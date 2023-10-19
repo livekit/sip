@@ -12,6 +12,7 @@ import (
 const (
 	userAgent = "LiveKit"
 	sipPort   = 5060
+	httpPort  = 8080
 )
 
 var (
@@ -20,6 +21,8 @@ var (
 
 func main() {
 	publicIp := getPublicIP()
+
+	audioTrack := createWebRTCHandlers(publicIp)
 
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(userAgent),
@@ -34,7 +37,9 @@ func main() {
 	}
 
 	srv.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
-		res := sip.NewResponseFromRequest(req, 200, "OK", generateAnswer(req.Body(), publicIp))
+		rtpListenerPort := createRTPListener(audioTrack)
+
+		res := sip.NewResponseFromRequest(req, 200, "OK", generateAnswer(req.Body(), publicIp, rtpListenerPort))
 		res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: publicIp, Port: sipPort}})
 		res.AppendHeader(&contentTypeHeaderSDP)
 		tx.Respond(res)

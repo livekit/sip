@@ -9,7 +9,7 @@ import (
 	"github.com/pion/sdp/v2"
 )
 
-func generateAnswer(offer []byte, publicIp string) []byte {
+func generateAnswer(offer []byte, publicIp string, rtpListenerPort int) []byte {
 	offerParsed := sdp.SessionDescription{}
 	if err := offerParsed.Unmarshal(offer); err != nil {
 		panic(err)
@@ -43,7 +43,7 @@ func generateAnswer(offer []byte, publicIp string) []byte {
 			&sdp.MediaDescription{
 				MediaName: sdp.MediaName{
 					Media:   "audio",
-					Port:    sdp.RangedPort{Value: 19502},
+					Port:    sdp.RangedPort{Value: rtpListenerPort},
 					Protos:  []string{"RTP", "AVP"},
 					Formats: []string{"0", "101"},
 				},
