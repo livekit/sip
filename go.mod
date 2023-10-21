@@ -1,4 +1,4 @@
-module github.com/livekit/sip-webrtc-bridge
+module github.com/livekit/sip
 
 go 1.21.3
 
