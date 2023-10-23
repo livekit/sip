@@ -20,6 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/utils"
@@ -28,13 +29,23 @@ import (
 	"github.com/livekit/sip/pkg/errors"
 )
 
+const (
+	DefaultSIPPort int = 5060
+)
+
+var (
+	DefaultRTPPortRange = rtcconfig.PortRange{Start: 10000, End: 20000}
+)
+
 type Config struct {
 	Redis     *redis.RedisConfig `yaml:"redis"`      // required
 	ApiKey    string             `yaml:"api_key"`    // required (env LIVEKIT_API_KEY)
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
-	Logging logger.Config `yaml:"logging"`
+	SIPPort int                 `yaml:"sip_port"`
+	RTPPort rtcconfig.PortRange `yaml:"rtp_port"`
+	Logging logger.Config       `yaml:"logging"`
 
 	// internal
 	ServiceName string `yaml:"-"`
@@ -63,6 +74,16 @@ func NewConfig(confString string) (*Config, error) {
 
 func (conf *Config) Init() error {
 	conf.NodeID = utils.NewGuid("NE_")
+
+	if conf.SIPPort == 0 {
+		conf.SIPPort = DefaultSIPPort
+	}
+	if conf.RTPPort.Start == 0 {
+		conf.RTPPort.Start = DefaultRTPPortRange.Start
+	}
+	if conf.RTPPort.End == 0 {
+		conf.RTPPort.End = DefaultRTPPortRange.End
+	}
 
 	if err := conf.InitLogger(); err != nil {
 		return err

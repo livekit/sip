@@ -33,6 +33,7 @@ import (
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/service"
+	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/version"
 )
 
@@ -112,6 +113,11 @@ func runService(c *cli.Context) error {
 
 	svc := service.NewService(conf, psrpcClient, bus)
 
+	sipSrv := sip.NewServer()
+	if err = sipSrv.Start(conf); err != nil {
+		return err
+	}
+
 	go func() {
 		select {
 		case sig := <-stopChan:
@@ -121,6 +127,7 @@ func runService(c *cli.Context) error {
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
+			sipSrv.Stop()
 
 		}
 	}()

@@ -1,12 +1,11 @@
-package main
+package sip
 
 import (
+	"fmt"
 	"net"
-
-	"github.com/pion/webrtc/v3"
 )
 
-func createRTPListener(audioTrack *webrtc.TrackLocalStaticRTP) int {
+func createRTPListener() int {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{
 		Port: 0,
 		IP:   net.ParseIP("0.0.0.0"),
@@ -24,7 +23,7 @@ func createRTPListener(audioTrack *webrtc.TrackLocalStaticRTP) int {
 				panic(err)
 			}
 
-			audioTrack.Write(buff[:n])
+			fmt.Println(n)
 		}
 	}()
 
