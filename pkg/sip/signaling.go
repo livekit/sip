@@ -2,10 +2,10 @@ package sip
 
 import "github.com/pion/sdp/v2"
 
-func generateAnswer(offer []byte, publicIp string, rtpListenerPort int) []byte {
+func generateAnswer(offer []byte, publicIp string, rtpListenerPort int) ([]byte, error) {
 	offerParsed := sdp.SessionDescription{}
 	if err := offerParsed.Unmarshal(offer); err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	answer := sdp.SessionDescription{
@@ -52,9 +52,5 @@ func generateAnswer(offer []byte, publicIp string, rtpListenerPort int) []byte {
 		},
 	}
 
-	answerByte, err := answer.Marshal()
-	if err != nil {
-		panic(err)
-	}
-	return answerByte
+	return answer.Marshal()
 }

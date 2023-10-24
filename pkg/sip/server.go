@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -26,19 +27,40 @@ import (
 
 const (
 	userAgent = "LiveKit"
-	sipPort   = 5060
-	httpPort  = 8080
 )
 
 var (
 	contentTypeHeaderSDP = sip.ContentTypeHeader("application/sdp")
 )
 
+type activeInvite struct {
+	udpConn *net.UDPConn
+}
+
 type Server struct {
+	sipSrv *sipgo.Server
+
+	activeInvites map[string]activeInvite
 }
 
 func NewServer() *Server {
-	return &Server{}
+	return &Server{
+		activeInvites: map[string]activeInvite{},
+	}
+}
+
+func getTagValue(req *sip.Request) (string, error) {
+	from, ok := req.From()
+	if !ok {
+		return "", fmt.Errorf("No From on Request")
+	}
+
+	tag, ok := from.Params["tag"]
+	if !ok {
+		return "", fmt.Errorf("No tag on From")
+	}
+
+	return tag, nil
 }
 
 func (s *Server) Start(conf *config.Config) error {
@@ -51,35 +73,76 @@ func (s *Server) Start(conf *config.Config) error {
 		log.Fatal(err)
 	}
 
-	srv, err := sipgo.NewServer(ua)
+	s.sipSrv, err = sipgo.NewServer(ua)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	srv.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
-		rtpListenerPort := createRTPListener()
+	s.sipSrv.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
+		tag, err := getTagValue(req)
+		if err != nil {
+			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			return
+		}
 
-		res := sip.NewResponseFromRequest(req, 200, "OK", generateAnswer(req.Body(), publicIp, rtpListenerPort))
-		res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: publicIp, Port: sipPort}})
+		from, ok := req.From()
+		if !ok {
+			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			return
+		}
+
+		udpConn, err := createRTPListener(conf, from.Address.User)
+		if err != nil {
+			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			return
+		}
+
+		s.activeInvites[tag] = activeInvite{udpConn: udpConn}
+
+		answer, err := generateAnswer(req.Body(), publicIp, udpConn.LocalAddr().(*net.UDPAddr).Port)
+		if err != nil {
+			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			return
+		}
+
+		res := sip.NewResponseFromRequest(req, 200, "OK", answer)
+		res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: publicIp, Port: conf.SIPPort}})
 		res.AppendHeader(&contentTypeHeaderSDP)
 		tx.Respond(res)
 	})
 
-	srv.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+	s.sipSrv.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+		tag, err := getTagValue(req)
+		if err != nil {
+			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			return
+		}
+
+		if activeInvite, ok := s.activeInvites[tag]; ok {
+			if activeInvite.udpConn != nil {
+				activeInvite.udpConn.Close()
+			}
+			delete(s.activeInvites, tag)
+		}
+
 		tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 	})
 
-	srv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
 		tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 	})
 
 	go func() {
-		panic(srv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", sipPort)))
+		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", conf.SIPPort)))
 	}()
 
 	return nil
 }
 
 func (s *Server) Stop() error {
+	if s.sipSrv != nil {
+		return s.sipSrv.Close()
+	}
+
 	return nil
 }
