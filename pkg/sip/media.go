@@ -3,6 +3,7 @@ package sip
 import (
 	"encoding/binary"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/livekit/sip/pkg/config"
@@ -23,6 +24,50 @@ const (
 )
 
 func createRTPListener(conf *config.Config, participantIdentity string) (*net.UDPConn, error) {
+	webrtcAudioSamples := make(chan []byte, 1500)
+
+	roomCB := &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if track.Kind() == webrtc.RTPCodecTypeVideo {
+					publication.SetSubscribed(false)
+					return
+				}
+
+				defer func() {
+					close(webrtcAudioSamples)
+				}()
+
+				decoder, err := opus.NewDecoder(8000, 1)
+				if err != nil {
+					return
+				}
+
+				samples := make([]int16, 1000)
+				for {
+					rtpPkt, _, err := track.ReadRTP()
+					if err != nil {
+						return
+					}
+
+					n, err := decoder.Decode(rtpPkt.Payload, samples)
+					if err != nil {
+						return
+					}
+
+					out := []byte{}
+					for _, sample := range samples[:n] {
+						out = append(out, byte(sample&0xff))
+						out = append(out, byte(sample>>8))
+					}
+
+					webrtcAudioSamples <- g711.EncodeUlaw(out)
+				}
+
+			},
+		},
+	}
+
 	room, err := lksdk.ConnectToRoom(conf.WsUrl,
 		lksdk.ConnectInfo{
 			APIKey:              conf.ApiKey,
@@ -30,8 +75,7 @@ func createRTPListener(conf *config.Config, participantIdentity string) (*net.UD
 			RoomName:            demoRoom,
 			ParticipantIdentity: participantIdentity,
 		},
-		lksdk.NewRoomCallback(),
-		lksdk.WithAutoSubscribe(false),
+		roomCB,
 	)
 	if err != nil {
 		return nil, err
@@ -61,15 +105,55 @@ func createRTPListener(conf *config.Config, participantIdentity string) (*net.UD
 		return nil, err
 	}
 
+	var rtpDestination atomic.Value
+
+	go func() {
+
+		rtpPkt := &rtp.Packet{
+			Header: rtp.Header{
+				Version: 2,
+				SSRC:    5000,
+			},
+		}
+
+		for {
+			audioSample, ok := <-webrtcAudioSamples
+			if !ok {
+				return
+			}
+
+			dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
+			if !ok || dstAddr == nil {
+				continue
+			}
+
+			rtpPkt.Payload = audioSample
+
+			raw, err := rtpPkt.Marshal()
+			if err != nil {
+				continue
+			}
+
+			if _, err = conn.WriteTo(raw, dstAddr); err != nil {
+				continue
+			}
+
+			rtpPkt.Header.Timestamp += 160
+			rtpPkt.Header.SequenceNumber += 1
+		}
+	}()
+
 	go func() {
 		buff := make([]byte, 1500)
 		rtpPkt := &rtp.Packet{}
 
 		for {
-			n, _, err := conn.ReadFromUDP(buff)
+			n, srcAddr, err := conn.ReadFromUDP(buff)
 			if err != nil {
 				break
 			}
+
+			rtpDestination.Store(srcAddr)
 
 			if err := rtpPkt.Unmarshal(buff[:n]); err != nil {
 				continue

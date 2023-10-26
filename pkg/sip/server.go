@@ -23,6 +23,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/sip/pkg/config"
+	"github.com/pion/sdp/v2"
 )
 
 const (
@@ -97,9 +98,15 @@ func (s *Server) Start(conf *config.Config) error {
 			return
 		}
 
+		offer := sdp.SessionDescription{}
+		if err := offer.Unmarshal(req.Body()); err != nil {
+			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			return
+		}
+
 		s.activeInvites[tag] = activeInvite{udpConn: udpConn}
 
-		answer, err := generateAnswer(req.Body(), publicIp, udpConn.LocalAddr().(*net.UDPAddr).Port)
+		answer, err := generateAnswer(offer, publicIp, udpConn.LocalAddr().(*net.UDPAddr).Port)
 		if err != nil {
 			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 			return

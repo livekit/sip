@@ -2,18 +2,14 @@ package sip
 
 import "github.com/pion/sdp/v2"
 
-func generateAnswer(offer []byte, publicIp string, rtpListenerPort int) ([]byte, error) {
-	offerParsed := sdp.SessionDescription{}
-	if err := offerParsed.Unmarshal(offer); err != nil {
-		return nil, err
-	}
+func generateAnswer(offer sdp.SessionDescription, publicIp string, rtpListenerPort int) ([]byte, error) {
 
 	answer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
 			Username:       "-",
-			SessionID:      offerParsed.Origin.SessionID,
-			SessionVersion: offerParsed.Origin.SessionID + 2,
+			SessionID:      offer.Origin.SessionID,
+			SessionVersion: offer.Origin.SessionID + 2,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
 			UnicastAddress: publicIp,
