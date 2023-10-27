@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sip
 
 import (
@@ -7,6 +21,7 @@ import (
 	"time"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/mixer"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
@@ -24,7 +39,41 @@ const (
 )
 
 func createRTPListener(conf *config.Config, participantIdentity string) (*net.UDPConn, error) {
-	webrtcAudioSamples := make(chan []byte, 1500)
+	var rtpDestination atomic.Value
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{
+		Port: 0,
+		IP:   net.ParseIP("0.0.0.0"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	mixerRtpPkt := &rtp.Packet{
+		Header: rtp.Header{
+			Version: 2,
+			SSRC:    5000,
+		},
+	}
+	audioMixer := mixer.NewMixer(func(audioSample []byte) {
+		dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
+		if !ok || dstAddr == nil {
+			return
+		}
+
+		mixerRtpPkt.Payload = g711.EncodeUlaw(audioSample)
+
+		raw, err := mixerRtpPkt.Marshal()
+		if err != nil {
+			return
+		}
+
+		if _, err = conn.WriteTo(raw, dstAddr); err != nil {
+			return
+		}
+
+		mixerRtpPkt.Header.Timestamp += 160
+		mixerRtpPkt.Header.SequenceNumber += 1
+	})
 
 	roomCB := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
@@ -34,35 +83,28 @@ func createRTPListener(conf *config.Config, participantIdentity string) (*net.UD
 					return
 				}
 
-				defer func() {
-					close(webrtcAudioSamples)
-				}()
-
 				decoder, err := opus.NewDecoder(8000, 1)
 				if err != nil {
 					return
 				}
 
+				audioMixer.AddInput()
 				samples := make([]int16, 1000)
 				for {
 					rtpPkt, _, err := track.ReadRTP()
 					if err != nil {
-						return
+						break
 					}
 
 					n, err := decoder.Decode(rtpPkt.Payload, samples)
 					if err != nil {
-						return
+						break
 					}
 
-					out := []byte{}
-					for _, sample := range samples[:n] {
-						out = append(out, byte(sample&0xff))
-						out = append(out, byte(sample>>8))
-					}
-
-					webrtcAudioSamples <- g711.EncodeUlaw(out)
+					audioMixer.Push(samples[:n])
 				}
+
+				audioMixer.RemoveInput()
 
 			},
 		},
@@ -96,52 +138,6 @@ func createRTPListener(conf *config.Config, participantIdentity string) (*net.UD
 	if err != nil {
 		return nil, err
 	}
-
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{
-		Port: 0,
-		IP:   net.ParseIP("0.0.0.0"),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var rtpDestination atomic.Value
-
-	go func() {
-
-		rtpPkt := &rtp.Packet{
-			Header: rtp.Header{
-				Version: 2,
-				SSRC:    5000,
-			},
-		}
-
-		for {
-			audioSample, ok := <-webrtcAudioSamples
-			if !ok {
-				return
-			}
-
-			dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
-			if !ok || dstAddr == nil {
-				continue
-			}
-
-			rtpPkt.Payload = audioSample
-
-			raw, err := rtpPkt.Marshal()
-			if err != nil {
-				continue
-			}
-
-			if _, err = conn.WriteTo(raw, dstAddr); err != nil {
-				continue
-			}
-
-			rtpPkt.Header.Timestamp += 160
-			rtpPkt.Header.SequenceNumber += 1
-		}
-	}()
 
 	go func() {
 		buff := make([]byte, 1500)
@@ -179,6 +175,7 @@ func createRTPListener(conf *config.Config, participantIdentity string) (*net.UD
 		}
 
 		room.Disconnect()
+		audioMixer.Stop()
 	}()
 
 	return conn, nil
