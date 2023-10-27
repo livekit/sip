@@ -38,43 +38,7 @@ const (
 	sampleRate = 8000
 )
 
-func createRTPListener(conf *config.Config, participantIdentity string) (*net.UDPConn, error) {
-	var rtpDestination atomic.Value
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{
-		Port: 0,
-		IP:   net.ParseIP("0.0.0.0"),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	mixerRtpPkt := &rtp.Packet{
-		Header: rtp.Header{
-			Version: 2,
-			SSRC:    5000,
-		},
-	}
-	audioMixer := mixer.NewMixer(func(audioSample []byte) {
-		dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
-		if !ok || dstAddr == nil {
-			return
-		}
-
-		mixerRtpPkt.Payload = g711.EncodeUlaw(audioSample)
-
-		raw, err := mixerRtpPkt.Marshal()
-		if err != nil {
-			return
-		}
-
-		if _, err = conn.WriteTo(raw, dstAddr); err != nil {
-			return
-		}
-
-		mixerRtpPkt.Header.Timestamp += 160
-		mixerRtpPkt.Header.SequenceNumber += 1
-	})
-
+func createLiveKitParticipant(conf *config.Config, participantIdentity string, audioMixer *mixer.Mixer) (*webrtc.TrackLocalStaticSample, *lksdk.Room, error) {
 	roomCB := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
@@ -120,17 +84,62 @@ func createRTPListener(conf *config.Config, participantIdentity string) (*net.UD
 		roomCB,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if _, err = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
 		Name: participantIdentity,
 	}); err != nil {
+		return nil, nil, err
+	}
+
+	return track, room, nil
+}
+
+func createMediaSession(conf *config.Config, participantIdentity string) (*net.UDPConn, error) {
+	var rtpDestination atomic.Value
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{
+		Port: 0,
+		IP:   net.ParseIP("0.0.0.0"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	mixerRtpPkt := &rtp.Packet{
+		Header: rtp.Header{
+			Version: 2,
+			SSRC:    5000,
+		},
+	}
+	audioMixer := mixer.NewMixer(func(audioSample []byte) {
+		dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
+		if !ok || dstAddr == nil {
+			return
+		}
+
+		mixerRtpPkt.Payload = g711.EncodeUlaw(audioSample)
+
+		raw, err := mixerRtpPkt.Marshal()
+		if err != nil {
+			return
+		}
+
+		if _, err = conn.WriteTo(raw, dstAddr); err != nil {
+			return
+		}
+
+		mixerRtpPkt.Header.Timestamp += 160
+		mixerRtpPkt.Header.SequenceNumber += 1
+	})
+
+	track, room, err := createLiveKitParticipant(conf, participantIdentity, audioMixer)
+	if err != nil {
 		return nil, err
 	}
 

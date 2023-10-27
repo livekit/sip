@@ -64,6 +64,10 @@ func getTagValue(req *sip.Request) (string, error) {
 	return tag, nil
 }
 
+func sipErrorResponse(req *sip.Request) *sip.Response {
+	return sip.NewResponseFromRequest(req, 400, "", nil)
+}
+
 func (s *Server) Start(conf *config.Config) error {
 	publicIp := getPublicIP()
 
@@ -82,25 +86,25 @@ func (s *Server) Start(conf *config.Config) error {
 	s.sipSrv.OnInvite(func(req *sip.Request, tx sip.ServerTransaction) {
 		tag, err := getTagValue(req)
 		if err != nil {
-			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			tx.Respond(sipErrorResponse(req))
 			return
 		}
 
 		from, ok := req.From()
 		if !ok {
-			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			tx.Respond(sipErrorResponse(req))
 			return
 		}
 
-		udpConn, err := createRTPListener(conf, from.Address.User)
+		udpConn, err := createMediaSession(conf, from.Address.User)
 		if err != nil {
-			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			tx.Respond(sipErrorResponse(req))
 			return
 		}
 
 		offer := sdp.SessionDescription{}
 		if err := offer.Unmarshal(req.Body()); err != nil {
-			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			tx.Respond(sipErrorResponse(req))
 			return
 		}
 
@@ -108,7 +112,7 @@ func (s *Server) Start(conf *config.Config) error {
 
 		answer, err := generateAnswer(offer, publicIp, udpConn.LocalAddr().(*net.UDPAddr).Port)
 		if err != nil {
-			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			tx.Respond(sipErrorResponse(req))
 			return
 		}
 
@@ -121,7 +125,7 @@ func (s *Server) Start(conf *config.Config) error {
 	s.sipSrv.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
 		tag, err := getTagValue(req)
 		if err != nil {
-			tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+			tx.Respond(sipErrorResponse(req))
 			return
 		}
 
