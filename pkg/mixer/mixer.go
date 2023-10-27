@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	mixSize           = 160
-	mixerTickDuration = time.Millisecond * 20
+	defaultMixSize = 160
+
+	mixerTickDuration = time.Millisecond * 20 // How ofter we gener
+
+	bufferSize = 5 // Samples required for a input before we start mixing
 )
 
 type Mixer struct {
@@ -31,7 +34,9 @@ type Mixer struct {
 	onSample func([]byte)
 
 	samples [][]int16
+
 	ticker  *time.Ticker
+	mixSize int
 
 	inputCount uint64
 	stopped    atomic.Bool
@@ -41,6 +46,7 @@ func NewMixer(onSample func([]byte)) *Mixer {
 	m := &Mixer{
 		onSample: onSample,
 		ticker:   time.NewTicker(mixerTickDuration),
+		mixSize:  defaultMixSize,
 	}
 
 	go m.start()
@@ -49,7 +55,7 @@ func NewMixer(onSample func([]byte)) *Mixer {
 }
 
 func (m *Mixer) doMix() {
-	mixed := make([]int16, mixSize)
+	mixed := make([]int16, m.mixSize)
 	for i := range m.samples {
 		for j := range m.samples[i] {
 			mixed[j] += m.samples[i][j]
@@ -73,7 +79,7 @@ func (m *Mixer) start() {
 		}
 
 		if atomic.LoadUint64(&m.inputCount) == 0 {
-			m.onSample(make([]byte, mixSize*2))
+			m.onSample(make([]byte, m.mixSize*2))
 		}
 	}
 
