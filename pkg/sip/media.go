@@ -52,7 +52,7 @@ func createLiveKitParticipant(conf *config.Config, participantIdentity string, a
 					return
 				}
 
-				audioMixer.AddInput()
+				input := audioMixer.AddInput()
 				samples := make([]int16, 1000)
 				for {
 					rtpPkt, _, err := track.ReadRTP()
@@ -65,10 +65,10 @@ func createLiveKitParticipant(conf *config.Config, participantIdentity string, a
 						break
 					}
 
-					audioMixer.Push(samples[:n])
+					input.Push(samples[:n])
 				}
 
-				audioMixer.RemoveInput()
+				audioMixer.RemoveInput(input)
 
 			},
 		},
