@@ -67,5 +67,45 @@ func TestMixer(t *testing.T) {
 				t.Fatal()
 			}
 		}
+
+		m.RemoveInput(input)
 	})
+
+	t.Run("Buffer Underflow", func(t *testing.T) {
+		input := m.AddInput()
+
+		for i := 0; i < 5; i++ {
+			input.Push([]int16{0, 1, 2, 3, 4})
+		}
+
+		for i := 0; i < 8; i++ {
+			m.doMix()
+
+			expected := []byte{0, 0, 1, 0, 2, 0, 3, 0, 4, 0}
+			if i == 7 {
+				expected = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+			}
+
+			if !bytes.Equal(sample, expected) {
+				t.Fatal()
+			}
+		}
+
+		m.RemoveInput(input)
+	})
+
+	t.Run("Buffer Overflow", func(t *testing.T) {
+		input := m.AddInput()
+
+		for i := 0; i < 500; i++ {
+			input.Push([]int16{0, 1, 2, 3, 4})
+		}
+
+		m.doMix()
+		if len(input.samples) != 400 {
+			t.Fatal()
+		}
+		m.RemoveInput(input)
+	})
+
 }

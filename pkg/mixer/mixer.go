@@ -28,8 +28,9 @@ const (
 )
 
 type Input struct {
-	mu      sync.Mutex
-	samples [][]int16
+	mu               sync.Mutex
+	samples          [][]int16
+	ignoredLastPrune bool
 
 	hasBuffered atomic.Bool
 	bufferSize  int
@@ -63,14 +64,28 @@ func (m *Mixer) doMix() {
 	mixed := make([]int16, m.mixSize)
 
 	for _, input := range m.inputs {
-		if !input.hasBuffered.Load() {
+		input.mu.Lock()
+
+		if !input.hasBuffered.Load() || len(input.samples) == 0 {
+			input.mu.Unlock()
 			continue
 		}
 
-		input.mu.Lock()
 		for j := 0; j < m.mixSize; j++ {
 			mixed[j] += input.samples[0][j] / int16(len(m.inputs))
 		}
+
+		samplesToPrune := 1
+
+		if len(input.samples) < input.bufferSize && len(input.samples)%2 == 1 && !input.ignoredLastPrune {
+			samplesToPrune = 0
+		} else if len(input.samples) > input.bufferSize && input.bufferSize != 0 {
+			samplesToPrune = len(input.samples) / input.bufferSize
+		}
+
+		input.samples = input.samples[samplesToPrune:]
+		input.ignoredLastPrune = samplesToPrune == 0
+
 		input.mu.Unlock()
 	}
 
