@@ -15,13 +15,14 @@
 package mixer
 
 import (
+	"container/list"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/frostbyte73/core"
 )
 
 const (
-	defaultMixSize    = 160
 	defaultBufferSize = 5 // Samples required for a input before we start mixing
 
 	mixerTickDuration = time.Millisecond * 20 // How ofter we generate mixes
@@ -29,30 +30,33 @@ const (
 
 type Input struct {
 	mu               sync.Mutex
-	samples          [][]int16
+	samples          list.List // linked list of [mixSize]byte
 	ignoredLastPrune bool
 
-	hasBuffered atomic.Bool
+	hasBuffered bool
 	bufferSize  int
+	mixSize     int
 }
 
 type Mixer struct {
 	mu sync.Mutex
 
 	onSample func([]byte)
-	inputs   []*Input
+	inputs   map[*Input]struct{}
 
 	ticker  *time.Ticker
 	mixSize int
 
-	stopped atomic.Bool
+	stopped core.Fuse
 }
 
-func NewMixer(onSample func([]byte)) *Mixer {
+func NewMixer(onSample func([]byte), sampleRate int) *Mixer {
 	m := &Mixer{
 		onSample: onSample,
 		ticker:   time.NewTicker(mixerTickDuration),
-		mixSize:  defaultMixSize,
+		mixSize:  int(time.Duration(sampleRate) * mixerTickDuration / time.Second),
+		stopped:  core.NewFuse(),
+		inputs:   make(map[*Input]struct{}),
 	}
 
 	go m.start()
@@ -61,67 +65,82 @@ func NewMixer(onSample func([]byte)) *Mixer {
 }
 
 func (m *Mixer) doMix() {
-	mixed := make([]int16, m.mixSize)
+	mixed := make([]int32, m.mixSize)
 
-	for _, input := range m.inputs {
+	for input, _ := range m.inputs {
 		input.mu.Lock()
 
-		if !input.hasBuffered.Load() || len(input.samples) == 0 {
+		if !input.hasBuffered || input.samples.Len() == 0 {
 			input.mu.Unlock()
 			continue
 		}
 
 		for j := 0; j < m.mixSize; j++ {
-			mixed[j] += input.samples[0][j] / int16(len(m.inputs))
+			// Add the samples. This can potentially lead to overfow, but is unlikely and dividing by the source
+			// count would cause the volume to drop ever time somebody joins
+
+			samples := input.samples.Front().Value.([]int16)
+			mixed[j] += int32(samples[j])
 		}
 
 		samplesToPrune := 1
 
-		if len(input.samples) < input.bufferSize && len(input.samples)%2 == 1 && !input.ignoredLastPrune {
+		if input.samples.Len() < input.bufferSize && input.samples.Len()%2 == 1 && !input.ignoredLastPrune {
 			samplesToPrune = 0
-		} else if len(input.samples) > input.bufferSize && input.bufferSize != 0 {
-			samplesToPrune = len(input.samples) / input.bufferSize
+		} else if input.samples.Len() > input.bufferSize && input.bufferSize != 0 {
+			samplesToPrune = input.samples.Len() / input.bufferSize
 		}
 
-		input.samples = input.samples[samplesToPrune:]
+		for i := 0; i < samplesToPrune; i++ {
+			input.samples.Remove(input.samples.Front())
+		}
 		input.ignoredLastPrune = samplesToPrune == 0
 
 		input.mu.Unlock()
 	}
 
-	out := []byte{}
-	for _, sample := range mixed {
-		out = append(out, byte(sample&0xff))
-		out = append(out, byte(sample>>8))
+	out := make([]byte, 2*m.mixSize)
+	for i, sample := range mixed {
+		// Result is little endian
+		if sample > 0xFFFF {
+			sample = 0xFFFF
+		}
+		out[2*i] = byte(sample & 0xFF)
+		out[2*i+1] = byte(sample >> 8)
 	}
 
 	m.onSample(out)
 }
 
 func (m *Mixer) start() {
-	for range m.ticker.C {
-		if m.stopped.Load() {
-			break
+loop:
+	for {
+		select {
+		case <-m.ticker.C:
+			m.mu.Lock()
+			m.doMix()
+			m.mu.Unlock()
+		case <-m.stopped.Watch():
+			break loop
 		}
-
-		m.mu.Lock()
-		m.doMix()
-		m.mu.Unlock()
 	}
 
 	m.ticker.Stop()
 }
 
 func (m *Mixer) Stop() {
-	m.stopped.Store(true)
+	m.stopped.Break()
 }
 
 func (m *Mixer) AddInput() *Input {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	i := &Input{bufferSize: defaultBufferSize}
-	m.inputs = append(m.inputs, i)
+	i := &Input{
+		bufferSize: defaultBufferSize,
+		mixSize:    m.mixSize,
+	}
+	m.inputs[i] = struct{}{}
 
 	return i
 }
@@ -130,22 +149,20 @@ func (m *Mixer) RemoveInput(i *Input) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	newInputs := []*Input{}
-	for _, input := range m.inputs {
-		if i != input {
-			newInputs = append(newInputs, input)
-		}
-	}
-	m.inputs = newInputs
+	delete(m.inputs, i)
 }
 
 func (i *Input) Push(sample []int16) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	i.samples = append(i.samples, append([]int16{}, sample...))
+	// Zero pad the sample if it's shorter than mixSize
+	copiedSample := make([]int16, i.mixSize)
+	copy(copiedSample, sample)
 
-	if len(i.samples) >= i.bufferSize {
-		i.hasBuffered.Store(true)
+	i.samples.PushBack(copiedSample)
+
+	if i.samples.Len() >= i.bufferSize {
+		i.hasBuffered = true
 	}
 }
