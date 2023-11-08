@@ -51,6 +51,14 @@ type Mixer struct {
 }
 
 func NewMixer(onSample func([]byte), sampleRate int) *Mixer {
+	m := newMixer(onSample, sampleRate)
+
+	go m.start()
+
+	return m
+}
+
+func newMixer(onSample func([]byte), sampleRate int) *Mixer {
 	m := &Mixer{
 		onSample: onSample,
 		ticker:   time.NewTicker(mixerTickDuration),
@@ -58,8 +66,6 @@ func NewMixer(onSample func([]byte), sampleRate int) *Mixer {
 		stopped:  core.NewFuse(),
 		inputs:   make(map[*Input]struct{}),
 	}
-
-	go m.start()
 
 	return m
 }
@@ -101,7 +107,6 @@ func (m *Mixer) doMix() {
 
 	out := make([]byte, 2*m.mixSize)
 	for i, sample := range mixed {
-		// Result is little endian
 		if sample > 0x7FFF {
 			sample = 0x7FFF
 		}
@@ -109,6 +114,7 @@ func (m *Mixer) doMix() {
 			sample = -0x7FFF
 		}
 
+		// Encoder expects little endian data (???)
 		out[2*i] = byte(sample & 0xFF)
 		out[2*i+1] = byte(sample >> 8)
 	}

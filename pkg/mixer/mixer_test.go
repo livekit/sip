@@ -3,16 +3,19 @@ package mixer
 import (
 	"bytes"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMixer(t *testing.T) {
 	sample := []byte{}
-	m := &Mixer{
-		mixSize: 5,
-		onSample: func(s []byte) {
-			sample = s
-		},
-	}
+	m := newMixer(func(s []byte) {
+		sample = s
+	}, 8000)
+
+	require.Equal(t, 160, m.mixSize)
+
+	m.mixSize = 5
 
 	t.Run("No Input", func(t *testing.T) {
 		m.doMix()
@@ -27,9 +30,7 @@ func TestMixer(t *testing.T) {
 		input.Push([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
 		m.doMix()
-		if !bytes.Equal(sample, []byte{10, 0, 11, 0, 12, 0, 13, 0, 14, 0}) {
-			t.Fatal()
-		}
+		require.Equal(t, []byte{10, 0, 11, 0, 12, 0, 13, 0, 14, 0}, sample)
 		m.RemoveInput(input)
 	})
 
@@ -43,9 +44,13 @@ func TestMixer(t *testing.T) {
 		secondInput.Push([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
 		m.doMix()
-		if !bytes.Equal(sample, []byte{12, 0, 11, 0, 12, 0, 11, 0, 12, 0}) {
-			t.Fatal()
-		}
+		require.Equal(t, []byte{24, 0, 24, 0, 24, 0, 24, 0, 24, 0}, sample)
+
+		firstInput.Push([]int16{0x7FFF, 0x1, -0x7FFF, -0x1, 0x0})
+		secondInput.Push([]int16{0x1, 0x7FFF, -0x1, -0x7FFF, 0x0})
+
+		m.doMix()
+		require.Equal(t, []byte{0xFF, 0x7F, 0xFF, 0x7F, 0x1, 0x80, 0x1, 0x80, 0x0, 0x0}, sample)
 
 		m.RemoveInput(firstInput)
 		m.RemoveInput(secondInput)
@@ -63,9 +68,7 @@ func TestMixer(t *testing.T) {
 				expected = []byte{0, 0, 1, 0, 2, 0, 3, 0, 4, 0}
 			}
 
-			if !bytes.Equal(sample, expected) {
-				t.Fatal()
-			}
+			require.Equal(t, expected, sample)
 		}
 
 		m.RemoveInput(input)
@@ -86,9 +89,7 @@ func TestMixer(t *testing.T) {
 				expected = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 			}
 
-			if !bytes.Equal(sample, expected) {
-				t.Fatal()
-			}
+			require.Equal(t, expected, sample)
 		}
 
 		m.RemoveInput(input)
@@ -102,9 +103,7 @@ func TestMixer(t *testing.T) {
 		}
 
 		m.doMix()
-		if len(input.samples) != 400 {
-			t.Fatal()
-		}
+		require.Equal(t, 400, input.samples.Len())
 		m.RemoveInput(input)
 	})
 
