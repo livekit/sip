@@ -30,7 +30,7 @@ const (
 
 type Input struct {
 	mu               sync.Mutex
-	samples          list.List // linked list of [mixSize]byte
+	samples          list.List // linked list of elements of type [mixSize]byte
 	ignoredLastPrune bool
 
 	hasBuffered bool
@@ -51,14 +51,14 @@ type Mixer struct {
 }
 
 func NewMixer(onSample func([]byte), sampleRate int) *Mixer {
-	m := newMixer(onSample, sampleRate)
+	m := createMixer(onSample, sampleRate)
 
 	go m.start()
 
 	return m
 }
 
-func newMixer(onSample func([]byte), sampleRate int) *Mixer {
+func createMixer(onSample func([]byte), sampleRate int) *Mixer {
 	m := &Mixer{
 		onSample: onSample,
 		ticker:   time.NewTicker(mixerTickDuration),

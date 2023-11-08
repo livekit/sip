@@ -9,7 +9,7 @@ import (
 
 func TestMixer(t *testing.T) {
 	sample := []byte{}
-	m := newMixer(func(s []byte) {
+	m := createMixer(func(s []byte) {
 		sample = s
 	}, 8000)
 
