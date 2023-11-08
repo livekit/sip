@@ -117,7 +117,7 @@ func createMediaSession(conf *config.Config, participantIdentity string) (*net.U
 			SSRC:    5000,
 		},
 	}
-	audioMixer := mixer.NewMixer(func(audioSample []byte) {
+	audioMixer := mixer.NewMixer(func(audioSample []byte, sampleRate) {
 		dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
 		if !ok || dstAddr == nil {
 			return
