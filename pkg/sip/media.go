@@ -117,7 +117,7 @@ func createMediaSession(conf *config.Config, participantIdentity string) (*net.U
 			SSRC:    5000,
 		},
 	}
-	audioMixer := mixer.NewMixer(func(audioSample []byte, sampleRate) {
+	audioMixer := mixer.NewMixer(func(audioSample []byte) {
 		dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
 		if !ok || dstAddr == nil {
 			return
@@ -136,7 +136,7 @@ func createMediaSession(conf *config.Config, participantIdentity string) (*net.U
 
 		mixerRtpPkt.Header.Timestamp += 160
 		mixerRtpPkt.Header.SequenceNumber += 1
-	})
+	}, 8000)
 
 	track, room, err := createLiveKitParticipant(conf, participantIdentity, audioMixer)
 	if err != nil {
