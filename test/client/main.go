@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/at-wat/ebml-go"
@@ -91,15 +92,10 @@ func createOffer(port int) ([]byte, error) {
 					Media:   "audio",
 					Port:    sdp.RangedPort{Value: port},
 					Protos:  []string{"RTP", "AVP"},
-					Formats: []string{"0", "101"},
+					Formats: []string{"0"},
 				},
 				Attributes: []sdp.Attribute{
 					sdp.Attribute{Key: "rtpmap", Value: "0 PCMU/8000"},
-					sdp.Attribute{Key: "rtpmap", Value: "101 telephone-event/8000"},
-					sdp.Attribute{Key: "fmtp", Value: "101 0-16"},
-					sdp.Attribute{Key: "ptime", Value: "20"},
-					sdp.Attribute{Key: "maxptime", Value: "150"},
-					sdp.Attribute{Key: "sendrecv"},
 				},
 			},
 		},
@@ -153,11 +149,15 @@ func sendAudioPackets(conn *net.UDPConn, port int) {
 	}
 
 	for range time.NewTicker(20 * time.Millisecond).C {
+		if i >= len(audioFrames) {
+			break
+		}
+
 		rtpPkt.Payload = audioFrames[i]
 
 		raw, err := rtpPkt.Marshal()
 		if err != nil {
-			return
+			panic(err)
 		}
 
 		if _, err = conn.WriteTo(raw, dstAddr); err != nil {
@@ -184,29 +184,52 @@ func main() {
 		log.Fatal(err)
 	}
 
-	client, err := sipgo.NewClient(ua)
+	sipClient, err := sipgo.NewClient(ua)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	req := sip.NewRequest(sip.INVITE, &sip.Uri{User: "+15550100000", Host: "example.pstn.twilio.com"})
-	req.SetDestination(getLocalIP() + ":5060")
-	req.SetBody(offer)
+	inviteRequest := sip.NewRequest(sip.INVITE, &sip.Uri{User: "+15550100000", Host: "example.pstn.twilio.com"})
+	inviteRequest.SetDestination(getLocalIP() + ":5060")
+	inviteRequest.SetBody(offer)
 
-	tx, err := client.TransactionRequest(req)
+	tx, err := sipClient.TransactionRequest(inviteRequest)
 	if err != nil {
 		panic(err)
 	}
-	defer tx.Terminate()
 
-	var port int
-
+	var inviteResponse *sip.Response
 	select {
-	case res := <-tx.Responses():
-		port = parseAnswer(res.Body())
+	case inviteResponse = <-tx.Responses():
 	case <-tx.Done():
 		panic("INVITE failed")
 	}
 
-	sendAudioPackets(mediaConn, port)
+	sendBye := func() {
+		req := sip.NewByeRequest(inviteRequest, inviteResponse, nil)
+
+		tx, err := sipClient.TransactionRequest(req)
+		if err != nil {
+			panic(err)
+		}
+
+		select {
+		case <-tx.Responses():
+		case <-tx.Done():
+			panic("BYE failed")
+		}
+
+		mediaConn.Close()
+	}
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+	go func() {
+		<-signalChan
+		sendBye()
+	}()
+
+	sendAudioPackets(mediaConn, parseAnswer(inviteResponse.Body()))
+	sendBye()
+
 }
