@@ -17,7 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -127,7 +127,9 @@ func runService(c *cli.Context) error {
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
-			sipSrv.Stop()
+			if err = sipSrv.Stop(); err != nil {
+				log.Println(err)
+			}
 
 		}
 	}()
@@ -150,12 +152,7 @@ func runHandler(c *cli.Context) error {
 
 	token := c.String("token")
 
-	var handler interface {
-		Kill()
-		HandleSIP(ctx context.Context, info any, wsUrl, token string, extraParams any)
-	}
-
-	handler = service.NewHandler(conf)
+	handler := service.NewHandler(conf)
 
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
@@ -189,7 +186,7 @@ func getConfig(c *cli.Context, initialize bool) (*config.Config, error) {
 		if configFile == "" {
 			return nil, errors.ErrNoConfig
 		}
-		content, err := ioutil.ReadFile(configFile)
+		content, err := os.ReadFile(configFile)
 		if err != nil {
 			return nil, err
 		}

@@ -73,7 +73,7 @@ func createMixer(onSample func([]byte), sampleRate int) *Mixer {
 func (m *Mixer) doMix() {
 	mixed := make([]int32, m.mixSize)
 
-	for input, _ := range m.inputs {
+	for input := range m.inputs {
 		input.mu.Lock()
 
 		if !input.hasBuffered || input.samples.Len() == 0 {

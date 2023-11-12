@@ -16,6 +16,7 @@ package sip
 
 import (
 	"encoding/binary"
+	"log"
 	"net"
 	"sync/atomic"
 	"time"
@@ -43,7 +44,9 @@ func createLiveKitParticipant(conf *config.Config, participantIdentity string, a
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 				if track.Kind() == webrtc.RTPCodecTypeVideo {
-					publication.SetSubscribed(false)
+					if err := publication.SetSubscribed(false); err != nil {
+						log.Println(err)
+					}
 					return
 				}
 
