@@ -16,6 +16,7 @@ package sip
 
 import (
 	"encoding/binary"
+	"log"
 	"net"
 	"sync/atomic"
 	"time"
@@ -32,18 +33,18 @@ import (
 )
 
 const (
-	demoRoom = "gz4h-1yff"
-
 	channels   = 1
 	sampleRate = 8000
 )
 
-func createLiveKitParticipant(conf *config.Config, participantIdentity string, audioMixer *mixer.Mixer) (*webrtc.TrackLocalStaticSample, *lksdk.Room, error) {
+func createLiveKitParticipant(conf *config.Config, roomName, participantIdentity string, audioMixer *mixer.Mixer) (*webrtc.TrackLocalStaticSample, *lksdk.Room, error) {
 	roomCB := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 				if track.Kind() == webrtc.RTPCodecTypeVideo {
-					publication.SetSubscribed(false)
+					if err := publication.SetSubscribed(false); err != nil {
+						log.Println(err)
+					}
 					return
 				}
 
@@ -78,7 +79,7 @@ func createLiveKitParticipant(conf *config.Config, participantIdentity string, a
 		lksdk.ConnectInfo{
 			APIKey:              conf.ApiKey,
 			APISecret:           conf.ApiSecret,
-			RoomName:            demoRoom,
+			RoomName:            roomName,
 			ParticipantIdentity: participantIdentity,
 		},
 		roomCB,
@@ -101,7 +102,7 @@ func createLiveKitParticipant(conf *config.Config, participantIdentity string, a
 	return track, room, nil
 }
 
-func createMediaSession(conf *config.Config, participantIdentity string) (*net.UDPConn, error) {
+func createMediaSession(conf *config.Config, roomName, participantIdentity string) (*net.UDPConn, error) {
 	var rtpDestination atomic.Value
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{
 		Port: 0,
@@ -136,9 +137,9 @@ func createMediaSession(conf *config.Config, participantIdentity string) (*net.U
 
 		mixerRtpPkt.Header.Timestamp += 160
 		mixerRtpPkt.Header.SequenceNumber += 1
-	})
+	}, 8000)
 
-	track, room, err := createLiveKitParticipant(conf, participantIdentity, audioMixer)
+	track, room, err := createLiveKitParticipant(conf, roomName, participantIdentity, audioMixer)
 	if err != nil {
 		return nil, err
 	}

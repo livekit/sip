@@ -73,7 +73,7 @@ func createMixer(onSample func([]byte), sampleRate int) *Mixer {
 func (m *Mixer) doMix() {
 	mixed := make([]int32, m.mixSize)
 
-	for input, _ := range m.inputs {
+	for input := range m.inputs {
 		input.mu.Lock()
 
 		if !input.hasBuffered || input.samples.Len() == 0 {
@@ -114,7 +114,7 @@ func (m *Mixer) doMix() {
 			sample = -0x7FFF
 		}
 
-		// Encoder expects little endian data (???)
+		// Encoder expects little endian data
 		out[2*i] = byte(sample & 0xFF)
 		out[2*i+1] = byte(sample >> 8)
 	}
