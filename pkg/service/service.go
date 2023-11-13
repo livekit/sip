@@ -59,3 +59,10 @@ func (s *Service) Run() error {
 		}
 	}
 }
+
+func (s *Service) HandleInvite(from, to, srcAddress string) (joinRoom string, requestPin bool, rejectInvite bool) {
+	return "", false, true
+}
+
+func (s *Service) HandlePIN() {
+}

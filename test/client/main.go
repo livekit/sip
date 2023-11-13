@@ -205,6 +205,10 @@ func main() {
 		panic("INVITE failed")
 	}
 
+	if inviteResponse.StatusCode != 200 {
+		panic("INVITE rejected")
+	}
+
 	sendBye := func() {
 		req := sip.NewByeRequest(inviteRequest, inviteResponse, nil)
 

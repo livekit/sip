@@ -34,19 +34,30 @@ var (
 	contentTypeHeaderSDP = sip.ContentTypeHeader("application/sdp")
 )
 
-type activeInvite struct {
-	udpConn *net.UDPConn
-}
+type (
+	onInviteFunc func(from, to, srcAddress string) (joinRoom string, pinRequired bool, hangup bool)
+	onPinFunc    func()
 
-type Server struct {
-	sipSrv *sipgo.Server
+	Server struct {
+		sipSrv *sipgo.Server
 
-	activeInvites map[string]activeInvite
-}
+		activeInvites map[string]activeInvite
+		onInvite      onInviteFunc
+		onPin         onPinFunc
+		conf          *config.Config
+	}
 
-func NewServer() *Server {
+	activeInvite struct {
+		udpConn *net.UDPConn
+	}
+)
+
+func NewServer(conf *config.Config, onInvite onInviteFunc, onPin onPinFunc) *Server {
 	return &Server{
+		conf:          conf,
 		activeInvites: map[string]activeInvite{},
+		onInvite:      onInvite,
+		onPin:         onPin,
 	}
 }
 
@@ -76,7 +87,7 @@ func sipSuccessResponse(tx sip.ServerTransaction, req *sip.Request, body []byte)
 	}
 }
 
-func (s *Server) Start(conf *config.Config) error {
+func (s *Server) Start() error {
 	publicIp := getPublicIP()
 
 	ua, err := sipgo.NewUA(
@@ -104,7 +115,13 @@ func (s *Server) Start(conf *config.Config) error {
 			return
 		}
 
-		udpConn, err := createMediaSession(conf, from.Address.User)
+		_, _, rejectInvite := s.onInvite("", "", "")
+		if rejectInvite {
+			sipErrorResponse(tx, req)
+			return
+		}
+
+		udpConn, err := createMediaSession(s.conf, from.Address.User)
 		if err != nil {
 			sipErrorResponse(tx, req)
 			return
@@ -125,7 +142,7 @@ func (s *Server) Start(conf *config.Config) error {
 		}
 
 		res := sip.NewResponseFromRequest(req, 200, "OK", answer)
-		res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: publicIp, Port: conf.SIPPort}})
+		res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: publicIp, Port: s.conf.SIPPort}})
 		res.AppendHeader(&contentTypeHeaderSDP)
 		if err = tx.Respond(res); err != nil {
 			log.Println(err)
@@ -155,7 +172,7 @@ func (s *Server) Start(conf *config.Config) error {
 	})
 
 	go func() {
-		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", conf.SIPPort)))
+		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)))
 	}()
 
 	return nil
