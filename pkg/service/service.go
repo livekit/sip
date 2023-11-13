@@ -15,6 +15,9 @@
 package service
 
 import (
+	"context"
+	"log"
+
 	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -26,16 +29,18 @@ import (
 type Service struct {
 	conf *config.Config
 
-	bus psrpc.MessageBus
+	psrpcClient rpc.IOInfoClient
+	bus         psrpc.MessageBus
 
 	shutdown core.Fuse
 }
 
 func NewService(conf *config.Config, psrpcClient rpc.IOInfoClient, bus psrpc.MessageBus) *Service {
 	s := &Service{
-		conf:     conf,
-		bus:      bus,
-		shutdown: core.NewFuse(),
+		conf:        conf,
+		psrpcClient: psrpcClient,
+		bus:         bus,
+		shutdown:    core.NewFuse(),
 	}
 
 	return s
@@ -61,7 +66,18 @@ func (s *Service) Run() error {
 }
 
 func (s *Service) HandleInvite(from, to, srcAddress string) (joinRoom string, requestPin bool, rejectInvite bool) {
-	return "", false, true
+	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
+		From:       from,
+		To:         to,
+		SrcAddress: srcAddress,
+	})
+
+	if err != nil {
+		log.Println(err)
+		return "", false, true
+	}
+
+	return resp.RoomName, false, false
 }
 
 func (s *Service) HandlePIN() {

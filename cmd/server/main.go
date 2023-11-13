@@ -72,7 +72,7 @@ func runService(c *cli.Context) error {
 	}
 
 	bus := psrpc.NewRedisMessageBus(rc)
-	psrpcClient, err := rpc.NewIOInfoClient(conf.NodeID, bus)
+	psrpcClient, err := rpc.NewIOInfoClient(bus)
 	if err != nil {
 		return err
 	}

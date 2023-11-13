@@ -115,13 +115,13 @@ func (s *Server) Start() error {
 			return
 		}
 
-		_, _, rejectInvite := s.onInvite("", "", "")
+		roomName, _, rejectInvite := s.onInvite("", "", "")
 		if rejectInvite {
 			sipErrorResponse(tx, req)
 			return
 		}
 
-		udpConn, err := createMediaSession(s.conf, from.Address.User)
+		udpConn, err := createMediaSession(s.conf, roomName, from.Address.User)
 		if err != nil {
 			sipErrorResponse(tx, req)
 			return
