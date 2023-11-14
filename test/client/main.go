@@ -15,6 +15,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -171,6 +172,10 @@ func sendAudioPackets(conn *net.UDPConn, port int) {
 }
 
 func main() {
+	to := flag.String("to", "+15550100000", "")
+	from := flag.String("from", "+15550100001", "")
+	flag.Parse()
+
 	mediaConn := startMediaListener()
 	offer, err := createOffer(mediaConn.LocalAddr().(*net.UDPAddr).Port)
 	if err != nil {
@@ -178,7 +183,7 @@ func main() {
 	}
 
 	ua, err := sipgo.NewUA(
-		sipgo.WithUserAgent("+15550100001"),
+		sipgo.WithUserAgent(*from),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -189,7 +194,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	inviteRequest := sip.NewRequest(sip.INVITE, &sip.Uri{User: "+15550100000", Host: "example.pstn.twilio.com"})
+	inviteRequest := sip.NewRequest(sip.INVITE, &sip.Uri{User: *to, Host: "example.pstn.twilio.com"})
 	inviteRequest.SetDestination(getLocalIP() + ":5060")
 	inviteRequest.SetBody(offer)
 
@@ -206,7 +211,7 @@ func main() {
 	}
 
 	if inviteResponse.StatusCode != 200 {
-		panic("INVITE rejected")
+		panic(fmt.Sprintf("INVITE rejected(%d)", inviteResponse.StatusCode))
 	}
 
 	sendBye := func() {
