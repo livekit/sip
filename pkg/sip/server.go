@@ -39,7 +39,7 @@ var (
 
 type (
 	authenticationHandlerFunc func(from, to, srcAddress string) (username, password string, err error)
-	dispatchRuleHandlerFunc   func(callingNumber, calledNumber, srcAddress string) (joinRoom string, pinRequired bool, hangup bool)
+	dispatchRuleHandlerFunc   func(callingNumber, calledNumber, srcAddress string) (joinRoom, identity string, pinRequired, hangup bool)
 
 	Server struct {
 		sipSrv   *sipgo.Server
@@ -194,13 +194,13 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	roomName, _, rejectInvite := s.dispatchRuleHandler(from.Address.User, to.Address.User, req.Source())
+	roomName, identity, _, rejectInvite := s.dispatchRuleHandler(from.Address.User, to.Address.User, req.Source())
 	if rejectInvite {
 		sipErrorResponse(tx, req)
 		return
 	}
 
-	udpConn, err := createMediaSession(s.conf, roomName, from.Address.User)
+	udpConn, err := createMediaSession(s.conf, roomName, identity)
 	if err != nil {
 		sipErrorResponse(tx, req)
 		return
