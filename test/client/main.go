@@ -28,6 +28,7 @@ import (
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/icholy/digest"
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 )
@@ -58,6 +59,15 @@ func getLocalIP() string {
 	}
 
 	panic("No IP Found")
+}
+
+func getResponse(tx sip.ClientTransaction) *sip.Response {
+	select {
+	case <-tx.Done():
+		panic("transaction failed to complete")
+	case res := <-tx.Responses():
+		return res
+	}
 }
 
 func createOffer(port int) ([]byte, error) {
@@ -174,6 +184,8 @@ func sendAudioPackets(conn *net.UDPConn, port int) {
 func main() {
 	to := flag.String("to", "+15550100000", "")
 	from := flag.String("from", "+15550100001", "")
+	username := flag.String("username", "", "")
+	password := flag.String("password", "", "")
 	flag.Parse()
 
 	mediaConn := startMediaListener()
@@ -194,24 +206,59 @@ func main() {
 		log.Fatal(err)
 	}
 
-	inviteRequest := sip.NewRequest(sip.INVITE, &sip.Uri{User: *to, Host: "example.pstn.twilio.com"})
-	inviteRequest.SetDestination(getLocalIP() + ":5060")
-	inviteRequest.SetBody(offer)
+	inviteRecipent := &sip.Uri{User: *to, Host: "example.pstn.twilio.com"}
+	createInviteRequest := func() *sip.Request {
+		inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipent)
+		inviteRequest.SetDestination(getLocalIP() + ":5060")
+		inviteRequest.SetBody(offer)
+		return inviteRequest
+	}
 
+	inviteRequest := createInviteRequest()
 	tx, err := sipClient.TransactionRequest(inviteRequest)
 	if err != nil {
 		panic(err)
 	}
+	defer tx.Terminate()
 
-	var inviteResponse *sip.Response
-	select {
-	case inviteResponse = <-tx.Responses():
-	case <-tx.Done():
-		panic("INVITE failed")
-	}
+	inviteResponse := getResponse(tx)
 
-	if inviteResponse.StatusCode != 200 {
-		panic(fmt.Sprintf("INVITE rejected(%d)", inviteResponse.StatusCode))
+	if inviteResponse.StatusCode == 401 {
+		// Cancel the old TX we have to try again
+		tx.Terminate()
+		inviteRequest = createInviteRequest()
+
+		if *username == "" || *password == "" {
+			panic("Server responded with 401, but no username or password was provided")
+		}
+
+		wwwAuth := inviteResponse.GetHeader("WWW-Authenticate")
+		challenge, err := digest.ParseChallenge(wwwAuth.Value())
+		if err != nil {
+			panic(err)
+		}
+
+		cred, _ := digest.Digest(challenge, digest.Options{
+			Method:   inviteRequest.Method.String(),
+			URI:      inviteRecipent.Host,
+			Username: *username,
+			Password: *password,
+		})
+
+		inviteRequest.AppendHeader(sip.NewHeader("Authorization", cred.String()))
+		newTx, err := sipClient.TransactionRequest(inviteRequest)
+		if err != nil {
+			panic(err)
+		}
+
+		defer newTx.Terminate()
+
+		inviteResponse = getResponse(newTx)
+		if inviteResponse.StatusCode != 200 {
+			panic(fmt.Sprintf("Unexpected INVITE response after auth (%d)", inviteResponse.StatusCode))
+		}
+	} else if inviteResponse.StatusCode != 200 {
+		panic(fmt.Sprintf("Unexpected INVITE response (%d)", inviteResponse.StatusCode))
 	}
 
 	sendBye := func() {
@@ -222,12 +269,7 @@ func main() {
 			panic(err)
 		}
 
-		select {
-		case <-tx.Responses():
-		case <-tx.Done():
-			panic("BYE failed")
-		}
-
+		getResponse(tx)
 		mediaConn.Close()
 	}
 

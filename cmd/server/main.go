@@ -85,7 +85,7 @@ func runService(c *cli.Context) error {
 
 	svc := service.NewService(conf, psrpcClient, bus)
 
-	sipSrv := sip.NewServer(conf, svc.HandleInvite, svc.HandlePIN)
+	sipSrv := sip.NewServer(conf, svc.HandleTrunkAuthentication, svc.HandleDispatchRules)
 	if err = sipSrv.Start(); err != nil {
 		return err
 	}

@@ -55,7 +55,7 @@ func (s *Service) Run() error {
 
 	logger.Debugw("service ready")
 
-	for {
+	for { //nolint: gosimple
 		select {
 		case <-s.shutdown.Watch():
 			logger.Infow("shutting down")
@@ -65,11 +65,25 @@ func (s *Service) Run() error {
 	}
 }
 
-func (s *Service) HandleInvite(from, to, srcAddress string) (joinRoom string, requestPin bool, rejectInvite bool) {
-	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
+func (s *Service) HandleTrunkAuthentication(from, to, srcAddress string) (username, password string, err error) {
+	resp, err := s.psrpcClient.GetSIPTrunkAuthentication(context.TODO(), &rpc.GetSIPTrunkAuthenticationRequest{
 		From:       from,
 		To:         to,
 		SrcAddress: srcAddress,
+	})
+
+	if err != nil {
+		return "", "", err
+	}
+
+	return resp.Username, resp.Password, nil
+}
+
+func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress string) (joinRoom string, requestPin bool, rejectInvite bool) {
+	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
+		CallingNumber: callingNumber,
+		CalledNumber:  calledNumber,
+		SrcAddress:    srcAddress,
 	})
 
 	if err != nil {
@@ -78,7 +92,4 @@ func (s *Service) HandleInvite(from, to, srcAddress string) (joinRoom string, re
 	}
 
 	return resp.RoomName, false, false
-}
-
-func (s *Service) HandlePIN() {
 }
