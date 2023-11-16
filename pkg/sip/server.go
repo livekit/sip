@@ -261,9 +261,8 @@ func (s *Server) Start() error {
 		sipSuccessResponse(tx, req, nil)
 	})
 
-	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
-		sipSuccessResponse(tx, req, nil)
-	})
+	// Ignore ACKs
+	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 
 	go func() {
 		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)))
