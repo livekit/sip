@@ -131,7 +131,7 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 			Algorithm: "MD5",
 		}
 
-		res := sip.NewResponseFromRequest(req, 401, "Unathorized", nil)
+		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("WWW-Authenticate", inviteState.challenge.String()))
 		logOnError(tx.Respond(res))
 		return false
