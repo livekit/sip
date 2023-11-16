@@ -22,6 +22,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/version"
 )
@@ -79,11 +80,13 @@ func (s *Service) HandleTrunkAuthentication(from, to, srcAddress string) (userna
 	return resp.Username, resp.Password, nil
 }
 
-func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress string) (joinRoom, identity string, requestPin, rejectInvite bool) {
+func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress string, pin string, skipPin bool) (joinRoom, identity string, requestPin, rejectInvite bool) {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
 		CallingNumber: callingNumber,
 		CalledNumber:  calledNumber,
 		SrcAddress:    srcAddress,
+		Pin:           pin,
+		// FIXME: NoPin
 	})
 
 	if err != nil {
@@ -91,5 +94,5 @@ func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress st
 		return "", "", false, true
 	}
 
-	return resp.RoomName, resp.ParticipantIdentity, false, false
+	return resp.RoomName, resp.ParticipantIdentity, resp.RequestPin, false
 }
