@@ -40,4 +40,4 @@ jobs:
           key: sip
 
       - name: Build docker image
-        run: docker build -t sip -f ./build/sip/Dockerfile --build-arg GOVERSION=$GOVERSION --build-arg .
+        run: docker build -t sip -f ./build/sip/Dockerfile --build-arg GOVERSION=$GOVERSION .
