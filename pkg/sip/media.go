@@ -65,7 +65,6 @@ func (c *inboundCall) closeMedia() {
 }
 
 func (c *inboundCall) createMediaSession() (*net.UDPAddr, error) {
-	var rtpDestination atomic.Value
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{
 		Port: 0,
 		IP:   net.ParseIP("0.0.0.0"),
@@ -82,8 +81,8 @@ func (c *inboundCall) createMediaSession() (*net.UDPAddr, error) {
 		},
 	}
 	c.media.mix = mixer.NewMixer(func(audioSample []byte) {
-		dstAddr, ok := rtpDestination.Load().(*net.UDPAddr)
-		if !ok || dstAddr == nil {
+		dstAddr := c.media.dest.Load()
+		if dstAddr == nil {
 			return
 		}
 
