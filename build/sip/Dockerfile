@@ -29,6 +29,7 @@ COPY go.sum .
 RUN go mod download
 
 # copy source
+COPY res/ res/
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 COPY version/ version/

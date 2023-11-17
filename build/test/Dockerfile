@@ -21,7 +21,7 @@ WORKDIR /workspace
 # install deps
 RUN apt-get update && \
     apt-get install -y \
-    curl 
+    curl libopus-dev libopusfile-dev
 
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then GOARCH=arm64; else GOARCH=amd64; fi && \
     curl -L -o /tmp/go.tar.gz "https://go.dev/dl/go1.20.7.linux-$GOARCH.tar.gz"
@@ -34,6 +34,7 @@ COPY go.sum .
 RUN go mod download
 
 # copy source
+COPY res/ res/
 COPY pkg/ pkg/
 COPY version/ version/
 

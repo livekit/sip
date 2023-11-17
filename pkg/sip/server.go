@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +26,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v2"
+	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
 )
@@ -56,20 +56,18 @@ type (
 		authenticationHandler authenticationHandlerFunc
 		dispatchRuleHandler   dispatchRuleHandlerFunc
 		conf                  *config.Config
+
+		res mediaRes
 	}
 
 	inProgressInvite struct {
 		from      string
 		challenge digest.Challenge
 	}
-
-	activeInvite struct {
-		udpConn *net.UDPConn
-	}
 )
 
 func NewServer(conf *config.Config, authenticationHandler authenticationHandlerFunc, dispatchRuleHandler dispatchRuleHandlerFunc) *Server {
-	return &Server{
+	s := &Server{
 		conf:                  conf,
 		publicIp:              getPublicIP(),
 		activeCalls:           make(map[string]*inboundCall),
@@ -77,6 +75,8 @@ func NewServer(conf *config.Config, authenticationHandler authenticationHandlerF
 		authenticationHandler: authenticationHandler,
 		dispatchRuleHandler:   dispatchRuleHandler,
 	}
+	s.initMediaRes()
+	return s
 }
 
 func getTagValue(req *sip.Request) (string, error) {
@@ -274,7 +274,7 @@ func (c *inboundCall) runMedia(offerData []byte) ([]byte, error) {
 func (c *inboundCall) pinPrompt() {
 	log.Printf("Requesting Pin for SIP call %q -> %q\n", c.from.Address.User, c.to.Address.User)
 	const pinLimit = 16
-	c.playPleaseEnterPin()
+	c.playAudio(c.s.res.enterPin)
 	pin := ""
 	noPin := false
 	for {
@@ -293,10 +293,8 @@ func (c *inboundCall) pinPrompt() {
 
 				log.Printf("Checking Pin for SIP call %q -> %q = %q (noPin = %v)\n", c.from.Address.User, c.to.Address.User, pin, noPin)
 				roomName, identity, requirePin, reject := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.src, pin, noPin)
-				if reject {
-					c.Close()
-					return
-				} else if requirePin || roomName == "" {
+				if reject || requirePin || roomName == "" {
+					c.playAudio(c.s.res.wrongPin)
 					c.Close()
 					return
 				}
@@ -306,6 +304,7 @@ func (c *inboundCall) pinPrompt() {
 			// Gather pin numbers
 			pin += string(b)
 			if len(pin) > pinLimit {
+				c.playAudio(c.s.res.wrongPin)
 				c.Close()
 				return
 			}
@@ -321,6 +320,7 @@ func (c *inboundCall) Close() error {
 	delete(c.s.activeCalls, c.tag)
 	c.s.cmu.Unlock()
 	c.closeMedia()
+	// FIXME: drop the actual call
 	return nil
 }
 
@@ -366,6 +366,13 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
+	s.cmu.Lock()
+	calls := maps.Values(s.activeCalls)
+	s.activeCalls = make(map[string]*inboundCall)
+	s.cmu.Unlock()
+	for _, c := range calls {
+		c.Close()
+	}
 	if s.sipSrv != nil {
 		return s.sipSrv.Close()
 	}
