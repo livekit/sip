@@ -7,17 +7,19 @@ require (
 	github.com/emiago/sipgo v0.13.1
 	github.com/frostbyte73/core v0.0.9
 	github.com/icholy/digest v0.1.22
+	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20231017082622-43f077b4e60e
-	github.com/livekit/protocol v1.9.1
+	github.com/livekit/protocol v1.9.2-0.20231116141704-aa43aa7482d7
 	github.com/livekit/psrpc v0.5.1
 	github.com/livekit/server-sdk-go v1.1.1
 	github.com/pion/rtp v1.8.3
 	github.com/pion/sdp/v2 v2.4.0
-	github.com/pion/webrtc/v3 v3.2.22
+	github.com/pion/webrtc/v3 v3.2.23
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.8.4
 	github.com/urfave/cli/v2 v2.25.7
 	github.com/zaf/g711 v0.0.0-20220109202201-cf0017bf0359
+	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -45,7 +47,6 @@ require (
 	github.com/klauspost/compress v1.17.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/lithammer/shortuuid/v4 v4.0.0 // indirect
-	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1 // indirect
 	github.com/mackerelio/go-osstat v0.2.4 // indirect
 	github.com/magefile/mage v1.15.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
@@ -86,7 +87,6 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/crypto v0.15.0 // indirect
-	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/mod v0.14.0 // indirect
 	golang.org/x/net v0.18.0 // indirect
 	golang.org/x/sync v0.5.0 // indirect
