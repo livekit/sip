@@ -34,11 +34,12 @@ import (
 )
 
 var (
-	to              = flag.String("to", "+15550100000", "")
-	from            = flag.String("from", "+15550100001", "")
-	username        = flag.String("username", "", "")
-	password        = flag.String("password", "", "")
-	sipRecipentHost = "example.pstn.twilio.com"
+	sipServer = flag.String("sip-server", "", "")
+	to        = flag.String("to", "+15550100000", "")
+	from      = flag.String("from", "+15550100001", "")
+	username  = flag.String("username", "", "")
+	password  = flag.String("password", "", "")
+	sipUri    = flag.String("sip-uri", "example.pstn.twilio.com", "")
 )
 
 func startMediaListener() *net.UDPConn {
@@ -74,6 +75,10 @@ func getResponse(tx sip.ClientTransaction) *sip.Response {
 	case <-tx.Done():
 		panic("transaction failed to complete")
 	case res := <-tx.Responses():
+		if res.StatusCode == 100 || res.StatusCode == 180 || res.StatusCode == 183 {
+			return getResponse(tx)
+		}
+
 		return res
 	}
 }
@@ -123,16 +128,18 @@ func createOffer(port int) ([]byte, error) {
 	return offer.Marshal()
 }
 
-func parseAnswer(in []byte) int {
+func parseAnswer(in []byte) (string, int) {
 	offer := sdp.SessionDescription{}
 	if err := offer.Unmarshal(in); err != nil {
 		panic(err)
 	}
 
-	return offer.MediaDescriptions[0].MediaName.Port.Value
+	return offer.ConnectionInformation.Address.Address, offer.MediaDescriptions[0].MediaName.Port.Value
 }
 
-func sendAudioPackets(conn *net.UDPConn, port int) {
+func sendAudioPackets(conn *net.UDPConn, body []byte) {
+	ip, port := parseAnswer(body)
+
 	r, err := os.Open("audio.mkv")
 	if err != nil {
 		panic(err)
@@ -162,7 +169,7 @@ func sendAudioPackets(conn *net.UDPConn, port int) {
 		},
 	}
 
-	dstAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", getLocalIP(), port))
+	dstAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, port))
 	if err != nil {
 		panic(err)
 	}
@@ -190,13 +197,16 @@ func sendAudioPackets(conn *net.UDPConn, port int) {
 }
 
 func attemptInvite(sipClient *sipgo.Client, offer []byte, authorizationHeaderValue string) (*sip.Request, *sip.Response) {
-	inviteRecipent := &sip.Uri{User: *to, Host: sipRecipentHost}
+	inviteRecipent := &sip.Uri{User: *to, Host: *sipUri}
 	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipent)
-	inviteRequest.SetDestination(getLocalIP() + ":5060")
+	inviteRequest.SetDestination(*sipServer)
 	inviteRequest.SetBody(offer)
+	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	inviteRequest.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", getLocalIP())))
+	inviteRequest.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	if authorizationHeaderValue != "" {
-		inviteRequest.AppendHeader(sip.NewHeader("Authorization", authorizationHeaderValue))
+		inviteRequest.AppendHeader(sip.NewHeader("Proxy-Authorization", authorizationHeaderValue))
 	}
 
 	tx, err := sipClient.TransactionRequest(inviteRequest)
@@ -211,6 +221,10 @@ func attemptInvite(sipClient *sipgo.Client, offer []byte, authorizationHeaderVal
 func main() {
 	flag.Parse()
 
+	if *sipServer == "" {
+		*sipServer = getLocalIP() + ":5060"
+	}
+
 	mediaConn := startMediaListener()
 	offer, err := createOffer(mediaConn.LocalAddr().(*net.UDPAddr).Port)
 	if err != nil {
@@ -224,7 +238,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	sipClient, err := sipgo.NewClient(ua)
+	sipClient, err := sipgo.NewClient(ua, sipgo.WithClientHostname(getLocalIP()))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -238,29 +252,30 @@ func main() {
 	for {
 		inviteRequest, inviteResponse = attemptInvite(sipClient, offer, authorizationHeaderValue)
 
-		if inviteResponse.StatusCode == 100 {
-			// Try again
-			continue
-		} else if inviteResponse.StatusCode == 401 {
+		if inviteResponse.StatusCode == 407 {
 			if *username == "" || *password == "" {
-				panic("Server responded with 401, but no username or password was provided")
+				panic("Server responded with 407, but no username or password was provided")
 			}
 
-			wwwAuth := inviteResponse.GetHeader("WWW-Authenticate")
-			challenge, err := digest.ParseChallenge(wwwAuth.Value())
+			headerVal := inviteResponse.GetHeader("Proxy-Authenticate")
+			challenge, err := digest.ParseChallenge(headerVal.Value())
 			if err != nil {
 				panic(err)
 			}
 
+			toHeader, ok := inviteResponse.To()
+			if !ok {
+				panic("No To Header on Request")
+			}
+
 			cred, _ := digest.Digest(challenge, digest.Options{
 				Method:   inviteRequest.Method.String(),
-				URI:      sipRecipentHost,
+				URI:      toHeader.Address.String(),
 				Username: *username,
 				Password: *password,
 			})
 
 			authorizationHeaderValue = cred.String()
-
 			// Compute digest and try again
 			continue
 		} else if inviteResponse.StatusCode != 200 {
@@ -270,8 +285,15 @@ func main() {
 		break
 	}
 
+	if contactHeader, ok := inviteResponse.Contact(); ok {
+		inviteRequest.Recipient = &contactHeader.Address
+		inviteRequest.Recipient.Port = 5060
+	}
+	sipClient.WriteRequest(sip.NewAckRequest(inviteRequest, inviteResponse, nil))
+
 	sendBye := func() {
 		req := sip.NewByeRequest(inviteRequest, inviteResponse, nil)
+		inviteRequest.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 
 		tx, err := sipClient.TransactionRequest(req)
 		if err != nil {
@@ -289,6 +311,6 @@ func main() {
 		sendBye()
 	}()
 
-	sendAudioPackets(mediaConn, parseAnswer(inviteResponse.Body()))
+	sendAudioPackets(mediaConn, inviteResponse.Body())
 	sendBye()
 }

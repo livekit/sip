@@ -128,7 +128,7 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 		s.inProgressInvites = append(s.inProgressInvites, inviteState)
 	}
 
-	h := req.GetHeader("Authorization")
+	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
 			Realm:     userAgent,
@@ -136,8 +136,8 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 			Algorithm: "MD5",
 		}
 
-		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
-		res.AppendHeader(sip.NewHeader("WWW-Authenticate", inviteState.challenge.String()))
+		res := sip.NewResponseFromRequest(req, 407, "Unauthorized", nil)
+		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
 		logOnError(tx.Respond(res))
 		return false
 	}
