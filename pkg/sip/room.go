@@ -40,16 +40,19 @@ type lkRoomConfig struct {
 	identity string
 }
 
-func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
-	r := &Room{
-		identity: identity,
-	}
+func NewRoom() *Room {
+	r := &Room{}
 	r.mix = mixer.NewMixer(func(data []byte) {
 		sample := media.LPCM16Sample(data)
-		if out := r.Output(); out == nil {
+		if out := r.Output(); out != nil {
 			_ = out.WriteSample(sample)
 		}
 	}, sampleRate)
+	return r
+}
+
+func (r *Room) Connect(conf *config.Config, roomName string, identity string) error {
+	r.identity = identity
 
 	room, err := lksdk.ConnectToRoom(conf.WsUrl,
 		lksdk.ConnectInfo{
@@ -82,9 +85,17 @@ func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room
 		},
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	r.room = room
+	return nil
+}
+
+func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
+	r := NewRoom()
+	if err := r.Connect(conf, roomName, identity); err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 

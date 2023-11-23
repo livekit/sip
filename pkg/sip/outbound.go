@@ -125,24 +125,28 @@ func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkN
 	if c.sipCur == sipNew && c.lkCur == lkNew {
 		return nil
 	}
-	if c.sipCur.address == "" || c.sipCur.to == "" {
+	if sipNew.address == "" || sipNew.to == "" {
+		logger.Infow("Shutdown of outbound SIP call",
+			"roomName", lkNew.roomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
 		// shutdown the call
 		c.close()
 		return nil
 	}
 	if err := c.startMedia(); err != nil {
 		c.close()
-		return err
+		return fmt.Errorf("start media failed: %w", err)
 	}
 	if err := c.updateRoom(lkNew); err != nil {
 		c.close()
-		return err
+		return fmt.Errorf("update room failed: %w", err)
 	}
 	if err := c.updateSIP(sipNew); err != nil {
 		c.close()
-		return err
+		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.relinkMedia()
+	logger.Infow("Outbound SIP update complete",
+		"roomName", lkNew.roomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
 	return nil
 }
 
