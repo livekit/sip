@@ -15,168 +15,55 @@
 package sip
 
 import (
-	"bytes"
-	"encoding/binary"
 	"log"
-	"net"
-	"sync/atomic"
 	"time"
 
-	"github.com/at-wat/ebml-go"
-	"github.com/at-wat/ebml-go/webm"
-	"github.com/pion/rtp"
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media"
-	"github.com/zaf/g711"
-	"gopkg.in/hraban/opus.v2"
-
-	"github.com/livekit/sip/pkg/mixer"
+	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/res"
-
-	lksdk "github.com/livekit/server-sdk-go"
 )
 
 const (
-	channels   = 1
-	sampleRate = 8000
+	channels      = 1
+	sampleRate    = 8000
+	sampleDur     = 20 * time.Millisecond
+	sampleDurPart = int(time.Second / sampleDur)
+	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
 )
 
 type mediaRes struct {
-	enterPin [][]int16
-	roomJoin [][]int16
-	wrongPin [][]int16
+	enterPin []media.PCM16Sample
+	roomJoin []media.PCM16Sample
+	wrongPin []media.PCM16Sample
 }
 
 func (s *Server) initMediaRes() {
-	s.res.enterPin = audioFileToFrames(res.EnterPinMkv)
-	s.res.roomJoin = audioFileToFrames(res.RoomJoinMkv)
-	s.res.wrongPin = audioFileToFrames(res.WrongPinMkv)
-}
-
-func audioFileToFrames(data []byte) [][]int16 {
-	var ret struct {
-		Header  webm.EBMLHeader `ebml:"EBML"`
-		Segment webm.Segment    `ebml:"Segment"`
-	}
-	if err := ebml.Unmarshal(bytes.NewReader(data), &ret); err != nil {
-		panic(err)
-	}
-
-	var frames [][]int16
-	for _, cluster := range ret.Segment.Cluster {
-		for _, block := range cluster.SimpleBlock {
-			for _, data := range block.Data {
-				decoded := g711.DecodeUlaw(data)
-				pcm := make([]int16, 0, len(decoded)/2)
-				for i := 0; i < len(decoded); i += 2 {
-					sample := binary.LittleEndian.Uint16(decoded[i:])
-					pcm = append(pcm, int16(sample))
-				}
-				frames = append(frames, pcm)
-			}
-		}
-	}
-	return frames
-}
-
-type mediaData struct {
-	conn  *net.UDPConn
-	mix   *mixer.Mixer
-	enc   *opus.Encoder
-	dest  atomic.Pointer[net.UDPAddr]
-	track atomic.Pointer[webrtc.TrackLocalStaticSample]
-	room  atomic.Pointer[lksdk.Room]
-	dtmf  chan byte
-}
-
-func (c *inboundCall) initMedia() {
-	c.media.dtmf = make(chan byte, 10)
+	s.res.enterPin = readMkvAudioFile(res.EnterPinMkv)
+	s.res.roomJoin = readMkvAudioFile(res.RoomJoinMkv)
+	s.res.wrongPin = readMkvAudioFile(res.WrongPinMkv)
 }
 
 func (c *inboundCall) closeMedia() {
-	if p := c.media.room.Load(); p != nil {
-		p.Disconnect()
-		c.media.room.Store(nil)
+	c.audioHandler.Store(nil)
+	if p := c.lkRoom.Load(); p != nil {
+		p.Close()
+		c.lkRoom.Store(nil)
 	}
-	if p := c.media.track.Load(); p != nil {
-		c.media.track.Store(nil)
-	}
-	c.media.mix.Stop()
-	c.media.conn.Close()
-	close(c.media.dtmf)
+	c.rtpConn.Close()
+	close(c.dtmf)
 }
 
-func (c *inboundCall) createMediaSession() (*net.UDPAddr, error) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{
-		Port: 0,
-		IP:   net.ParseIP("0.0.0.0"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	c.media.conn = conn
-
-	mixerRtpPkt := &rtp.Packet{
-		Header: rtp.Header{
-			Version: 2,
-			SSRC:    5000,
-		},
-	}
-	c.media.mix = mixer.NewMixer(func(audioSample []byte) {
-		dstAddr := c.media.dest.Load()
-		if dstAddr == nil {
-			return
-		}
-
-		mixerRtpPkt.Payload = g711.EncodeUlaw(audioSample)
-
-		raw, err := mixerRtpPkt.Marshal()
-		if err != nil {
-			return
-		}
-
-		if _, err = c.media.conn.WriteTo(raw, dstAddr); err != nil {
-			return
-		}
-
-		mixerRtpPkt.Header.Timestamp += 160
-		mixerRtpPkt.Header.SequenceNumber += 1
-	}, 8000)
-
-	enc, err := opus.NewEncoder(sampleRate, channels, opus.AppVoIP)
-	if err != nil {
-		return nil, err
-	}
-	c.media.enc = enc
-
-	go c.readMedia()
-	return conn.LocalAddr().(*net.UDPAddr), nil
-}
-
-func (c *inboundCall) readMedia() {
-	buff := make([]byte, 1500)
-	var rtpPkt rtp.Packet
-	for {
-		n, srcAddr, err := c.media.conn.ReadFromUDP(buff)
-		if err != nil {
-			return
-		}
-		c.media.dest.Store(srcAddr)
-
-		if err := rtpPkt.Unmarshal(buff[:n]); err != nil {
-			continue
-		}
-		c.handleRTP(&rtpPkt)
-	}
-}
-
-func (c *inboundCall) handleRTP(p *rtp.Packet) {
+func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
 	if p.Marker && p.PayloadType == 101 {
 		c.handleDTMF(p.Payload)
-		return
+		return nil
 	}
 	// TODO: Audio data appears to be coming with PayloadType=0, so maybe enforce it?
-	c.handleAudio(p.Payload)
+	if h := c.audioHandler.Load(); h != nil {
+		return (*h).HandleRTP(p)
+	}
+	return nil
 }
 
 var dtmfEventToChar = [256]byte{
@@ -194,95 +81,33 @@ func (c *inboundCall) handleDTMF(data []byte) { // RFC2833
 	b := dtmfEventToChar[ev]
 	// We should have enough buffer here.
 	select {
-	case c.media.dtmf <- b:
+	case c.dtmf <- b:
 	default:
 	}
 }
 
-func (c *inboundCall) handleAudio(audioData []byte) {
-	track := c.media.track.Load()
-	if track == nil {
-		return
-	}
-	decoded := g711.DecodeUlaw(audioData)
-
-	var pcm []int16
-	for i := 0; i < len(decoded); i += 2 {
-		sample := binary.LittleEndian.Uint16(decoded[i:])
-		pcm = append(pcm, int16(sample))
-	}
-
-	data := make([]byte, 1000)
-	n, err := c.media.enc.Encode(pcm, data)
-	if err != nil {
-		return
-	}
-	if err = track.WriteSample(media.Sample{Data: data[:n], Duration: time.Millisecond * 20}); err != nil {
-		return
-	}
-}
-
 func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity string) error {
-	roomCB := &lksdk.RoomCallback{
-		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackSubscribed: func(track *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				if track.Kind() == webrtc.RTPCodecTypeVideo {
-					if err := publication.SetSubscribed(false); err != nil {
-						log.Println(err)
-					}
-					return
-				}
-
-				decoder, err := opus.NewDecoder(8000, 1)
-				if err != nil {
-					return
-				}
-
-				input := c.media.mix.AddInput()
-				samples := make([]int16, 1000)
-				for {
-					rtpPkt, _, err := track.ReadRTP()
-					if err != nil {
-						break
-					}
-
-					n, err := decoder.Decode(rtpPkt.Payload, samples)
-					if err != nil {
-						break
-					}
-
-					input.Push(samples[:n])
-				}
-				c.media.mix.RemoveInput(input)
-			},
-		},
-	}
-
-	room, err := lksdk.ConnectToRoom(c.s.conf.WsUrl,
-		lksdk.ConnectInfo{
-			APIKey:              c.s.conf.ApiKey,
-			APISecret:           c.s.conf.ApiSecret,
-			RoomName:            roomName,
-			ParticipantIdentity: participantIdentity,
-		},
-		roomCB,
-	)
+	room, err := ConnectToRoom(c.s.conf, roomName, participantIdentity)
 	if err != nil {
 		return err
 	}
-
-	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
+	local, err := room.NewParticipant()
 	if err != nil {
+		_ = room.Close()
 		return err
 	}
+	c.lkRoom.Store(room)
 
-	if _, err = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-		Name: participantIdentity,
-	}); err != nil {
-		return err
-	}
-	c.media.track.Store(track)
-	c.media.room.Store(room)
+	// Decoding pipeline (SIP -> LK)
+	lpcm := media.DecodePCM(local)
+	law := ulaw.Encode(lpcm)
+	var h rtp.Handler = rtp.NewMediaStreamIn(law)
+	c.audioHandler.Store(&h)
+
+	// Encoding pipeline (LK -> SIP)
+	s := rtp.NewMediaStreamOut[ulaw.Sample](c.rtpConn, rtpPacketDur)
+	room.SetOutput(ulaw.Decode(s))
+
 	return nil
 }
 
@@ -294,18 +119,9 @@ func (c *inboundCall) joinRoom(roomName, identity string) {
 	}
 }
 
-func (c *inboundCall) playAudio(frames [][]int16) {
-	input := c.media.mix.AddInput()
-	defer c.media.mix.RemoveInput(input)
-
-	tick := time.NewTicker(20 * time.Millisecond)
-	defer tick.Stop()
-	for range tick.C {
-		if len(frames) == 0 {
-			break
-		}
-		samples := frames[0]
-		frames = frames[1:]
-		input.Push(samples)
-	}
+func (c *inboundCall) playAudio(frames []media.PCM16Sample) {
+	r := c.lkRoom.Load()
+	t := r.NewTrack()
+	defer t.Close()
+	t.PlayAudio(frames)
 }
