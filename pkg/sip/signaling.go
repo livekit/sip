@@ -14,9 +14,70 @@
 
 package sip
 
-import "github.com/pion/sdp/v2"
+import (
+	"math/rand"
 
-func generateAnswer(offer sdp.SessionDescription, publicIp string, rtpListenerPort int) ([]byte, error) {
+	"github.com/pion/sdp/v2"
+)
+
+func sdpMediaDesc(rtpListenerPort int) []*sdp.MediaDescription {
+	// Static compiler check for sample rate hardcoded below.
+	var _ = [1]struct{}{}[8000-sampleRate]
+
+	return []*sdp.MediaDescription{
+		{
+			MediaName: sdp.MediaName{
+				Media:   "audio",
+				Port:    sdp.RangedPort{Value: rtpListenerPort},
+				Protos:  []string{"RTP", "AVP"},
+				Formats: []string{"0", "101"},
+			},
+			Attributes: []sdp.Attribute{
+				{Key: "rtpmap", Value: "0 PCMU/8000"},
+				{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				{Key: "fmtp", Value: "101 0-16"},
+				{Key: "ptime", Value: "20"},
+				{Key: "maxptime", Value: "150"},
+				{Key: "sendrecv"},
+			},
+		},
+	}
+}
+
+func sdpGenerateOffer(publicIp string, rtpListenerPort int) ([]byte, error) {
+	sessId := rand.Uint64() // TODO: do we need to track these?
+
+	answer := sdp.SessionDescription{
+		Version: 0,
+		Origin: sdp.Origin{
+			Username:       "-",
+			SessionID:      sessId,
+			SessionVersion: sessId,
+			NetworkType:    "IN",
+			AddressType:    "IP4",
+			UnicastAddress: publicIp,
+		},
+		SessionName: "LiveKit",
+		ConnectionInformation: &sdp.ConnectionInformation{
+			NetworkType: "IN",
+			AddressType: "IP4",
+			Address:     &sdp.Address{Address: publicIp},
+		},
+		TimeDescriptions: []sdp.TimeDescription{
+			{
+				Timing: sdp.Timing{
+					StartTime: 0,
+					StopTime:  0,
+				},
+			},
+		},
+		MediaDescriptions: sdpMediaDesc(rtpListenerPort),
+	}
+
+	return answer.Marshal()
+}
+
+func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, rtpListenerPort int) ([]byte, error) {
 
 	answer := sdp.SessionDescription{
 		Version: 0,
@@ -35,35 +96,15 @@ func generateAnswer(offer sdp.SessionDescription, publicIp string, rtpListenerPo
 			Address:     &sdp.Address{Address: publicIp},
 		},
 		TimeDescriptions: []sdp.TimeDescription{
-			sdp.TimeDescription{
+			{
 				Timing: sdp.Timing{
 					StartTime: 0,
 					StopTime:  0,
 				},
 			},
 		},
-		MediaDescriptions: []*sdp.MediaDescription{
-			&sdp.MediaDescription{
-				MediaName: sdp.MediaName{
-					Media:   "audio",
-					Port:    sdp.RangedPort{Value: rtpListenerPort},
-					Protos:  []string{"RTP", "AVP"},
-					Formats: []string{"0", "101"},
-				},
-				Attributes: []sdp.Attribute{
-					sdp.Attribute{Key: "rtpmap", Value: "0 PCMU/8000"},
-					sdp.Attribute{Key: "rtpmap", Value: "101 telephone-event/8000"},
-					sdp.Attribute{Key: "fmtp", Value: "101 0-16"},
-					sdp.Attribute{Key: "ptime", Value: "20"},
-					sdp.Attribute{Key: "maxptime", Value: "150"},
-					sdp.Attribute{Key: "sendrecv"},
-				},
-			},
-		},
+		MediaDescriptions: sdpMediaDesc(rtpListenerPort),
 	}
-
-	// Static compiler check for sample rate hardcoded above.
-	var _ = [1]struct{}{}[8000-sampleRate]
 
 	return answer.Marshal()
 }

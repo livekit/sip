@@ -27,6 +27,7 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/service"
@@ -83,7 +84,12 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
-	svc := service.NewService(conf, psrpcClient, bus)
+	sipCli := sip.NewClient(conf)
+	if err = sipCli.Start(); err != nil {
+		return err
+	}
+
+	svc := service.NewService(conf, sipCli, psrpcClient, bus)
 
 	sipSrv := sip.NewServer(conf, svc.HandleTrunkAuthentication, svc.HandleDispatchRules)
 	if err = sipSrv.Start(); err != nil {
@@ -99,6 +105,9 @@ func runService(c *cli.Context) error {
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
+			if err = sipCli.Stop(); err != nil {
+				log.Println(err)
+			}
 			if err = sipSrv.Stop(); err != nil {
 				log.Println(err)
 			}

@@ -33,7 +33,7 @@ type MediaConn struct {
 	conn *net.UDPConn
 
 	dest  atomic.Pointer[net.UDPAddr]
-	onRTP rtp.Handler
+	onRTP atomic.Pointer[rtp.Handler]
 }
 
 func (c *MediaConn) LocalAddr() *net.UDPAddr {
@@ -49,7 +49,14 @@ func (c *MediaConn) SetDestAddr(addr *net.UDPAddr) {
 }
 
 func (c *MediaConn) OnRTP(h rtp.Handler) {
-	c.onRTP = h
+	if c == nil {
+		return
+	}
+	if h == nil {
+		c.onRTP.Store(nil)
+	} else {
+		c.onRTP.Store(&h)
+	}
 }
 
 func (c *MediaConn) Close() error {
@@ -90,8 +97,8 @@ func (c *MediaConn) readLoop() {
 		if err := p.Unmarshal(buf[:n]); err != nil {
 			continue
 		}
-		if c.onRTP != nil {
-			_ = c.onRTP.HandleRTP(&p)
+		if h := c.onRTP.Load(); h != nil {
+			_ = (*h).HandleRTP(&p)
 		}
 	}
 }

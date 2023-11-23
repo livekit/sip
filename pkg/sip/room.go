@@ -35,6 +35,11 @@ type Room struct {
 	identity string
 }
 
+type lkRoomConfig struct {
+	roomName string
+	identity string
+}
+
 func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
 	r := &Room{
 		identity: identity,
@@ -92,6 +97,9 @@ func (r *Room) Output() media.Writer[media.LPCM16Sample] {
 }
 
 func (r *Room) SetOutput(out media.Writer[media.LPCM16Sample]) {
+	if r == nil {
+		return
+	}
 	if out == nil {
 		r.out.Store(nil)
 	} else {
