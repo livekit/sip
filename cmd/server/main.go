@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/emiago/sipgo"
 	"github.com/urfave/cli/v2"
 
 	"github.com/livekit/protocol/logger"
@@ -84,15 +85,22 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
+	ua, err := sipgo.NewUA(
+		sipgo.WithUserAgent(sip.UserAgent),
+	)
+	if err != nil {
+		return err
+	}
+
 	sipCli := sip.NewClient(conf)
-	if err = sipCli.Start(); err != nil {
+	if err = sipCli.Start(ua); err != nil {
 		return err
 	}
 
 	svc := service.NewService(conf, sipCli, psrpcClient, bus)
 
 	sipSrv := sip.NewServer(conf, svc.HandleTrunkAuthentication, svc.HandleDispatchRules)
-	if err = sipSrv.Start(); err != nil {
+	if err = sipSrv.Start(ua); err != nil {
 		return err
 	}
 

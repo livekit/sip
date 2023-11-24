@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	userAgent   = "LiveKit"
+	UserAgent   = "LiveKit"
 	digestLimit = 500
 )
 
@@ -104,17 +104,20 @@ func logOnError(err error) {
 	}
 }
 
-func (s *Server) Start() error {
-	ua, err := sipgo.NewUA(
-		sipgo.WithUserAgent(userAgent),
-	)
-	if err != nil {
-		log.Fatal(err)
+func (s *Server) Start(agent *sipgo.UserAgent) error {
+	if agent == nil {
+		ua, err := sipgo.NewUA(
+			sipgo.WithUserAgent(UserAgent),
+		)
+		if err != nil {
+			return err
+		}
+		agent = ua
 	}
-
-	s.sipSrv, err = sipgo.NewServer(ua)
+	var err error
+	s.sipSrv, err = sipgo.NewServer(agent)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	s.sipSrv.OnInvite(s.onInvite)

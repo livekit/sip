@@ -46,15 +46,18 @@ func NewClient(conf *config.Config) *Client {
 	return c
 }
 
-func (c *Client) Start() error {
-	ua, err := sipgo.NewUA(
-		sipgo.WithUserAgent(userAgent),
-	)
-	if err != nil {
-		return err
+func (c *Client) Start(agent *sipgo.UserAgent) error {
+	if agent == nil {
+		ua, err := sipgo.NewUA(
+			sipgo.WithUserAgent(UserAgent),
+		)
+		if err != nil {
+			return err
+		}
+		agent = ua
 	}
-
-	c.sipCli, err = sipgo.NewClient(ua, sipgo.WithClientHostname(c.publicIp))
+	var err error
+	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.publicIp))
 	if err != nil {
 		return err
 	}
