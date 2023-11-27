@@ -6,6 +6,10 @@
 </picture>
 <!--END_BANNER_IMAGE-->
 
+<h1 align="center">Project is in active development</h1>
+<h4 align="center">SIP should not be used in production and APIs are subject to change</h4>
+<br>
+
 # LiveKit SIP
 
 <!--BEGIN_DESCRIPTION-->
