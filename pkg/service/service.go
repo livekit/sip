@@ -96,3 +96,7 @@ func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress st
 
 	return resp.RoomName, resp.ParticipantIdentity, resp.RequestPin, false
 }
+
+func (s *Service) CanAccept() bool {
+	return true
+}
