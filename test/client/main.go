@@ -22,6 +22,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"time"
 
 	"github.com/at-wat/ebml-go"
@@ -289,6 +290,11 @@ func main() {
 		inviteRequest.Recipient = &contactHeader.Address
 		inviteRequest.Recipient.Port = 5060
 	}
+
+	if recordRouteHeader, ok := inviteResponse.RecordRoute(); ok {
+		inviteRequest.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
+	}
+
 	sipClient.WriteRequest(sip.NewAckRequest(inviteRequest, inviteResponse, nil))
 
 	sendBye := func() {
@@ -304,13 +310,17 @@ func main() {
 		mediaConn.Close()
 	}
 
+	byeSent := atomic.Bool{}
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
 	go func() {
 		<-signalChan
 		sendBye()
+		byeSent.Store(true)
 	}()
 
 	sendAudioPackets(mediaConn, inviteResponse.Body())
-	sendBye()
+	if !byeSent.Load() {
+		sendBye()
+	}
 }
