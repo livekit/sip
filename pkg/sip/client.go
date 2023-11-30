@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/emiago/sipgo"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
 
@@ -79,12 +80,17 @@ func (c *Client) Stop() error {
 
 func (c *Client) UpdateSIPParticipant(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) (*rpc.InternalUpdateSIPParticipantResponse, error) {
 	if req.CallTo == "" {
+		logger.Infow("Disconnect SIP participant",
+			"roomName", req.RoomName, "participant", req.ParticipantId)
 		// Disconnect participant
 		if call := c.getCall(req.ParticipantId); call != nil {
 			call.Close()
 		}
 		return &rpc.InternalUpdateSIPParticipantResponse{}, nil
 	}
+	logger.Infow("Updating SIP participant",
+		"roomName", req.RoomName, "participant", req.ParticipantId,
+		"from", req.Number, "to", req.CallTo, "address", req.Address)
 	err := c.getOrCreateCall(req.ParticipantId).Update(ctx, sipOutboundConfig{
 		address: req.Address,
 		from:    req.Number,
