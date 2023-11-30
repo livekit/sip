@@ -16,23 +16,19 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/emiago/sipgo"
 	"github.com/urfave/cli/v2"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
-	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/service"
-	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/version"
 )
 
@@ -72,9 +68,9 @@ func runService(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-
 	bus := psrpc.NewRedisMessageBus(rc)
-	psrpcClient, err := rpc.NewIOInfoClient(bus)
+
+	svc, err := service.NewService(conf, bus)
 	if err != nil {
 		return err
 	}
@@ -85,41 +81,14 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
-	ua, err := sipgo.NewUA(
-		sipgo.WithUserAgent(sip.UserAgent),
-	)
-	if err != nil {
-		return err
-	}
-
-	sipCli := sip.NewClient(conf)
-	if err = sipCli.Start(ua); err != nil {
-		return err
-	}
-
-	svc := service.NewService(conf, sipCli, psrpcClient, bus)
-
-	sipSrv := sip.NewServer(conf, svc.HandleTrunkAuthentication, svc.HandleDispatchRules)
-	if err = sipSrv.Start(ua); err != nil {
-		return err
-	}
-
 	go func() {
 		select {
 		case sig := <-stopChan:
 			logger.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
 			svc.Stop(false)
-
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
-			if err = sipCli.Stop(); err != nil {
-				log.Println(err)
-			}
-			if err = sipSrv.Stop(); err != nil {
-				log.Println(err)
-			}
-
 		}
 	}()
 

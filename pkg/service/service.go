@@ -18,44 +18,73 @@ import (
 	"context"
 	"log"
 
+	"github.com/emiago/sipgo"
 	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/version"
 )
 
 type Service struct {
 	conf *config.Config
+	cli  *sip.Client
+	srv  *sip.Server
 
-	psrpcServer rpc.SIPInternalServerImpl
 	psrpcClient rpc.IOInfoClient
 	bus         psrpc.MessageBus
 
 	shutdown core.Fuse
 }
 
-func NewService(conf *config.Config, srv rpc.SIPInternalServerImpl, cli rpc.IOInfoClient, bus psrpc.MessageBus) *Service {
+func NewService(conf *config.Config, bus psrpc.MessageBus) (*Service, error) {
+	psrpcClient, err := rpc.NewIOInfoClient(bus)
+	if err != nil {
+		return nil, err
+	}
+	cli := sip.NewClient(conf)
 	s := &Service{
 		conf:        conf,
-		psrpcServer: srv,
-		psrpcClient: cli,
+		cli:         cli,
+		psrpcClient: psrpcClient,
 		bus:         bus,
 		shutdown:    core.NewFuse(),
 	}
-	return s
+	s.srv = sip.NewServer(conf, s.HandleTrunkAuthentication, s.HandleDispatchRules)
+	return s, nil
 }
 
 func (s *Service) Stop(kill bool) {
 	s.shutdown.Break()
+	if kill {
+		if err := s.cli.Stop(); err != nil {
+			log.Println(err)
+		}
+		if err := s.srv.Stop(); err != nil {
+			log.Println(err)
+		}
+	}
 }
 
 func (s *Service) Run() error {
 	logger.Debugw("starting service", "version", version.Version)
+	ua, err := sipgo.NewUA(
+		sipgo.WithUserAgent(sip.UserAgent),
+	)
+	if err != nil {
+		return err
+	}
+	if err = s.cli.Start(ua); err != nil {
+		return err
+	}
+	if err = s.srv.Start(ua); err != nil {
+		return err
+	}
 
-	srv, err := rpc.NewSIPInternalServer(s.psrpcServer, s.bus)
+	srv, err := rpc.NewSIPInternalServer(s.cli, s.bus)
 	if err != nil {
 		return err
 	}
