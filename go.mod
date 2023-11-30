@@ -12,6 +12,7 @@ require (
 	github.com/livekit/protocol v1.9.2-0.20231116141704-aa43aa7482d7
 	github.com/livekit/psrpc v0.5.1
 	github.com/livekit/server-sdk-go v1.1.1
+	github.com/pion/interceptor v0.1.25
 	github.com/pion/rtp v1.8.3
 	github.com/pion/sdp/v2 v2.4.0
 	github.com/pion/webrtc/v3 v3.2.23
@@ -58,7 +59,6 @@ require (
 	github.com/pion/datachannel v1.5.5 // indirect
 	github.com/pion/dtls/v2 v2.2.7 // indirect
 	github.com/pion/ice/v2 v2.3.11 // indirect
-	github.com/pion/interceptor v0.1.25 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns v0.0.8 // indirect
 	github.com/pion/randutil v0.1.0 // indirect

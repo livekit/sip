@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+
+	"github.com/livekit/sip/pkg/media"
 )
 
 const (
@@ -175,4 +177,9 @@ func (i *Input) Push(sample []int16) {
 	if i.samples.Len() >= i.bufferSize {
 		i.hasBuffered = true
 	}
+}
+
+func (i *Input) WriteSample(sample media.PCM16Sample) error {
+	i.Push(sample)
+	return nil
 }

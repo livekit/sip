@@ -9,6 +9,8 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v2"
+
+	"github.com/livekit/sip/pkg/media/rtp"
 )
 
 func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
@@ -107,13 +109,16 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 type inboundCall struct {
-	s     *Server
-	tag   string
-	from  *sip.FromHeader
-	to    *sip.ToHeader
-	src   string
-	media mediaData
-	done  atomic.Bool
+	s            *Server
+	tag          string
+	from         *sip.FromHeader
+	to           *sip.ToHeader
+	src          string
+	rtpConn      *MediaConn
+	audioHandler atomic.Pointer[rtp.Handler]
+	dtmf         chan byte            // buffered; DTMF digits as characters
+	lkRoom       atomic.Pointer[Room] // LiveKit room; only populated after correct pin is entered
+	done         atomic.Bool
 }
 
 func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHeader, src string) *inboundCall {
@@ -123,14 +128,14 @@ func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHead
 		from: from,
 		to:   to,
 		src:  src,
+		dtmf: make(chan byte, 10),
 	}
-	c.initMedia()
 	return c
 }
 
 func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
-	// Otherwise, we could ever learn that this number is not allowed and reject the call, or ask for pin if required.
+	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	roomName, identity, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.src, "", false)
 	if rejectInvite {
 		sipErrorResponse(tx, req)
@@ -138,7 +143,7 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
-	answerData, err := c.runMedia(req.Body())
+	answerData, err := c.runMediaConn(req.Body())
 	if err != nil {
 		sipErrorResponse(tx, req)
 		return
@@ -163,16 +168,18 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
-func (c *inboundCall) runMedia(offerData []byte) ([]byte, error) {
-	addr, err := c.createMediaSession()
-	if err != nil {
+func (c *inboundCall) runMediaConn(offerData []byte) (answerData []byte, _ error) {
+	conn := NewMediaConn()
+	conn.OnRTP(c)
+	if err := conn.Start("0.0.0.0"); err != nil {
 		return nil, err
 	}
+	c.rtpConn = conn
 	offer := sdp.SessionDescription{}
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
 	}
-	return generateAnswer(offer, c.s.publicIp, addr.Port)
+	return generateAnswer(offer, c.s.publicIp, conn.LocalAddr().Port)
 }
 
 func (c *inboundCall) pinPrompt() {
@@ -183,7 +190,7 @@ func (c *inboundCall) pinPrompt() {
 	noPin := false
 	for {
 		select {
-		case b, ok := <-c.media.dtmf:
+		case b, ok := <-c.dtmf:
 			if !ok {
 				c.Close()
 				return

@@ -62,5 +62,8 @@ func generateAnswer(offer sdp.SessionDescription, publicIp string, rtpListenerPo
 		},
 	}
 
+	// Static compiler check for sample rate hardcoded above.
+	var _ = [1]struct{}{}[8000-sampleRate]
+
 	return answer.Marshal()
 }
