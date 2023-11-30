@@ -80,13 +80,13 @@ func (s *Service) HandleTrunkAuthentication(from, to, srcAddress string) (userna
 	return resp.Username, resp.Password, nil
 }
 
-func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress string, pin string, skipPin bool) (joinRoom, identity string, requestPin, rejectInvite bool) {
+func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool) {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
 		CallingNumber: callingNumber,
 		CalledNumber:  calledNumber,
 		SrcAddress:    srcAddress,
 		Pin:           pin,
-		// FIXME: NoPin
+		NoPin:         noPin,
 	})
 
 	if err != nil {
