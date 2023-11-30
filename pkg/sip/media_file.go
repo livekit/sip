@@ -22,7 +22,20 @@ import (
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/ulaw"
+	"github.com/livekit/sip/res"
 )
+
+type mediaRes struct {
+	enterPin []media.PCM16Sample
+	roomJoin []media.PCM16Sample
+	wrongPin []media.PCM16Sample
+}
+
+func (s *Server) initMediaRes() {
+	s.res.enterPin = readMkvAudioFile(res.EnterPinMkv)
+	s.res.roomJoin = readMkvAudioFile(res.RoomJoinMkv)
+	s.res.wrongPin = readMkvAudioFile(res.WrongPinMkv)
+}
 
 func readMkvAudioFile(data []byte) []media.PCM16Sample {
 	var ret struct {

@@ -30,20 +30,21 @@ import (
 type Service struct {
 	conf *config.Config
 
+	psrpcServer rpc.SIPInternalServerImpl
 	psrpcClient rpc.IOInfoClient
 	bus         psrpc.MessageBus
 
 	shutdown core.Fuse
 }
 
-func NewService(conf *config.Config, psrpcClient rpc.IOInfoClient, bus psrpc.MessageBus) *Service {
+func NewService(conf *config.Config, srv rpc.SIPInternalServerImpl, cli rpc.IOInfoClient, bus psrpc.MessageBus) *Service {
 	s := &Service{
 		conf:        conf,
-		psrpcClient: psrpcClient,
+		psrpcServer: srv,
+		psrpcClient: cli,
 		bus:         bus,
 		shutdown:    core.NewFuse(),
 	}
-
 	return s
 }
 
@@ -53,6 +54,12 @@ func (s *Service) Stop(kill bool) {
 
 func (s *Service) Run() error {
 	logger.Debugw("starting service", "version", version.Version)
+
+	srv, err := rpc.NewSIPInternalServer(s.psrpcServer, s.bus)
+	if err != nil {
+		return err
+	}
+	defer srv.Shutdown()
 
 	logger.Debugw("service ready")
 

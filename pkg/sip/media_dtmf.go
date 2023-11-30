@@ -14,14 +14,9 @@
 
 package sip
 
-import (
-	"time"
-)
-
-const (
-	channels      = 1
-	sampleRate    = 8000
-	sampleDur     = 20 * time.Millisecond
-	sampleDurPart = int(time.Second / sampleDur)
-	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
-)
+var dtmfEventToChar = [256]byte{
+	0: '0', 1: '1', 2: '2', 3: '3', 4: '4',
+	5: '5', 6: '6', 7: '7', 8: '8', 9: '9',
+	10: '*', 11: '#',
+	12: 'a', 13: 'b', 14: 'c', 15: 'd',
+}
