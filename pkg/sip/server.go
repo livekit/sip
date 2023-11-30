@@ -38,9 +38,6 @@ var (
 )
 
 type (
-	authenticationHandlerFunc func(from, to, srcAddress string) (username, password string, err error)
-	dispatchRuleHandlerFunc   func(callingNumber, calledNumber, srcAddress, pin string, skipPin bool) (joinRoom, identity string, pinRequired, hangup bool)
-
 	Server struct {
 		sipSrv   *sipgo.Server
 		publicIp string
@@ -50,9 +47,8 @@ type (
 		cmu         sync.RWMutex
 		activeCalls map[string]*inboundCall
 
-		authenticationHandler authenticationHandlerFunc
-		dispatchRuleHandler   dispatchRuleHandlerFunc
-		conf                  *config.Config
+		handler ServerHandler
+		conf    *config.Config
 
 		res mediaRes
 	}
@@ -63,17 +59,32 @@ type (
 	}
 )
 
-func NewServer(conf *config.Config, authenticationHandler authenticationHandlerFunc, dispatchRuleHandler dispatchRuleHandlerFunc) *Server {
+type AuthHandler interface {
+	HandleTrunkAuthentication(from, to, srcAddress string) (username, password string, err error)
+}
+
+type DispatchRuleHandler interface {
+	HandleDispatchRules(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
+}
+
+type ServerHandler interface {
+	AuthHandler
+	DispatchRuleHandler
+}
+
+func NewServer(conf *config.Config) *Server {
 	s := &Server{
-		conf:                  conf,
-		publicIp:              getPublicIP(),
-		activeCalls:           make(map[string]*inboundCall),
-		inProgressInvites:     []*inProgressInvite{},
-		authenticationHandler: authenticationHandler,
-		dispatchRuleHandler:   dispatchRuleHandler,
+		conf:              conf,
+		publicIp:          getPublicIP(),
+		activeCalls:       make(map[string]*inboundCall),
+		inProgressInvites: []*inProgressInvite{},
 	}
 	s.initMediaRes()
 	return s
+}
+
+func (s *Server) SetHandler(handler ServerHandler) {
+	s.handler = handler
 }
 
 func getTagValue(req *sip.Request) (string, error) {

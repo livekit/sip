@@ -24,11 +24,13 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/service"
+	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/version"
 )
 
@@ -68,9 +70,9 @@ func runService(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	bus := psrpc.NewRedisMessageBus(rc)
 
-	svc, err := service.NewService(conf, bus)
+	bus := psrpc.NewRedisMessageBus(rc)
+	psrpcClient, err := rpc.NewIOInfoClient(bus)
 	if err != nil {
 		return err
 	}
@@ -81,14 +83,29 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
+	sipsrv, err := sip.NewService(conf)
+	if err != nil {
+		return err
+	}
+
+	svc := service.NewService(conf, sipsrv.InternalServerImpl(), psrpcClient, bus)
+	sipsrv.SetServerHandler(svc)
+
+	if err = sipsrv.Start(); err != nil {
+		return err
+	}
+
 	go func() {
 		select {
 		case sig := <-stopChan:
 			logger.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
 			svc.Stop(false)
+			sipsrv.Stop(false)
+
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
+			sipsrv.Stop(true)
 		}
 	}()
 
