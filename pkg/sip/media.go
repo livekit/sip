@@ -15,12 +15,15 @@
 package sip
 
 import (
+	"bytes"
 	"encoding/binary"
 	"log"
 	"net"
 	"sync/atomic"
 	"time"
 
+	"github.com/at-wat/ebml-go"
+	"github.com/at-wat/ebml-go/webm"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
@@ -28,6 +31,7 @@ import (
 	"gopkg.in/hraban/opus.v2"
 
 	"github.com/livekit/sip/pkg/mixer"
+	"github.com/livekit/sip/res"
 
 	lksdk "github.com/livekit/server-sdk-go"
 )
@@ -36,6 +40,44 @@ const (
 	channels   = 1
 	sampleRate = 8000
 )
+
+type mediaRes struct {
+	enterPin [][]int16
+	roomJoin [][]int16
+	wrongPin [][]int16
+}
+
+func (s *Server) initMediaRes() {
+	s.res.enterPin = audioFileToFrames(res.EnterPinMkv)
+	s.res.roomJoin = audioFileToFrames(res.RoomJoinMkv)
+	s.res.wrongPin = audioFileToFrames(res.WrongPinMkv)
+}
+
+func audioFileToFrames(data []byte) [][]int16 {
+	var ret struct {
+		Header  webm.EBMLHeader `ebml:"EBML"`
+		Segment webm.Segment    `ebml:"Segment"`
+	}
+	if err := ebml.Unmarshal(bytes.NewReader(data), &ret); err != nil {
+		panic(err)
+	}
+
+	var frames [][]int16
+	for _, cluster := range ret.Segment.Cluster {
+		for _, block := range cluster.SimpleBlock {
+			for _, data := range block.Data {
+				decoded := g711.DecodeUlaw(data)
+				pcm := make([]int16, 0, len(decoded)/2)
+				for i := 0; i < len(decoded); i += 2 {
+					sample := binary.LittleEndian.Uint16(decoded[i:])
+					pcm = append(pcm, int16(sample))
+				}
+				frames = append(frames, pcm)
+			}
+		}
+	}
+	return frames
+}
 
 type mediaData struct {
 	conn  *net.UDPConn
@@ -246,11 +288,24 @@ func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity str
 
 func (c *inboundCall) joinRoom(roomName, identity string) {
 	log.Printf("Bridging SIP call %q -> %q to room %q (as %q)\n", c.from.Address.User, c.to.Address.User, roomName, identity)
+	c.playAudio(c.s.res.roomJoin)
 	if err := c.createLiveKitParticipant(roomName, identity); err != nil {
 		log.Println(err)
 	}
 }
 
-func (c *inboundCall) playPleaseEnterPin() {
-	// FIXME: play "Please enter room pin" audio
+func (c *inboundCall) playAudio(frames [][]int16) {
+	input := c.media.mix.AddInput()
+	defer c.media.mix.RemoveInput(input)
+
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for range tick.C {
+		if len(frames) == 0 {
+			break
+		}
+		samples := frames[0]
+		frames = frames[1:]
+		input.Push(samples)
+	}
 }
