@@ -111,7 +111,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	src := req.Source()
 
-	username, password, err := s.handler.HandleTrunkAuthentication(from.Address.User, to.Address.User, src)
+	username, password, err := s.authHandler(from.Address.User, to.Address.User, src)
 	if err != nil {
 		sipErrorResponse(tx, req)
 		return
@@ -153,7 +153,7 @@ func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHead
 func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
-	roomName, identity, requirePin, rejectInvite := c.s.handler.HandleDispatchRules(c.from.Address.User, c.to.Address.User, c.src, "", false)
+	roomName, identity, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.src, "", false)
 	if rejectInvite {
 		sipErrorResponse(tx, req)
 		return
@@ -226,7 +226,7 @@ func (c *inboundCall) pinPrompt() {
 				noPin = pin == ""
 
 				log.Printf("Checking Pin for SIP call %q -> %q = %q (noPin = %v)\n", c.from.Address.User, c.to.Address.User, pin, noPin)
-				roomName, identity, requirePin, reject := c.s.handler.HandleDispatchRules(c.from.Address.User, c.to.Address.User, c.src, pin, noPin)
+				roomName, identity, requirePin, reject := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.src, pin, noPin)
 				if reject || requirePin || roomName == "" {
 					c.playAudio(c.s.res.wrongPin)
 					c.Close()

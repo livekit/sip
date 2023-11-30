@@ -20,6 +20,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/version"
 )
@@ -49,8 +50,12 @@ func (s *Service) Stop(kill bool) {
 	}
 }
 
-func (s *Service) SetServerHandler(handler ServerHandler) {
-	s.srv.SetHandler(handler)
+func (s *Service) SetAuthHandler(handler AuthHandlerFunc) {
+	s.srv.SetAuthHandler(handler)
+}
+
+func (s *Service) SetDispatchRuleHandlerFunc(handler DispatchRuleHandlerFunc) {
+	s.srv.SetDispatchRuleHandlerFunc(handler)
 }
 
 func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {

@@ -38,7 +38,9 @@ var (
 )
 
 type (
-	Server struct {
+	AuthHandlerFunc         func(from, to, srcAddress string) (username, password string, err error)
+	DispatchRuleHandlerFunc func(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
+	Server                  struct {
 		sipSrv   *sipgo.Server
 		publicIp string
 
@@ -47,8 +49,9 @@ type (
 		cmu         sync.RWMutex
 		activeCalls map[string]*inboundCall
 
-		handler ServerHandler
-		conf    *config.Config
+		authHandler         AuthHandlerFunc
+		dispatchRuleHandler DispatchRuleHandlerFunc
+		conf                *config.Config
 
 		res mediaRes
 	}
@@ -58,19 +61,6 @@ type (
 		challenge digest.Challenge
 	}
 )
-
-type AuthHandler interface {
-	HandleTrunkAuthentication(from, to, srcAddress string) (username, password string, err error)
-}
-
-type DispatchRuleHandler interface {
-	HandleDispatchRules(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
-}
-
-type ServerHandler interface {
-	AuthHandler
-	DispatchRuleHandler
-}
 
 func NewServer(conf *config.Config) *Server {
 	s := &Server{
@@ -83,8 +73,12 @@ func NewServer(conf *config.Config) *Server {
 	return s
 }
 
-func (s *Server) SetHandler(handler ServerHandler) {
-	s.handler = handler
+func (s *Server) SetAuthHandler(handler AuthHandlerFunc) {
+	s.authHandler = handler
+}
+
+func (s *Server) SetDispatchRuleHandlerFunc(handler DispatchRuleHandlerFunc) {
+	s.dispatchRuleHandler = handler
 }
 
 func getTagValue(req *sip.Request) (string, error) {
