@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	userAgent   = "LiveKit"
+	UserAgent   = "LiveKit"
 	digestLimit = 500
 )
 
@@ -38,10 +38,9 @@ var (
 )
 
 type (
-	authenticationHandlerFunc func(from, to, srcAddress string) (username, password string, err error)
-	dispatchRuleHandlerFunc   func(callingNumber, calledNumber, srcAddress, pin string, skipPin bool) (joinRoom, identity string, pinRequired, hangup bool)
-
-	Server struct {
+	AuthHandlerFunc         func(from, to, srcAddress string) (username, password string, err error)
+	DispatchRuleHandlerFunc func(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
+	Server                  struct {
 		sipSrv   *sipgo.Server
 		publicIp string
 
@@ -50,9 +49,9 @@ type (
 		cmu         sync.RWMutex
 		activeCalls map[string]*inboundCall
 
-		authenticationHandler authenticationHandlerFunc
-		dispatchRuleHandler   dispatchRuleHandlerFunc
-		conf                  *config.Config
+		authHandler         AuthHandlerFunc
+		dispatchRuleHandler DispatchRuleHandlerFunc
+		conf                *config.Config
 
 		res mediaRes
 	}
@@ -63,17 +62,23 @@ type (
 	}
 )
 
-func NewServer(conf *config.Config, authenticationHandler authenticationHandlerFunc, dispatchRuleHandler dispatchRuleHandlerFunc) *Server {
+func NewServer(conf *config.Config) *Server {
 	s := &Server{
-		conf:                  conf,
-		publicIp:              getPublicIP(),
-		activeCalls:           make(map[string]*inboundCall),
-		inProgressInvites:     []*inProgressInvite{},
-		authenticationHandler: authenticationHandler,
-		dispatchRuleHandler:   dispatchRuleHandler,
+		conf:              conf,
+		publicIp:          getPublicIP(),
+		activeCalls:       make(map[string]*inboundCall),
+		inProgressInvites: []*inProgressInvite{},
 	}
 	s.initMediaRes()
 	return s
+}
+
+func (s *Server) SetAuthHandler(handler AuthHandlerFunc) {
+	s.authHandler = handler
+}
+
+func (s *Server) SetDispatchRuleHandlerFunc(handler DispatchRuleHandlerFunc) {
+	s.dispatchRuleHandler = handler
 }
 
 func getTagValue(req *sip.Request) (string, error) {
@@ -104,17 +109,20 @@ func logOnError(err error) {
 	}
 }
 
-func (s *Server) Start() error {
-	ua, err := sipgo.NewUA(
-		sipgo.WithUserAgent(userAgent),
-	)
-	if err != nil {
-		log.Fatal(err)
+func (s *Server) Start(agent *sipgo.UserAgent) error {
+	if agent == nil {
+		ua, err := sipgo.NewUA(
+			sipgo.WithUserAgent(UserAgent),
+		)
+		if err != nil {
+			return err
+		}
+		agent = ua
 	}
-
-	s.sipSrv, err = sipgo.NewServer(ua)
+	var err error
+	s.sipSrv, err = sipgo.NewServer(agent)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	s.sipSrv.OnInvite(s.onInvite)

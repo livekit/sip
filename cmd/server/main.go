@@ -16,7 +16,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -84,15 +83,16 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
-	sipCli := sip.NewClient(conf)
-	if err = sipCli.Start(); err != nil {
+	sipsrv, err := sip.NewService(conf)
+	if err != nil {
 		return err
 	}
 
-	svc := service.NewService(conf, sipCli, psrpcClient, bus)
+	svc := service.NewService(conf, sipsrv.InternalServerImpl(), psrpcClient, bus)
+	sipsrv.SetAuthHandler(svc.HandleTrunkAuthentication)
+	sipsrv.SetDispatchRuleHandlerFunc(svc.HandleDispatchRules)
 
-	sipSrv := sip.NewServer(conf, svc.HandleTrunkAuthentication, svc.HandleDispatchRules)
-	if err = sipSrv.Start(); err != nil {
+	if err = sipsrv.Start(); err != nil {
 		return err
 	}
 
@@ -101,17 +101,12 @@ func runService(c *cli.Context) error {
 		case sig := <-stopChan:
 			logger.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
 			svc.Stop(false)
+			sipsrv.Stop(false)
 
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
-			if err = sipCli.Stop(); err != nil {
-				log.Println(err)
-			}
-			if err = sipSrv.Stop(); err != nil {
-				log.Println(err)
-			}
-
+			sipsrv.Stop(true)
 		}
 	}()
 

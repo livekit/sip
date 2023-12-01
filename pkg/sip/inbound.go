@@ -53,7 +53,7 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
-			Realm:     userAgent,
+			Realm:     UserAgent,
 			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
 			Algorithm: "MD5",
 		}
@@ -111,7 +111,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	src := req.Source()
 
-	username, password, err := s.authenticationHandler(from.Address.User, to.Address.User, src)
+	username, password, err := s.authHandler(from.Address.User, to.Address.User, src)
 	if err != nil {
 		sipErrorResponse(tx, req)
 		return

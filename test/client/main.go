@@ -17,7 +17,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"os"
@@ -236,12 +235,12 @@ func main() {
 		sipgo.WithUserAgent(*from),
 	)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	sipClient, err := sipgo.NewClient(ua, sipgo.WithClientHostname(getLocalIP()))
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	var (
