@@ -16,32 +16,63 @@ package sip
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 )
 
-func getPublicIP() string {
+func getPublicIP() (string, error) {
 	req, err := http.Get("http://ip-api.com/json/")
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 	defer req.Body.Close()
 
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
 	ip := struct {
 		Query string
 	}{}
 	if err = json.Unmarshal(body, &ip); err != nil {
-		panic(err)
+		return "", err
 	}
 
 	if ip.Query == "" {
-		panic("Query entry was not populated")
+		return "", fmt.Errorf("Query entry was not populated")
 	}
 
-	return ip.Query
+	return ip.Query, nil
+}
+
+func getLocalIP() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, i := range ifaces {
+		addrs, err := i.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, a := range addrs {
+			switch v := a.(type) {
+			case *net.IPAddr:
+				if !v.IP.IsLoopback() && v.IP.To4() != nil {
+					return v.IP.String(), nil
+				}
+			case *net.IPNet:
+				if !v.IP.IsLoopback() && v.IP.To4() != nil {
+					return v.IP.String(), nil
+				}
+			}
+
+		}
+	}
+
+	return "", fmt.Errorf("No local interface found")
 }

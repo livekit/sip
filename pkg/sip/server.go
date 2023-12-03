@@ -41,8 +41,8 @@ type (
 	AuthHandlerFunc         func(from, to, srcAddress string) (username, password string, err error)
 	DispatchRuleHandlerFunc func(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
 	Server                  struct {
-		sipSrv   *sipgo.Server
-		publicIp string
+		sipSrv      *sipgo.Server
+		signalingIp string
 
 		inProgressInvites []*inProgressInvite
 
@@ -65,7 +65,6 @@ type (
 func NewServer(conf *config.Config) *Server {
 	s := &Server{
 		conf:              conf,
-		publicIp:          getPublicIP(),
 		activeCalls:       make(map[string]*inboundCall),
 		inProgressInvites: []*inProgressInvite{},
 	}
@@ -110,6 +109,19 @@ func logOnError(err error) {
 }
 
 func (s *Server) Start(agent *sipgo.UserAgent) error {
+	var err error
+	if s.conf.UseExternalIP {
+		if s.signalingIp, err = getPublicIP(); err != nil {
+			return err
+		}
+	} else if s.conf.NAT1To1IP != "" {
+		s.signalingIp = s.conf.NAT1To1IP
+	} else {
+		if s.signalingIp, err = getLocalIP(); err != nil {
+			return err
+		}
+	}
+
 	if agent == nil {
 		ua, err := sipgo.NewUA(
 			sipgo.WithUserAgent(UserAgent),
@@ -119,7 +131,7 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 		}
 		agent = ua
 	}
-	var err error
+
 	s.sipSrv, err = sipgo.NewServer(agent)
 	if err != nil {
 		return err

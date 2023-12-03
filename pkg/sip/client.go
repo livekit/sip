@@ -30,8 +30,8 @@ import (
 type Client struct {
 	conf *config.Config
 
-	sipCli   *sipgo.Client
-	publicIp string
+	sipCli      *sipgo.Client
+	signalingIp string
 
 	cmu         sync.RWMutex
 	activeCalls map[string]*outboundCall
@@ -40,13 +40,25 @@ type Client struct {
 func NewClient(conf *config.Config) *Client {
 	c := &Client{
 		conf:        conf,
-		publicIp:    getPublicIP(),
 		activeCalls: make(map[string]*outboundCall),
 	}
 	return c
 }
 
 func (c *Client) Start(agent *sipgo.UserAgent) error {
+	var err error
+	if c.conf.UseExternalIP {
+		if c.signalingIp, err = getPublicIP(); err != nil {
+			return err
+		}
+	} else if c.conf.NAT1To1IP != "" {
+		c.signalingIp = c.conf.NAT1To1IP
+	} else {
+		if c.signalingIp, err = getLocalIP(); err != nil {
+			return err
+		}
+	}
+
 	if agent == nil {
 		ua, err := sipgo.NewUA(
 			sipgo.WithUserAgent(UserAgent),
@@ -56,8 +68,7 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		}
 		agent = ua
 	}
-	var err error
-	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.publicIp))
+	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.signalingIp))
 	if err != nil {
 		return err
 	}

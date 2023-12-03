@@ -248,7 +248,7 @@ func (c *outboundCall) stopSIP() {
 }
 
 func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
-	offer, err := sdpGenerateOffer(c.c.publicIp, c.rtpConn.LocalAddr().Port)
+	offer, err := sdpGenerateOffer(c.c.signalingIp, c.rtpConn.LocalAddr().Port)
 	if err != nil {
 		return err
 	}
@@ -271,7 +271,7 @@ func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, au
 	req.SetDestination("") // FIXME: what should be here
 	req.SetBody(offer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.c.publicIp)))
+	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.c.signalingIp)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	if authHeader != "" {

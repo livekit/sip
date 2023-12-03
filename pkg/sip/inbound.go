@@ -170,7 +170,7 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	c.s.cmu.Unlock()
 
 	res := sip.NewResponseFromRequest(req, 200, "OK", answerData)
-	res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: c.s.publicIp, Port: c.s.conf.SIPPort}})
+	res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp, Port: c.s.conf.SIPPort}})
 	res.AppendHeader(&contentTypeHeaderSDP)
 	if err = tx.Respond(res); err != nil {
 		log.Println(err)
@@ -202,7 +202,7 @@ func (c *inboundCall) runMediaConn(offerData []byte) (answerData []byte, _ error
 	s := rtp.NewMediaStreamOut[ulaw.Sample](conn, rtpPacketDur)
 	c.lkRoom.SetOutput(ulaw.Decode(s))
 
-	return sdpGenerateAnswer(offer, c.s.publicIp, conn.LocalAddr().Port)
+	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)
 }
 
 func (c *inboundCall) pinPrompt() {

@@ -15,6 +15,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/sirupsen/logrus"
@@ -48,6 +49,9 @@ type Config struct {
 	SIPPort    int                 `yaml:"sip_port"`
 	RTPPort    rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging    logger.Config       `yaml:"logging"`
+
+	UseExternalIP bool   `yaml:"use_external_ip"`
+	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 
 	// internal
 	ServiceName string `yaml:"-"`
@@ -89,6 +93,10 @@ func (conf *Config) Init() error {
 
 	if err := conf.InitLogger(); err != nil {
 		return err
+	}
+
+	if conf.UseExternalIP && conf.NAT1To1IP != "" {
+		return fmt.Errorf("use_external_ip and nat_1_to_1_ip can not both be set")
 	}
 
 	return nil
