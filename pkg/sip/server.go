@@ -38,8 +38,8 @@ var (
 )
 
 type (
-	AuthHandlerFunc         func(from, to, srcAddress string) (username, password string, err error)
-	DispatchRuleHandlerFunc func(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
+	AuthHandlerFunc         func(fromUser, toUser, toHost, srcAddress string) (username, password string, err error)
+	DispatchRuleHandlerFunc func(fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool)
 	Server                  struct {
 		sipSrv      *sipgo.Server
 		signalingIp string

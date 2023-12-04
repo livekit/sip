@@ -73,10 +73,11 @@ func (s *Service) Run() error {
 	}
 }
 
-func (s *Service) HandleTrunkAuthentication(from, to, srcAddress string) (username, password string, err error) {
+func (s *Service) HandleTrunkAuthentication(from, to, toHost, srcAddress string) (username, password string, err error) {
 	resp, err := s.psrpcClient.GetSIPTrunkAuthentication(context.TODO(), &rpc.GetSIPTrunkAuthenticationRequest{
 		From:       from,
 		To:         to,
+		ToHost:     toHost,
 		SrcAddress: srcAddress,
 	})
 
@@ -87,10 +88,11 @@ func (s *Service) HandleTrunkAuthentication(from, to, srcAddress string) (userna
 	return resp.Username, resp.Password, nil
 }
 
-func (s *Service) HandleDispatchRules(callingNumber, calledNumber, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool) {
+func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool) {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
 		CallingNumber: callingNumber,
 		CalledNumber:  calledNumber,
+		CalledHost:    calledHost,
 		SrcAddress:    srcAddress,
 		Pin:           pin,
 		NoPin:         noPin,

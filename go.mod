@@ -9,7 +9,7 @@ require (
 	github.com/icholy/digest v0.1.22
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20231017082622-43f077b4e60e
-	github.com/livekit/protocol v1.9.2-0.20231121183749-0cb26043c3cd
+	github.com/livekit/protocol v1.9.4-0.20231204164031-5ffa9f0c6545
 	github.com/livekit/psrpc v0.5.2
 	github.com/livekit/server-sdk-go v1.1.1
 	github.com/pion/interceptor v0.1.25
