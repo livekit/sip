@@ -40,6 +40,7 @@ var (
 	username  = flag.String("username", "", "")
 	password  = flag.String("password", "", "")
 	sipUri    = flag.String("sip-uri", "example.pstn.twilio.com", "")
+	filePath  = flag.String("play", "audio.mkv", "")
 )
 
 func startMediaListener() *net.UDPConn {
@@ -140,7 +141,7 @@ func parseAnswer(in []byte) (string, int) {
 func sendAudioPackets(conn *net.UDPConn, body []byte) {
 	ip, port := parseAnswer(body)
 
-	r, err := os.Open("audio.mkv")
+	r, err := os.Open(*filePath)
 	if err != nil {
 		panic(err)
 	}

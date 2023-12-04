@@ -16,7 +16,6 @@ package service
 
 import (
 	"context"
-	"log"
 
 	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
@@ -99,7 +98,7 @@ func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, s
 	})
 
 	if err != nil {
-		log.Println(err)
+		logger.Warnw("SIP handle dispatch rule error", err)
 		return "", "", false, true
 	}
 

@@ -23,6 +23,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
@@ -144,6 +145,7 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 			sipErrorResponse(tx, req)
 			return
 		}
+		logger.Infow("BYE", "tag", tag)
 
 		s.cmu.RLock()
 		c := s.activeCalls[tag]
@@ -158,6 +160,7 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 
+	// TODO: pass proper context here
 	go func() {
 		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)))
 	}()

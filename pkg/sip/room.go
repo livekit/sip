@@ -15,9 +15,9 @@
 package sip
 
 import (
-	"log"
 	"sync/atomic"
 
+	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go"
 	"github.com/pion/webrtc/v3"
 
@@ -66,7 +66,7 @@ func (r *Room) Connect(conf *config.Config, roomName string, identity string) er
 				OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 					if track.Kind() != webrtc.RTPCodecTypeAudio {
 						if err := pub.SetSubscribed(false); err != nil {
-							log.Println(err)
+							logger.Errorw("Cannot unsubscribe from the track", err)
 						}
 						return
 					}
@@ -119,7 +119,7 @@ func (r *Room) SetOutput(out media.Writer[media.LPCM16Sample]) {
 }
 
 func (r *Room) Close() error {
-	if r.room == nil {
+	if r.room != nil {
 		r.room.Disconnect()
 		r.room = nil
 	}

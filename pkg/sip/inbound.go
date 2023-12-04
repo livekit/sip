@@ -16,12 +16,12 @@ package sip
 
 import (
 	"fmt"
-	"log"
 	"sync/atomic"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/protocol/logger"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -92,6 +92,8 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 }
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
+	_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
+
 	tag, err := getTagValue(req)
 	if err != nil {
 		sipErrorResponse(tx, req)
@@ -111,9 +113,11 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	src := req.Source()
 
+	logger.Infow("INVITE", "tag", tag, "from", from, "to", to)
+
 	username, password, err := s.authHandler(from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
-		log.Printf("Rejecting inbound call, doesn't match any Trunks %q %q %q %q\n", from.Address.User, to.Address.User, to.Address.Host, src)
+		logger.Warnw("Rejecting inbound call, doesn't match any Trunks", err, "tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
 		sipErrorResponse(tx, req)
 		return
 	}
@@ -128,6 +132,8 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 type inboundCall struct {
 	s            *Server
 	tag          string
+	inviteReq    *sip.Request
+	inviteResp   *sip.Response
 	from         *sip.FromHeader
 	to           *sip.ToHeader
 	src          string
@@ -148,6 +154,9 @@ func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHead
 		dtmf:   make(chan byte, 10),
 		lkRoom: NewRoom(), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
+	s.cmu.Lock()
+	s.activeCalls[tag] = c
+	s.cmu.Unlock()
 	return c
 }
 
@@ -156,36 +165,46 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction, c
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	roomName, identity, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, "", false)
 	if rejectInvite {
-		log.Printf("Rejecting inbound call, doesn't match any Dispatch Rules %q %q %q %q\n", c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src)
+		logger.Infow("Rejecting inbound call, doesn't match any Dispatch Rules", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
 		sipErrorResponse(tx, req)
+		c.Close()
 		return
 	}
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
 	answerData, err := c.runMediaConn(req.Body(), conf)
-
 	if err != nil {
 		sipErrorResponse(tx, req)
+		c.Close()
 		return
 	}
-	c.s.cmu.Lock()
-	c.s.activeCalls[c.tag] = c
-	c.s.cmu.Unlock()
 
 	res := sip.NewResponseFromRequest(req, 200, "OK", answerData)
 	res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp, Port: c.s.conf.SIPPort}})
 	res.AppendHeader(&contentTypeHeaderSDP)
 	if err = tx.Respond(res); err != nil {
-		log.Println(err)
+		logger.Errorw("Cannot respond to INVITE", err)
 		// TODO: should we close the call in this case?
 		return
 	}
+	c.inviteReq = req
+	c.inviteResp = res
 	// We own this goroutine, so can freely block.
 	if requirePin {
 		c.pinPrompt()
 	} else {
 		c.joinRoom(roomName, identity)
 	}
+}
+
+func (c *inboundCall) sendBye() {
+	if c.inviteReq == nil {
+		return
+	}
+	res := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
+	c.s.sipSrv.TransportLayer().WriteMsg(res)
+	c.inviteReq = nil
+	c.inviteResp = nil
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
@@ -209,7 +228,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 }
 
 func (c *inboundCall) pinPrompt() {
-	log.Printf("Requesting Pin for SIP call %q -> %q\n", c.from.Address.User, c.to.Address.User)
+	logger.Infow("Requesting Pin for SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User)
 	const pinLimit = 16
 	c.playAudio(c.s.res.enterPin)
 	pin := ""
@@ -228,9 +247,10 @@ func (c *inboundCall) pinPrompt() {
 				// End of the pin
 				noPin = pin == ""
 
-				log.Printf("Checking Pin for SIP call %q -> %q = %q (noPin = %v)\n", c.from.Address.User, c.to.Address.User, pin, noPin)
+				logger.Infow("Checking Pin for SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
 				roomName, identity, requirePin, reject := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, pin, noPin)
 				if reject || requirePin || roomName == "" {
+					logger.Infow("Rejecting call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
 					c.playAudio(c.s.res.wrongPin)
 					c.Close()
 					return
@@ -250,14 +270,15 @@ func (c *inboundCall) pinPrompt() {
 }
 
 func (c *inboundCall) Close() error {
-	if c.done.CompareAndSwap(false, true) {
+	if !c.done.CompareAndSwap(false, true) {
 		return nil
 	}
+	logger.Infow("Closing inbound call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User)
 	c.s.cmu.Lock()
 	delete(c.s.activeCalls, c.tag)
 	c.s.cmu.Unlock()
 	c.closeMedia()
-	// FIXME: drop the actual call
+	c.sendBye()
 	return nil
 }
 
@@ -267,7 +288,10 @@ func (c *inboundCall) closeMedia() {
 		p.Close()
 		c.lkRoom = nil
 	}
-	c.rtpConn.Close()
+	if c.rtpConn != nil {
+		c.rtpConn.Close()
+		c.rtpConn = nil
+	}
 	close(c.dtmf)
 }
 
@@ -304,10 +328,10 @@ func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity str
 }
 
 func (c *inboundCall) joinRoom(roomName, identity string) {
-	log.Printf("Bridging SIP call %q -> %q to room %q (as %q)\n", c.from.Address.User, c.to.Address.User, roomName, identity)
+	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity)
 	c.playAudio(c.s.res.roomJoin)
 	if err := c.createLiveKitParticipant(roomName, identity); err != nil {
-		log.Println(err)
+		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag)
 	}
 }
 
