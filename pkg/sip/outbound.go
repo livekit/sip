@@ -23,6 +23,7 @@ import (
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
 
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
@@ -112,7 +113,7 @@ func (c *outboundCall) close() {
 	// FIXME: remove call from the client map?
 }
 
-func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkNew lkRoomConfig) error {
+func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkNew lkRoomConfig, conf *config.Config) error {
 	c.mu.RLock()
 	sipCur, lkCur := c.sipCur, c.lkCur
 	c.mu.RUnlock()
@@ -132,7 +133,7 @@ func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkN
 		c.close()
 		return nil
 	}
-	if err := c.startMedia(); err != nil {
+	if err := c.startMedia(conf); err != nil {
 		c.close()
 		return fmt.Errorf("start media failed: %w", err)
 	}
@@ -150,11 +151,11 @@ func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkN
 	return nil
 }
 
-func (c *outboundCall) startMedia() error {
+func (c *outboundCall) startMedia(conf *config.Config) error {
 	if c.mediaRunning {
 		return nil
 	}
-	if err := c.rtpConn.Start("0.0.0.0"); err != nil {
+	if err := c.rtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
 	c.mediaRunning = true
@@ -239,7 +240,9 @@ func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
 
 func (c *outboundCall) stopSIP() {
 	if c.sipInviteReq != nil {
-		c.sipBye()
+		if err := c.sipBye(); err != nil {
+			logger.Errorw("SIP bye failed", err)
+		}
 	}
 	c.sipInviteReq = nil
 	c.sipInviteResp = nil

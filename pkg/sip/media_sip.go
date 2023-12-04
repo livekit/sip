@@ -67,15 +67,14 @@ func (c *MediaConn) Close() error {
 	return nil
 }
 
-func (c *MediaConn) Start(listenAddr string) error {
+func (c *MediaConn) Start(portMin, portMax int, listenAddr string) error {
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0"
 	}
+
 	var err error
-	c.conn, err = net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.ParseIP(listenAddr),
-		Port: 0,
-	})
+	c.conn, err = listenUDPInPortRange(portMin, portMax, net.ParseIP(listenAddr))
+
 	if err != nil {
 		return err
 	}

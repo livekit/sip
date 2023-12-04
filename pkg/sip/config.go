@@ -18,9 +18,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
+	"time"
 )
+
+var source *rand.Rand
+
+func init() {
+	source = rand.New(rand.NewSource(time.Now().UnixNano()))
+}
 
 func getPublicIP() (string, error) {
 	req, err := http.Get("http://ip-api.com/json/")
@@ -75,4 +83,48 @@ func getLocalIP() (string, error) {
 	}
 
 	return "", fmt.Errorf("No local interface found")
+}
+
+var listenErr = fmt.Errorf("Failed to listen on UDP Port")
+
+func listenUDPInPortRange(portMin, portMax int, IP net.IP) (*net.UDPConn, error) {
+	if portMin == 0 && portMax == 0 {
+		return net.ListenUDP("udp", &net.UDPAddr{
+			IP:   IP,
+			Port: 0,
+		})
+	}
+
+	i := portMin
+	if i == 0 {
+		i = 1
+	}
+
+	j := portMax
+	if j == 0 {
+		j = 0xFFFF
+	}
+
+	if i > j {
+		return nil, listenErr
+	}
+
+	portStart := source.Intn(portMax-portMin+1) + portMin
+	portCurrent := portStart
+
+	for {
+		c, e := net.ListenUDP("udp", &net.UDPAddr{IP: IP, Port: portCurrent})
+		if e == nil {
+			return c, nil
+		}
+
+		portCurrent++
+		if portCurrent > j {
+			portCurrent = i
+		}
+		if portCurrent == portStart {
+			break
+		}
+	}
+	return nil, listenErr
 }

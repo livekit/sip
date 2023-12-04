@@ -24,6 +24,7 @@ import (
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v2"
 
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
@@ -121,7 +122,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 	call := s.newInboundCall(tag, from, to, src)
-	call.handleInvite(req, tx)
+	call.handleInvite(req, tx, s.conf)
 }
 
 type inboundCall struct {
@@ -150,7 +151,7 @@ func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHead
 	return c
 }
 
-func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
+func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction, conf *config.Config) {
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	roomName, identity, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.src, "", false)
@@ -160,7 +161,8 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
-	answerData, err := c.runMediaConn(req.Body())
+	answerData, err := c.runMediaConn(req.Body(), conf)
+
 	if err != nil {
 		sipErrorResponse(tx, req)
 		return
@@ -185,10 +187,10 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
-func (c *inboundCall) runMediaConn(offerData []byte) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
 	conn := NewMediaConn()
 	conn.OnRTP(c)
-	if err := conn.Start("0.0.0.0"); err != nil {
+	if err := conn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
 	c.rtpConn = conn

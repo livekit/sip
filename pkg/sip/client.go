@@ -114,7 +114,7 @@ func (c *Client) UpdateSIPParticipant(ctx context.Context, req *rpc.InternalUpda
 	}, lkRoomConfig{
 		roomName: req.RoomName,
 		identity: req.ParticipantIdentity,
-	})
+	}, c.conf)
 	if err != nil {
 		return nil, err
 	}
