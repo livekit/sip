@@ -51,39 +51,47 @@ func NewRoom() *Room {
 	return r
 }
 
-func (r *Room) Connect(conf *config.Config, roomName string, identity string) error {
+func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token string) error {
+	var (
+		err  error
+		room *lksdk.Room
+	)
 	r.identity = identity
-
-	room, err := lksdk.ConnectToRoom(conf.WsUrl,
-		lksdk.ConnectInfo{
-			APIKey:              conf.ApiKey,
-			APISecret:           conf.ApiSecret,
-			RoomName:            roomName,
-			ParticipantIdentity: identity,
-		},
-		&lksdk.RoomCallback{
-			ParticipantCallback: lksdk.ParticipantCallback{
-				OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-					if track.Kind() != webrtc.RTPCodecTypeAudio {
-						if err := pub.SetSubscribed(false); err != nil {
-							logger.Errorw("Cannot unsubscribe from the track", err)
-						}
-						return
+	roomCallback := &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if track.Kind() != webrtc.RTPCodecTypeAudio {
+					if err := pub.SetSubscribed(false); err != nil {
+						logger.Errorw("Cannot unsubscribe from the track", err)
 					}
+					return
+				}
 
-					mtrack := r.NewTrack()
-					defer mtrack.Close()
+				mtrack := r.NewTrack()
+				defer mtrack.Close()
 
-					odec, err := opus.Decode(mtrack, sampleRate, channels)
-					if err != nil {
-						return
-					}
-					h := rtp.NewMediaStreamIn[opus.Sample](odec)
-					_ = rtp.HandleLoop(track, h)
-				},
+				odec, err := opus.Decode(mtrack, sampleRate, channels)
+				if err != nil {
+					return
+				}
+				h := rtp.NewMediaStreamIn[opus.Sample](odec)
+				_ = rtp.HandleLoop(track, h)
 			},
 		},
-	)
+	}
+
+	if wsUrl == "" || token == "" {
+		room, err = lksdk.ConnectToRoom(conf.WsUrl,
+			lksdk.ConnectInfo{
+				APIKey:              conf.ApiKey,
+				APISecret:           conf.ApiSecret,
+				RoomName:            roomName,
+				ParticipantIdentity: identity,
+			}, roomCallback)
+	} else {
+		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -93,7 +101,7 @@ func (r *Room) Connect(conf *config.Config, roomName string, identity string) er
 
 func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
 	r := NewRoom()
-	if err := r.Connect(conf, roomName, identity); err != nil {
+	if err := r.Connect(conf, roomName, identity, "", ""); err != nil {
 		return nil, err
 	}
 	return r, nil

@@ -87,7 +87,7 @@ func (s *Service) HandleTrunkAuthentication(from, to, toHost, srcAddress string)
 	return resp.Username, resp.Password, nil
 }
 
-func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, srcAddress string, pin string, noPin bool) (joinRoom, identity string, requestPin, rejectInvite bool) {
+func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool) {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
 		CallingNumber: callingNumber,
 		CalledNumber:  calledNumber,
@@ -99,10 +99,10 @@ func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, s
 
 	if err != nil {
 		logger.Warnw("SIP handle dispatch rule error", err)
-		return "", "", false, true
+		return "", "", "", "", false, true
 	}
 
-	return resp.RoomName, resp.ParticipantIdentity, resp.RequestPin, false
+	return resp.RoomName, resp.ParticipantIdentity, resp.WsUrl, resp.Token, resp.RequestPin, false
 }
 
 func (s *Service) CanAccept() bool {

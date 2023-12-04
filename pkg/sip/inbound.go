@@ -163,7 +163,7 @@ func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHead
 func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction, conf *config.Config) {
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
-	roomName, identity, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, "", false)
+	roomName, identity, wsUrl, token, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, "", false)
 	if rejectInvite {
 		logger.Infow("Rejecting inbound call, doesn't match any Dispatch Rules", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
 		sipErrorResponse(tx, req)
@@ -193,7 +193,7 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction, c
 	if requirePin {
 		c.pinPrompt()
 	} else {
-		c.joinRoom(roomName, identity)
+		c.joinRoom(roomName, identity, wsUrl, token)
 	}
 }
 
@@ -248,14 +248,14 @@ func (c *inboundCall) pinPrompt() {
 				noPin = pin == ""
 
 				logger.Infow("Checking Pin for SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
-				roomName, identity, requirePin, reject := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, pin, noPin)
+				roomName, identity, wsUrl, token, requirePin, reject := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, pin, noPin)
 				if reject || requirePin || roomName == "" {
 					logger.Infow("Rejecting call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
 					c.playAudio(c.s.res.wrongPin)
 					c.Close()
 					return
 				}
-				c.joinRoom(roomName, identity)
+				c.joinRoom(roomName, identity, wsUrl, token)
 				return
 			}
 			// Gather pin numbers
@@ -307,8 +307,8 @@ func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
 	return nil
 }
 
-func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity string) error {
-	err := c.lkRoom.Connect(c.s.conf, roomName, participantIdentity)
+func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity, wsUrl, token string) error {
+	err := c.lkRoom.Connect(c.s.conf, roomName, participantIdentity, wsUrl, token)
 	if err != nil {
 		return err
 	}
@@ -327,10 +327,10 @@ func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity str
 	return nil
 }
 
-func (c *inboundCall) joinRoom(roomName, identity string) {
+func (c *inboundCall) joinRoom(roomName, identity, wsUrl, token string) {
 	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity)
 	c.playAudio(c.s.res.roomJoin)
-	if err := c.createLiveKitParticipant(roomName, identity); err != nil {
+	if err := c.createLiveKitParticipant(roomName, identity, wsUrl, token); err != nil {
 		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag)
 	}
 }
