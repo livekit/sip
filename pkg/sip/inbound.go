@@ -84,7 +84,6 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 	}
 
 	if cred.Response != digCred.Response {
-		// 	fmt.Println(cred.Response, digCred.Response)
 		logOnError(tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)))
 		return false
 	}
@@ -114,6 +113,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	username, password, err := s.authHandler(from.Address.User, to.Address.User, src)
 	if err != nil {
+		log.Printf("Rejecting inbound call, doesn't match any Trunks %q %q %q\n", from.Address.User, to.Address.User, src)
 		sipErrorResponse(tx, req)
 		return
 	}
@@ -156,6 +156,7 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction, c
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	roomName, identity, requirePin, rejectInvite := c.s.dispatchRuleHandler(c.from.Address.User, c.to.Address.User, c.src, "", false)
 	if rejectInvite {
+		log.Printf("Rejecting inbound call, doesn't match any Dispatch Rules %q %q %q\n", c.from.Address.User, c.to.Address.User, c.src)
 		sipErrorResponse(tx, req)
 		return
 	}
