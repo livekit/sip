@@ -184,7 +184,7 @@ func (c *inboundCall) handleInvite(req *sip.Request, tx sip.ServerTransaction, c
 	res.AppendHeader(&contentTypeHeaderSDP)
 	if err = tx.Respond(res); err != nil {
 		logger.Errorw("Cannot respond to INVITE", err)
-		// TODO: should we close the call in this case?
+		c.Close()
 		return
 	}
 	c.inviteReq = req
@@ -201,8 +201,24 @@ func (c *inboundCall) sendBye() {
 	if c.inviteReq == nil {
 		return
 	}
-	res := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
-	c.s.sipSrv.TransportLayer().WriteMsg(res)
+	// This function is for clients, so we need to swap src and dest
+	bye := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
+	if contact, ok := c.inviteReq.Contact(); ok {
+		bye.Recipient = &contact.Address
+	} else {
+		bye.Recipient = &c.from.Address
+	}
+	bye.SetSource(c.inviteResp.Source())
+	bye.SetDestination(c.inviteResp.Destination())
+	bye.RemoveHeader("From")
+	bye.AppendHeader((*sip.FromHeader)(c.to))
+	bye.RemoveHeader("To")
+	bye.AppendHeader((*sip.ToHeader)(c.from))
+	if route, ok := bye.RecordRoute(); ok {
+		bye.RemoveHeader("Record-Route")
+		bye.AppendHeader(&sip.RouteHeader{Address: route.Address})
+	}
+	_ = c.s.sipSrv.TransportLayer().WriteMsg(bye)
 	c.inviteReq = nil
 	c.inviteResp = nil
 }
@@ -274,11 +290,11 @@ func (c *inboundCall) Close() error {
 		return nil
 	}
 	logger.Infow("Closing inbound call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User)
+	c.sendBye()
+	c.closeMedia()
 	c.s.cmu.Lock()
 	delete(c.s.activeCalls, c.tag)
 	c.s.cmu.Unlock()
-	c.closeMedia()
-	c.sendBye()
 	return nil
 }
 
