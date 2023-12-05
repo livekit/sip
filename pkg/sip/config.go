@@ -22,6 +22,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/livekit/protocol/logger"
 )
 
 var source *rand.Rand
@@ -115,6 +117,7 @@ func listenUDPInPortRange(portMin, portMax int, IP net.IP) (*net.UDPConn, error)
 	for {
 		c, e := net.ListenUDP("udp", &net.UDPAddr{IP: IP, Port: portCurrent})
 		if e == nil {
+			logger.Debugw("begin listening on UDP", "port", portCurrent)
 			return c, nil
 		}
 
