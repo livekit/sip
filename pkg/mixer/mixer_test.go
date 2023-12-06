@@ -15,17 +15,19 @@
 package mixer
 
 import (
-	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sip/pkg/media"
 )
 
 func TestMixer(t *testing.T) {
-	sample := []byte{}
-	m := createMixer(func(s []byte) {
+	var sample media.PCM16Sample
+	m := createMixer(media.WriterFunc[media.PCM16Sample](func(s media.PCM16Sample) error {
 		sample = s
-	}, 8000)
+		return nil
+	}), 8000)
 
 	require.Equal(t, 160, m.mixSize)
 
@@ -33,9 +35,7 @@ func TestMixer(t *testing.T) {
 
 	t.Run("No Input", func(t *testing.T) {
 		m.doMix()
-		if !bytes.Equal(sample, []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}) {
-			t.Fatal()
-		}
+		require.Equal(t, media.PCM16Sample{0, 0, 0, 0, 0}, sample)
 	})
 
 	t.Run("One Input", func(t *testing.T) {
@@ -44,7 +44,7 @@ func TestMixer(t *testing.T) {
 		input.Push([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
 		m.doMix()
-		require.Equal(t, []byte{10, 0, 11, 0, 12, 0, 13, 0, 14, 0}, sample)
+		require.Equal(t, media.PCM16Sample{10, 11, 12, 13, 14}, sample)
 		m.RemoveInput(input)
 	})
 
@@ -58,13 +58,13 @@ func TestMixer(t *testing.T) {
 		secondInput.Push([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
 		m.doMix()
-		require.Equal(t, []byte{24, 0, 24, 0, 24, 0, 24, 0, 24, 0}, sample)
+		require.Equal(t, media.PCM16Sample{24, 24, 24, 24, 24}, sample)
 
 		firstInput.Push([]int16{0x7FFF, 0x1, -0x7FFF, -0x1, 0x0})
 		secondInput.Push([]int16{0x1, 0x7FFF, -0x1, -0x7FFF, 0x0})
 
 		m.doMix()
-		require.Equal(t, []byte{0xFF, 0x7F, 0xFF, 0x7F, 0x1, 0x80, 0x1, 0x80, 0x0, 0x0}, sample)
+		require.Equal(t, media.PCM16Sample{0x7FFF, 0x7FFF, -0x7FFF, -0x7FFF, 0x0}, sample)
 
 		m.RemoveInput(firstInput)
 		m.RemoveInput(secondInput)
@@ -77,9 +77,9 @@ func TestMixer(t *testing.T) {
 			input.Push([]int16{0, 1, 2, 3, 4})
 			m.doMix()
 
-			expected := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+			expected := media.PCM16Sample{0, 0, 0, 0, 0}
 			if i == 4 {
-				expected = []byte{0, 0, 1, 0, 2, 0, 3, 0, 4, 0}
+				expected = media.PCM16Sample{0, 1, 2, 3, 4}
 			}
 
 			require.Equal(t, expected, sample)
@@ -98,9 +98,9 @@ func TestMixer(t *testing.T) {
 		for i := 0; i < 8; i++ {
 			m.doMix()
 
-			expected := []byte{0, 0, 1, 0, 2, 0, 3, 0, 4, 0}
+			expected := media.PCM16Sample{0, 1, 2, 3, 4}
 			if i == 7 {
-				expected = []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+				expected = media.PCM16Sample{0, 0, 0, 0, 0}
 			}
 
 			require.Equal(t, expected, sample)

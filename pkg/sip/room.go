@@ -15,8 +15,6 @@
 package sip
 
 import (
-	"sync/atomic"
-
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go"
 	"github.com/pion/webrtc/v3"
@@ -31,7 +29,7 @@ import (
 type Room struct {
 	room     *lksdk.Room
 	mix      *mixer.Mixer
-	out      atomic.Pointer[media.Writer[media.LPCM16Sample]]
+	out      media.SwitchWriter[media.PCM16Sample]
 	identity string
 }
 
@@ -42,12 +40,7 @@ type lkRoomConfig struct {
 
 func NewRoom() *Room {
 	r := &Room{}
-	r.mix = mixer.NewMixer(func(data []byte) {
-		sample := media.LPCM16Sample(data)
-		if out := r.Output(); out != nil {
-			_ = out.WriteSample(sample)
-		}
-	}, sampleRate)
+	r.mix = mixer.NewMixer(&r.out, sampleRate)
 	return r
 }
 
@@ -107,23 +100,15 @@ func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room
 	return r, nil
 }
 
-func (r *Room) Output() media.Writer[media.LPCM16Sample] {
-	ptr := r.out.Load()
-	if ptr == nil {
-		return nil
-	}
-	return *ptr
+func (r *Room) Output() media.Writer[media.PCM16Sample] {
+	return r.out.Get()
 }
 
-func (r *Room) SetOutput(out media.Writer[media.LPCM16Sample]) {
+func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
 	if r == nil {
 		return
 	}
-	if out == nil {
-		r.out.Store(nil)
-	} else {
-		r.out.Store(&out)
-	}
+	r.out.Set(out)
 }
 
 func (r *Room) Close() error {

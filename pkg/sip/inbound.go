@@ -238,7 +238,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
 	s := rtp.NewMediaStreamOut[ulaw.Sample](conn, rtpPacketDur)
-	c.lkRoom.SetOutput(ulaw.Decode(s))
+	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)
 }
@@ -335,8 +335,7 @@ func (c *inboundCall) createLiveKitParticipant(roomName, participantIdentity, ws
 	}
 
 	// Decoding pipeline (SIP -> LK)
-	lpcm := media.DecodePCM(local)
-	law := ulaw.Encode(lpcm)
+	law := ulaw.Decode(local)
 	var h rtp.Handler = rtp.NewMediaStreamIn(law)
 	c.audioHandler.Store(&h)
 

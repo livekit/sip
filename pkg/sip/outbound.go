@@ -207,11 +207,10 @@ func (c *outboundCall) relinkMedia() {
 	}
 	// Encoding pipeline (LK -> SIP)
 	s := rtp.NewMediaStreamOut[ulaw.Sample](c.rtpConn, rtpPacketDur)
-	c.lkRoom.SetOutput(ulaw.Decode(s))
+	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	// Decoding pipeline (SIP -> LK)
-	lpcm := media.DecodePCM(c.lkRoomIn)
-	law := ulaw.Encode(lpcm)
+	law := ulaw.Decode(c.lkRoomIn)
 	c.rtpConn.OnRTP(rtp.NewMediaStreamIn(law))
 }
 
