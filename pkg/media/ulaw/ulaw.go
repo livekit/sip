@@ -28,17 +28,42 @@ func (s *Sample) Encode(data media.PCM16Sample) {
 	*s = EncodeUlaw(data)
 }
 
-func Decode(w media.Writer[media.PCM16Sample]) media.Writer[Sample] {
-	return media.WriterFunc[Sample](func(in Sample) error {
-		out := in.Decode()
-		return w.WriteSample(out)
-	})
+type Writer = media.Writer[Sample]
+
+type Decoder struct {
+	w   media.PCM16Writer
+	buf media.PCM16Sample
 }
 
-func Encode(w media.Writer[Sample]) media.Writer[media.PCM16Sample] {
-	return media.WriterFunc[media.PCM16Sample](func(in media.PCM16Sample) error {
-		var s Sample
-		s.Encode(in)
-		return w.WriteSample(s)
-	})
+func (d *Decoder) WriteSample(in Sample) error {
+	if len(in) >= cap(d.buf) {
+		d.buf = make(media.PCM16Sample, len(in))
+	} else {
+		d.buf = d.buf[:len(in)]
+	}
+	DecodeUlawTo(d.buf, in)
+	return d.w.WriteSample(d.buf)
+}
+
+func Decode(w media.PCM16Writer) Writer {
+	return &Decoder{w: w}
+}
+
+type Encoder struct {
+	w   Writer
+	buf Sample
+}
+
+func (e *Encoder) WriteSample(in media.PCM16Sample) error {
+	if len(in) >= cap(e.buf) {
+		e.buf = make(Sample, len(in))
+	} else {
+		e.buf = e.buf[:len(in)]
+	}
+	EncodeUlawTo(e.buf, in)
+	return e.w.WriteSample(e.buf)
+}
+
+func Encode(w Writer) media.PCM16Writer {
+	return &Encoder{w: w}
 }

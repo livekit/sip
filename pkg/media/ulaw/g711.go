@@ -101,6 +101,16 @@ func EncodeUlaw(lpcm []int16) []byte {
 	return out
 }
 
+// EncodeUlawTo encodes 16bit LPCM data to an existing G711 u-law PCM buffer.
+func EncodeUlawTo(out []byte, lpcm []int16) {
+	if len(out) != len(lpcm) {
+		panic("short buffer")
+	}
+	for i := range lpcm {
+		out[i] = EncodeUlawFrame(lpcm[i])
+	}
+}
+
 // EncodeUlawFrame encodes a 16bit LPCM frame to G711 u-law PCM
 func EncodeUlawFrame(frame int16) uint8 {
 	/*
@@ -127,12 +137,22 @@ func EncodeUlawFrame(frame int16) uint8 {
 }
 
 // DecodeUlaw decodes u-law PCM data to 16bit PCM.
-func DecodeUlaw(pcm []byte) []int16 {
-	out := make([]int16, len(pcm))
-	for i := 0; i < len(pcm); i++ {
-		out[i] = ulaw2lpcm[pcm[i]]
+func DecodeUlaw(ulaw []byte) []int16 {
+	out := make([]int16, len(ulaw))
+	for i := 0; i < len(ulaw); i++ {
+		out[i] = ulaw2lpcm[ulaw[i]]
 	}
 	return out
+}
+
+// DecodeUlawTo decodes u-law PCM data to an existing 16bit PCM buffer.
+func DecodeUlawTo(out []int16, ulaw []byte) {
+	if len(out) != len(ulaw) {
+		panic("short buffer")
+	}
+	for i := 0; i < len(ulaw); i++ {
+		out[i] = ulaw2lpcm[ulaw[i]]
+	}
 }
 
 // DecodeUlawFrame decodes a u-law PCM frame to 16bit LPCM
