@@ -38,6 +38,8 @@ func PlayAudio[T any](w Writer[T], sampleDur time.Duration, frames []T) error {
 
 type PCM16Sample []int16
 
+type PCM16Writer = Writer[PCM16Sample]
+
 type MediaSampleWriter interface {
 	WriteSample(sample media.Sample) error
 }
