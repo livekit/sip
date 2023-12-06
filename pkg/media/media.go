@@ -14,6 +14,8 @@
 
 package media
 
+import "sync/atomic"
+
 type Writer[T any] interface {
 	WriteSample(sample T) error
 }
@@ -22,4 +24,44 @@ type WriterFunc[T any] func(in T) error
 
 func (fnc WriterFunc[T]) WriteSample(in T) error {
 	return fnc(in)
+}
+
+type SwitchWriter[T any] struct {
+	ptr atomic.Pointer[Writer[T]]
+}
+
+func (s *SwitchWriter[T]) Get() Writer[T] {
+	ptr := s.ptr.Load()
+	if ptr == nil {
+		return nil
+	}
+	return *ptr
+}
+
+func (s *SwitchWriter[T]) Set(w Writer[T]) {
+	if w == nil {
+		s.ptr.Store(nil)
+	} else {
+		s.ptr.Store(&w)
+	}
+}
+
+func (s *SwitchWriter[T]) WriteSample(sample T) error {
+	w := s.Get()
+	if w == nil {
+		return nil
+	}
+	return w.WriteSample(sample)
+}
+
+type MultiWriter[T any] []Writer[T]
+
+func (s MultiWriter[T]) WriteSample(sample T) error {
+	var last error
+	for _, w := range s {
+		if err := w.WriteSample(sample); err != nil {
+			last = err
+		}
+	}
+	return last
 }

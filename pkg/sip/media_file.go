@@ -51,8 +51,7 @@ func readMkvAudioFile(data []byte) []media.PCM16Sample {
 		for _, block := range cluster.SimpleBlock {
 			for _, data := range block.Data {
 				lpcm := ulaw.Sample(data).Decode()
-				pcm := lpcm.Decode()
-				frames = append(frames, pcm)
+				frames = append(frames, lpcm)
 			}
 		}
 	}

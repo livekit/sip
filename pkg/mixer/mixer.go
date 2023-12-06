@@ -43,8 +43,8 @@ type Input struct {
 type Mixer struct {
 	mu sync.Mutex
 
-	onSample func([]byte)
-	inputs   map[*Input]struct{}
+	out    media.Writer[media.PCM16Sample]
+	inputs map[*Input]struct{}
 
 	ticker  *time.Ticker
 	mixSize int
@@ -52,21 +52,21 @@ type Mixer struct {
 	stopped core.Fuse
 }
 
-func NewMixer(onSample func([]byte), sampleRate int) *Mixer {
-	m := createMixer(onSample, sampleRate)
+func NewMixer(out media.Writer[media.PCM16Sample], sampleRate int) *Mixer {
+	m := createMixer(out, sampleRate)
 
 	go m.start()
 
 	return m
 }
 
-func createMixer(onSample func([]byte), sampleRate int) *Mixer {
+func createMixer(out media.Writer[media.PCM16Sample], sampleRate int) *Mixer {
 	m := &Mixer{
-		onSample: onSample,
-		ticker:   time.NewTicker(mixerTickDuration),
-		mixSize:  int(time.Duration(sampleRate) * mixerTickDuration / time.Second),
-		stopped:  core.NewFuse(),
-		inputs:   make(map[*Input]struct{}),
+		out:     out,
+		ticker:  time.NewTicker(mixerTickDuration),
+		mixSize: int(time.Duration(sampleRate) * mixerTickDuration / time.Second),
+		stopped: core.NewFuse(),
+		inputs:  make(map[*Input]struct{}),
 	}
 
 	return m
@@ -107,7 +107,7 @@ func (m *Mixer) doMix() {
 		input.mu.Unlock()
 	}
 
-	out := make([]byte, 2*m.mixSize)
+	out := make(media.PCM16Sample, m.mixSize)
 	for i, sample := range mixed {
 		if sample > 0x7FFF {
 			sample = 0x7FFF
@@ -115,13 +115,10 @@ func (m *Mixer) doMix() {
 		if sample < -0x7FFF {
 			sample = -0x7FFF
 		}
-
-		// Encoder expects little endian data (???)
-		out[2*i] = byte(sample & 0xFF)
-		out[2*i+1] = byte(sample >> 8)
+		out[i] = int16(sample)
 	}
 
-	m.onSample(out)
+	_ = m.out.WriteSample(out)
 }
 
 func (m *Mixer) start() {
