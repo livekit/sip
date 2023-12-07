@@ -4,4 +4,4 @@ bin/
 cmd/server/server
 
 test/config.yaml
-test/client/audio.mkv
+test/client/*.mkv

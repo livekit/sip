@@ -29,18 +29,20 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 )
 
 var (
-	sipServer = flag.String("sip-server", "", "")
-	to        = flag.String("to", "+15550100000", "")
-	from      = flag.String("from", "+15550100001", "")
-	username  = flag.String("username", "", "")
-	password  = flag.String("password", "", "")
-	sipUri    = flag.String("sip-uri", "example.pstn.twilio.com", "")
-	filePath  = flag.String("play", "audio.mkv", "")
+	sipServer    = flag.String("sip-server", "", "")
+	to           = flag.String("to", "+15550100000", "")
+	from         = flag.String("from", "+15550100001", "")
+	username     = flag.String("username", "", "")
+	password     = flag.String("password", "", "")
+	sipUri       = flag.String("sip-uri", "example.pstn.twilio.com", "")
+	filePathPlay = flag.String("play", "audio.mkv", "")
+	filePathSave = flag.String("save", "save.mkv", "")
 )
 
 func startMediaListener() *net.UDPConn {
@@ -51,6 +53,62 @@ func startMediaListener() *net.UDPConn {
 	if err != nil {
 		panic(err)
 	}
+
+	go func() {
+		var (
+			p              rtp.Packet
+			audioTimestamp int64
+		)
+		buf := make([]byte, 1500)
+
+		w, err := os.OpenFile(*filePathSave, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+		if err != nil {
+			panic(err)
+		}
+
+		ws, err := webm.NewSimpleBlockWriter(w,
+			[]webm.TrackEntry{
+				{
+					Name:            "Audio",
+					TrackNumber:     1,
+					TrackUID:        12345,
+					CodecID:         "A_PCM/INT/LIT",
+					TrackType:       2,
+					DefaultDuration: 20000000,
+					Audio: &webm.Audio{
+						SamplingFrequency: 8000.0,
+						Channels:          1,
+					},
+				},
+			})
+		if err != nil {
+			panic(err)
+		}
+
+		for {
+			n, _, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+
+			p = rtp.Packet{}
+			if err := p.Unmarshal(buf[:n]); err != nil {
+				continue
+			}
+
+			audioTimestamp += 20
+			decoded := ulaw.DecodeUlaw(p.Payload)
+			out := []byte{}
+			for _, sample := range decoded {
+				out = append(out, byte(sample&0xff))
+				out = append(out, byte(sample>>8))
+			}
+
+			if _, err := ws[0].Write(true, audioTimestamp, out); err != nil {
+				panic(err)
+			}
+		}
+	}()
 
 	return conn
 }
@@ -141,7 +199,7 @@ func parseAnswer(in []byte) (string, int) {
 func sendAudioPackets(conn *net.UDPConn, body []byte) {
 	ip, port := parseAnswer(body)
 
-	r, err := os.Open(*filePath)
+	r, err := os.Open(*filePathPlay)
 	if err != nil {
 		panic(err)
 	}
@@ -295,7 +353,9 @@ func main() {
 		inviteRequest.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
-	sipClient.WriteRequest(sip.NewAckRequest(inviteRequest, inviteResponse, nil))
+	if err = sipClient.WriteRequest(sip.NewAckRequest(inviteRequest, inviteResponse, nil)); err != nil {
+		panic(err)
+	}
 
 	sendBye := func() {
 		req := sip.NewByeRequest(inviteRequest, inviteResponse, nil)
