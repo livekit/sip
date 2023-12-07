@@ -16,6 +16,9 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
+	"time"
 
 	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
@@ -26,29 +29,49 @@ import (
 	"github.com/livekit/sip/version"
 )
 
-type Service struct {
-	conf *config.Config
+const shutdownTimer = time.Second * 5
 
-	psrpcServer rpc.SIPInternalServerImpl
-	psrpcClient rpc.IOInfoClient
-	bus         psrpc.MessageBus
+type (
+	sipServiceStopFunc        func()
+	sipServiceActiveCallsFunc func() int
 
-	shutdown core.Fuse
-}
+	Service struct {
+		conf *config.Config
 
-func NewService(conf *config.Config, srv rpc.SIPInternalServerImpl, cli rpc.IOInfoClient, bus psrpc.MessageBus) *Service {
+		psrpcServer rpc.SIPInternalServerImpl
+		psrpcClient rpc.IOInfoClient
+		bus         psrpc.MessageBus
+
+		sipServiceStop        sipServiceStopFunc
+		sipServiceActiveCalls sipServiceActiveCallsFunc
+
+		shutdown core.Fuse
+		killed   atomic.Bool
+	}
+)
+
+func NewService(
+	conf *config.Config, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
+	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoClient, bus psrpc.MessageBus,
+) *Service {
 	s := &Service{
-		conf:        conf,
+		conf: conf,
+
 		psrpcServer: srv,
 		psrpcClient: cli,
 		bus:         bus,
-		shutdown:    core.NewFuse(),
+
+		sipServiceStop:        sipServiceStop,
+		sipServiceActiveCalls: sipServiceActiveCalls,
+
+		shutdown: core.NewFuse(),
 	}
 	return s
 }
 
 func (s *Service) Stop(kill bool) {
 	s.shutdown.Break()
+	s.killed.Store(kill)
 }
 
 func (s *Service) Run() error {
@@ -67,6 +90,16 @@ func (s *Service) Run() error {
 		case <-s.shutdown.Watch():
 			logger.Infow("shutting down")
 
+			if !s.killed.Load() {
+				activeCalls := s.sipServiceActiveCalls()
+				if activeCalls > 0 {
+					fmt.Printf("instance waiting for %d calls to finish", activeCalls)
+					time.Sleep(shutdownTimer)
+					continue
+				}
+			}
+
+			s.sipServiceStop()
 			return nil
 		}
 	}
@@ -106,5 +139,5 @@ func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, s
 }
 
 func (s *Service) CanAccept() bool {
-	return true
+	return !s.shutdown.IsBroken()
 }

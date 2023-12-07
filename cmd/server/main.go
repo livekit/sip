@@ -88,7 +88,7 @@ func runService(c *cli.Context) error {
 		return err
 	}
 
-	svc := service.NewService(conf, sipsrv.InternalServerImpl(), psrpcClient, bus)
+	svc := service.NewService(conf, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus)
 	sipsrv.SetAuthHandler(svc.HandleTrunkAuthentication)
 	sipsrv.SetDispatchRuleHandlerFunc(svc.HandleDispatchRules)
 
@@ -101,12 +101,9 @@ func runService(c *cli.Context) error {
 		case sig := <-stopChan:
 			logger.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
 			svc.Stop(false)
-			sipsrv.Stop(false)
-
 		case sig := <-killChan:
 			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
-			sipsrv.Stop(true)
 		}
 	}()
 

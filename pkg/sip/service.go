@@ -23,6 +23,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/rs/zerolog"
 	zlog "github.com/rs/zerolog/log"
+	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/version"
@@ -57,14 +58,24 @@ func NewService(conf *config.Config) (*Service, error) {
 	return s, nil
 }
 
-func (s *Service) Stop(kill bool) {
-	if kill {
-		if err := s.cli.Stop(); err != nil {
-			log.Println(err)
-		}
-		if err := s.srv.Stop(); err != nil {
-			log.Println(err)
-		}
+func (s *Service) ActiveCalls() int {
+	s.cli.cmu.Lock()
+	activeClientCalls := len(maps.Values(s.cli.activeCalls))
+	s.cli.cmu.Unlock()
+
+	s.srv.cmu.Lock()
+	activeServerCalls := len(maps.Values(s.srv.activeCalls))
+	s.srv.cmu.Unlock()
+
+	return activeClientCalls + activeServerCalls
+}
+
+func (s *Service) Stop() {
+	if err := s.cli.Stop(); err != nil {
+		log.Println(err)
+	}
+	if err := s.srv.Stop(); err != nil {
+		log.Println(err)
 	}
 }
 
