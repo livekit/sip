@@ -17,7 +17,6 @@ package sip
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/emiago/sipgo"
@@ -95,17 +94,7 @@ func getTagValue(req *sip.Request) (string, error) {
 }
 
 func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
-	logOnError(tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil)))
-}
-
-func sipSuccessResponse(tx sip.ServerTransaction, req *sip.Request, body []byte) {
-	logOnError(tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", body)))
-}
-
-func logOnError(err error) {
-	if err != nil {
-		log.Println(err)
-	}
+	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
 
 func (s *Server) Start(agent *sipgo.UserAgent) error {
@@ -151,7 +140,7 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 	return nil
 }
 
-func (s *Server) Stop() error {
+func (s *Server) Stop() {
 	s.cmu.Lock()
 	calls := maps.Values(s.activeCalls)
 	s.activeCalls = make(map[string]*inboundCall)
@@ -160,8 +149,6 @@ func (s *Server) Stop() error {
 		c.Close()
 	}
 	if s.sipSrv != nil {
-		return s.sipSrv.Close()
+		s.sipSrv.Close()
 	}
-
-	return nil
 }

@@ -16,7 +16,6 @@ package sip
 
 import (
 	"errors"
-	"log"
 
 	"github.com/emiago/sipgo"
 	"github.com/livekit/protocol/logger"
@@ -71,12 +70,8 @@ func (s *Service) ActiveCalls() int {
 }
 
 func (s *Service) Stop() {
-	if err := s.cli.Stop(); err != nil {
-		log.Println(err)
-	}
-	if err := s.srv.Stop(); err != nil {
-		log.Println(err)
-	}
+	s.cli.Stop()
+	s.srv.Stop()
 }
 
 func (s *Service) SetAuthHandler(handler AuthHandlerFunc) {
