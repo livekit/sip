@@ -120,8 +120,8 @@ func (s *Service) HandleTrunkAuthentication(from, to, toHost, srcAddress string)
 	return resp.Username, resp.Password, nil
 }
 
-func (s *Service) HandleDispatchRules(callingNumber, calledNumber, calledHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool) {
-	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(context.TODO(), &rpc.EvaluateSIPDispatchRulesRequest{
+func (s *Service) HandleDispatchRules(ctx context.Context, callingNumber, calledNumber, calledHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool) {
+	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{
 		CallingNumber: callingNumber,
 		CalledNumber:  calledNumber,
 		CalledHost:    calledHost,
