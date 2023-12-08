@@ -76,7 +76,7 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 	return nil
 }
 
-func (c *Client) Stop() error {
+func (c *Client) Stop() {
 	c.cmu.Lock()
 	calls := maps.Values(c.activeCalls)
 	c.activeCalls = make(map[string]*outboundCall)
@@ -89,7 +89,6 @@ func (c *Client) Stop() error {
 		c.sipCli = nil
 	}
 	// FIXME: anything else?
-	return nil
 }
 
 func (c *Client) UpdateSIPParticipant(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) (*rpc.InternalUpdateSIPParticipantResponse, error) {

@@ -62,13 +62,13 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 
 		res := sip.NewResponseFromRequest(req, 407, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
-		logOnError(tx.Respond(res))
+		_ = tx.Respond(res)
 		return false
 	}
 
 	cred, err := digest.ParseCredentials(h.Value())
 	if err != nil {
-		logOnError(tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
 		return false
 	}
 
@@ -80,12 +80,12 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 	})
 
 	if err != nil {
-		logOnError(tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
 		return false
 	}
 
 	if cred.Response != digCred.Response {
-		logOnError(tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
 		return false
 	}
 
@@ -144,8 +144,7 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	if c != nil {
 		c.Close()
 	}
-
-	sipSuccessResponse(tx, req, nil)
+	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 }
 
 type inboundCall struct {
