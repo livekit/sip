@@ -15,25 +15,33 @@
 package media
 
 import (
+	"context"
 	"time"
 
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
-func PlayAudio[T any](w Writer[T], sampleDur time.Duration, frames []T) error {
+func PlayAudio[T any](ctx context.Context, w Writer[T], sampleDur time.Duration, frames []T) error {
+	if len(frames) == 0 {
+		return nil
+	}
 	tick := time.NewTicker(sampleDur)
 	defer tick.Stop()
-	for range tick.C {
-		if len(frames) == 0 {
-			break
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
 		}
 		samples := frames[0]
 		frames = frames[1:]
 		if err := w.WriteSample(samples); err != nil {
 			return err
 		}
+		if len(frames) == 0 {
+			return nil
+		}
 	}
-	return nil
 }
 
 type PCM16Sample []int16

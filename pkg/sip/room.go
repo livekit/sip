@@ -15,6 +15,8 @@
 package sip
 
 import (
+	"context"
+
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go"
 	"github.com/pion/webrtc/v3"
@@ -156,8 +158,8 @@ func (t *Track) Close() error {
 	return nil
 }
 
-func (t *Track) PlayAudio(frames []media.PCM16Sample) {
-	_ = media.PlayAudio[media.PCM16Sample](t, sampleDur, frames)
+func (t *Track) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
+	_ = media.PlayAudio[media.PCM16Sample](ctx, t, sampleDur, frames)
 }
 
 func (t *Track) WriteSample(pcm media.PCM16Sample) error {

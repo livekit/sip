@@ -23,7 +23,6 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
@@ -40,7 +39,7 @@ var (
 
 type (
 	AuthHandlerFunc         func(fromUser, toUser, toHost, srcAddress string) (username, password string, err error)
-	DispatchRuleHandlerFunc func(fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool)
+	DispatchRuleHandlerFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool)
 	Server                  struct {
 		sipSrv      *sipgo.Server
 		signalingIp string
@@ -139,23 +138,7 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 	}
 
 	s.sipSrv.OnInvite(s.onInvite)
-	s.sipSrv.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
-		tag, err := getTagValue(req)
-		if err != nil {
-			sipErrorResponse(tx, req)
-			return
-		}
-		logger.Infow("BYE", "tag", tag)
-
-		s.cmu.RLock()
-		c := s.activeCalls[tag]
-		s.cmu.RUnlock()
-		if c != nil {
-			c.Close()
-		}
-
-		sipSuccessResponse(tx, req, nil)
-	})
+	s.sipSrv.OnBye(s.onBye)
 
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
