@@ -269,11 +269,15 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 }
 
 func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, authHeader string) (*sip.Request, *sip.Response, error) {
-	req := sip.NewRequest(sip.INVITE, &sip.Uri{User: conf.to, Host: conf.address})
-	req.SetDestination("") // FIXME: what should be here
+	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060}
+	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp, Port: 5060}
+	req := sip.NewRequest(sip.INVITE, to)
+	req.SetDestination(conf.address + ":5060")
 	req.SetBody(offer)
+	req.AppendHeader(&sip.ToHeader{Address: *to})
+	req.AppendHeader(&sip.FromHeader{Address: *from})
+	req.AppendHeader(&sip.ContactHeader{Address: *from})
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.c.signalingIp)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	if authHeader != "" {
@@ -296,15 +300,29 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 		req, resp, err := c.sipAttemptInvite(offer, conf, authHeader)
 		if err != nil {
 			return nil, nil, err
-		} else if resp.StatusCode == 200 {
-			return req, resp, nil
-		} else if resp.StatusCode != 407 {
+		}
+		switch resp.StatusCode {
+		default:
 			return nil, nil, fmt.Errorf("Unexpected StatusCode from INVITE response %d", resp.StatusCode)
+		case 400:
+			var reason string
+			if body := resp.Body(); len(body) != 0 {
+				reason = string(body)
+			} else if s := resp.GetHeader("X-Twillio-Error"); s != nil {
+				reason = s.Value()
+			}
+			if reason != "" {
+				return nil, nil, fmt.Errorf("INVITE failed: %s", reason)
+			}
+			return nil, nil, fmt.Errorf("INVITE failed with status %d", resp.StatusCode)
+		case 200:
+			return req, resp, nil
+		case 407:
+			// auth required
 		}
 		if conf.user == "" || conf.pass == "" {
 			return nil, nil, fmt.Errorf("Server responded with 407, but no username or password was provided")
 		}
-
 		headerVal := resp.GetHeader("Proxy-Authenticate")
 		challenge, err := digest.ParseChallenge(headerVal.Value())
 		if err != nil {
