@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/sirupsen/logrus"
@@ -132,4 +133,20 @@ func (c *Config) GetLoggerFields() logrus.Fields {
 	}
 
 	return fields
+}
+
+func GetLocalIP() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", nil
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String(), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("No local IP found")
 }

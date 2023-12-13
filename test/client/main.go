@@ -29,6 +29,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
@@ -113,22 +114,6 @@ func startMediaListener() *net.UDPConn {
 	return conn
 }
 
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		panic(err)
-	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
-		}
-	}
-
-	panic("No IP Found")
-}
-
 func getResponse(tx sip.ClientTransaction) *sip.Response {
 	select {
 	case <-tx.Done():
@@ -153,13 +138,13 @@ func createOffer(port int) ([]byte, error) {
 			SessionVersion: sessionId,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
-			UnicastAddress: getLocalIP(),
+			UnicastAddress: config.GetLocalIP(),
 		},
 		SessionName: "LiveKit",
 		ConnectionInformation: &sdp.ConnectionInformation{
 			NetworkType: "IN",
 			AddressType: "IP4",
-			Address:     &sdp.Address{Address: getLocalIP()},
+			Address:     &sdp.Address{Address: config.GetLocalIP()},
 		},
 		TimeDescriptions: []sdp.TimeDescription{
 			sdp.TimeDescription{
@@ -261,7 +246,7 @@ func attemptInvite(sipClient *sipgo.Client, offer []byte, authorizationHeaderVal
 	inviteRequest.SetDestination(*sipServer)
 	inviteRequest.SetBody(offer)
 	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	inviteRequest.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", getLocalIP())))
+	inviteRequest.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", config.GetLocalIP())))
 	inviteRequest.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	if authorizationHeaderValue != "" {
@@ -281,7 +266,7 @@ func main() {
 	flag.Parse()
 
 	if *sipServer == "" {
-		*sipServer = getLocalIP() + ":5060"
+		*sipServer = config.GetLocalIP() + ":5060"
 	}
 
 	mediaConn := startMediaListener()
@@ -297,7 +282,7 @@ func main() {
 		panic(err)
 	}
 
-	sipClient, err := sipgo.NewClient(ua, sipgo.WithClientHostname(getLocalIP()))
+	sipClient, err := sipgo.NewClient(ua, sipgo.WithClientHostname(config.GetLocalIP()))
 	if err != nil {
 		panic(err)
 	}
