@@ -47,7 +47,7 @@ jobs:
       - name: Test
         run: |
           set -euo pipefail
-          go test -race -json -v -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee /tmp/gotest.log | gotestfmt
+          go test -coverpkg=./... -race -json -v -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee /tmp/gotest.log | gotestfmt
 
       - name: Upload test log
         uses: actions/upload-artifact@v3
