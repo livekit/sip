@@ -44,9 +44,17 @@ var (
 	sipUri       = flag.String("sip-uri", "example.pstn.twilio.com", "")
 	filePathPlay = flag.String("play", "audio.mkv", "")
 	filePathSave = flag.String("save", "save.mkv", "")
+
+	localIP = ""
 )
 
 func startMediaListener() *net.UDPConn {
+	var err error
+	localIP, err = config.GetLocalIP()
+	if err != nil {
+		panic(err)
+	}
+
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{
 		Port: 0,
 		IP:   net.ParseIP("0.0.0.0"),
@@ -138,13 +146,13 @@ func createOffer(port int) ([]byte, error) {
 			SessionVersion: sessionId,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
-			UnicastAddress: config.GetLocalIP(),
+			UnicastAddress: localIP,
 		},
 		SessionName: "LiveKit",
 		ConnectionInformation: &sdp.ConnectionInformation{
 			NetworkType: "IN",
 			AddressType: "IP4",
-			Address:     &sdp.Address{Address: config.GetLocalIP()},
+			Address:     &sdp.Address{Address: localIP},
 		},
 		TimeDescriptions: []sdp.TimeDescription{
 			sdp.TimeDescription{
@@ -246,7 +254,7 @@ func attemptInvite(sipClient *sipgo.Client, offer []byte, authorizationHeaderVal
 	inviteRequest.SetDestination(*sipServer)
 	inviteRequest.SetBody(offer)
 	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	inviteRequest.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", config.GetLocalIP())))
+	inviteRequest.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", localIP)))
 	inviteRequest.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	if authorizationHeaderValue != "" {
@@ -266,7 +274,7 @@ func main() {
 	flag.Parse()
 
 	if *sipServer == "" {
-		*sipServer = config.GetLocalIP() + ":5060"
+		*sipServer = localIP + ":5060"
 	}
 
 	mediaConn := startMediaListener()
@@ -282,7 +290,7 @@ func main() {
 		panic(err)
 	}
 
-	sipClient, err := sipgo.NewClient(ua, sipgo.WithClientHostname(config.GetLocalIP()))
+	sipClient, err := sipgo.NewClient(ua, sipgo.WithClientHostname(localIP))
 	if err != nil {
 		panic(err)
 	}
