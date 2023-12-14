@@ -15,26 +15,12 @@
 package errors
 
 import (
-	"errors"
-
 	"github.com/livekit/psrpc"
 )
 
 var (
 	ErrNoConfig = psrpc.NewErrorf(psrpc.InvalidArgument, "missing config")
 )
-
-func New(err string) error {
-	return errors.New(err)
-}
-
-func Is(err, target error) bool {
-	return errors.Is(err, target)
-}
-
-func As(err error, target any) bool {
-	return errors.As(err, target)
-}
 
 func ErrCouldNotParseConfig(err error) psrpc.Error {
 	return psrpc.NewErrorf(psrpc.InvalidArgument, "could not parse config: %v", err)
