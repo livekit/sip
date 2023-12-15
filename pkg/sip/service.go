@@ -25,6 +25,7 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
 
@@ -44,16 +45,21 @@ func init() {
 }
 
 type Service struct {
-	cli *Client
-	srv *Server
+	conf *config.Config
+	mon  *stats.Monitor
+	cli  *Client
+	srv  *Server
 }
 
 func NewService(conf *config.Config) (*Service, error) {
-	cli := NewClient(conf)
+	mon := stats.NewMonitor()
+	cli := NewClient(conf, mon)
 	s := &Service{
-		cli: cli,
+		conf: conf,
+		mon:  mon,
+		cli:  cli,
 	}
-	s.srv = NewServer(conf)
+	s.srv = NewServer(conf, mon)
 	return s, nil
 }
 
@@ -72,6 +78,7 @@ func (s *Service) ActiveCalls() int {
 func (s *Service) Stop() {
 	s.cli.Stop()
 	s.srv.Stop()
+	s.mon.Stop()
 }
 
 func (s *Service) SetAuthHandler(handler AuthHandlerFunc) {
@@ -88,6 +95,10 @@ func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {
 
 func (s *Service) Start() error {
 	logger.Debugw("starting sip service", "version", version.Version)
+
+	if err := s.mon.Start(s.conf); err != nil {
+		return err
+	}
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(UserAgent),
 	)

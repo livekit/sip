@@ -46,10 +46,11 @@ type Config struct {
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
-	HealthPort int                 `yaml:"health_port"`
-	SIPPort    int                 `yaml:"sip_port"`
-	RTPPort    rtcconfig.PortRange `yaml:"rtp_port"`
-	Logging    logger.Config       `yaml:"logging"`
+	HealthPort     int                 `yaml:"health_port"`
+	PrometheusPort int                 `yaml:"prometheus_port"`
+	SIPPort        int                 `yaml:"sip_port"`
+	RTPPort        rtcconfig.PortRange `yaml:"rtp_port"`
+	Logging        logger.Config       `yaml:"logging"`
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`

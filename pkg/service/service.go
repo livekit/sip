@@ -17,6 +17,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/version"
@@ -31,24 +34,24 @@ import (
 
 const shutdownTimer = time.Second * 5
 
-type (
-	sipServiceStopFunc        func()
-	sipServiceActiveCallsFunc func() int
+type sipServiceStopFunc func()
+type sipServiceActiveCallsFunc func() int
 
-	Service struct {
-		conf *config.Config
+type Service struct {
+	conf *config.Config
 
-		psrpcServer rpc.SIPInternalServerImpl
-		psrpcClient rpc.IOInfoClient
-		bus         psrpc.MessageBus
+	psrpcServer rpc.SIPInternalServerImpl
+	psrpcClient rpc.IOInfoClient
+	bus         psrpc.MessageBus
 
-		sipServiceStop        sipServiceStopFunc
-		sipServiceActiveCalls sipServiceActiveCallsFunc
+	promServer *http.Server
 
-		shutdown core.Fuse
-		killed   atomic.Bool
-	}
-)
+	sipServiceStop        sipServiceStopFunc
+	sipServiceActiveCalls sipServiceActiveCallsFunc
+
+	shutdown core.Fuse
+	killed   atomic.Bool
+}
 
 func NewService(
 	conf *config.Config, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
@@ -66,6 +69,12 @@ func NewService(
 
 		shutdown: core.NewFuse(),
 	}
+	if conf.PrometheusPort > 0 {
+		s.promServer = &http.Server{
+			Addr:    fmt.Sprintf(":%d", conf.PrometheusPort),
+			Handler: promhttp.Handler(),
+		}
+	}
 	return s
 }
 
@@ -76,6 +85,17 @@ func (s *Service) Stop(kill bool) {
 
 func (s *Service) Run() error {
 	logger.Debugw("starting service", "version", version.Version)
+
+	if s.promServer != nil {
+		promListener, err := net.Listen("tcp", s.promServer.Addr)
+		if err != nil {
+			return err
+		}
+		defer promListener.Close()
+		go func() {
+			_ = s.promServer.Serve(promListener)
+		}()
+	}
 
 	srv, err := rpc.NewSIPInternalServer(s.psrpcServer, s.bus)
 	if err != nil {

@@ -25,6 +25,7 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 const (
@@ -36,34 +37,35 @@ var (
 	contentTypeHeaderSDP = sip.ContentTypeHeader("application/sdp")
 )
 
-type (
-	AuthHandlerFunc         func(fromUser, toUser, toHost, srcAddress string) (username, password string, err error)
-	DispatchRuleHandlerFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool)
-	Server                  struct {
-		sipSrv      *sipgo.Server
-		signalingIp string
+type AuthHandlerFunc func(fromUser, toUser, toHost, srcAddress string) (username, password string, err error)
+type DispatchRuleHandlerFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool)
 
-		inProgressInvites []*inProgressInvite
+type Server struct {
+	mon         *stats.Monitor
+	sipSrv      *sipgo.Server
+	signalingIp string
 
-		cmu         sync.RWMutex
-		activeCalls map[string]*inboundCall
+	inProgressInvites []*inProgressInvite
 
-		authHandler         AuthHandlerFunc
-		dispatchRuleHandler DispatchRuleHandlerFunc
-		conf                *config.Config
+	cmu         sync.RWMutex
+	activeCalls map[string]*inboundCall
 
-		res mediaRes
-	}
+	authHandler         AuthHandlerFunc
+	dispatchRuleHandler DispatchRuleHandlerFunc
+	conf                *config.Config
 
-	inProgressInvite struct {
-		from      string
-		challenge digest.Challenge
-	}
-)
+	res mediaRes
+}
 
-func NewServer(conf *config.Config) *Server {
+type inProgressInvite struct {
+	from      string
+	challenge digest.Challenge
+}
+
+func NewServer(conf *config.Config, mon *stats.Monitor) *Server {
 	s := &Server{
 		conf:              conf,
+		mon:               mon,
 		activeCalls:       make(map[string]*inboundCall),
 		inProgressInvites: []*inProgressInvite{},
 	}
