@@ -25,10 +25,12 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 type Client struct {
 	conf *config.Config
+	mon  *stats.Monitor
 
 	sipCli      *sipgo.Client
 	signalingIp string
@@ -37,9 +39,10 @@ type Client struct {
 	activeCalls map[string]*outboundCall
 }
 
-func NewClient(conf *config.Config) *Client {
+func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
 	c := &Client{
 		conf:        conf,
+		mon:         mon,
 		activeCalls: make(map[string]*outboundCall),
 	}
 	return c

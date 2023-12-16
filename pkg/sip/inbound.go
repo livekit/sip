@@ -93,6 +93,7 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 }
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
+	s.mon.InviteReqRaw(false)
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
 
 	tag, err := getTagValue(req)
@@ -114,18 +115,23 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	src := req.Source()
 
+	s.mon.InviteReq(false, from.Address.String(), to.Address.String())
 	logger.Infow("INVITE", "tag", tag, "from", from, "to", to)
 
 	username, password, err := s.authHandler(from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
+		s.mon.InviteError(false, from.Address.String(), to.Address.String(), "no-rule")
 		logger.Warnw("Rejecting inbound call, doesn't match any Trunks", err, "tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
 		sipErrorResponse(tx, req)
 		return
 	}
 	if !s.handleInviteAuth(req, tx, from.Address.User, username, password) {
+		s.mon.InviteError(false, from.Address.String(), to.Address.String(), "unauthorized")
 		// handleInviteAuth will generate the SIP Response as needed
 		return
 	}
+	s.mon.InviteReq(false, from.Address.String(), to.Address.String())
+
 	call := s.newInboundCall(tag, from, to, src)
 	call.handleInvite(call.ctx, req, tx, s.conf)
 }
@@ -182,6 +188,8 @@ func (s *Server) newInboundCall(tag string, from *sip.FromHeader, to *sip.ToHead
 }
 
 func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip.ServerTransaction, conf *config.Config) {
+	c.s.mon.CallStart(false, c.from.Address.String(), c.to.Address.String())
+	defer c.s.mon.CallEnd(false, c.from.Address.String(), c.to.Address.String())
 	defer c.close()
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
