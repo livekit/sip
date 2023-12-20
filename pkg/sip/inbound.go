@@ -54,6 +54,7 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
+		logger.Infow(fmt.Sprintf("Requesting inbound auth for %s", from), "from", from)
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
 			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
@@ -116,12 +117,14 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	src := req.Source()
 
 	s.mon.InviteReq(false, from.Address.String(), to.Address.String())
-	logger.Infow("INVITE", "tag", tag, "from", from, "to", to)
+	logger.Infow(fmt.Sprintf("INVITE from %q to %q", from.Address.String(), to.Address.String()),
+		"tag", tag, "from", from, "to", to)
 
 	username, password, err := s.authHandler(from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
 		s.mon.InviteError(false, from.Address.String(), to.Address.String(), "no-rule")
-		logger.Warnw("Rejecting inbound call, doesn't match any Trunks", err, "tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
+		logger.Warnw(fmt.Sprintf("Rejecting inbound call to %q, doesn't match any Trunks", to.Address.String()), err,
+			"tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
 		sipErrorResponse(tx, req)
 		return
 	}
