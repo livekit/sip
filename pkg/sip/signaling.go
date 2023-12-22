@@ -16,6 +16,8 @@ package sip
 
 import (
 	"math/rand"
+	"net"
+	"net/netip"
 
 	"github.com/pion/sdp/v2"
 )
@@ -107,4 +109,28 @@ func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, rtpListene
 	}
 
 	return answer.Marshal()
+}
+
+func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
+	ci := offer.ConnectionInformation
+	if ci.NetworkType != "IN" {
+		return nil
+	}
+	ip, err := netip.ParseAddr(ci.Address.Address)
+	if err != nil {
+		return nil
+	}
+	var audio *sdp.MediaDescription
+	for _, m := range offer.MediaDescriptions {
+		if m.MediaName.Media == "audio" {
+			audio = m
+		}
+	}
+	if audio == nil {
+		return nil
+	}
+	return &net.UDPAddr{
+		IP:   ip.AsSlice(),
+		Port: audio.MediaName.Port.Value,
+	}
 }
