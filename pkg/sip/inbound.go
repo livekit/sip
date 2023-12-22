@@ -256,16 +256,19 @@ func (c *inboundCall) sendBye() {
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
-	conn := NewMediaConn()
-	conn.OnRTP(c)
-	if err := conn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
-		return nil, err
-	}
-	c.rtpConn = conn
 	offer := sdp.SessionDescription{}
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
 	}
+	conn := NewMediaConn()
+	conn.OnRTP(c)
+	if dst := sdpGetAudioDest(offer); dst != nil {
+		conn.SetDestAddr(dst)
+	}
+	if err := conn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+		return nil, err
+	}
+	c.rtpConn = conn
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
