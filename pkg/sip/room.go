@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"github.com/livekit/sip/pkg/media/h264"
 
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go"
@@ -31,7 +32,8 @@ import (
 type Room struct {
 	room     *lksdk.Room
 	mix      *mixer.Mixer
-	out      media.SwitchWriter[media.PCM16Sample]
+	audioOut media.SwitchWriter[media.PCM16Sample]
+	videoOut media.SwitchWriter[h264.Sample]
 	identity string
 }
 
@@ -42,7 +44,7 @@ type lkRoomConfig struct {
 
 func NewRoom() *Room {
 	r := &Room{}
-	r.mix = mixer.NewMixer(&r.out, sampleRate)
+	r.mix = mixer.NewMixer(&r.audioOut, sampleRate)
 	return r
 }
 
@@ -102,15 +104,24 @@ func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room
 	return r, nil
 }
 
-func (r *Room) Output() media.Writer[media.PCM16Sample] {
-	return r.out.Get()
+func (r *Room) AudioOutput() media.Writer[media.PCM16Sample] {
+	return r.audioOut.Get()
 }
 
-func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
+func (r *Room) VideoOutput() media.Writer[h264.Sample] { return r.videoOut.Get() }
+
+func (r *Room) SetAudioOutput(out media.Writer[media.PCM16Sample]) {
 	if r == nil {
 		return
 	}
-	r.out.Set(out)
+	r.audioOut.Set(out)
+}
+
+func (r *Room) SetVideoOutput(out media.Writer[h264.Sample]) {
+	if r == nil {
+		return
+	}
+	r.videoOut.Set(out)
 }
 
 func (r *Room) Close() error {
@@ -125,22 +136,41 @@ func (r *Room) Close() error {
 	return nil
 }
 
-func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], error) {
-	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
+func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], media.Writer[h264.Sample], error) {
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, r.identity+"-audio", r.identity+"-audio-pion")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if _, err = r.room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, r.identity+"-video", r.identity+"-video-pion")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if _, err = r.room.LocalParticipant.PublishTrack(audioTrack, &lksdk.TrackPublicationOptions{
 		Name: r.identity,
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, sampleDur)
+
+	if _, err = r.room.LocalParticipant.PublishTrack(videoTrack, &lksdk.TrackPublicationOptions{
+		Name:        r.identity + "-track",
+		VideoWidth:  1280,
+		VideoHeight: 720,
+	}); err != nil {
+		return nil, nil, err
+	}
+
+	//ow方法 构造写入opus encode后的字节数据方法，并通过audioTrack写入livekit
+	ow := media.FromSampleWriter[opus.Sample](audioTrack, sampleDur)
+	//pw方法 构造输入int16 opus encode后输出[]byte数据
 	pw, err := opus.Encode(ow, sampleRate, channels)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return pw, nil
+
+	vw := h264.BuildSampleWriter[h264.Sample](videoTrack, sampleDur)
+	return pw, vw, nil
 }
 
 func (r *Room) NewTrack() *Track {
