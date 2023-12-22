@@ -64,7 +64,7 @@ func TestService_AuthFailure(t *testing.T) {
 	sipClient, err := sipgo.NewClient(sipUserAgent)
 	require.NoError(t, err)
 
-	offer, err := sdpGenerateOffer(localIP, 0xB0B)
+	offer, err := sdpGenerateOffer(localIP, 0xB0B, 0xB0B)
 	require.NoError(t, err)
 
 	inviteRecipent := &sip.Uri{User: expectedToUser, Host: sipServerAddress}

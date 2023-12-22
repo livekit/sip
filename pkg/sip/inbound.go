@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"github.com/livekit/sip/pkg/media/h264"
 	"sync/atomic"
 	"time"
 
@@ -54,7 +55,6 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
-		logger.Infow(fmt.Sprintf("Requesting inbound auth for %s", from), "from", from)
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
 			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
@@ -117,14 +117,12 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	src := req.Source()
 
 	s.mon.InviteReq(false, from.Address.String(), to.Address.String())
-	logger.Infow(fmt.Sprintf("INVITE from %q to %q", from.Address.String(), to.Address.String()),
-		"tag", tag, "from", from, "to", to)
+	logger.Infow("INVITE", "tag", tag, "from", from, "to", to)
 
 	username, password, err := s.authHandler(from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
 		s.mon.InviteError(false, from.Address.String(), to.Address.String(), "no-rule")
-		logger.Warnw(fmt.Sprintf("Rejecting inbound call to %q, doesn't match any Trunks", to.Address.String()), err,
-			"tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
+		logger.Warnw("Rejecting inbound call, doesn't match any Trunks", err, "tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
 		sipErrorResponse(tx, req)
 		return
 	}
@@ -166,8 +164,10 @@ type inboundCall struct {
 	from         *sip.FromHeader
 	to           *sip.ToHeader
 	src          string
-	rtpConn      *MediaConn
+	audioRtpConn *MediaConn
+	videoRtpConn *MediaConn
 	audioHandler atomic.Pointer[rtp.Handler]
+	videoHandler atomic.Pointer[rtp.Handler]
 	dtmf         chan byte // buffered; DTMF digits as characters
 	lkRoom       *Room     // LiveKit room; only active after correct pin is entered
 	done         atomic.Bool
@@ -256,12 +256,20 @@ func (c *inboundCall) sendBye() {
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
-	conn := NewMediaConn()
-	conn.OnRTP(c)
-	if err := conn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	audioConn := NewMediaConn()
+	audioConn.OnRTP(c)
+	if err := audioConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
-	c.rtpConn = conn
+	c.audioRtpConn = audioConn
+
+	videoConn := NewMediaConn()
+	videoConn.OnRTP(c)
+	if err := videoConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+		return nil, err
+	}
+	c.videoRtpConn = videoConn
+
 	offer := sdp.SessionDescription{}
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
@@ -269,10 +277,13 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
-	s := rtp.NewMediaStreamOut[ulaw.Sample](conn, rtpPacketDur)
-	c.lkRoom.SetOutput(ulaw.Encode(s))
+	aus := rtp.NewMediaStreamOut[ulaw.Sample](audioConn, rtpPacketDur)
+	c.lkRoom.SetAudioOutput(ulaw.Encode(aus))
 
-	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)
+	vis := rtp.NewMediaStreamOut[h264.Sample](videoConn, rtpPacketDur)
+	c.lkRoom.SetVideoOutput(h264.Encode(vis))
+
+	return sdpGenerateAnswer(offer, c.s.signalingIp, audioConn.LocalAddr().Port, videoConn.LocalAddr().Port)
 }
 
 func (c *inboundCall) pinPrompt(ctx context.Context) {
@@ -343,9 +354,13 @@ func (c *inboundCall) closeMedia() {
 		p.Close()
 		c.lkRoom = nil
 	}
-	if c.rtpConn != nil {
-		c.rtpConn.Close()
-		c.rtpConn = nil
+	if c.audioRtpConn != nil {
+		c.audioRtpConn.Close()
+		c.audioRtpConn = nil
+	}
+	if c.videoRtpConn != nil {
+		c.videoRtpConn.Close()
+		c.videoRtpConn = nil
 	}
 	close(c.dtmf)
 }
@@ -356,9 +371,17 @@ func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
 		return nil
 	}
 	// TODO: Audio data appears to be coming with PayloadType=0, so maybe enforce it?
-	if h := c.audioHandler.Load(); h != nil {
-		return (*h).HandleRTP(p)
+	//logger.Infow("------------ pt == ", p.PayloadType)
+	if p.PayloadType < 96 {
+		if h := c.audioHandler.Load(); h != nil {
+			return (*h).HandleRTP(p)
+		}
+	} else {
+		if h := c.videoHandler.Load(); h != nil {
+			return (*h).HandleRTP(p)
+		}
 	}
+
 	return nil
 }
 
@@ -372,16 +395,20 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	if err != nil {
 		return err
 	}
-	local, err := c.lkRoom.NewParticipant()
+	audioTrack, videoTrack, err := c.lkRoom.NewParticipant()
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err
 	}
 
-	// Decoding pipeline (SIP -> LK)
-	law := ulaw.Decode(local)
+	// Decoding pipeline (SIP -> LK) audio
+	law := ulaw.Decode(audioTrack)
+	//构造NewMediaStreamIn  通过readLoop方法传入rtp byte数据，通过law decode为int16数据传给local  (pw)
 	var h rtp.Handler = rtp.NewMediaStreamIn(law)
 	c.audioHandler.Store(&h)
+
+	var vh rtp.Handler = rtp.NewMediaStreamIn(videoTrack)
+	c.videoHandler.Store(&vh)
 
 	return nil
 }

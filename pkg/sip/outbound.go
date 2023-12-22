@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"github.com/livekit/sip/pkg/media/h264"
 	"sync"
 
 	"github.com/emiago/sipgo/sip"
@@ -40,13 +41,15 @@ type sipOutboundConfig struct {
 type outboundCall struct {
 	c             *Client
 	participantID string
-	rtpConn       *MediaConn
+	audioRtpConn  *MediaConn
+	videoRtpConn  *MediaConn
 
 	mu            sync.RWMutex
 	mediaRunning  bool
 	lkCur         lkRoomConfig
 	lkRoom        *Room
-	lkRoomIn      media.Writer[media.PCM16Sample]
+	lkRoomAudioIn media.Writer[media.PCM16Sample]
+	lkRoomVideoIn media.Writer[h264.Sample]
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
@@ -79,7 +82,8 @@ func (c *Client) newCall(participantId string) *outboundCall {
 	call := &outboundCall{
 		c:             c,
 		participantID: participantId,
-		rtpConn:       NewMediaConn(),
+		audioRtpConn:  NewMediaConn(),
+		videoRtpConn:  NewMediaConn(),
 	}
 	return call
 }
@@ -92,11 +96,14 @@ func (c *outboundCall) Close() error {
 }
 
 func (c *outboundCall) close() {
-	c.rtpConn.OnRTP(nil)
-	c.lkRoom.SetOutput(nil)
+	c.audioRtpConn.OnRTP(nil)
+	c.videoRtpConn.OnRTP(nil)
+	c.lkRoom.SetAudioOutput(nil)
+	c.lkRoom.SetVideoOutput(nil)
 
 	if c.mediaRunning {
-		_ = c.rtpConn.Close()
+		_ = c.audioRtpConn.Close()
+		_ = c.videoRtpConn.Close()
 	}
 	c.mediaRunning = false
 
@@ -104,7 +111,8 @@ func (c *outboundCall) close() {
 		_ = c.lkRoom.Close()
 	}
 	c.lkRoom = nil
-	c.lkRoomIn = nil
+	c.lkRoomAudioIn = nil
+	c.lkRoomVideoIn = nil
 	c.lkCur = lkRoomConfig{}
 
 	c.stopSIP()
@@ -155,7 +163,10 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	if c.mediaRunning {
 		return nil
 	}
-	if err := c.rtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := c.audioRtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+		return err
+	}
+	if err := c.videoRtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
 	c.mediaRunning = true
@@ -169,19 +180,21 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 	if c.lkRoom != nil {
 		_ = c.lkRoom.Close()
 		c.lkRoom = nil
-		c.lkRoomIn = nil
+		c.lkRoomAudioIn = nil
+		c.lkRoomVideoIn = nil
 	}
 	r, err := ConnectToRoom(c.c.conf, lkNew.roomName, lkNew.identity)
 	if err != nil {
 		return err
 	}
-	local, err := r.NewParticipant()
+	audioTrack, videoTrack, err := r.NewParticipant()
 	if err != nil {
 		_ = r.Close()
 		return err
 	}
 	c.lkRoom = r
-	c.lkRoomIn = local
+	c.lkRoomAudioIn = audioTrack
+	c.lkRoomVideoIn = videoTrack
 	c.lkCur = lkNew
 	return nil
 }
@@ -201,17 +214,25 @@ func (c *outboundCall) updateSIP(sipNew sipOutboundConfig) error {
 
 func (c *outboundCall) relinkMedia() {
 	if c.lkRoom == nil || !c.mediaRunning {
-		c.lkRoom.SetOutput(nil)
-		c.rtpConn.OnRTP(nil)
+		c.lkRoom.SetAudioOutput(nil)
+		c.lkRoom.SetVideoOutput(nil)
+		c.audioRtpConn.OnRTP(nil)
+		c.videoRtpConn.OnRTP(nil)
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	s := rtp.NewMediaStreamOut[ulaw.Sample](c.rtpConn, rtpPacketDur)
-	c.lkRoom.SetOutput(ulaw.Encode(s))
+	aus := rtp.NewMediaStreamOut[ulaw.Sample](c.audioRtpConn, rtpPacketDur)
+	c.lkRoom.SetAudioOutput(ulaw.Encode(aus))
+
+	vis := rtp.NewMediaStreamOut[h264.Sample](c.videoRtpConn, rtpPacketDur)
+	c.lkRoom.SetVideoOutput(h264.Encode(vis))
 
 	// Decoding pipeline (SIP -> LK)
-	law := ulaw.Decode(c.lkRoomIn)
-	c.rtpConn.OnRTP(rtp.NewMediaStreamIn(law))
+	law := ulaw.Decode(c.lkRoomAudioIn)
+	c.audioRtpConn.OnRTP(rtp.NewMediaStreamIn(law))
+
+	var vh rtp.Handler = rtp.NewMediaStreamIn(c.lkRoomVideoIn)
+	c.videoRtpConn.OnRTP(vh)
 }
 
 func (c *outboundCall) SendDTMF(ctx context.Context, digits string) error {
@@ -250,7 +271,7 @@ func (c *outboundCall) stopSIP() {
 }
 
 func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
-	offer, err := sdpGenerateOffer(c.c.signalingIp, c.rtpConn.LocalAddr().Port)
+	offer, err := sdpGenerateOffer(c.c.signalingIp, c.audioRtpConn.LocalAddr().Port, c.videoRtpConn.LocalAddr().Port)
 	if err != nil {
 		return err
 	}
