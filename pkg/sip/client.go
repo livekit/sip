@@ -91,7 +91,6 @@ func (c *Client) Stop() {
 		c.sipCli.Close()
 		c.sipCli = nil
 	}
-	// FIXME: anything else?
 }
 
 func (c *Client) UpdateSIPParticipant(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) (*rpc.InternalUpdateSIPParticipantResponse, error) {
