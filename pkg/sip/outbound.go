@@ -27,6 +27,7 @@ import (
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 type sipOutboundConfig struct {
@@ -43,6 +44,7 @@ type outboundCall struct {
 	rtpConn       *MediaConn
 
 	mu            sync.RWMutex
+	mon           *stats.CallMonitor
 	mediaRunning  bool
 	lkCur         lkRoomConfig
 	lkRoom        *Room
@@ -87,11 +89,11 @@ func (c *Client) newCall(participantId string) *outboundCall {
 func (c *outboundCall) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close()
+	c.close("shutdown")
 	return nil
 }
 
-func (c *outboundCall) close() {
+func (c *outboundCall) close(reason string) {
 	c.rtpConn.OnRTP(nil)
 	c.lkRoom.SetOutput(nil)
 
@@ -107,7 +109,7 @@ func (c *outboundCall) close() {
 	c.lkRoomIn = nil
 	c.lkCur = lkRoomConfig{}
 
-	c.stopSIP()
+	c.stopSIP(reason)
 	c.sipCur = sipOutboundConfig{}
 
 	// FIXME: remove call from the client map?
@@ -130,25 +132,30 @@ func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkN
 		logger.Infow("Shutdown of outbound SIP call",
 			"roomName", lkNew.roomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
 		// shutdown the call
-		c.close()
+		c.close("shutdown")
 		return nil
 	}
+	c.startMonitor(sipNew)
 	if err := c.startMedia(conf); err != nil {
-		c.close()
+		c.close("media-failed")
 		return fmt.Errorf("start media failed: %w", err)
 	}
 	if err := c.updateRoom(lkNew); err != nil {
-		c.close()
+		c.close("join-failed")
 		return fmt.Errorf("update room failed: %w", err)
 	}
 	if err := c.updateSIP(sipNew); err != nil {
-		c.close()
+		c.close("invite-failed")
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.relinkMedia()
 	logger.Infow("Outbound SIP update complete",
 		"roomName", lkNew.roomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
 	return nil
+}
+
+func (c *outboundCall) startMonitor(conf sipOutboundConfig) {
+	c.mon = c.c.mon.NewCall(stats.Outbound, conf.from, conf.to)
 }
 
 func (c *outboundCall) startMedia(conf *config.Config) error {
@@ -190,7 +197,7 @@ func (c *outboundCall) updateSIP(sipNew sipOutboundConfig) error {
 	if c.sipCur == sipNew {
 		return nil
 	}
-	c.stopSIP()
+	c.stopSIP("update")
 	if err := c.sipSignal(sipNew); err != nil {
 		return err
 	}
@@ -206,12 +213,12 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	s := rtp.NewMediaStreamOut[ulaw.Sample](c.rtpConn, rtpPacketDur)
+	s := rtp.NewMediaStreamOut[ulaw.Sample](&rtpStatsWriter{mon: c.mon, w: c.rtpConn}, rtpPacketDur)
 	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	// Decoding pipeline (SIP -> LK)
 	law := ulaw.Decode(c.lkRoomIn)
-	c.rtpConn.OnRTP(rtp.NewMediaStreamIn(law))
+	c.rtpConn.OnRTP(&rtpStatsHandler{mon: c.mon, h: rtp.NewMediaStreamIn(law)})
 }
 
 func (c *outboundCall) SendDTMF(ctx context.Context, digits string) error {
@@ -237,10 +244,14 @@ func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
 	}
 }
 
-func (c *outboundCall) stopSIP() {
+func (c *outboundCall) stopSIP(reason string) {
 	if c.sipInviteReq != nil {
 		if err := c.sipBye(); err != nil {
 			logger.Errorw("SIP bye failed", err)
+		}
+		if c.mon != nil {
+			c.mon.CallTerminate(reason)
+			c.mon.CallEnd()
 		}
 	}
 	c.sipInviteReq = nil
@@ -254,21 +265,27 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	if err != nil {
 		return err
 	}
+	c.mon.CallStart()
+	joinDur := c.mon.JoinDur()
 	inviteReq, inviteResp, err := c.sipInvite(offer, conf)
 	if err != nil {
+		c.mon.CallEnd()
 		logger.Errorw("SIP invite failed", err)
 		return err // TODO: should we retry? maybe new offer will work
 	}
 	err = c.sipAccept(inviteReq, inviteResp)
 	if err != nil {
+		c.mon.CallEnd()
 		logger.Errorw("SIP accept failed", err)
 		return err
 	}
+	joinDur()
 	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
 	return nil
 }
 
 func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, authHeader string) (*sip.Request, *sip.Response, error) {
+	c.mon.InviteReq()
 	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060}
 	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp, Port: 5060}
 	req := sip.NewRequest(sip.INVITE, to)
@@ -286,11 +303,15 @@ func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, au
 
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
+		c.mon.InviteError("tx-failed")
 		return nil, nil, err
 	}
 	defer tx.Terminate()
 
 	resp, err := sipResponse(tx)
+	if err != nil {
+		c.mon.InviteError("tx-failed")
+	}
 	return req, resp, err
 }
 
@@ -303,8 +324,10 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 		}
 		switch resp.StatusCode {
 		default:
+			c.mon.InviteError(fmt.Sprintf("status-%d", resp.StatusCode))
 			return nil, nil, fmt.Errorf("Unexpected StatusCode from INVITE response %d", resp.StatusCode)
 		case 400:
+			c.mon.InviteError("status-400")
 			var reason string
 			if body := resp.Body(); len(body) != 0 {
 				reason = string(body)
@@ -316,9 +339,11 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 			}
 			return nil, nil, fmt.Errorf("INVITE failed with status %d", resp.StatusCode)
 		case 200:
+			c.mon.InviteAccept()
 			return req, resp, nil
 		case 407:
 			// auth required
+			c.mon.InviteError("auth-required")
 		}
 		if conf.user == "" || conf.pass == "" {
 			return nil, nil, fmt.Errorf("Server responded with 407, but no username or password was provided")

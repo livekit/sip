@@ -15,7 +15,13 @@
 package sip
 
 import (
+	"strconv"
 	"time"
+
+	"github.com/pion/rtp"
+
+	srtp "github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 const (
@@ -25,3 +31,47 @@ const (
 	sampleDurPart = int(time.Second / sampleDur)
 	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
 )
+
+type rtpStatsHandler struct {
+	h   srtp.Handler
+	mon *stats.CallMonitor
+}
+
+func (h *rtpStatsHandler) HandleRTP(p *rtp.Packet) error {
+	if h.mon != nil {
+		if typ, ok := rtpPacketType(p); ok {
+			h.mon.RTPPacketRecv(typ)
+		}
+	}
+	return h.h.HandleRTP(p)
+}
+
+type rtpStatsWriter struct {
+	w   srtp.Writer
+	mon *stats.CallMonitor
+}
+
+func (h *rtpStatsWriter) WriteRTP(p *rtp.Packet) error {
+	if h.mon != nil {
+		if typ, ok := rtpPacketType(p); ok {
+			h.mon.RTPPacketSend(typ)
+		}
+	}
+	return h.w.WriteRTP(p)
+}
+
+func rtpPacketType(p *rtp.Packet) (string, bool) {
+	switch p.PayloadType {
+	case 101:
+		if p.Marker {
+			return "dtmf", true
+		}
+	default:
+		if p.PayloadType == 0 {
+			return "audio", true
+		} else {
+			return strconv.Itoa(int(p.PayloadType)), true
+		}
+	}
+	return "", false
+}
