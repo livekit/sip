@@ -45,6 +45,7 @@ type Monitor struct {
 	inviteReqRaw    prometheus.Counter
 	inviteReq       *prometheus.CounterVec
 	inviteAccept    *prometheus.CounterVec
+	inviteErrShort  *prometheus.CounterVec
 	inviteErr       *prometheus.CounterVec
 	callsActive     *prometheus.GaugeVec
 	callsTerminated *prometheus.CounterVec
@@ -96,6 +97,13 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "Number of rejected SIP INVITE requests",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, []string{"dir", "from", "to", "reason"})
+	m.inviteErrShort = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "invite_error",
+		Help:        "Number of rejected SIP INVITE requests",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "reason"})
 
 	m.callsActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -202,6 +210,14 @@ type CallMonitor struct {
 	from, to string
 }
 
+func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
+	out := prometheus.Labels{"dir": c.dir.String()}
+	for k, v := range l {
+		out[k] = v
+	}
+	return out
+}
+
 func (c *CallMonitor) labels(l prometheus.Labels) prometheus.Labels {
 	out := prometheus.Labels{"dir": c.dir.String(), "from": c.from, "to": c.to}
 	for k, v := range l {
@@ -216,6 +232,10 @@ func (c *CallMonitor) InviteReq() {
 
 func (c *CallMonitor) InviteAccept() {
 	c.m.inviteAccept.With(c.labels(nil)).Inc()
+}
+
+func (c *CallMonitor) InviteErrorShort(reason string) {
+	c.m.inviteErrShort.With(c.labelsShort(prometheus.Labels{"reason": reason})).Inc()
 }
 
 func (c *CallMonitor) InviteError(reason string) {

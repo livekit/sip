@@ -126,14 +126,14 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	username, password, err := s.authHandler(from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
-		cmon.InviteError("no-rule")
+		cmon.InviteErrorShort("no-rule")
 		logger.Warnw("Rejecting inbound, doesn't match any Trunks", err,
 			"tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
 		sipErrorResponse(tx, req)
 		return
 	}
 	if !s.handleInviteAuth(req, tx, from.Address.User, username, password) {
-		cmon.InviteError("unauthorized")
+		cmon.InviteErrorShort("unauthorized")
 		// handleInviteAuth will generate the SIP Response as needed
 		return
 	}
