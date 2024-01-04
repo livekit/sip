@@ -49,12 +49,6 @@ var (
 )
 
 func startMediaListener() *net.UDPConn {
-	var err error
-	localIP, err = config.GetLocalIP()
-	if err != nil {
-		panic(err)
-	}
-
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{
 		Port: 0,
 		IP:   net.ParseIP("0.0.0.0"),
@@ -272,6 +266,12 @@ func attemptInvite(sipClient *sipgo.Client, offer []byte, authorizationHeaderVal
 
 func main() {
 	flag.Parse()
+
+	var err error
+	localIP, err = config.GetLocalIP()
+	if err != nil {
+		panic(err)
+	}
 
 	if *sipServer == "" {
 		*sipServer = localIP + ":5060"
