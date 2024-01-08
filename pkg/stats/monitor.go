@@ -24,7 +24,7 @@ import (
 )
 
 var durBuckets = []float64{
-	// TODO
+	0.1, 0.5, 1, 10, 60, 10 * 60, 30 * 60, 3600, 6 * 3600, 12 * 3600, 24 * 3600,
 }
 
 type CallDir bool
@@ -80,7 +80,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_requests",
 		Help:        "Number of valid SIP INVITE requests received",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "from", "to"})
+	}, []string{"dir"})
 
 	m.inviteAccept = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -88,7 +88,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_accepted",
 		Help:        "Number of accepted SIP INVITE requests (that matched a trunk and passed auth)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "from", "to"})
+	}, []string{"dir", "to"})
 
 	m.inviteErr = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -96,7 +96,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_error",
 		Help:        "Number of rejected SIP INVITE requests",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "from", "to", "reason"})
+	}, []string{"dir", "to", "reason"})
 	m.inviteErrShort = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
@@ -111,7 +111,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "calls_active",
 		Help:        "Number of currently active SIP calls",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "from", "to"})
+	}, []string{"dir", "to"})
 
 	m.callsTerminated = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -119,7 +119,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "calls_terminated",
 		Help:        "Number of calls terminated by SIP bridge",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "from", "to", "reason"})
+	}, []string{"dir", "to", "reason"})
 
 	m.packetsRTP = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -127,7 +127,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "packets_rtp",
 		Help:        "Number of RTP packets sent or received by SIP bridge",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "from", "to", "op", "payload"})
+	}, []string{"dir", "to", "op", "payload"})
 
 	m.durSession = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -136,7 +136,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SIP session duration (from INVITE to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBuckets,
-	}, []string{"dir", "from", "to"})
+	}, []string{"dir"})
 
 	m.durCall = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -145,7 +145,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SIP call duration (from successful pin to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBuckets,
-	}, []string{"dir", "from", "to"})
+	}, []string{"dir"})
 
 	m.durJoin = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -154,7 +154,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SIP room join duration (from INVITE to mixed room audio)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBuckets,
-	}, []string{"dir", "from", "to"})
+	}, []string{"dir"})
 
 	prometheus.MustRegister(
 		m.inviteReqRaw, m.inviteReq, m.inviteAccept, m.inviteErr, m.callsActive, m.callsTerminated,
@@ -219,7 +219,7 @@ func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
 }
 
 func (c *CallMonitor) labels(l prometheus.Labels) prometheus.Labels {
-	out := prometheus.Labels{"dir": c.dir.String(), "from": c.from, "to": c.to}
+	out := prometheus.Labels{"dir": c.dir.String(), "to": c.to}
 	for k, v := range l {
 		out[k] = v
 	}
@@ -227,7 +227,7 @@ func (c *CallMonitor) labels(l prometheus.Labels) prometheus.Labels {
 }
 
 func (c *CallMonitor) InviteReq() {
-	c.m.inviteReq.With(c.labels(nil)).Inc()
+	c.m.inviteReq.With(c.labelsShort(nil)).Inc()
 }
 
 func (c *CallMonitor) InviteAccept() {
@@ -263,13 +263,13 @@ func (c *CallMonitor) RTPPacketRecv(payloadType string) {
 }
 
 func (c *CallMonitor) SessionDur() func() time.Duration {
-	return prometheus.NewTimer(c.m.durSession.With(c.labels(nil))).ObserveDuration
+	return prometheus.NewTimer(c.m.durSession.With(c.labelsShort(nil))).ObserveDuration
 }
 
 func (c *CallMonitor) CallDur() func() time.Duration {
-	return prometheus.NewTimer(c.m.durCall.With(c.labels(nil))).ObserveDuration
+	return prometheus.NewTimer(c.m.durCall.With(c.labelsShort(nil))).ObserveDuration
 }
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
-	return prometheus.NewTimer(c.m.durJoin.With(c.labels(nil))).ObserveDuration
+	return prometheus.NewTimer(c.m.durJoin.With(c.labelsShort(nil))).ObserveDuration
 }
