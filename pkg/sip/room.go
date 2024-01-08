@@ -28,7 +28,16 @@ import (
 	"github.com/livekit/sip/pkg/mixer"
 )
 
-type Room struct {
+type Room interface {
+	Connect(conf *config.Config, roomName, identity, wsUrl, token string) error
+	Output() media.Writer[media.PCM16Sample]
+	SetOutput(out media.Writer[media.PCM16Sample])
+	NewParticipant() (media.Writer[media.PCM16Sample], error)
+	NewTrack() Track
+	Close() error
+}
+
+type LkRoom struct {
 	room     *lksdk.Room
 	mix      *mixer.Mixer
 	out      media.SwitchWriter[media.PCM16Sample]
@@ -40,13 +49,13 @@ type lkRoomConfig struct {
 	identity string
 }
 
-func NewRoom() *Room {
-	r := &Room{}
+func NewLkRoom() *LkRoom {
+	r := &LkRoom{}
 	r.mix = mixer.NewMixer(&r.out, sampleRate)
 	return r
 }
 
-func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token string) error {
+func (r *LkRoom) Connect(conf *config.Config, roomName, identity, wsUrl, token string) error {
 	var (
 		err  error
 		room *lksdk.Room
@@ -94,26 +103,26 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 	return nil
 }
 
-func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
-	r := NewRoom()
+func ConnectToRoom(conf *config.Config, roomName string, identity string) (*LkRoom, error) {
+	r := NewLkRoom()
 	if err := r.Connect(conf, roomName, identity, "", ""); err != nil {
 		return nil, err
 	}
 	return r, nil
 }
 
-func (r *Room) Output() media.Writer[media.PCM16Sample] {
+func (r *LkRoom) Output() media.Writer[media.PCM16Sample] {
 	return r.out.Get()
 }
 
-func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
+func (r *LkRoom) SetOutput(out media.Writer[media.PCM16Sample]) {
 	if r == nil {
 		return
 	}
 	r.out.Set(out)
 }
 
-func (r *Room) Close() error {
+func (r *LkRoom) Close() error {
 	if r.room != nil {
 		r.room.Disconnect()
 		r.room = nil
@@ -125,7 +134,7 @@ func (r *Room) Close() error {
 	return nil
 }
 
-func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], error) {
+func (r *LkRoom) NewParticipant() (media.Writer[media.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		return nil, err
@@ -143,25 +152,31 @@ func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], error) {
 	return pw, nil
 }
 
-func (r *Room) NewTrack() *Track {
+func (r *LkRoom) NewTrack() Track {
 	inp := r.mix.AddInput()
-	return &Track{room: r, inp: inp}
+	return &LkTrack{room: r, inp: inp}
 }
 
-type Track struct {
-	room *Room
+type Track interface {
+	Close() error
+	PlayAudio(ctx context.Context, frames []media.PCM16Sample)
+	WriteSample(pcm media.PCM16Sample) error
+}
+
+type LkTrack struct {
+	room *LkRoom
 	inp  *mixer.Input
 }
 
-func (t *Track) Close() error {
+func (t *LkTrack) Close() error {
 	t.room.mix.RemoveInput(t.inp)
 	return nil
 }
 
-func (t *Track) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
+func (t *LkTrack) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
 	_ = media.PlayAudio[media.PCM16Sample](ctx, t, sampleDur, frames)
 }
 
-func (t *Track) WriteSample(pcm media.PCM16Sample) error {
+func (t *LkTrack) WriteSample(pcm media.PCM16Sample) error {
 	return t.inp.WriteSample(pcm)
 }

@@ -47,7 +47,7 @@ type outboundCall struct {
 	mon           *stats.CallMonitor
 	mediaRunning  bool
 	lkCur         lkRoomConfig
-	lkRoom        *Room
+	room          Room
 	lkRoomIn      media.Writer[media.PCM16Sample]
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
@@ -95,17 +95,17 @@ func (c *outboundCall) Close() error {
 
 func (c *outboundCall) close(reason string) {
 	c.rtpConn.OnRTP(nil)
-	c.lkRoom.SetOutput(nil)
+	c.room.SetOutput(nil)
 
 	if c.mediaRunning {
 		_ = c.rtpConn.Close()
 	}
 	c.mediaRunning = false
 
-	if c.lkRoom != nil {
-		_ = c.lkRoom.Close()
+	if c.room != nil {
+		_ = c.room.Close()
 	}
-	c.lkRoom = nil
+	c.room = nil
 	c.lkRoomIn = nil
 	c.lkCur = lkRoomConfig{}
 
@@ -170,12 +170,12 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 }
 
 func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
-	if c.lkRoom != nil && c.lkCur == lkNew {
+	if c.room != nil && c.lkCur == lkNew {
 		return nil
 	}
-	if c.lkRoom != nil {
-		_ = c.lkRoom.Close()
-		c.lkRoom = nil
+	if c.room != nil {
+		_ = c.room.Close()
+		c.room = nil
 		c.lkRoomIn = nil
 	}
 	r, err := ConnectToRoom(c.c.conf, lkNew.roomName, lkNew.identity)
@@ -187,7 +187,7 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 		_ = r.Close()
 		return err
 	}
-	c.lkRoom = r
+	c.room = r
 	c.lkRoomIn = local
 	c.lkCur = lkNew
 	return nil
@@ -207,14 +207,14 @@ func (c *outboundCall) updateSIP(sipNew sipOutboundConfig) error {
 }
 
 func (c *outboundCall) relinkMedia() {
-	if c.lkRoom == nil || !c.mediaRunning {
-		c.lkRoom.SetOutput(nil)
+	if c.room == nil || !c.mediaRunning {
+		c.room.SetOutput(nil)
 		c.rtpConn.OnRTP(nil)
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
 	s := rtp.NewMediaStreamOut[ulaw.Sample](&rtpStatsWriter{mon: c.mon, w: c.rtpConn}, rtpPacketDur)
-	c.lkRoom.SetOutput(ulaw.Encode(s))
+	c.room.SetOutput(ulaw.Encode(s))
 
 	// Decoding pipeline (SIP -> LK)
 	law := ulaw.Decode(c.lkRoomIn)

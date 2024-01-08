@@ -175,7 +175,7 @@ type inboundCall struct {
 	rtpConn      *MediaConn
 	audioHandler atomic.Pointer[rtp.Handler]
 	dtmf         chan byte // buffered; DTMF digits as characters
-	lkRoom       *Room     // LiveKit room; only active after correct pin is entered
+	room         Room      // LiveKit room; only active after correct pin is entered
 	callDur      func() time.Duration
 	joinDur      func() time.Duration
 	done         atomic.Bool
@@ -183,14 +183,14 @@ type inboundCall struct {
 
 func (s *Server) newInboundCall(mon *stats.CallMonitor, tag string, from *sip.FromHeader, to *sip.ToHeader, src string) *inboundCall {
 	c := &inboundCall{
-		s:      s,
-		mon:    mon,
-		tag:    tag,
-		from:   from,
-		to:     to,
-		src:    src,
-		dtmf:   make(chan byte, 10),
-		lkRoom: NewRoom(), // we need it created earlier so that the audio mixer is available for pin prompts
+		s:    s,
+		mon:  mon,
+		tag:  tag,
+		from: from,
+		to:   to,
+		src:  src,
+		dtmf: make(chan byte, 10),
+		room: NewLkRoom(), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
@@ -285,7 +285,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
 	s := rtp.NewMediaStreamOut[ulaw.Sample](&rtpStatsWriter{mon: c.mon, w: conn}, rtpPacketDur)
-	c.lkRoom.SetOutput(ulaw.Encode(s))
+	c.room.SetOutput(ulaw.Encode(s))
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)
 }
@@ -359,12 +359,12 @@ func (c *inboundCall) Close() error {
 
 func (c *inboundCall) closeMedia() {
 	c.audioHandler.Store(nil)
-	if p := c.lkRoom; p != nil {
-		p.Close()
-		c.lkRoom = nil
+	if p := c.room; p != nil {
+		_ = p.Close()
+		c.room = nil
 	}
 	if c.rtpConn != nil {
-		c.rtpConn.Close()
+		_ = c.rtpConn.Close()
 		c.rtpConn = nil
 	}
 	close(c.dtmf)
@@ -391,13 +391,13 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 		return ctx.Err()
 	default:
 	}
-	err := c.lkRoom.Connect(c.s.conf, roomName, participantIdentity, wsUrl, token)
+	err := c.room.Connect(c.s.conf, roomName, participantIdentity, wsUrl, token)
 	if err != nil {
 		return err
 	}
-	local, err := c.lkRoom.NewParticipant()
+	local, err := c.room.NewParticipant()
 	if err != nil {
-		_ = c.lkRoom.Close()
+		_ = c.room.Close()
 		return err
 	}
 
@@ -423,7 +423,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, wsUrl, t
 }
 
 func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample) {
-	t := c.lkRoom.NewTrack()
+	t := c.room.NewTrack()
 	defer t.Close()
 	t.PlayAudio(ctx, frames)
 }
