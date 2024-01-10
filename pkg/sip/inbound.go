@@ -222,7 +222,23 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	}
 
 	res := sip.NewResponseFromRequest(req, 200, "OK", answerData)
+
+	// This will effectively redirect future SIP requests to this server instance (if signalingIp is not LB).
 	res.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp, Port: c.s.conf.SIPPort}})
+
+	// When behind LB, the source IP may be incorrect and/or the UDP "session" timeout may expire.
+	// This is critical for sending new requests like BYE.
+	//
+	// Thus, instead of relying on LB, we will contact the source IP directly (should be the first Via).
+	// BYE will also copy the same destination address from our response to INVITE.
+	if h, ok := req.Via(); ok && h.Host != "" {
+		port := 5060
+		if h.Port != 0 {
+			port = h.Port
+		}
+		res.SetDestination(fmt.Sprintf("%s:%d", h.Host, port))
+	}
+
 	res.AppendHeader(&contentTypeHeaderSDP)
 	if err = tx.Respond(res); err != nil {
 		logger.Errorw("Cannot respond to INVITE", err)
