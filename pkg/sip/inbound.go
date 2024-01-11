@@ -336,6 +336,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 					c.close("wrong-pin")
 					return
 				}
+				c.playAudio(ctx, c.s.res.roomJoin)
 				c.joinRoom(ctx, roomName, identity, wsUrl, token)
 				return
 			}
@@ -431,7 +432,6 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, wsUrl, t
 	}
 	c.callDur = c.mon.CallDur()
 	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity)
-	c.playAudio(ctx, c.s.res.roomJoin)
 	if err := c.createLiveKitParticipant(ctx, roomName, identity, wsUrl, token); err != nil {
 		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag)
 		c.close("participant-failed")
