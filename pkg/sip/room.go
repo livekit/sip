@@ -17,9 +17,10 @@ package sip
 import (
 	"context"
 
+	"github.com/pion/webrtc/v3"
+
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go"
-	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -54,18 +55,18 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 	r.identity = identity
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				if track.Kind() != webrtc.RTPCodecTypeAudio {
-					if err := pub.SetSubscribed(false); err != nil {
-						logger.Errorw("Cannot unsubscribe from the track", err)
+			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if publication.Kind() == lksdk.TrackKindAudio {
+					if err := publication.SetSubscribed(true); err != nil {
+						logger.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
 					}
-					return
 				}
+			},
+			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				mTrack := r.NewTrack()
+				defer mTrack.Close()
 
-				mtrack := r.NewTrack()
-				defer mtrack.Close()
-
-				odec, err := opus.Decode(mtrack, sampleRate, channels)
+				odec, err := opus.Decode(mTrack, sampleRate, channels)
 				if err != nil {
 					return
 				}
@@ -82,7 +83,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				APISecret:           conf.ApiSecret,
 				RoomName:            roomName,
 				ParticipantIdentity: identity,
-			}, roomCallback)
+			}, roomCallback, lksdk.WithAutoSubscribe(false))
 	} else {
 		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
 	}

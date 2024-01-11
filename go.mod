@@ -16,6 +16,7 @@ require (
 	github.com/pion/rtp v1.8.3
 	github.com/pion/sdp/v2 v2.4.0
 	github.com/pion/webrtc/v3 v3.2.23
+	github.com/prometheus/client_golang v1.17.0
 	github.com/rs/zerolog v1.28.0
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.8.4
@@ -71,7 +72,6 @@ require (
 	github.com/pion/turn/v2 v2.1.3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.17.0 // indirect
 	github.com/prometheus/client_model v0.4.1-0.20230718164431-9a2bf3000d16 // indirect
 	github.com/prometheus/common v0.44.0 // indirect
 	github.com/prometheus/procfs v0.11.1 // indirect
