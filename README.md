@@ -78,7 +78,7 @@ The `SIP Bridge` is used to authenticate incoming traffic. Typically you will cr
 SIP providers and their IP Ranges/Authentication details.
 
 ```shell
-livekit-cli create-sip-bridge \
+livekit-cli create-sip-trunk \
   --request <path to SIP Trunk creation request JSON file>
 ```
 
@@ -90,9 +90,9 @@ The SIP Bridge request creation JSON file uses the following syntax:
     "outbound_address": IP Address that SIP INVITEs will be sent too
     "outbound_number": When making an outbound call on this SIP Trunk what Phone Number should be used
     "inbound_numbers_regex": Phone numbers this SIP Trunk will serve. If Empty it will serve all incoming calls,
-    "inbound_user": Username for Authentication of inbound calls, no Authentication if empty,
+    "inbound_username": Username for Authentication of inbound calls, no Authentication if empty,
     "inbound_password": Password for Authentication of inbound calls, no Authentication if empty,
-    "outbound_user": Username for Authentication of outbound calls, no Authentication if empty,
+    "outbound_username": Username for Authentication of outbound calls, no Authentication if empty,
     "outbound_password": Password for Authentication of outbound calls, no Authentication if empty
 }
 ```
