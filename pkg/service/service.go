@@ -44,7 +44,8 @@ type Service struct {
 	psrpcClient rpc.IOInfoClient
 	bus         psrpc.MessageBus
 
-	promServer *http.Server
+	promServer   *http.Server
+	rpcSIPServer rpc.SIPInternalServer
 
 	sipServiceStop        sipServiceStopFunc
 	sipServiceActiveCalls sipServiceActiveCallsFunc
@@ -97,11 +98,11 @@ func (s *Service) Run() error {
 		}()
 	}
 
-	srv, err := rpc.NewSIPInternalServer(s.psrpcServer, s.bus)
-	if err != nil {
+	var err error
+	if s.rpcSIPServer, err = rpc.NewSIPInternalServer(s.psrpcServer, s.bus); err != nil {
 		return err
 	}
-	defer srv.Shutdown()
+	defer s.rpcSIPServer.Shutdown()
 
 	logger.Debugw("service ready")
 
@@ -160,4 +161,18 @@ func (s *Service) HandleDispatchRules(ctx context.Context, callingNumber, called
 
 func (s *Service) CanAccept() bool {
 	return !s.shutdown.IsBroken()
+}
+
+func (s *Service) RegisterUpdateSIPParticipantTopic() error {
+	if s.rpcSIPServer != nil {
+		return s.rpcSIPServer.RegisterUpdateSIPParticipantTopic(s.conf.ClusterID)
+	}
+
+	return nil
+}
+
+func (s *Service) DeregisterUpdateSIPParticipantTopic() {
+	if s.rpcSIPServer != nil {
+		s.rpcSIPServer.DeregisterUpdateSIPParticipantTopic(s.conf.ClusterID)
+	}
 }
