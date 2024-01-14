@@ -51,6 +51,7 @@ type Config struct {
 	SIPPort        int                 `yaml:"sip_port"`
 	RTPPort        rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging        logger.Config       `yaml:"logging"`
+	ClusterID      string              `yaml:"cluster_id"` // cluster this instance belongs to
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
