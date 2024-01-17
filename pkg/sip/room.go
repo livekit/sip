@@ -83,6 +83,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				APISecret:           conf.ApiSecret,
 				RoomName:            roomName,
 				ParticipantIdentity: identity,
+				ParticipantKind:     lksdk.ParticipantSIP,
 			}, roomCallback, lksdk.WithAutoSubscribe(false))
 	} else {
 		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
