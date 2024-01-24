@@ -104,12 +104,17 @@ func (s *Service) Run() error {
 	}
 	defer s.rpcSIPServer.Shutdown()
 
+	if err := s.RegisterCreateSIPParticipantTopic(); err != nil {
+		return err
+	}
+
 	logger.Debugw("service ready")
 
 	for { //nolint: gosimple
 		select {
 		case <-s.shutdown.Watch():
 			logger.Infow("shutting down")
+			s.DeregisterCreateSIPParticipantTopic()
 
 			if !s.killed.Load() {
 				activeCalls := s.sipServiceActiveCalls()
@@ -163,16 +168,16 @@ func (s *Service) CanAccept() bool {
 	return !s.shutdown.IsBroken()
 }
 
-func (s *Service) RegisterUpdateSIPParticipantTopic() error {
+func (s *Service) RegisterCreateSIPParticipantTopic() error {
 	if s.rpcSIPServer != nil {
-		return s.rpcSIPServer.RegisterUpdateSIPParticipantTopic(s.conf.ClusterID)
+		return s.rpcSIPServer.RegisterCreateSIPParticipantTopic(s.conf.ClusterID)
 	}
 
 	return nil
 }
 
-func (s *Service) DeregisterUpdateSIPParticipantTopic() {
+func (s *Service) DeregisterCreateSIPParticipantTopic() {
 	if s.rpcSIPServer != nil {
-		s.rpcSIPServer.DeregisterUpdateSIPParticipantTopic(s.conf.ClusterID)
+		s.rpcSIPServer.DeregisterCreateSIPParticipantTopic(s.conf.ClusterID)
 	}
 }

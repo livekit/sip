@@ -35,15 +35,15 @@ type Client struct {
 	sipCli      *sipgo.Client
 	signalingIp string
 
-	cmu         sync.RWMutex
-	activeCalls map[string]*outboundCall
+	cmu         sync.Mutex
+	activeCalls map[*outboundCall]struct{}
 }
 
 func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
 	c := &Client{
 		conf:        conf,
 		mon:         mon,
-		activeCalls: make(map[string]*outboundCall),
+		activeCalls: make(map[*outboundCall]struct{}),
 	}
 	return c
 }
@@ -75,14 +75,13 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 	if err != nil {
 		return err
 	}
-	// FIXME: read existing SIP participants from the store?
 	return nil
 }
 
 func (c *Client) Stop() {
 	c.cmu.Lock()
-	calls := maps.Values(c.activeCalls)
-	c.activeCalls = make(map[string]*outboundCall)
+	calls := maps.Keys(c.activeCalls)
+	c.activeCalls = make(map[*outboundCall]struct{})
 	c.cmu.Unlock()
 	for _, call := range calls {
 		call.Close()
@@ -93,59 +92,46 @@ func (c *Client) Stop() {
 	}
 }
 
-func (c *Client) UpdateSIPParticipant(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) (*rpc.InternalUpdateSIPParticipantResponse, error) {
+func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	if req.CallTo == "" {
-		logger.Infow("Disconnect SIP participant",
-			"roomName", req.RoomName, "participant", req.ParticipantId)
-		// Disconnect participant
-		if call := c.getCall(req.ParticipantId); call != nil {
-			call.Close()
-		}
-		return &rpc.InternalUpdateSIPParticipantResponse{}, nil
+		return nil, fmt.Errorf("call-to number must be set")
+	} else if req.Address == "" {
+		return nil, fmt.Errorf("trunk adresss must be set")
+	} else if req.Number == "" {
+		return nil, fmt.Errorf("trunk outbound number must be set")
+	} else if req.RoomName == "" {
+		return nil, fmt.Errorf("room name must be set")
 	}
-	logger.Infow("Updating SIP participant",
-		"roomName", req.RoomName, "participant", req.ParticipantId,
-		"from", req.Number, "to", req.CallTo, "address", req.Address)
-	err := c.getOrCreateCall(req.ParticipantId).Update(ctx, sipOutboundConfig{
-		address: req.Address,
-		from:    req.Number,
-		to:      req.CallTo,
-		user:    req.Username,
-		pass:    req.Password,
-	}, lkRoomConfig{
+	logger.Infow("Creating SIP participant",
+		"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
+	call, err := c.newCall(c.conf, lkRoomConfig{
 		roomName: req.RoomName,
 		identity: req.ParticipantIdentity,
-	}, c.conf)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &rpc.InternalUpdateSIPParticipantResponse{}, nil
+	// Start actual SIP call async.
+	go func() {
+		ctx := context.WithoutCancel(ctx)
+		err := call.UpdateSIP(ctx, sipOutboundConfig{
+			address: req.Address,
+			from:    req.Number,
+			to:      req.CallTo,
+			user:    req.Username,
+			pass:    req.Password,
+		})
+		if err != nil {
+			logger.Errorw("SIP call failed", err,
+				"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
+		}
+	}()
+
+	p := call.Participant()
+	return &rpc.InternalCreateSIPParticipantResponse{ParticipantId: p.ID, ParticipantIdentity: p.Identity}, nil
 }
 
-func (c *Client) UpdateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalUpdateSIPParticipantRequest) float32 {
-	call := c.getCall(req.ParticipantId)
-	if call != nil {
-		return 1 // Existing participant
-	}
+func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
 	// TODO: scale affinity based on a number or active calls?
 	return 0.5
-}
-
-func (c *Client) SendSIPParticipantDTMF(ctx context.Context, req *rpc.InternalSendSIPParticipantDTMFRequest) (*rpc.InternalSendSIPParticipantDTMFResponse, error) {
-	call := c.getCall(req.ParticipantId)
-	if call == nil {
-		return nil, fmt.Errorf("Cannot send DTMF: participant not connected.")
-	}
-	if err := call.SendDTMF(ctx, req.Digits); err != nil {
-		return nil, err
-	}
-	return &rpc.InternalSendSIPParticipantDTMFResponse{}, nil
-}
-
-func (c *Client) SendSIPParticipantDTMFAffinity(ctx context.Context, req *rpc.InternalSendSIPParticipantDTMFRequest) float32 {
-	call := c.getCall(req.ParticipantId)
-	if call != nil {
-		return 1 // Only existing participants
-	}
-	return 0
 }

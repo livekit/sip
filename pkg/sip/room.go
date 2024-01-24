@@ -29,11 +29,17 @@ import (
 	"github.com/livekit/sip/pkg/mixer"
 )
 
+type Participant struct {
+	ID       string
+	RoomName string
+	Identity string
+}
+
 type Room struct {
-	room     *lksdk.Room
-	mix      *mixer.Mixer
-	out      media.SwitchWriter[media.PCM16Sample]
-	identity string
+	room *lksdk.Room
+	mix  *mixer.Mixer
+	out  media.SwitchWriter[media.PCM16Sample]
+	p    Participant
 }
 
 type lkRoomConfig struct {
@@ -52,7 +58,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 		err  error
 		room *lksdk.Room
 	)
-	r.identity = identity
+	r.p = Participant{RoomName: roomName, Identity: identity}
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
@@ -93,6 +99,8 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 		return err
 	}
 	r.room = room
+	r.p.ID = r.room.LocalParticipant.SID()
+	r.p.Identity = r.room.LocalParticipant.Identity()
 	return nil
 }
 
@@ -127,13 +135,21 @@ func (r *Room) Close() error {
 	return nil
 }
 
-func (r *Room) NewParticipant() (media.Writer[media.PCM16Sample], error) {
+func (r *Room) Participant() Participant {
+	if r == nil {
+		return Participant{}
+	}
+	return r.p
+}
+
+func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		return nil, err
 	}
-	if _, err = r.room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-		Name: r.identity,
+	p := r.room.LocalParticipant
+	if _, err = p.PublishTrack(track, &lksdk.TrackPublicationOptions{
+		Name: p.Identity(),
 	}); err != nil {
 		return nil, err
 	}
