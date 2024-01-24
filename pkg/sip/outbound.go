@@ -39,14 +39,12 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c             *Client
-	participantID string
-	rtpConn       *MediaConn
+	c       *Client
+	rtpConn *MediaConn
 
 	mu            sync.RWMutex
 	mon           *stats.CallMonitor
 	mediaRunning  bool
-	lkCur         lkRoomConfig
 	lkRoom        *Room
 	lkRoomIn      media.Writer[media.PCM16Sample]
 	sipCur        sipOutboundConfig
@@ -55,35 +53,24 @@ type outboundCall struct {
 	sipRunning    bool
 }
 
-func (c *Client) getCall(participantId string) *outboundCall {
-	c.cmu.RLock()
-	defer c.cmu.RUnlock()
-	return c.activeCalls[participantId]
-}
-
-func (c *Client) getOrCreateCall(participantId string) *outboundCall {
-	// Fast path
-	if call := c.getCall(participantId); call != nil {
-		return call
+func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall, error) {
+	call := &outboundCall{
+		c:       c,
+		rtpConn: NewMediaConn(),
 	}
-	// Slow path
+	if err := call.startMedia(conf); err != nil {
+		call.close("media-failed")
+		return nil, fmt.Errorf("start media failed: %w", err)
+	}
+	if err := call.updateRoom(room); err != nil {
+		call.close("join-failed")
+		return nil, fmt.Errorf("update room failed: %w", err)
+	}
+
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
-	if call := c.activeCalls[participantId]; call != nil {
-		return call
-	}
-	call := c.newCall(participantId)
-	c.activeCalls[participantId] = call
-	return call
-}
-
-func (c *Client) newCall(participantId string) *outboundCall {
-	call := &outboundCall{
-		c:             c,
-		participantID: participantId,
-		rtpConn:       NewMediaConn(),
-	}
-	return call
+	c.activeCalls[call] = struct{}{}
+	return call, nil
 }
 
 func (c *outboundCall) Close() error {
@@ -107,50 +94,43 @@ func (c *outboundCall) close(reason string) {
 	}
 	c.lkRoom = nil
 	c.lkRoomIn = nil
-	c.lkCur = lkRoomConfig{}
 
 	c.stopSIP(reason)
 	c.sipCur = sipOutboundConfig{}
 
-	// FIXME: remove call from the client map?
+	c.c.cmu.Lock()
+	delete(c.c.activeCalls, c)
+	c.c.cmu.Unlock()
 }
 
-func (c *outboundCall) Update(ctx context.Context, sipNew sipOutboundConfig, lkNew lkRoomConfig, conf *config.Config) error {
+func (c *outboundCall) Participant() Participant {
 	c.mu.RLock()
-	sipCur, lkCur := c.sipCur, c.lkCur
-	c.mu.RUnlock()
-	if sipCur == sipNew && lkCur == lkNew {
-		return nil
-	}
+	defer c.mu.RUnlock()
+	return c.lkRoom.Participant()
+}
 
+func (c *outboundCall) UpdateSIP(ctx context.Context, sipNew sipOutboundConfig) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.sipCur == sipNew && c.lkCur == lkNew {
+	if c.sipCur == sipNew {
 		return nil
 	}
+	p := c.lkRoom.Participant()
 	if sipNew.address == "" || sipNew.to == "" {
 		logger.Infow("Shutdown of outbound SIP call",
-			"roomName", lkNew.roomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
+			"roomName", p.RoomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
 		// shutdown the call
 		c.close("shutdown")
 		return nil
 	}
 	c.startMonitor(sipNew)
-	if err := c.startMedia(conf); err != nil {
-		c.close("media-failed")
-		return fmt.Errorf("start media failed: %w", err)
-	}
-	if err := c.updateRoom(lkNew); err != nil {
-		c.close("join-failed")
-		return fmt.Errorf("update room failed: %w", err)
-	}
 	if err := c.updateSIP(sipNew); err != nil {
 		c.close("invite-failed")
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.relinkMedia()
 	logger.Infow("Outbound SIP update complete",
-		"roomName", lkNew.roomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
+		"roomName", p.RoomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
 	return nil
 }
 
@@ -170,9 +150,6 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 }
 
 func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
-	if c.lkRoom != nil && c.lkCur == lkNew {
-		return nil
-	}
 	if c.lkRoom != nil {
 		_ = c.lkRoom.Close()
 		c.lkRoom = nil
@@ -182,14 +159,13 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 	if err != nil {
 		return err
 	}
-	local, err := r.NewParticipant()
+	local, err := r.NewParticipantTrack()
 	if err != nil {
 		_ = r.Close()
 		return err
 	}
 	c.lkRoom = r
 	c.lkRoomIn = local
-	c.lkCur = lkNew
 	return nil
 }
 

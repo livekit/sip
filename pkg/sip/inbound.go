@@ -444,7 +444,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	if err != nil {
 		return err
 	}
-	local, err := c.lkRoom.NewParticipant()
+	local, err := c.lkRoom.NewParticipantTrack()
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err
