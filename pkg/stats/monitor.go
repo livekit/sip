@@ -45,7 +45,6 @@ type Monitor struct {
 	inviteReqRaw    prometheus.Counter
 	inviteReq       *prometheus.CounterVec
 	inviteAccept    *prometheus.CounterVec
-	inviteErrShort  *prometheus.CounterVec
 	inviteErr       *prometheus.CounterVec
 	callsActive     *prometheus.GaugeVec
 	callsTerminated *prometheus.CounterVec
@@ -54,6 +53,7 @@ type Monitor struct {
 	durCall         *prometheus.HistogramVec
 	durJoin         *prometheus.HistogramVec
 
+	metrics  []prometheus.Collector
 	started  core.Fuse
 	shutdown core.Fuse
 }
@@ -65,101 +65,95 @@ func NewMonitor() *Monitor {
 	}
 }
 
+func mustRegister[T prometheus.Collector](m *Monitor, c T) T {
+	prometheus.MustRegister(c)
+	m.metrics = append(m.metrics, c)
+	return c
+}
+
 func (m *Monitor) Start(conf *config.Config) error {
-	m.inviteReqRaw = prometheus.NewCounter(prometheus.CounterOpts{
+	m.inviteReqRaw = mustRegister(m, prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "invite_requests_raw",
 		Help:        "Number of unvalidated SIP INVITE requests received",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	})
+	}))
 
-	m.inviteReq = prometheus.NewCounterVec(prometheus.CounterOpts{
+	m.inviteReq = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "invite_requests",
 		Help:        "Number of valid SIP INVITE requests received",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir"})
+	}, []string{"dir"}))
 
-	m.inviteAccept = prometheus.NewCounterVec(prometheus.CounterOpts{
+	m.inviteAccept = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "invite_accepted",
 		Help:        "Number of accepted SIP INVITE requests (that matched a trunk and passed auth)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to"})
+	}, []string{"dir", "to"}))
 
-	m.inviteErr = prometheus.NewCounterVec(prometheus.CounterOpts{
+	m.inviteErr = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "invite_error",
 		Help:        "Number of rejected SIP INVITE requests",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "reason"})
-	m.inviteErrShort = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace:   "livekit",
-		Subsystem:   "sip",
-		Name:        "invite_error",
-		Help:        "Number of rejected SIP INVITE requests",
-		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "reason"})
+	}, []string{"dir", "to", "reason"}))
 
-	m.callsActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	m.callsActive = mustRegister(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "calls_active",
 		Help:        "Number of currently active SIP calls",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to"})
+	}, []string{"dir", "to"}))
 
-	m.callsTerminated = prometheus.NewCounterVec(prometheus.CounterOpts{
+	m.callsTerminated = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "calls_terminated",
 		Help:        "Number of calls terminated by SIP bridge",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "reason"})
+	}, []string{"dir", "to", "reason"}))
 
-	m.packetsRTP = prometheus.NewCounterVec(prometheus.CounterOpts{
+	m.packetsRTP = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "packets_rtp",
 		Help:        "Number of RTP packets sent or received by SIP bridge",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "op", "payload"})
+	}, []string{"dir", "to", "op", "payload"}))
 
-	m.durSession = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	m.durSession = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "dur_session_sec",
 		Help:        "SIP session duration (from INVITE to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBuckets,
-	}, []string{"dir"})
+	}, []string{"dir"}))
 
-	m.durCall = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	m.durCall = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "dur_call_sec",
 		Help:        "SIP call duration (from successful pin to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBuckets,
-	}, []string{"dir"})
+	}, []string{"dir"}))
 
-	m.durJoin = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	m.durJoin = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "dur_join_sec",
 		Help:        "SIP room join duration (from INVITE to mixed room audio)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBuckets,
-	}, []string{"dir"})
-
-	prometheus.MustRegister(
-		m.inviteReqRaw, m.inviteReq, m.inviteAccept, m.inviteErr, m.callsActive, m.callsTerminated,
-		m.packetsRTP, m.durSession, m.durCall, m.durJoin,
-	)
+	}, []string{"dir"}))
 
 	m.started.Break()
 
@@ -171,16 +165,10 @@ func (m *Monitor) Shutdown() {
 }
 
 func (m *Monitor) Stop() {
-	prometheus.Unregister(m.inviteReqRaw)
-	prometheus.Unregister(m.inviteReq)
-	prometheus.Unregister(m.inviteAccept)
-	prometheus.Unregister(m.inviteErr)
-	prometheus.Unregister(m.callsActive)
-	prometheus.Unregister(m.callsTerminated)
-	prometheus.Unregister(m.packetsRTP)
-	prometheus.Unregister(m.durSession)
-	prometheus.Unregister(m.durCall)
-	prometheus.Unregister(m.durJoin)
+	for _, c := range m.metrics {
+		prometheus.Unregister(c)
+	}
+	m.metrics = nil
 }
 
 func (m *Monitor) CanAccept() bool {
@@ -235,7 +223,7 @@ func (c *CallMonitor) InviteAccept() {
 }
 
 func (c *CallMonitor) InviteErrorShort(reason string) {
-	c.m.inviteErrShort.With(c.labelsShort(prometheus.Labels{"reason": reason})).Inc()
+	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": reason, "to": "unknown"})).Inc()
 }
 
 func (c *CallMonitor) InviteError(reason string) {
