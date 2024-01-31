@@ -64,7 +64,7 @@ func Build() error {
 		gopath = build.Default.GOPATH
 	}
 
-	return run(fmt.Sprintf("go build -a -o %s/bin/sip ./cmd/server", gopath))
+	return run(fmt.Sprintf("go build -a -o %s/bin/sip ./cmd/livekit-sip", gopath))
 }
 
 func Test() error {
@@ -74,14 +74,14 @@ func Test() error {
 func BuildDocker() error {
 	return mageutil.Run(context.Background(),
 		fmt.Sprintf("docker pull golang:%s", goVersion),
-		fmt.Sprintf("docker build --no-cache -t %s:latest -f build/sip/Dockerfile --build-arg GOVERSION=%s .", imageName, goVersion),
+		fmt.Sprintf("docker build -t %s:latest -f build/sip/Dockerfile --build-arg GOVERSION=%s .", imageName, goVersion),
 	)
 }
 
 func BuildDockerLinux() error {
 	return mageutil.Run(context.Background(),
 		fmt.Sprintf("docker pull golang:%s", goVersion),
-		fmt.Sprintf("docker build --no-cache --platform linux/amd64 -t %s:latest -f build/sip/Dockerfile --build-arg GOVERSION=%s .", imageName, goVersion),
+		fmt.Sprintf("docker build --platform linux/amd64 -t %s:latest -f build/sip/Dockerfile --build-arg GOVERSION=%s .", imageName, goVersion),
 	)
 }
 
