@@ -39,6 +39,8 @@ To accept SIP traffic into your running SIP service, the workflow goes like this
 * SIP service receives a call
 * SIP service connects to the LiveKit room and SIP caller is a participant
 
+See [SIP Quickstart](https://docs.livekit.io/sip/quickstart/) for a full guide.
+
 ### Service Architecture
 
 The SIP service and the LiveKit server communicate over Redis. Redis is also used as storage for the SIP session state. The SIP service must also expose a public IP address for remote SIP peers to connect to.
