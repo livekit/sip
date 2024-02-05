@@ -107,6 +107,8 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	call, err := c.newCall(c.conf, lkRoomConfig{
 		roomName: req.RoomName,
 		identity: req.ParticipantIdentity,
+		wsUrl:    req.WsUrl,
+		token:    req.Token,
 	})
 	if err != nil {
 		return nil, err

@@ -155,8 +155,8 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 		c.lkRoom = nil
 		c.lkRoomIn = nil
 	}
-	r, err := ConnectToRoom(c.c.conf, lkNew.roomName, lkNew.identity)
-	if err != nil {
+	r := NewRoom()
+	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.wsUrl, lkNew.token); err != nil {
 		return err
 	}
 	local, err := r.NewParticipantTrack()
