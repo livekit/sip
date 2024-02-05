@@ -49,7 +49,7 @@ type lkRoomConfig struct {
 
 func NewRoom() *Room {
 	r := &Room{}
-	r.mix = mixer.NewMixer(&r.out, sampleRate)
+	r.mix = mixer.NewMixer(&r.out, sampleDur, sampleRate)
 	return r
 }
 
@@ -162,17 +162,17 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], error) {
 }
 
 func (r *Room) NewTrack() *Track {
-	inp := r.mix.AddInput()
-	return &Track{room: r, inp: inp}
+	inp := r.mix.NewInput()
+	return &Track{mix: r.mix, inp: inp}
 }
 
 type Track struct {
-	room *Room
-	inp  *mixer.Input
+	mix *mixer.Mixer
+	inp *mixer.Input
 }
 
 func (t *Track) Close() error {
-	t.room.mix.RemoveInput(t.inp)
+	t.mix.RemoveInput(t.inp)
 	return nil
 }
 

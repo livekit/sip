@@ -15,168 +15,193 @@
 package mixer
 
 import (
-	"container/list"
 	"sync"
 	"time"
 
 	"github.com/frostbyte73/core"
 
+	"github.com/livekit/sip/pkg/internal/ringbuf"
 	"github.com/livekit/sip/pkg/media"
 )
 
 const (
-	defaultBufferSize = 5 // Samples required for a input before we start mixing
+	// inputBufferFrames sets max number of frames that each mixer input will allow.
+	// Sending more frames to the input will cause old one to be dropped.
+	inputBufferFrames = 5
 
-	mixerTickDuration = time.Millisecond * 20 // How ofter we generate mixes
+	// inputBufferMin is the minimal number of buffered frames required to start mixing.
+	// It affects inputs initially, or after they start to starve.
+	inputBufferMin = inputBufferFrames/2 + 1
 )
 
 type Input struct {
-	mu               sync.Mutex
-	samples          list.List // linked list of elements of type [mixSize]byte
-	ignoredLastPrune bool
-
-	hasBuffered bool
-	bufferSize  int
-	mixSize     int
+	mu        sync.Mutex
+	buf       *ringbuf.Buffer[int16]
+	buffering bool
 }
 
 type Mixer struct {
-	mu sync.Mutex
+	out media.Writer[media.PCM16Sample]
 
-	out    media.Writer[media.PCM16Sample]
-	inputs map[*Input]struct{}
+	mu     sync.Mutex
+	inputs []*Input
 
-	ticker  *time.Ticker
-	mixSize int
+	tickerDur time.Duration
+	ticker    *time.Ticker
+	mixBuf    []int32           // mix result buffer
+	mixTmp    media.PCM16Sample // temp buffer for reading input buffers
 
+	lastMix time.Time
 	stopped core.Fuse
+	mixCnt  uint
 }
 
-func NewMixer(out media.Writer[media.PCM16Sample], sampleRate int) *Mixer {
-	m := createMixer(out, sampleRate)
+func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration, sampleRate int) *Mixer {
+	mixSize := int(time.Duration(sampleRate) * bufferDur / time.Second)
+	m := newMixer(out, mixSize)
+	m.tickerDur = bufferDur
+	m.ticker = time.NewTicker(bufferDur)
 
 	go m.start()
 
 	return m
 }
 
-func createMixer(out media.Writer[media.PCM16Sample], sampleRate int) *Mixer {
-	m := &Mixer{
+func newMixer(out media.Writer[media.PCM16Sample], mixSize int) *Mixer {
+	return &Mixer{
 		out:     out,
-		ticker:  time.NewTicker(mixerTickDuration),
-		mixSize: int(time.Duration(sampleRate) * mixerTickDuration / time.Second),
+		mixBuf:  make([]int32, mixSize),
+		mixTmp:  make(media.PCM16Sample, mixSize),
 		stopped: core.NewFuse(),
-		inputs:  make(map[*Input]struct{}),
 	}
-
-	return m
 }
 
-func (m *Mixer) doMix() {
-	mixed := make([]int32, m.mixSize)
-
-	for input := range m.inputs {
-		input.mu.Lock()
-
-		if !input.hasBuffered || input.samples.Len() == 0 {
-			input.mu.Unlock()
+func (m *Mixer) mixInputs() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Keep at least half of the samples buffered.
+	bufMin := inputBufferMin * len(m.mixBuf)
+	for _, inp := range m.inputs {
+		n, _ := inp.readSample(bufMin, m.mixTmp[:len(m.mixBuf)])
+		if n == 0 {
 			continue
 		}
-
-		for j := 0; j < m.mixSize; j++ {
-			// Add the samples. This can potentially lead to overfow, but is unlikely and dividing by the source
-			// count would cause the volume to drop ever time somebody joins
-
-			samples := input.samples.Front().Value.([]int16)
-			mixed[j] += int32(samples[j])
+		m.mixTmp = m.mixTmp[:n]
+		for j, v := range m.mixTmp {
+			// Add the samples. This can potentially lead to overflow, but is unlikely and dividing by the source
+			// count would cause the volume to drop every time somebody joins
+			m.mixBuf[j] += int32(v)
 		}
-
-		samplesToPrune := 1
-
-		if input.samples.Len() < input.bufferSize && input.samples.Len()%2 == 1 && !input.ignoredLastPrune {
-			samplesToPrune = 0
-		} else if input.samples.Len() > input.bufferSize && input.bufferSize != 0 {
-			samplesToPrune = input.samples.Len() / input.bufferSize
-		}
-
-		for i := 0; i < samplesToPrune; i++ {
-			input.samples.Remove(input.samples.Front())
-		}
-		input.ignoredLastPrune = samplesToPrune == 0
-
-		input.mu.Unlock()
 	}
+}
 
-	out := make(media.PCM16Sample, m.mixSize)
-	for i, sample := range mixed {
-		if sample > 0x7FFF {
-			sample = 0x7FFF
-		}
-		if sample < -0x7FFF {
-			sample = -0x7FFF
-		}
-		out[i] = int16(sample)
+func (m *Mixer) reset() {
+	for i := range m.mixBuf {
+		m.mixBuf[i] = 0
 	}
+}
 
+func (m *Mixer) mixOnce() {
+	m.mixCnt++
+	m.reset()
+	m.mixInputs()
+
+	// TODO: if we can guarantee that WriteSample won't store the sample, we can avoid allocation
+	out := make(media.PCM16Sample, len(m.mixBuf))
+	for i, v := range m.mixBuf {
+		if v > 0x7FFF {
+			v = 0x7FFF
+		}
+		if v < -0x7FFF {
+			v = -0x7FFF
+		}
+		out[i] = int16(v)
+	}
 	_ = m.out.WriteSample(out)
 }
 
+func (m *Mixer) mixUpdate() {
+	n := 1
+	if !m.lastMix.IsZero() {
+		// In case scheduler stops us for too long, we will detect it and run mix multiple times.
+		// This happens if we get scheduled by OS/K8S on a lot of CPUs, but for a very short time.
+		if dt := time.Since(m.lastMix); dt > 0 {
+			n = int(dt / m.tickerDur)
+		}
+	}
+	if n == 0 {
+		n = 1
+	} else if n > inputBufferFrames {
+		n = inputBufferFrames
+	}
+	for i := 0; i < n; i++ {
+		m.mixOnce()
+	}
+	m.lastMix = time.Now()
+}
+
 func (m *Mixer) start() {
-loop:
+	defer m.ticker.Stop()
 	for {
 		select {
 		case <-m.ticker.C:
-			m.mu.Lock()
-			m.doMix()
-			m.mu.Unlock()
+			m.mixUpdate()
 		case <-m.stopped.Watch():
-			break loop
+			return
 		}
 	}
-
-	m.ticker.Stop()
 }
 
 func (m *Mixer) Stop() {
 	m.stopped.Break()
 }
 
-func (m *Mixer) AddInput() *Input {
+func (m *Mixer) NewInput() *Input {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	i := &Input{
-		bufferSize: defaultBufferSize,
-		mixSize:    m.mixSize,
+	inp := &Input{
+		buf:       ringbuf.New[int16](len(m.mixBuf) * inputBufferFrames),
+		buffering: true, // buffer some data initially
 	}
-	m.inputs[i] = struct{}{}
-
-	return i
+	m.inputs = append(m.inputs, inp)
+	return inp
 }
 
-func (m *Mixer) RemoveInput(i *Input) {
+func (m *Mixer) RemoveInput(inp *Input) {
+	if m == nil || inp == nil {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	delete(m.inputs, i)
+	for i, cur := range m.inputs {
+		if cur == inp {
+			m.inputs = append(m.inputs[:i], m.inputs[i+1:]...)
+			break
+		}
+	}
 }
 
-func (i *Input) Push(sample []int16) {
+func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-
-	// Zero pad the sample if it's shorter than mixSize
-	copiedSample := make([]int16, i.mixSize)
-	copy(copiedSample, sample)
-
-	i.samples.PushBack(copiedSample)
-
-	if i.samples.Len() >= i.bufferSize {
-		i.hasBuffered = true
+	if i.buffering {
+		if i.buf.Len() < bufMin {
+			return 0, nil // keep buffering
+		}
+		// buffered enough data - start playing as usual
+		i.buffering = false
 	}
+	n, err := i.buf.Read(out)
+	if n == 0 {
+		i.buffering = true // starving; pause the input and start buffering again
+	}
+	return n, err
 }
 
 func (i *Input) WriteSample(sample media.PCM16Sample) error {
-	i.Push(sample)
-	return nil
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, err := i.buf.Write(sample)
+	return err
 }

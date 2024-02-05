@@ -16,109 +16,176 @@ package mixer
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/media"
 )
 
-func TestMixer(t *testing.T) {
-	var sample media.PCM16Sample
-	m := createMixer(media.WriterFunc[media.PCM16Sample](func(s media.PCM16Sample) error {
-		sample = s
+type testMixer struct {
+	t      testing.TB
+	sample media.PCM16Sample
+	*Mixer
+}
+
+func newTestMixer(t testing.TB) *testMixer {
+	m := &testMixer{t: t}
+	m.Mixer = newMixer(media.WriterFunc[media.PCM16Sample](func(s media.PCM16Sample) error {
+		m.sample = s
 		return nil
-	}), 8000)
+	}), 5)
+	return m
+}
 
-	require.Equal(t, 160, m.mixSize)
+func (m *testMixer) Expect(exp media.PCM16Sample, msgAndArgs ...any) {
+	m.t.Helper()
+	m.mixOnce()
+	require.Equal(m.t, exp, m.sample, msgAndArgs...)
+}
 
-	m.mixSize = 5
+func WriteSampleN(inp *Input, i int) {
+	v := int16(i) * 5
+	inp.WriteSample(media.PCM16Sample{v + 0, v + 1, v + 2, v + 3, v + 4})
+}
 
-	t.Run("No Input", func(t *testing.T) {
-		m.doMix()
-		require.Equal(t, media.PCM16Sample{0, 0, 0, 0, 0}, sample)
+func (m *testMixer) ExpectSampleN(i int, msgAndArgs ...any) {
+	m.t.Helper()
+	m.mixOnce()
+	m.CheckSampleN(i, msgAndArgs...)
+}
+
+func (m *testMixer) CheckSampleN(i int, msgAndArgs ...any) {
+	m.t.Helper()
+	v := int16(i) * 5
+	require.Equal(m.t, media.PCM16Sample{v + 0, v + 1, v + 2, v + 3, v + 4}, m.sample, msgAndArgs...)
+}
+
+func TestMixer(t *testing.T) {
+	t.Run("no input produces silence", func(t *testing.T) {
+		m := newTestMixer(t)
+		m.mixOnce()
+		m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
 	})
 
-	t.Run("One Input", func(t *testing.T) {
-		input := m.AddInput()
-		input.bufferSize = 0
-		input.Push([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
+	t.Run("one input mixing correctly", func(t *testing.T) {
+		m := newTestMixer(t)
+		inp := m.NewInput()
+		defer m.RemoveInput(inp)
+		inp.buffering = false
 
-		m.doMix()
-		require.Equal(t, media.PCM16Sample{10, 11, 12, 13, 14}, sample)
-		m.RemoveInput(input)
+		WriteSampleN(inp, 1)
+		m.ExpectSampleN(1)
 	})
 
-	t.Run("Two Input", func(t *testing.T) {
-		firstInput := m.AddInput()
-		firstInput.bufferSize = 0
-		firstInput.Push([]int16{0xE, 0xD, 0xC, 0xB, 0xA})
+	t.Run("two inputs mixing correctly", func(t *testing.T) {
+		m := newTestMixer(t)
+		one := m.NewInput()
+		defer m.RemoveInput(one)
+		one.buffering = false
+		one.WriteSample([]int16{0xE, 0xD, 0xC, 0xB, 0xA})
 
-		secondInput := m.AddInput()
-		secondInput.bufferSize = 0
-		secondInput.Push([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
+		two := m.NewInput()
+		defer m.RemoveInput(two)
+		two.buffering = false
+		two.WriteSample([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
-		m.doMix()
-		require.Equal(t, media.PCM16Sample{24, 24, 24, 24, 24}, sample)
+		m.Expect(media.PCM16Sample{24, 24, 24, 24, 24})
 
-		firstInput.Push([]int16{0x7FFF, 0x1, -0x7FFF, -0x1, 0x0})
-		secondInput.Push([]int16{0x1, 0x7FFF, -0x1, -0x7FFF, 0x0})
+		one.WriteSample([]int16{0x7FFF, 0x1, -0x7FFF, -0x1, 0x0})
+		two.WriteSample([]int16{0x1, 0x7FFF, -0x1, -0x7FFF, 0x0})
 
-		m.doMix()
-		require.Equal(t, media.PCM16Sample{0x7FFF, 0x7FFF, -0x7FFF, -0x7FFF, 0x0}, sample)
-
-		m.RemoveInput(firstInput)
-		m.RemoveInput(secondInput)
+		m.Expect(media.PCM16Sample{0x7FFF, 0x7FFF, -0x7FFF, -0x7FFF, 0x0})
 	})
 
-	t.Run("Does Buffer", func(t *testing.T) {
-		input := m.AddInput()
+	t.Run("draining produces silence afterwards", func(t *testing.T) {
+		m := newTestMixer(t)
+		inp := m.NewInput()
+		defer m.RemoveInput(inp)
 
-		for i := 0; i < 5; i++ {
-			input.Push([]int16{0, 1, 2, 3, 4})
-			m.doMix()
-
-			expected := media.PCM16Sample{0, 0, 0, 0, 0}
-			if i == 4 {
-				expected = media.PCM16Sample{0, 1, 2, 3, 4}
-			}
-
-			require.Equal(t, expected, sample)
+		for i := 0; i < inputBufferFrames; i++ {
+			inp.WriteSample([]int16{0, 1, 2, 3, 4})
 		}
 
-		m.RemoveInput(input)
-	})
-
-	t.Run("Buffer Underflow", func(t *testing.T) {
-		input := m.AddInput()
-
-		for i := 0; i < 5; i++ {
-			input.Push([]int16{0, 1, 2, 3, 4})
-		}
-
-		for i := 0; i < 8; i++ {
-			m.doMix()
-
+		for i := 0; i < inputBufferFrames+3; i++ {
 			expected := media.PCM16Sample{0, 1, 2, 3, 4}
-			if i == 7 {
+			if i >= inputBufferFrames {
 				expected = media.PCM16Sample{0, 0, 0, 0, 0}
 			}
-
-			require.Equal(t, expected, sample)
+			m.Expect(expected, "i=%d", i)
 		}
-
-		m.RemoveInput(input)
 	})
 
-	t.Run("Buffer Overflow", func(t *testing.T) {
-		input := m.AddInput()
+	t.Run("drops frames on overflow", func(t *testing.T) {
+		m := newTestMixer(t)
+		input := m.NewInput()
+		defer m.RemoveInput(input)
 
-		for i := 0; i < 500; i++ {
-			input.Push([]int16{0, 1, 2, 3, 4})
+		for i := 0; i < inputBufferFrames+3; i++ {
+			input.WriteSample([]int16{0, 1, 2, 3, 4})
 		}
 
-		m.doMix()
-		require.Equal(t, 400, input.samples.Len())
-		m.RemoveInput(input)
+		m.mixOnce()
+		require.Equal(t, (inputBufferFrames-1)*5, input.buf.Len())
 	})
 
+	t.Run("buffered initially and after starving", func(t *testing.T) {
+		m := newTestMixer(t)
+		inp := m.NewInput()
+		defer m.RemoveInput(inp)
+
+		inp.WriteSample([]int16{10, 11, 12, 13, 14})
+
+		for i := 0; i < inputBufferMin-1; i++ {
+			// Mixing produces nothing, because we are buffering the input initially.
+			m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+			WriteSampleN(inp, i)
+		}
+
+		// Now we should finally receive all our samples, even if no new data is available.
+		m.Expect(media.PCM16Sample{10, 11, 12, 13, 14})
+		for i := 0; i < inputBufferMin-1; i++ {
+			m.ExpectSampleN(i)
+		}
+
+		// Input is starving, should produce silence again until we buffer enough samples.
+		m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+		for i := 0; i < inputBufferMin; i++ {
+			m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+			WriteSampleN(inp, i)
+		}
+		// Data is flowing again after we buffered enough.
+		for i := 0; i < inputBufferMin; i++ {
+			m.ExpectSampleN(i)
+			// Keep writing to see if we can get this data later without gaps.
+			WriteSampleN(inp, i*10)
+		}
+		// Check data that we were writing above.
+		for i := 0; i < inputBufferMin; i++ {
+			m.ExpectSampleN(i * 10)
+		}
+	})
+
+	t.Run("catches up after not running for long", func(t *testing.T) {
+		step := 20 * time.Millisecond
+		m := newTestMixer(t)
+		m.tickerDur = step
+
+		inp := m.NewInput()
+		defer m.RemoveInput(inp)
+
+		for i := 0; i < inputBufferFrames; i++ {
+			WriteSampleN(inp, i)
+		}
+
+		m.mixUpdate()
+		require.EqualValues(t, 1, m.mixCnt)
+		m.CheckSampleN(0)
+
+		const steps = inputBufferFrames/2 + 1
+		time.Sleep(step*steps + step/2)
+		m.mixUpdate()
+		require.EqualValues(t, 1+steps, m.mixCnt)
+		m.CheckSampleN(steps)
+	})
 }
