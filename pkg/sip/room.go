@@ -45,6 +45,8 @@ type Room struct {
 type lkRoomConfig struct {
 	roomName string
 	identity string
+	wsUrl    string
+	token    string
 }
 
 func NewRoom() *Room {
@@ -102,14 +104,6 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
 	return nil
-}
-
-func ConnectToRoom(conf *config.Config, roomName string, identity string) (*Room, error) {
-	r := NewRoom()
-	if err := r.Connect(conf, roomName, identity, "", ""); err != nil {
-		return nil, err
-	}
-	return r, nil
 }
 
 func (r *Room) Output() media.Writer[media.PCM16Sample] {
