@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 
+	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/protocol/logger"
@@ -36,10 +37,11 @@ type Participant struct {
 }
 
 type Room struct {
-	room *lksdk.Room
-	mix  *mixer.Mixer
-	out  media.SwitchWriter[media.PCM16Sample]
-	p    Participant
+	room    *lksdk.Room
+	mix     *mixer.Mixer
+	out     media.SwitchWriter[media.PCM16Sample]
+	p       Participant
+	stopped core.Fuse
 }
 
 type lkRoomConfig struct {
@@ -53,6 +55,13 @@ func NewRoom() *Room {
 	r := &Room{}
 	r.mix = mixer.NewMixer(&r.out, sampleDur, sampleRate)
 	return r
+}
+
+func (r *Room) Closed() <-chan struct{} {
+	if r == nil {
+		return nil
+	}
+	return r.stopped.Watch()
 }
 
 func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token string) error {
@@ -81,6 +90,9 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				h := rtp.NewMediaStreamIn[opus.Sample](odec)
 				_ = rtp.HandleLoop(track, h)
 			},
+		},
+		OnDisconnected: func() {
+			r.stopped.Break()
 		},
 	}
 

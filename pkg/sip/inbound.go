@@ -282,8 +282,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		c.joinRoom(ctx, roomName, identity, wsUrl, token)
 	}
 	// Wait for the caller to terminate the call.
-	<-ctx.Done()
-	c.close("hangup")
+	select {
+	case <-ctx.Done():
+		c.close("hangup")
+	case <-c.lkRoom.Closed():
+		c.close("removed")
+	}
 }
 
 func (c *inboundCall) sendBye() {

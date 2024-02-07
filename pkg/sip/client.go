@@ -126,6 +126,12 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		if err != nil {
 			logger.Errorw("SIP call failed", err,
 				"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
+			return
+		}
+		select {
+		case <-call.Disconnected():
+			call.CloseWithReason("removed")
+		case <-call.Closed():
 		}
 	}()
 

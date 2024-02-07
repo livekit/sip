@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
 
@@ -41,6 +42,7 @@ type sipOutboundConfig struct {
 type outboundCall struct {
 	c       *Client
 	rtpConn *MediaConn
+	stopped core.Fuse
 
 	mu            sync.RWMutex
 	mon           *stats.CallMonitor
@@ -73,6 +75,17 @@ func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall,
 	return call, nil
 }
 
+func (c *outboundCall) Closed() <-chan struct{} {
+	return c.stopped.Watch()
+}
+
+func (c *outboundCall) Disconnected() <-chan struct{} {
+	if c.lkRoom == nil {
+		return nil
+	}
+	return c.lkRoom.Closed()
+}
+
 func (c *outboundCall) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -80,7 +93,18 @@ func (c *outboundCall) Close() error {
 	return nil
 }
 
+func (c *outboundCall) CloseWithReason(reason string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.close(reason)
+	return nil
+}
+
 func (c *outboundCall) close(reason string) {
+	if c.stopped.IsBroken() {
+		return
+	}
+	c.stopped.Break()
 	c.rtpConn.OnRTP(nil)
 	c.lkRoom.SetOutput(nil)
 
