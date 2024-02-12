@@ -89,8 +89,7 @@ func runService(c *cli.Context) error {
 	}
 
 	svc := service.NewService(conf, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus)
-	sipsrv.SetAuthHandler(svc.HandleTrunkAuthentication)
-	sipsrv.SetDispatchRuleHandlerFunc(svc.HandleDispatchRules)
+	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
 		return err

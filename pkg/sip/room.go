@@ -52,7 +52,7 @@ type lkRoomConfig struct {
 }
 
 func NewRoom() *Room {
-	r := &Room{}
+	r := &Room{stopped: core.NewFuse()}
 	r.mix = mixer.NewMixer(&r.out, sampleDur, sampleRate)
 	return r
 }

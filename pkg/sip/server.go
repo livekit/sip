@@ -37,8 +37,36 @@ var (
 	contentTypeHeaderSDP = sip.ContentTypeHeader("application/sdp")
 )
 
-type AuthHandlerFunc func(fromUser, toUser, toHost, srcAddress string) (username, password string, err error)
-type DispatchRuleHandlerFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string, pin string, noPin bool) (joinRoom, identity, wsUrl, token string, requestPin, rejectInvite bool)
+type CallInfo struct {
+	FromUser   string
+	ToUser     string
+	ToHost     string
+	SrcAddress string
+	Pin        string
+	NoPin      bool
+}
+
+type DispatchResult int
+
+const (
+	DispatchAccept = DispatchResult(iota)
+	DispatchRequestPin
+	DispatchNoRuleReject // reject the call with an error
+	DispatchNoRuleDrop   // silently drop the call
+)
+
+type CallDispatch struct {
+	Result   DispatchResult
+	RoomName string
+	Identity string
+	WsUrl    string
+	Token    string
+}
+
+type Handler interface {
+	GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error)
+	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
+}
 
 type Server struct {
 	mon         *stats.Monitor
@@ -50,9 +78,8 @@ type Server struct {
 	cmu         sync.RWMutex
 	activeCalls map[string]*inboundCall
 
-	authHandler         AuthHandlerFunc
-	dispatchRuleHandler DispatchRuleHandlerFunc
-	conf                *config.Config
+	handler Handler
+	conf    *config.Config
 
 	res mediaRes
 }
@@ -73,12 +100,8 @@ func NewServer(conf *config.Config, mon *stats.Monitor) *Server {
 	return s
 }
 
-func (s *Server) SetAuthHandler(handler AuthHandlerFunc) {
-	s.authHandler = handler
-}
-
-func (s *Server) SetDispatchRuleHandlerFunc(handler DispatchRuleHandlerFunc) {
-	s.dispatchRuleHandler = handler
+func (s *Server) SetHandler(handler Handler) {
+	s.handler = handler
 }
 
 func getTagValue(req *sip.Request) (string, error) {
