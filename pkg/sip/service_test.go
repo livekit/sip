@@ -1,15 +1,18 @@
 package sip
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
-	"github.com/livekit/sip/pkg/config"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sip/pkg/config"
 )
 
 const (
@@ -31,12 +34,31 @@ func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
 	return nil
 }
 
-func TestService_AuthFailure(t *testing.T) {
-	const (
-		expectedFromUser = "foo"
-		expectedToUser   = "bar"
-	)
+func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
+	select {
+	case res := <-tx.Responses():
+		t.Fatal("unexpected result:", res)
+	case <-time.After(time.Second / 2):
+		// ok
+	case <-tx.Done():
+		// ok
+	}
+}
 
+type TestHandler struct {
+	GetAuthCredentialsFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error)
+	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
+}
+
+func (h TestHandler) GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error) {
+	return h.GetAuthCredentialsFunc(ctx, fromUser, toUser, toHost, srcAddress)
+}
+
+func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispatch {
+	return h.DispatchCall(ctx, info)
+}
+
+func testInvite(t *testing.T, h Handler, from, to string, test func(tx sip.ClientTransaction)) {
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)
@@ -49,16 +71,13 @@ func TestService_AuthFailure(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
 
-	s.SetAuthHandler(func(fromUser, toUser, _, _ string) (string, string, error) {
-		require.Equal(t, expectedFromUser, fromUser)
-		require.Equal(t, expectedToUser, toUser)
-		return "", "", fmt.Errorf("Auth Failure")
-	})
+	s.SetHandler(h)
 
 	require.NoError(t, s.Start())
 
-	sipUserAgent, err := sipgo.NewUA(sipgo.WithUserAgent(expectedFromUser))
+	sipUserAgent, err := sipgo.NewUA(sipgo.WithUserAgent(from))
 	require.NoError(t, err)
 
 	sipClient, err := sipgo.NewClient(sipUserAgent)
@@ -67,7 +86,7 @@ func TestService_AuthFailure(t *testing.T) {
 	offer, err := sdpGenerateOffer(localIP, 0xB0B)
 	require.NoError(t, err)
 
-	inviteRecipent := &sip.Uri{User: expectedToUser, Host: sipServerAddress}
+	inviteRecipent := &sip.Uri{User: to, Host: sipServerAddress}
 	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipent)
 	inviteRequest.SetDestination(sipServerAddress)
 	inviteRequest.SetBody(offer)
@@ -75,14 +94,50 @@ func TestService_AuthFailure(t *testing.T) {
 
 	tx, err := sipClient.TransactionRequest(inviteRequest)
 	require.NoError(t, err)
+	t.Cleanup(tx.Terminate)
 
-	res := getResponseOrFail(t, tx)
-	require.Equal(t, sip.StatusCode(180), res.StatusCode)
+	test(tx)
+}
 
-	res = getResponseOrFail(t, tx)
-	require.Equal(t, sip.StatusCode(400), res.StatusCode)
+func TestService_AuthFailure(t *testing.T) {
+	const (
+		expectedFromUser = "foo"
+		expectedToUser   = "bar"
+	)
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error) {
+			require.Equal(t, expectedFromUser, fromUser)
+			require.Equal(t, expectedToUser, toUser)
+			return "", "", false, fmt.Errorf("Auth Failure")
+		},
+	}
+	testInvite(t, h, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
+		if !inboundHidePort {
+			res := getResponseOrFail(t, tx)
+			require.Equal(t, sip.StatusCode(180), res.StatusCode)
+		}
 
-	defer tx.Terminate()
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(400), res.StatusCode)
+	})
+}
 
-	s.Stop()
+func TestService_AuthDrop(t *testing.T) {
+	if !inboundHidePort {
+		t.Skip()
+	}
+	const (
+		expectedFromUser = "foo"
+		expectedToUser   = "bar"
+	)
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error) {
+			require.Equal(t, expectedFromUser, fromUser)
+			require.Equal(t, expectedToUser, toUser)
+			return "", "", true, nil
+		},
+	}
+	testInvite(t, h, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
+		expectNoResponse(t, tx)
+	})
 }

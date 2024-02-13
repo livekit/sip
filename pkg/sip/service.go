@@ -81,12 +81,8 @@ func (s *Service) Stop() {
 	s.mon.Stop()
 }
 
-func (s *Service) SetAuthHandler(handler AuthHandlerFunc) {
-	s.srv.SetAuthHandler(handler)
-}
-
-func (s *Service) SetDispatchRuleHandlerFunc(handler DispatchRuleHandlerFunc) {
-	s.srv.SetDispatchRuleHandlerFunc(handler)
+func (s *Service) SetHandler(handler Handler) {
+	s.srv.SetHandler(handler)
 }
 
 func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {

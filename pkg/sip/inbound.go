@@ -33,14 +33,30 @@ import (
 )
 
 const (
+	// inboundHidePort controls how SIP endpoint responds to unverified inbound requests.
+	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
+	// Doing so hides our SIP endpoint from (a low effort) port scanners.
+	inboundHidePort = true
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
 )
 
+func sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
+	if inboundHidePort {
+		tx.Terminate()
+	} else {
+		sipErrorResponse(tx, req)
+	}
+}
+
 func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
 	if username == "" || password == "" {
 		return true
+	}
+	if inboundHidePort {
+		// We will send password request anyway, so might as well signal that the progress is made.
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
 	}
 
 	var inviteState *inProgressInvite
@@ -101,24 +117,27 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 }
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
+	ctx := context.Background()
 	s.mon.InviteReqRaw(stats.Inbound)
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
 
+	if !inboundHidePort {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
+	}
 	tag, err := getTagValue(req)
 	if err != nil {
-		sipErrorResponse(tx, req)
+		sipErrorOrDrop(tx, req)
 		return
 	}
 
 	from, ok := req.From()
 	if !ok {
-		sipErrorResponse(tx, req)
+		sipErrorOrDrop(tx, req)
 		return
 	}
 
 	to, ok := req.To()
 	if !ok {
-		sipErrorResponse(tx, req)
+		sipErrorOrDrop(tx, req)
 		return
 	}
 	src := req.Source()
@@ -130,12 +149,17 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	joinDur := cmon.JoinDur()
 	logger.Infow("INVITE received", "tag", tag, "from", from, "to", to)
 
-	username, password, err := s.authHandler(from.Address.User, to.Address.User, to.Address.Host, src)
+	username, password, drop, err := s.handler.GetAuthCredentials(ctx, from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
 		cmon.InviteErrorShort("no-rule")
 		logger.Warnw("Rejecting inbound, doesn't match any Trunks", err,
 			"tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
 		sipErrorResponse(tx, req)
+		return
+	} else if drop {
+		cmon.InviteErrorShort("flood")
+		logger.Debugw("Dropping inbound flood", "src", src, "from", from, "to", to, "to-host", to.Address.Host)
+		tx.Terminate()
 		return
 	}
 	if !s.handleInviteAuth(req, tx, from.Address.User, username, password) {
@@ -214,12 +238,32 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	defer c.close("other")
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
-	roomName, identity, wsUrl, token, requirePin, rejectInvite := c.s.dispatchRuleHandler(ctx, c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, "", false)
-	if rejectInvite {
+	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+		FromUser:   c.from.Address.User,
+		ToUser:     c.to.Address.User,
+		ToHost:     c.to.Address.Host,
+		SrcAddress: c.src,
+		Pin:        "",
+		NoPin:      false,
+	})
+	switch disp.Result {
+	default:
+		logger.Errorw("Rejecting inbound call", fmt.Errorf("unexpected dispatch result: %v", disp.Result), "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		sipErrorResponse(tx, req)
+		c.close("unexpected-result")
+		return
+	case DispatchNoRuleDrop:
+		logger.Debugw("Rejecting inbound flood", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		tx.Terminate()
+		c.close("flood")
+		return
+	case DispatchNoRuleReject:
 		logger.Infow("Rejecting inbound call, doesn't match any Dispatch Rules", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
 		sipErrorResponse(tx, req)
 		c.close("no-dispatch")
 		return
+	case DispatchAccept, DispatchRequestPin:
+		// continue
 	}
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
@@ -276,10 +320,16 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		delay.Stop()
 	case <-delay.C:
 	}
-	if requirePin {
+	switch disp.Result {
+	default:
+		logger.Errorw("Rejecting inbound call", fmt.Errorf("unreachable dispatch result path: %v", disp.Result), "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		sipErrorResponse(tx, req)
+		c.close("unreachable-path")
+		return
+	case DispatchRequestPin:
 		c.pinPrompt(ctx)
-	} else {
-		c.joinRoom(ctx, roomName, identity, wsUrl, token)
+	case DispatchAccept:
+		c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.WsUrl, disp.Token)
 	}
 	// Wait for the caller to terminate the call.
 	select {
@@ -362,15 +412,22 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				noPin = pin == ""
 
 				logger.Infow("Checking Pin for SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
-				roomName, identity, wsUrl, token, requirePin, reject := c.s.dispatchRuleHandler(ctx, c.from.Address.User, c.to.Address.User, c.to.Address.Host, c.src, pin, noPin)
-				if reject || requirePin || roomName == "" {
+				disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+					FromUser:   c.from.Address.User,
+					ToUser:     c.to.Address.User,
+					ToHost:     c.to.Address.Host,
+					SrcAddress: c.src,
+					Pin:        pin,
+					NoPin:      noPin,
+				})
+				if disp.Result != DispatchAccept || disp.RoomName == "" {
 					logger.Infow("Rejecting call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
 					c.playAudio(ctx, c.s.res.wrongPin)
 					c.close("wrong-pin")
 					return
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
-				c.joinRoom(ctx, roomName, identity, wsUrl, token)
+				c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.WsUrl, disp.Token)
 				return
 			}
 			// Gather pin numbers
