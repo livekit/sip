@@ -17,6 +17,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"net"
 	"os"
@@ -29,21 +30,23 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
+
+	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media/ulaw"
 )
 
 var (
-	sipServer    = flag.String("sip-server", "", "")
-	to           = flag.String("to", "+15550100000", "")
-	from         = flag.String("from", "+15550100001", "")
-	username     = flag.String("username", "", "")
-	password     = flag.String("password", "", "")
-	sipUri       = flag.String("sip-uri", "example.pstn.twilio.com", "")
-	filePathPlay = flag.String("play", "audio.mkv", "")
-	filePathSave = flag.String("save", "save.mkv", "")
+	sipServer    = flag.String("sip-server", "", "SIP server to connect to")
+	to           = flag.String("to", "+15550100000", "number to dial")
+	from         = flag.String("from", "+15550100001", "client number")
+	username     = flag.String("username", "", "username for INVITE")
+	password     = flag.String("password", "", "password for INVITE")
+	sipUri       = flag.String("sip-uri", "example.pstn.twilio.com", "SIP server URI")
+	filePathPlay = flag.String("play", "audio.mkv", "play audio")
+	filePathSave = flag.String("save", "save.mkv", "save incoming audio to file")
+	sendDTMF     = flag.String("dtmf", "", "send DTMF sequence")
 
 	localIP = ""
 )
@@ -183,10 +186,22 @@ func parseAnswer(in []byte) (string, int) {
 	return offer.ConnectionInformation.Address.Address, offer.MediaDescriptions[0].MediaName.Port.Value
 }
 
-func sendAudioPackets(conn *net.UDPConn, body []byte) {
-	ip, port := parseAnswer(body)
+var rtpPkt = &rtp.Packet{
+	Header: rtp.Header{
+		Version: 2,
+		SSRC:    5000,
+	},
+}
 
-	r, err := os.Open(*filePathPlay)
+func rtpNext() {
+	rtpPkt.Header.Timestamp += 160
+	rtpPkt.Header.SequenceNumber += 1
+}
+
+func sendAudioPackets(conn *net.UDPConn, dstAddr *net.UDPAddr, path string) {
+	slog.Info("playing audio", "file", path)
+
+	r, err := os.Open(path)
 	if err != nil {
 		panic(err)
 	}
@@ -208,23 +223,13 @@ func sendAudioPackets(conn *net.UDPConn, body []byte) {
 	}
 
 	i := 0
-	rtpPkt := &rtp.Packet{
-		Header: rtp.Header{
-			Version: 2,
-			SSRC:    5000,
-		},
-	}
-
-	dstAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, port))
-	if err != nil {
-		panic(err)
-	}
-
 	for range time.NewTicker(20 * time.Millisecond).C {
 		if i >= len(audioFrames) {
 			break
 		}
 
+		rtpPkt.PayloadType = 0
+		rtpPkt.Marker = false
 		rtpPkt.Payload = audioFrames[i]
 
 		raw, err := rtpPkt.Marshal()
@@ -236,9 +241,37 @@ func sendAudioPackets(conn *net.UDPConn, body []byte) {
 			return
 		}
 
-		rtpPkt.Header.Timestamp += 160
-		rtpPkt.Header.SequenceNumber += 1
+		rtpNext()
 		i++
+	}
+}
+
+var dtmfCharToEvent = map[rune]byte{
+	'0': 0, '1': 1, '2': 2, '3': 3, '4': 4,
+	'5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
+	'*': 10, '#': 11,
+	'a': 12, 'b': 13, 'c': 14, 'd': 15,
+}
+
+func sendDTMFPackets(conn *net.UDPConn, dstAddr *net.UDPAddr, dtmf string) {
+	slog.Info("sending dtmf", "str", dtmf)
+	data := make([]byte, 4)
+	for _, r := range dtmf {
+		// TODO: this is just enough for us to think it's DTMF; make a proper one later
+		data[0] = dtmfCharToEvent[r]
+		rtpPkt.PayloadType = 101
+		rtpPkt.Marker = true
+		rtpPkt.Payload = data
+
+		raw, err := rtpPkt.Marshal()
+		if err != nil {
+			panic(err)
+		}
+
+		if _, err = conn.WriteTo(raw, dstAddr); err != nil {
+			return
+		}
+		rtpNext()
 	}
 }
 
@@ -272,13 +305,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	slog.Info("local address", "addr", localIP)
 
 	if *sipServer == "" {
 		*sipServer = localIP + ":5060"
 	}
+	slog.Info("server address", "addr", *sipServer)
 
 	mediaConn := startMediaListener()
-	offer, err := createOffer(mediaConn.LocalAddr().(*net.UDPAddr).Port)
+	maddr := mediaConn.LocalAddr().(*net.UDPAddr)
+	slog.Info("media address", "addr", maddr)
+	offer, err := createOffer(maddr.Port)
 	if err != nil {
 		panic(err)
 	}
@@ -302,9 +339,11 @@ func main() {
 	)
 
 	for {
+		slog.Info("sending invite")
 		inviteRequest, inviteResponse = attemptInvite(sipClient, offer, authorizationHeaderValue)
 
 		if inviteResponse.StatusCode == 407 {
+			slog.Info("auth requested")
 			if *username == "" || *password == "" {
 				panic("Server responded with 407, but no username or password was provided")
 			}
@@ -349,6 +388,7 @@ func main() {
 	if err = sipClient.WriteRequest(sip.NewAckRequest(inviteRequest, inviteResponse, nil)); err != nil {
 		panic(err)
 	}
+	slog.Info("connected")
 
 	sendBye := func() {
 		req := sip.NewByeRequest(inviteRequest, inviteResponse, nil)
@@ -371,8 +411,18 @@ func main() {
 		sendBye()
 		byeSent.Store(true)
 	}()
+	ip, port := parseAnswer(inviteResponse.Body())
+	dstAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		panic(err)
+	}
 
-	sendAudioPackets(mediaConn, inviteResponse.Body())
+	if dtmf := *sendDTMF; dtmf != "" {
+		sendDTMFPackets(mediaConn, dstAddr, dtmf)
+		time.Sleep(time.Second)
+	}
+
+	sendAudioPackets(mediaConn, dstAddr, *filePathPlay)
 	if !byeSent.Load() {
 		sendBye()
 	}
