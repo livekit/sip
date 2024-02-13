@@ -19,24 +19,30 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/frostbyte73/core"
+
 	"github.com/livekit/sip/pkg/media/rtp"
 )
 
 var _ rtp.Writer = (*MediaConn)(nil)
 
 func NewMediaConn() *MediaConn {
-	return &MediaConn{}
+	return &MediaConn{closed: core.NewFuse()}
 }
 
 type MediaConn struct {
-	wmu  sync.Mutex
-	conn *net.UDPConn
+	wmu    sync.Mutex
+	conn   *net.UDPConn
+	closed core.Fuse
 
 	dest  atomic.Pointer[net.UDPAddr]
 	onRTP atomic.Pointer[rtp.Handler]
 }
 
 func (c *MediaConn) LocalAddr() *net.UDPAddr {
+	if c == nil || c.conn == nil {
+		return nil
+	}
 	return c.conn.LocalAddr().(*net.UDPAddr)
 }
 
@@ -60,10 +66,12 @@ func (c *MediaConn) OnRTP(h rtp.Handler) {
 }
 
 func (c *MediaConn) Close() error {
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
+	if c == nil {
+		return nil
 	}
+	c.closed.Once(func() {
+		c.conn.Close()
+	})
 	return nil
 }
 
@@ -83,10 +91,11 @@ func (c *MediaConn) Start(portMin, portMax int, listenAddr string) error {
 }
 
 func (c *MediaConn) readLoop() {
+	conn := c.conn
 	buf := make([]byte, 1500) // MTU
 	var p rtp.Packet
 	for {
-		n, srcAddr, err := c.conn.ReadFromUDP(buf)
+		n, srcAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
