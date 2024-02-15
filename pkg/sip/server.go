@@ -71,6 +71,7 @@ type Handler interface {
 type Server struct {
 	mon         *stats.Monitor
 	sipSrv      *sipgo.Server
+	sipSrvStop  func()
 	signalingIp string
 
 	inProgressInvites []*inProgressInvite
@@ -157,9 +158,12 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 
-	// TODO: pass proper context here
+	ctx, stop := context.WithCancel(context.Background())
+	s.sipSrvStop = stop
 	go func() {
-		panic(s.sipSrv.ListenAndServe(context.TODO(), "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)))
+		if err := s.sipSrv.ListenAndServe(ctx, "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)); err != nil {
+			panic(err)
+		}
 	}()
 
 	return nil
@@ -175,5 +179,6 @@ func (s *Server) Stop() {
 	}
 	if s.sipSrv != nil {
 		s.sipSrv.Close()
+		s.sipSrvStop()
 	}
 }
