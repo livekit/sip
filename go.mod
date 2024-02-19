@@ -118,3 +118,5 @@ require (
 	google.golang.org/protobuf v1.32.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
+
+replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240219170153-022fadb4f1a0

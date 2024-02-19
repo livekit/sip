@@ -72,6 +72,9 @@ func (lk *LiveKit) ExpectParticipants(t testing.TB, room string, participants []
 
 func (lk *LiveKit) ExpectRoomWithParticipants(t testing.TB, room string, participants []Participant) {
 	rooms := lk.ListRooms(t)
+	if len(participants) == 0 && len(rooms) == 0 {
+		return
+	}
 	require.Len(t, rooms, 1)
 	require.Equal(t, room, rooms[0].Name)
 
