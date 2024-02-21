@@ -20,6 +20,11 @@ type Writer[T any] interface {
 	WriteSample(sample T) error
 }
 
+type WriteCloser[T any] interface {
+	Writer[T]
+	Close() error
+}
+
 type WriterFunc[T any] func(in T) error
 
 func (fnc WriterFunc[T]) WriteSample(in T) error {

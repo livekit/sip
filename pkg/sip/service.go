@@ -15,34 +15,15 @@
 package sip
 
 import (
-	"errors"
-
 	"github.com/emiago/sipgo"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/rs/zerolog"
-	zlog "github.com/rs/zerolog/log"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
-
-func init() {
-	zlog.Logger = zerolog.New(nil).Hook(zerolog.HookFunc(func(e *zerolog.Event, level zerolog.Level, message string) {
-		switch level {
-		case zerolog.DebugLevel:
-			logger.Debugw(message)
-		case zerolog.InfoLevel:
-			logger.Infow(message)
-		case zerolog.WarnLevel:
-			logger.Warnw(message, errors.New(message))
-		case zerolog.ErrorLevel:
-			logger.Errorw(message, errors.New(message))
-		}
-	}))
-}
 
 type Service struct {
 	conf *config.Config

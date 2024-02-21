@@ -3,8 +3,10 @@ package integration
 import (
 	"context"
 	"net"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/redis"
@@ -60,9 +62,29 @@ type Participant struct {
 	Kind     livekit.ParticipantInfo_Kind
 }
 
-func (lk *LiveKit) ExpectParticipants(t testing.TB, room string, participants []Participant) {
-	list := lk.RoomParticipants(t, room)
+func (lk *LiveKit) ExpectParticipants(t testing.TB, ctx context.Context, room string, participants []Participant) {
+	var list []*livekit.ParticipantInfo
+	ticker := time.NewTicker(time.Second / 4)
+	defer ticker.Stop()
+wait:
+	for {
+		list = lk.RoomParticipants(t, room)
+		if len(list) == len(participants) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			break wait
+		case <-ticker.C:
+		}
+	}
 	require.Len(t, list, len(participants))
+	slices.SortFunc(participants, func(a, b Participant) int {
+		return strings.Compare(a.Identity, b.Identity)
+	})
+	slices.SortFunc(list, func(a, b *livekit.ParticipantInfo) int {
+		return strings.Compare(a.Identity, b.Identity)
+	})
 	for i := range participants {
 		exp, got := participants[i], list[i]
 		require.Equal(t, exp.Identity, got.Identity)
@@ -70,25 +92,48 @@ func (lk *LiveKit) ExpectParticipants(t testing.TB, room string, participants []
 	}
 }
 
-func (lk *LiveKit) ExpectRoomWithParticipants(t testing.TB, room string, participants []Participant) {
-	rooms := lk.ListRooms(t)
+func (lk *LiveKit) waitRooms(t testing.TB, ctx context.Context, none bool) []*livekit.Room {
+	var rooms []*livekit.Room
+	ticker := time.NewTicker(time.Second / 4)
+	defer ticker.Stop()
+	for {
+		rooms = lk.ListRooms(t)
+		if !none {
+			if len(rooms) >= 1 {
+				return rooms
+			}
+		} else {
+			if len(rooms) == 0 {
+				return rooms
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return rooms
+		case <-ticker.C:
+		}
+	}
+}
+
+func (lk *LiveKit) ExpectRoomWithParticipants(t testing.TB, ctx context.Context, room string, participants []Participant) {
+	rooms := lk.waitRooms(t, ctx, len(participants) == 0)
 	if len(participants) == 0 && len(rooms) == 0 {
 		return
 	}
 	require.Len(t, rooms, 1)
 	require.Equal(t, room, rooms[0].Name)
 
-	lk.ExpectParticipants(t, room, participants)
+	lk.ExpectParticipants(t, ctx, room, participants)
 }
 
-func (lk *LiveKit) ExpectRoomPrefWithParticipants(t testing.TB, pref, number string, participants []Participant) {
-	rooms := lk.ListRooms(t)
+func (lk *LiveKit) ExpectRoomPrefWithParticipants(t testing.TB, ctx context.Context, pref, number string, participants []Participant) {
+	rooms := lk.waitRooms(t, ctx, len(participants) == 0)
 	require.Len(t, rooms, 1)
 	require.NotEqual(t, pref, rooms[0].Name)
 	require.True(t, strings.HasPrefix(rooms[0].Name, pref+"_"+number+"_"))
 	t.Log("Room:", rooms[0].Name)
 
-	lk.ExpectParticipants(t, rooms[0].Name, participants)
+	lk.ExpectParticipants(t, ctx, rooms[0].Name, participants)
 }
 
 func runLiveKit(t testing.TB) *LiveKit {

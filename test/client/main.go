@@ -38,7 +38,7 @@ var (
 func main() {
 	flag.Parse()
 
-	cli, err := siptest.NewClient(siptest.ClientConfig{
+	cli, err := siptest.NewClient("", siptest.ClientConfig{
 		Number:   *from,
 		AuthUser: *username,
 		AuthPass: *password,

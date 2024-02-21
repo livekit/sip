@@ -12,13 +12,13 @@ require (
 	github.com/livekit/protocol v1.9.9
 	github.com/livekit/psrpc v0.5.3-0.20240129223932-473b29cda289
 	github.com/livekit/server-sdk-go v1.1.7
+	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.25
 	github.com/pion/rtp v1.8.3
 	github.com/pion/sdp/v2 v2.4.0
 	github.com/pion/webrtc/v3 v3.2.26
 	github.com/prometheus/client_golang v1.18.0
-	github.com/rs/zerolog v1.28.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.8.4
 	github.com/urfave/cli/v2 v2.25.7
@@ -64,8 +64,6 @@ require (
 	github.com/lithammer/shortuuid/v4 v4.0.0 // indirect
 	github.com/mackerelio/go-osstat v0.2.4 // indirect
 	github.com/magefile/mage v1.15.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/matttproud/golang_protobuf_extensions/v2 v2.0.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moby/term v0.5.0 // indirect
@@ -119,4 +117,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240219170153-022fadb4f1a0
+replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240221173016-7b582a2e22a2

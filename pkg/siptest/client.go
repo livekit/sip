@@ -15,13 +15,16 @@
 package siptest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand"
 	"net"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/at-wat/ebml-go"
@@ -33,7 +36,16 @@ import (
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/ulaw"
+	webmm "github.com/livekit/sip/pkg/media/webm"
+)
+
+const (
+	sampleRate    = 8000
+	sampleDur     = 20 * time.Millisecond
+	sampleDurPart = int(time.Second / sampleDur)
+	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
 )
 
 type ClientConfig struct {
@@ -44,9 +56,12 @@ type ClientConfig struct {
 	Log      *slog.Logger
 }
 
-func NewClient(conf ClientConfig) (*Client, error) {
+func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if conf.Log == nil {
 		conf.Log = slog.Default()
+	}
+	if id != "" {
+		conf.Log = conf.Log.With("id", id)
 	}
 	if conf.IP == "" {
 		localIP, err := config.GetLocalIP()
@@ -77,7 +92,7 @@ func NewClient(conf ClientConfig) (*Client, error) {
 		return nil, err
 	}
 	cli.mediaAddr = cli.media.LocalAddr().(*net.UDPAddr)
-	conf.Log.Debug("media address", "addr", cli.mediaAddr)
+	conf.Log.Info("media address", "addr", cli.mediaAddr)
 
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(conf.Number),
@@ -129,26 +144,7 @@ func (c *Client) Close() {
 func (c *Client) record(w io.WriteCloser) error {
 	buf := make([]byte, 1500)
 
-	ws, err := webm.NewSimpleBlockWriter(w,
-		[]webm.TrackEntry{
-			{
-				Name:            "Audio",
-				TrackNumber:     1,
-				TrackUID:        12345,
-				CodecID:         "A_PCM/INT/LIT",
-				TrackType:       2,
-				DefaultDuration: 20000000,
-				Audio: &webm.Audio{
-					SamplingFrequency: 8000.0,
-					Channels:          1,
-				},
-			},
-		})
-	if err != nil {
-		panic(err)
-	}
-
-	var audioTimestamp int64
+	ws := webmm.NewPCM16Writer(w, sampleRate, sampleDur)
 	for {
 		n, _, err := c.media.ReadFromUDP(buf)
 		if err != nil {
@@ -157,19 +153,12 @@ func (c *Client) record(w io.WriteCloser) error {
 
 		var p rtp.Packet
 		if err := p.Unmarshal(buf[:n]); err != nil {
-			c.conf.Log.Warn("cannot parse rtp packet", "err", err)
+			c.log.Warn("cannot parse rtp packet", "err", err)
 			continue
 		}
 
-		audioTimestamp += 20
 		decoded := ulaw.DecodeUlaw(p.Payload)
-
-		out := make([]byte, 2*len(decoded))
-		for _, sample := range decoded {
-			out = append(out, byte(sample&0xff), byte(sample>>8))
-		}
-
-		if _, err := ws[0].Write(true, audioTimestamp, out); err != nil {
+		if err = ws.WriteSample(decoded); err != nil {
 			return err
 		}
 	}
@@ -256,10 +245,10 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 	if err != nil {
 		return err
 	}
-	c.log.Debug("connected!")
 	c.inviteReq = req
 	c.inviteResp = resp
 	c.mediaDst = dstAddr
+	c.log.Debug("client connected", "media-dst", dstAddr)
 	return nil
 }
 
@@ -408,7 +397,7 @@ func (c *Client) SendAudio(path string) error {
 	}
 
 	i := 0
-	for range time.NewTicker(20 * time.Millisecond).C {
+	for range time.NewTicker(sampleDur).C {
 		if i >= len(audioFrames) {
 			break
 		}
@@ -430,6 +419,123 @@ func (c *Client) SendAudio(path string) error {
 		i++
 	}
 	return nil
+}
+
+const (
+	signalAmp    = math.MaxInt16 / 4
+	signalAmpMin = signalAmp - signalAmp/10
+	signalAmpMax = signalAmp + signalAmp/10
+)
+
+// SendSignal generate an audio signal with a given value. It repeats the signal n times, each frame containing one signal.
+// If n <= 0, it will send the signal until the context is cancelled.
+func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
+	signal := make(media.PCM16Sample, rtpPacketDur)
+	genSignal(signal, []wave{{Ind: val, Amp: signalAmp}})
+	data := ulaw.EncodeUlaw(signal)
+	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
+
+	ticker := time.NewTicker(sampleDur)
+	defer ticker.Stop()
+	i := 0
+	for {
+		if n > 0 && i >= n {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			if n <= 0 {
+				c.log.Debug("stopping signal", "n", i, "sig", val)
+				return nil
+			}
+			return ctx.Err()
+		case <-ticker.C:
+		}
+		c.rtp.PayloadType = 0
+		c.rtp.Marker = false
+		c.rtp.Payload = data
+
+		raw, err := c.rtp.Marshal()
+		if err != nil {
+			return err
+		}
+		if _, err = c.media.WriteTo(raw, c.mediaDst); err != nil {
+			return err
+		}
+		c.rtpNext()
+		i++
+	}
+	return nil
+}
+
+// WaitSignals waits for an audio frame to contain all signals.
+func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
+	buf := make([]byte, 1500)
+	var ws media.PCM16WriteCloser
+	if w != nil {
+		ws = webmm.NewPCM16Writer(w, sampleRate, sampleDur)
+		defer ws.Close()
+	}
+	for {
+		n, _, err := c.media.ReadFromUDP(buf)
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		var p rtp.Packet
+		if err := p.Unmarshal(buf[:n]); err != nil {
+			c.log.Warn("cannot parse rtp packet", "err", err)
+			continue
+		}
+		if p.PayloadType != 0 {
+			c.log.Debug("skipping payload", "type", p.PayloadType)
+			continue
+		}
+
+		decoded := ulaw.DecodeUlaw(p.Payload)
+		if ws != nil {
+			if err = ws.WriteSample(decoded); err != nil {
+				return err
+			}
+		}
+		allZero := true
+		for _, v := range decoded {
+			if v != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			continue
+		}
+		out := findSignal(decoded)
+		if len(out) >= len(vals) {
+			out = out[:len(vals)]
+			slices.SortFunc(out, func(a, b wave) int {
+				return a.Ind - b.Ind
+			})
+			ok := true
+			for i := range vals {
+				if out[i].Ind != vals[i] || out[i].Amp < signalAmpMin || out[i].Amp > signalAmpMax {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				c.log.Debug("signal found", "sig", vals)
+				return nil
+			}
+		}
+		if len(out) > len(vals)*2 {
+			out = out[:len(vals)*2]
+		}
+		c.log.Debug("skipping signal", "len", len(decoded), "signals", out)
+	}
 }
 
 func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {

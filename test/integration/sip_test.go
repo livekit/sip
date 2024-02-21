@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go"
+	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/service"
@@ -53,6 +55,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		UseExternalIP: false,
 		Logging:       logger.Config{Level: "debug"},
 	}
+	_ = conf.InitLogger()
 
 	sipsrv, err := sip.NewService(conf)
 	if err != nil {
@@ -157,8 +160,8 @@ func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string) {
 	t.Log("Dispatch (individual):", dr.SipDispatchRuleId)
 }
 
-func runClient(t testing.TB, conf *NumberConfig, number string, forcePin bool) func() {
-	cli, err := siptest.NewClient(siptest.ClientConfig{
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool) *siptest.Client {
+	cli, err := siptest.NewClient(id, siptest.ClientConfig{
 		//IP: dockerBridgeIP,
 		Number:   number,
 		AuthUser: conf.AuthUser,
@@ -180,12 +183,12 @@ func runClient(t testing.TB, conf *NumberConfig, number string, forcePin bool) f
 			t.Fatal(err)
 		}
 	}
-	return cli.Close
+	return cli
 }
 
 const (
-	serverNumber = "+111111111"
-	clientNumber = "+222222222"
+	serverNumber = "+000000000"
+	clientNumber = "+111111111"
 )
 
 func TestSIPJoinOpenRoom(t *testing.T) {
@@ -195,20 +198,22 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	const roomName = "test-open"
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
 
-	hangup := runClient(t, nc, clientNumber, false)
-	time.Sleep(2 * time.Second)
+	cli := runClient(t, nc, "", clientNumber, false)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
-	lk.ExpectRoomWithParticipants(t, roomName, []Participant{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 
-	hangup()
-	time.Sleep(1 * time.Second)
+	cli.Close()
 
 	// SIP participant must disconnect from LK room on hangup.
-	lk.ExpectRoomWithParticipants(t, roomName, nil)
+	ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 }
 
 func TestSIPJoinPinRoom(t *testing.T) {
@@ -218,22 +223,23 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	const roomName = "test-priv"
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234")
 
-	hangup := runClient(t, nc, clientNumber, false)
-
-	// Need additional time for the "enter pin" message to end.
-	time.Sleep(7 * time.Second)
+	cli := runClient(t, nc, "", clientNumber, false)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
-	lk.ExpectRoomWithParticipants(t, roomName, []Participant{
+	// This needs additional time for the "enter pin" message to end.
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 
-	hangup()
-	time.Sleep(1 * time.Second)
+	cli.Close()
 
 	// SIP participant must disconnect from LK room on hangup.
-	lk.ExpectRoomWithParticipants(t, roomName, nil)
+	ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 }
 
 func TestSIPJoinOpenRoomWithPin(t *testing.T) {
@@ -244,12 +250,12 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
 	srv.CreateDirectDispatch(t, "test-priv", "1234")
 
-	runClient(t, nc, clientNumber, true)
+	runClient(t, nc, "", clientNumber, true)
 
-	// Need additional time for the "enter pin" message to end.
-	time.Sleep(7 * time.Second)
-
-	lk.ExpectRoomWithParticipants(t, roomName, []Participant{
+	// This needs additional time for the "enter pin" message to end.
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 }
@@ -261,12 +267,89 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	const roomName = "test-open"
 	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "")
 
-	runClient(t, nc, clientNumber, false)
-	time.Sleep(2 * time.Second)
+	runClient(t, nc, "", clientNumber, false)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
-	lk.ExpectRoomPrefWithParticipants(t, roomName, clientNumber, []Participant{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
+}
+
+func TestSIPAudio(t *testing.T) {
+	for _, N := range []int{2, 3} {
+		N := N
+		t.Run(fmt.Sprintf("%d clients", N), func(t *testing.T) {
+			lk := runLiveKit(t)
+			srv := runSIPServer(t, lk)
+
+			const roomName = "test-open"
+			nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
+
+			// Connect clients and wait for them to join.
+			var clients []*siptest.Client
+			for i := 0; i < N; i++ {
+				cli := runClient(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), false)
+				clients = append(clients, cli)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second*time.Duration(N))
+			defer cancel()
+			var exp []Participant
+			for i := range clients {
+				exp = append(exp, Participant{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
+			}
+			lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
+
+			ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			// Participants can only subscribe to tracks that are "live", so give them the chance to do so.
+			for _, cli := range clients {
+				err := cli.SendSignal(ctx, 1, 0)
+				require.NoError(t, err)
+			}
+
+			// Each client will emit its own audio signal.
+			var allSig []int
+			for i, cli := range clients {
+				cli := cli
+				sig := i + 1
+				allSig = append(allSig, sig)
+				go func() {
+					err := cli.SendSignal(ctx, -1, sig)
+					require.NoError(t, err)
+				}()
+			}
+
+			// And they will wait for the other one's signal.
+			errc := make(chan error, N)
+			for i, cli := range clients {
+				cli := cli
+				// Expect all signals except its own.
+				var signals []int
+				signals = append(signals, allSig[:i]...)
+				signals = append(signals, allSig[i+1:]...)
+				go func() {
+					errc <- cli.WaitSignals(ctx, signals, nil)
+				}()
+			}
+			// Wait for the signal sequence to be received by both (or the timeout).
+			for i := 0; i < N; i++ {
+				err := <-errc
+				require.NoError(t, err)
+			}
+
+			// Stop everything and ensure the room is empty afterward.
+			cancel()
+			for _, cli := range clients {
+				cli.Close()
+			}
+
+			ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
+		})
+	}
 }
