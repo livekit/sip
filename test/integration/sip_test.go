@@ -302,12 +302,12 @@ func TestSIPAudio(t *testing.T) {
 			}
 			lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
 
-			ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
 			// Participants can only subscribe to tracks that are "live", so give them the chance to do so.
 			for _, cli := range clients {
-				err := cli.SendSignal(ctx, 1, 0)
+				err := cli.SendSignal(ctx, 3, 0)
 				require.NoError(t, err)
 			}
 

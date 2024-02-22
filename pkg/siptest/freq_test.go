@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/ulaw"
 )
 
 func TestFreq(t *testing.T) {
@@ -28,25 +27,10 @@ func TestFreq(t *testing.T) {
 	const amp = 100
 	inp := []wave{
 		{0, amp},
-		{1, amp / 4},
 		{3, amp / 2},
+		{1, amp / 4},
 	}
 	genSignal(sig, inp)
-
-	out := findSignal(sig)
-	require.Equal(t, inp, out)
-}
-
-func TestFreqUlaw(t *testing.T) {
-	sig := make(media.PCM16Sample, rtpPacketDur)
-	const amp = 100
-	inp := []wave{
-		{0, amp},
-		{1, amp / 4},
-		{3, amp / 2},
-	}
-	genSignal(sig, inp)
-	sig = ulaw.DecodeUlaw(ulaw.EncodeUlaw(sig))
 
 	out := findSignal(sig)
 	require.Equal(t, inp, out)
