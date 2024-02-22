@@ -503,24 +503,20 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 				return err
 			}
 		}
-		allZero := true
-		for _, v := range decoded {
-			if v != 0 {
-				allZero = false
-				break
-			}
-		}
-		if allZero {
-			continue
+		if !slices.ContainsFunc(decoded, func(v int16) bool { return v != 0 }) {
+			continue // Ignore silence.
 		}
 		out := findSignal(decoded)
 		if len(out) >= len(vals) {
+			// Only consider first N strongest signals.
 			out = out[:len(vals)]
+			// Sort them again by index, so it's easier to compare.
 			slices.SortFunc(out, func(a, b wave) int {
 				return a.Ind - b.Ind
 			})
 			ok := true
 			for i := range vals {
+				// All signals must match the frequency and have around the same amplitude.
 				if out[i].Ind != vals[i] || out[i].Amp < signalAmpMin || out[i].Amp > signalAmpMax {
 					ok = false
 					break
@@ -531,6 +527,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 				return nil
 			}
 		}
+		// Remove most other components from the logs.
 		if len(out) > len(vals)*2 {
 			out = out[:len(vals)*2]
 		}
