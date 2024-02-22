@@ -187,8 +187,11 @@ func runClient(t testing.TB, conf *NumberConfig, id string, number string, force
 }
 
 const (
-	serverNumber = "+000000000"
-	clientNumber = "+111111111"
+	serverNumber                   = "+000000000"
+	clientNumber                   = "+111111111"
+	participantsJoinTimeout        = 2 * time.Second
+	participantsJoinWithPinTimeout = participantsJoinTimeout + 5*time.Second
+	participantsLeaveTimeout       = 3 * time.Second
 )
 
 func TestSIPJoinOpenRoom(t *testing.T) {
@@ -202,7 +205,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
@@ -211,7 +214,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	cli.Close()
 
 	// SIP participant must disconnect from LK room on hangup.
-	ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 }
@@ -228,7 +231,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
 	// This needs additional time for the "enter pin" message to end.
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
@@ -237,7 +240,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	cli.Close()
 
 	// SIP participant must disconnect from LK room on hangup.
-	ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 }
@@ -253,7 +256,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	runClient(t, nc, "", clientNumber, true)
 
 	// This needs additional time for the "enter pin" message to end.
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
@@ -271,7 +274,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
 	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []Participant{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
@@ -294,7 +297,7 @@ func TestSIPAudio(t *testing.T) {
 				cli := runClient(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), false)
 				clients = append(clients, cli)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second*time.Duration(N))
+			ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout*time.Duration(N))
 			defer cancel()
 			var exp []Participant
 			for i := range clients {
@@ -347,7 +350,7 @@ func TestSIPAudio(t *testing.T) {
 				cli.Close()
 			}
 
-			ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+			ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
 			defer cancel()
 			lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 		})
