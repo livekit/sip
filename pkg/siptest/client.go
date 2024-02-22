@@ -476,6 +476,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 		ws = webmm.NewPCM16Writer(w, sampleRate, sampleDur)
 		defer ws.Close()
 	}
+	lastLog := time.Now()
 	for {
 		n, _, err := c.media.ReadFromUDP(buf)
 		if err != nil {
@@ -531,7 +532,10 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 		if len(out) > len(vals)*2 {
 			out = out[:len(vals)*2]
 		}
-		c.log.Debug("skipping signal", "len", len(decoded), "signals", out)
+		if time.Since(lastLog) > time.Second {
+			lastLog = time.Now()
+			c.log.Debug("skipping signal", "len", len(decoded), "signals", out)
+		}
 	}
 }
 
