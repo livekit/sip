@@ -20,7 +20,7 @@ on:
   pull_request:
     branches: [ main ]
 env:
-  GOVERSION: "1.21.4"
+  GOVERSION: "1.21"
 
 jobs:
   integration:
