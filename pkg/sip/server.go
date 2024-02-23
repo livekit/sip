@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/emiago/sipgo"
@@ -71,7 +72,7 @@ type Handler interface {
 type Server struct {
 	mon         *stats.Monitor
 	sipSrv      *sipgo.Server
-	sipSrvStop  func()
+	sipConn     *net.UDPConn
 	signalingIp string
 
 	inProgressInvites []*inProgressInvite
@@ -158,11 +159,18 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 
-	ctx, stop := context.WithCancel(context.Background())
-	s.sipSrvStop = stop
+	lis, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.IPv4(0, 0, 0, 0),
+		Port: s.conf.SIPPort,
+	})
+	if err != nil {
+		return fmt.Errorf("cannot listen on the signaling port %d: %w", s.conf.SIPPort, err)
+	}
+	s.sipConn = lis
+
 	go func() {
-		if err := s.sipSrv.ListenAndServe(ctx, "udp", fmt.Sprintf("0.0.0.0:%d", s.conf.SIPPort)); err != nil {
-			panic(err)
+		if err := s.sipSrv.ServeUDP(lis); err != nil {
+			panic(fmt.Errorf("SIP listen UDP error: %w", err))
 		}
 	}()
 
@@ -179,6 +187,8 @@ func (s *Server) Stop() {
 	}
 	if s.sipSrv != nil {
 		s.sipSrv.Close()
-		s.sipSrvStop()
+	}
+	if s.sipConn != nil {
+		s.sipConn.Close()
 	}
 }
