@@ -54,6 +54,7 @@ type ClientConfig struct {
 	AuthUser string
 	AuthPass string
 	Log      *slog.Logger
+	OnBye    func(req *sip.Request, tx sip.ServerTransaction)
 }
 
 func NewClient(id string, conf ClientConfig) (*Client, error) {
@@ -102,10 +103,20 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	cli.sip, err = sipgo.NewClient(ua, sipgo.WithClientHostname(conf.IP))
+	cli.sipClient, err = sipgo.NewClient(ua, sipgo.WithClientHostname(conf.IP))
 	if err != nil {
 		cli.Close()
 		return nil, err
+	}
+
+	cli.sipServer, err = sipgo.NewServer(ua)
+	if err != nil {
+		cli.Close()
+		return nil, err
+	}
+
+	if conf.OnBye != nil {
+		cli.sipServer.OnBye(conf.OnBye)
 	}
 
 	return cli, nil
@@ -117,7 +128,8 @@ type Client struct {
 	media      *net.UDPConn
 	mediaAddr  *net.UDPAddr
 	mediaDst   *net.UDPAddr
-	sip        *sipgo.Client
+	sipClient  *sipgo.Client
+	sipServer  *sipgo.Server
 	inviteReq  *sip.Request
 	inviteResp *sip.Response
 	rtp        *rtp.Packet
@@ -133,8 +145,11 @@ func (c *Client) Close() {
 		c.inviteReq = nil
 		c.inviteResp = nil
 	}
-	if c.sip != nil {
-		c.sip.Close()
+	if c.sipClient != nil {
+		c.sipClient.Close()
+	}
+	if c.sipServer != nil {
+		c.sipServer.Close()
 	}
 	if c.media != nil {
 		c.media.Close()
@@ -167,6 +182,10 @@ func (c *Client) record(w io.WriteCloser) error {
 func (c *Client) Record(w io.WriteCloser) {
 	go func() {
 		if err := c.record(w); err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+
 			panic(err)
 		}
 	}()
@@ -234,7 +253,7 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
-	if err = c.sip.WriteRequest(sip.NewAckRequest(req, resp, nil)); err != nil {
+	if err = c.sipClient.WriteRequest(sip.NewAckRequest(req, resp, nil)); err != nil {
 		return err
 	}
 	ip, port, err := parseSDPAnswer(resp.Body())
@@ -264,7 +283,7 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 		req.AppendHeader(sip.NewHeader("Proxy-Authorization", authHeader))
 	}
 
-	tx, err := c.sip.TransactionRequest(req)
+	tx, err := c.sipClient.TransactionRequest(req)
 	if err != nil {
 		panic(err)
 	}
@@ -280,7 +299,7 @@ func (c *Client) sendBye() {
 	req := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
 	req.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 
-	tx, err := c.sip.TransactionRequest(req)
+	tx, err := c.sipClient.TransactionRequest(req)
 	if err != nil {
 		return
 	}
