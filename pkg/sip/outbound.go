@@ -23,6 +23,7 @@ import (
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
+	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -201,6 +202,18 @@ func (c *outboundCall) updateSIP(sipNew sipOutboundConfig) error {
 	if err := c.sipSignal(sipNew); err != nil {
 		return err
 	}
+
+	if c.sipInviteResp != nil && c.rtpConn != nil {
+		offer := sdp.SessionDescription{}
+		if err := offer.Unmarshal(c.sipInviteResp.Body()); err != nil {
+			return err
+		}
+
+		if dst := sdpGetAudioDest(offer); dst != nil {
+			c.rtpConn.SetDestAddr(dst)
+		}
+	}
+
 	c.sipRunning = true
 	c.sipCur = sipNew
 	return nil
