@@ -94,11 +94,10 @@ func (c *outboundCall) Close() error {
 	return nil
 }
 
-func (c *outboundCall) CloseWithReason(reason string) error {
+func (c *outboundCall) CloseWithReason(reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.close(reason)
-	return nil
 }
 
 func (c *outboundCall) close(reason string) {
