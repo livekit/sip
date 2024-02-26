@@ -16,10 +16,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"net"
 	"os"
 	"os/signal"
 
+	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/sip/pkg/siptest"
 )
 
@@ -38,10 +41,16 @@ var (
 func main() {
 	flag.Parse()
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
 	cli, err := siptest.NewClient("", siptest.ClientConfig{
 		Number:   *from,
 		AuthUser: *username,
 		AuthPass: *password,
+		OnBye: func(req *sip.Request, tx sip.ServerTransaction) {
+			cancel()
+		},
 	})
 	if err != nil {
 		panic(err)
@@ -61,9 +70,6 @@ func main() {
 		cli.Record(f)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
 	if err = cli.Dial(*sipServer, *sipUri, *to); err != nil {
 		panic(err)
 	}
@@ -80,6 +86,8 @@ func main() {
 	}
 
 	if err = cli.SendAudio(*filePathPlay); err != nil {
-		panic(err)
+		if !errors.Is(err, net.ErrClosed) {
+			panic(err)
+		}
 	}
 }
