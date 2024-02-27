@@ -69,10 +69,9 @@ func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration, samp
 
 func newMixer(out media.Writer[media.PCM16Sample], mixSize int) *Mixer {
 	return &Mixer{
-		out:     out,
-		mixBuf:  make([]int32, mixSize),
-		mixTmp:  make(media.PCM16Sample, mixSize),
-		stopped: core.NewFuse(),
+		out:    out,
+		mixBuf: make([]int32, mixSize),
+		mixTmp: make(media.PCM16Sample, mixSize),
 	}
 }
 

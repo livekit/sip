@@ -68,8 +68,6 @@ func NewService(
 
 		sipServiceStop:        sipServiceStop,
 		sipServiceActiveCalls: sipServiceActiveCalls,
-
-		shutdown: core.NewFuse(),
 	}
 	if conf.PrometheusPort > 0 {
 		s.promServer = &http.Server{

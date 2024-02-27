@@ -60,7 +60,6 @@ func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall,
 	call := &outboundCall{
 		c:       c,
 		rtpConn: NewMediaConn(),
-		stopped: core.NewFuse(),
 	}
 	if err := call.startMedia(conf); err != nil {
 		call.close("media-failed")
