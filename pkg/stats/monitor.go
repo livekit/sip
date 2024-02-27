@@ -59,10 +59,7 @@ type Monitor struct {
 }
 
 func NewMonitor() *Monitor {
-	return &Monitor{
-		started:  core.NewFuse(),
-		shutdown: core.NewFuse(),
-	}
+	return &Monitor{}
 }
 
 func mustRegister[T prometheus.Collector](m *Monitor, c T) T {

@@ -27,7 +27,7 @@ import (
 var _ rtp.Writer = (*MediaConn)(nil)
 
 func NewMediaConn() *MediaConn {
-	return &MediaConn{closed: core.NewFuse()}
+	return &MediaConn{}
 }
 
 type MediaConn struct {
