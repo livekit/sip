@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
@@ -33,6 +34,7 @@ type Client struct {
 	mon  *stats.Monitor
 
 	sipCli      *sipgo.Client
+	sipServer   *sipgo.Server
 	signalingIp string
 
 	cmu         sync.Mutex
@@ -48,7 +50,7 @@ func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
 	return c
 }
 
-func (c *Client) Start(agent *sipgo.UserAgent) error {
+func (c *Client) Start() error {
 	var err error
 	if c.conf.UseExternalIP {
 		if c.signalingIp, err = getPublicIP(); err != nil {
@@ -62,19 +64,25 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		}
 	}
 
-	if agent == nil {
-		ua, err := sipgo.NewUA(
-			sipgo.WithUserAgent(UserAgent),
-		)
-		if err != nil {
-			return err
-		}
-		agent = ua
+	agent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(UserAgent),
+	)
+	if err != nil {
+		return err
 	}
+
 	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.signalingIp))
 	if err != nil {
 		return err
 	}
+
+	c.sipServer, err = sipgo.NewServer(agent)
+	if err != nil {
+		return err
+	}
+
+	c.sipServer.OnBye(c.onBye)
+
 	return nil
 }
 
@@ -137,6 +145,29 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 
 	p := call.Participant()
 	return &rpc.InternalCreateSIPParticipantResponse{ParticipantId: p.ID, ParticipantIdentity: p.Identity}, nil
+}
+
+func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+
+	for c := range c.activeCalls {
+		toHeader, ok := req.To()
+		if !ok {
+			continue
+		}
+
+		fromHeader, ok := req.From()
+		if !ok {
+			continue
+		}
+
+		if c.sipCur.to == fromHeader.Address.User && c.sipCur.from == toHeader.Address.User {
+			go func(call *outboundCall) {
+				call.CloseWithReason("bye")
+			}(c)
+		}
+	}
 }
 
 func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {

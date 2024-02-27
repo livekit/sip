@@ -124,7 +124,7 @@ func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
 
-func (s *Server) Start(agent *sipgo.UserAgent) error {
+func (s *Server) Start() error {
 	var err error
 	if s.conf.UseExternalIP {
 		if s.signalingIp, err = getPublicIP(); err != nil {
@@ -138,14 +138,11 @@ func (s *Server) Start(agent *sipgo.UserAgent) error {
 		}
 	}
 
-	if agent == nil {
-		ua, err := sipgo.NewUA(
-			sipgo.WithUserAgent(UserAgent),
-		)
-		if err != nil {
-			return err
-		}
-		agent = ua
+	agent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(UserAgent),
+	)
+	if err != nil {
+		return err
 	}
 
 	s.sipSrv, err = sipgo.NewServer(agent)

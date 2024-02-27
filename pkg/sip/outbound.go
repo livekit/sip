@@ -299,13 +299,18 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 
 func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, authHeader string) (*sip.Request, *sip.Response, error) {
 	c.mon.InviteReq()
+
 	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060}
-	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp, Port: 5060}
+	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp}
+
+	fromHeader := &sip.FromHeader{Address: *from, DisplayName: conf.from, Params: sip.NewParams()}
+	fromHeader.Params.Add("tag", sip.GenerateTagN(16))
+
 	req := sip.NewRequest(sip.INVITE, to)
 	req.SetDestination(conf.address + ":5060")
 	req.SetBody(offer)
 	req.AppendHeader(&sip.ToHeader{Address: *to})
-	req.AppendHeader(&sip.FromHeader{Address: *from})
+	req.AppendHeader(fromHeader)
 	req.AppendHeader(&sip.ContactHeader{Address: *from})
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
@@ -391,6 +396,11 @@ func (c *outboundCall) sipAccept(inviteReq *sip.Request, inviteResp *sip.Respons
 		inviteReq.Recipient = &cont.Address
 		inviteReq.Recipient.Port = 5060
 	}
+
+	if recordRouteHeader, ok := inviteResp.RecordRoute(); ok {
+		inviteReq.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
+	}
+
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(inviteReq, inviteResp, nil))
 }
 
