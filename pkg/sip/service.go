@@ -15,7 +15,6 @@
 package sip
 
 import (
-	"github.com/emiago/sipgo"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
@@ -76,16 +75,11 @@ func (s *Service) Start() error {
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
 	}
-	ua, err := sipgo.NewUA(
-		sipgo.WithUserAgent(UserAgent),
-	)
-	if err != nil {
+
+	if err := s.cli.Start(); err != nil {
 		return err
 	}
-	if err = s.cli.Start(ua); err != nil {
-		return err
-	}
-	if err = s.srv.Start(ua); err != nil {
+	if err := s.srv.Start(); err != nil {
 		return err
 	}
 	logger.Debugw("sip service ready")
