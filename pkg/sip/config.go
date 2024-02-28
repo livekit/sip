@@ -58,10 +58,17 @@ func getPublicIP() (string, error) {
 	return ip.Query, nil
 }
 
-func getLocalIP() (string, error) {
+func getLocalIP(localNet string) (string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
+	}
+	var netw *net.IPNet
+	if localNet != "" {
+		_, netw, err = net.ParseCIDR(localNet)
+		if err != nil {
+			return "", err
+		}
 	}
 	for _, i := range ifaces {
 		addrs, err := i.Addrs()
@@ -72,10 +79,16 @@ func getLocalIP() (string, error) {
 		for _, a := range addrs {
 			switch v := a.(type) {
 			case *net.IPAddr:
+				if netw != nil && !netw.Contains(v.IP) {
+					continue
+				}
 				if !v.IP.IsLoopback() && v.IP.To4() != nil {
 					return v.IP.String(), nil
 				}
 			case *net.IPNet:
+				if netw != nil && !netw.Contains(v.IP) {
+					continue
+				}
 				if !v.IP.IsLoopback() && v.IP.To4() != nil {
 					return v.IP.String(), nil
 				}

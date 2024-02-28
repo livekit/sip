@@ -33,9 +33,9 @@ type Client struct {
 	conf *config.Config
 	mon  *stats.Monitor
 
-	sipCli      *sipgo.Client
-	sipServer   *sipgo.Server
-	signalingIp string
+	sipCli           *sipgo.Client
+	signalingIp      string
+	signalingIpLocal string
 
 	cmu         sync.Mutex
 	activeCalls map[*outboundCall]struct{}
@@ -50,38 +50,40 @@ func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
 	return c
 }
 
-func (c *Client) Start() error {
+func (c *Client) Start(agent *sipgo.UserAgent) error {
 	var err error
 	if c.conf.UseExternalIP {
 		if c.signalingIp, err = getPublicIP(); err != nil {
 			return err
 		}
-	} else if c.conf.NAT1To1IP != "" {
-		c.signalingIp = c.conf.NAT1To1IP
-	} else {
-		if c.signalingIp, err = getLocalIP(); err != nil {
+		if c.signalingIpLocal, err = getLocalIP(c.conf.LocalNet); err != nil {
 			return err
 		}
+	} else if c.conf.NAT1To1IP != "" {
+		c.signalingIp = c.conf.NAT1To1IP
+		c.signalingIpLocal = c.signalingIp
+	} else {
+		if c.signalingIp, err = getLocalIP(c.conf.LocalNet); err != nil {
+			return err
+		}
+		c.signalingIpLocal = c.signalingIp
 	}
+	logger.Infow("client starting", "local", c.signalingIpLocal, "external", c.signalingIp)
 
-	agent, err := sipgo.NewUA(
-		sipgo.WithUserAgent(UserAgent),
-	)
-	if err != nil {
-		return err
+	if agent == nil {
+		ua, err := sipgo.NewUA(
+			sipgo.WithUserAgent(UserAgent),
+		)
+		if err != nil {
+			return err
+		}
+		agent = ua
 	}
 
 	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.signalingIp))
 	if err != nil {
 		return err
 	}
-
-	c.sipServer, err = sipgo.NewServer(agent)
-	if err != nil {
-		return err
-	}
-
-	c.sipServer.OnBye(c.onBye)
 
 	return nil
 }
@@ -147,7 +149,16 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return &rpc.InternalCreateSIPParticipantResponse{ParticipantId: p.ID, ParticipantIdentity: p.Identity}, nil
 }
 
+func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) {
+	switch req.Method {
+	case "BYE":
+		c.onBye(req, tx)
+	}
+}
+
 func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
+	tag, _ := getTagValue(req)
+	logger.Infow("BYE", "tag", tag)
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
 

@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"github.com/emiago/sipgo"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
@@ -75,11 +76,23 @@ func (s *Service) Start() error {
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
 	}
-
-	if err := s.cli.Start(); err != nil {
+	// The UA must be shared between the client and the server.
+	// Otherwise, the client will have to listen on a random port, which must then be forwarded.
+	//
+	// Routers are smart, they usually keep the UDP "session" open for a few moments, and may allow INVITE handshake
+	// to pass even without forwarding rules on the firewall. ut it will inevitably fail later on follow-up requests like BYE.
+	ua, err := sipgo.NewUA(
+		sipgo.WithUserAgent(UserAgent),
+	)
+	if err != nil {
 		return err
 	}
-	if err := s.srv.Start(); err != nil {
+	if err := s.cli.Start(ua); err != nil {
+		return err
+	}
+	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
+	// Thus, all unhandled transactions will be checked by the client.
+	if err := s.srv.Start(ua, s.cli.OnRequest); err != nil {
 		return err
 	}
 	logger.Debugw("sip service ready")

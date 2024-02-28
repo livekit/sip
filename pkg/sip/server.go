@@ -23,6 +23,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
@@ -70,10 +71,12 @@ type Handler interface {
 }
 
 type Server struct {
-	mon         *stats.Monitor
-	sipSrv      *sipgo.Server
-	sipConn     *net.UDPConn
-	signalingIp string
+	mon              *stats.Monitor
+	sipSrv           *sipgo.Server
+	sipConn          *net.UDPConn
+	sipUnhandled     sipgo.RequestHandler
+	signalingIp      string
+	signalingIpLocal string
 
 	inProgressInvites []*inProgressInvite
 
@@ -124,25 +127,34 @@ func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
 
-func (s *Server) Start() error {
+func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) error {
 	var err error
 	if s.conf.UseExternalIP {
 		if s.signalingIp, err = getPublicIP(); err != nil {
 			return err
 		}
-	} else if s.conf.NAT1To1IP != "" {
-		s.signalingIp = s.conf.NAT1To1IP
-	} else {
-		if s.signalingIp, err = getLocalIP(); err != nil {
+		if s.signalingIpLocal, err = getLocalIP(s.conf.LocalNet); err != nil {
 			return err
 		}
+	} else if s.conf.NAT1To1IP != "" {
+		s.signalingIp = s.conf.NAT1To1IP
+		s.signalingIpLocal = s.signalingIp
+	} else {
+		if s.signalingIp, err = getLocalIP(s.conf.LocalNet); err != nil {
+			return err
+		}
+		s.signalingIpLocal = s.signalingIp
 	}
+	logger.Infow("server starting", "local", s.signalingIpLocal, "external", s.signalingIp)
 
-	agent, err := sipgo.NewUA(
-		sipgo.WithUserAgent(UserAgent),
-	)
-	if err != nil {
-		return err
+	if agent == nil {
+		ua, err := sipgo.NewUA(
+			sipgo.WithUserAgent(UserAgent),
+		)
+		if err != nil {
+			return err
+		}
+		agent = ua
 	}
 
 	s.sipSrv, err = sipgo.NewServer(agent)
@@ -152,6 +164,7 @@ func (s *Server) Start() error {
 
 	s.sipSrv.OnInvite(s.onInvite)
 	s.sipSrv.OnBye(s.onBye)
+	s.sipUnhandled = unhandled
 
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
