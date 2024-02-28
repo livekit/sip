@@ -187,6 +187,8 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	s.cmu.RUnlock()
 	if c != nil {
 		c.Close()
+	} else if s.sipUnhandled != nil {
+		s.sipUnhandled(req, tx)
 	}
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 }

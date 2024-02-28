@@ -312,6 +312,34 @@ func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, au
 	req.AppendHeader(&sip.ToHeader{Address: *to})
 	req.AppendHeader(fromHeader)
 	req.AppendHeader(&sip.ContactHeader{Address: *from})
+	// TODO: This issue came out when we tried creating separate UA for the server and the client.
+	//       So we might need to set Via explicitly. Anyway, UA must be shared for other reasons,
+	//       and the calls work without explicit Via. So keep it simple, and let SIPGO set Via for now.
+	//       Code will remain here for the future reference/refactoring.
+	if false {
+		if c.c.signalingIp != c.c.signalingIpLocal {
+			// SIPGO will use Via/From headers to figure out which interface to listen on, which will obviously fail
+			// in case we specify our external IP in there. So we must explicitly add a Via with our local IP.
+			params := sip.NewParams()
+			params["branch"] = sip.GenerateBranch()
+			req.AppendHeader(&sip.ViaHeader{
+				ProtocolName:    "SIP",
+				ProtocolVersion: "2.0",
+				Transport:       req.Transport(),
+				Host:            c.c.signalingIpLocal,
+				Params:          params,
+			})
+		}
+		params := sip.NewParams()
+		params["branch"] = sip.GenerateBranch()
+		req.AppendHeader(&sip.ViaHeader{
+			ProtocolName:    "SIP",
+			ProtocolVersion: "2.0",
+			Transport:       req.Transport(),
+			Host:            c.c.signalingIp,
+			Params:          params,
+		})
+	}
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 

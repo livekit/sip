@@ -54,6 +54,7 @@ type Config struct {
 	ClusterID      string              `yaml:"cluster_id"` // cluster this instance belongs to
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
+	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 
 	// internal
