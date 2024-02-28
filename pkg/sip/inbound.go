@@ -202,7 +202,7 @@ type inboundCall struct {
 	from          *sip.FromHeader
 	to            *sip.ToHeader
 	src           string
-	rtpConn       *MediaConn
+	rtpConn       *rtp.Conn
 	audioHandler  atomic.Pointer[rtp.Handler]
 	audioReceived atomic.Bool
 	audioRecvChan chan struct{}
@@ -371,14 +371,15 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
 	}
-	conn := NewMediaConn()
+	conn := rtp.NewConn()
 	conn.OnRTP(&rtpStatsHandler{mon: c.mon, h: c})
 	if dst := sdpGetAudioDest(offer); dst != nil {
 		conn.SetDestAddr(dst)
 	}
-	if err := conn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := conn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
+	logger.Debugw("begin listening on UDP", "port", conn.LocalAddr().Port)
 	c.rtpConn = conn
 
 	// Encoding pipeline (LK -> SIP)

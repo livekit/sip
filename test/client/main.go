@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/sip/pkg/siptest"
 )
 
@@ -48,7 +47,7 @@ func main() {
 		Number:   *from,
 		AuthUser: *username,
 		AuthPass: *password,
-		OnBye: func(req *sip.Request, tx sip.ServerTransaction) {
+		OnBye: func() {
 			cancel()
 		},
 	})
