@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sip
+package rtp
 
 import (
 	"net"
@@ -20,41 +20,43 @@ import (
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
-
-	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/pion/rtp"
 )
 
-var _ rtp.Writer = (*MediaConn)(nil)
+var _ Writer = (*Conn)(nil)
 
-func NewMediaConn() *MediaConn {
-	return &MediaConn{}
+func NewConn() *Conn {
+	return &Conn{
+		readBuf: make([]byte, 1500), // MTU
+	}
 }
 
-type MediaConn struct {
-	wmu    sync.Mutex
-	conn   *net.UDPConn
-	closed core.Fuse
+type Conn struct {
+	wmu     sync.Mutex
+	conn    *net.UDPConn
+	closed  core.Fuse
+	readBuf []byte
 
 	dest  atomic.Pointer[net.UDPAddr]
-	onRTP atomic.Pointer[rtp.Handler]
+	onRTP atomic.Pointer[Handler]
 }
 
-func (c *MediaConn) LocalAddr() *net.UDPAddr {
+func (c *Conn) LocalAddr() *net.UDPAddr {
 	if c == nil || c.conn == nil {
 		return nil
 	}
 	return c.conn.LocalAddr().(*net.UDPAddr)
 }
 
-func (c *MediaConn) DestAddr() *net.UDPAddr {
+func (c *Conn) DestAddr() *net.UDPAddr {
 	return c.dest.Load()
 }
 
-func (c *MediaConn) SetDestAddr(addr *net.UDPAddr) {
+func (c *Conn) SetDestAddr(addr *net.UDPAddr) {
 	c.dest.Store(addr)
 }
 
-func (c *MediaConn) OnRTP(h rtp.Handler) {
+func (c *Conn) OnRTP(h Handler) {
 	if c == nil {
 		return
 	}
@@ -65,7 +67,7 @@ func (c *MediaConn) OnRTP(h rtp.Handler) {
 	}
 }
 
-func (c *MediaConn) Close() error {
+func (c *Conn) Close() error {
 	if c == nil {
 		return nil
 	}
@@ -75,24 +77,29 @@ func (c *MediaConn) Close() error {
 	return nil
 }
 
-func (c *MediaConn) Start(portMin, portMax int, listenAddr string) error {
+func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0"
 	}
 
 	var err error
-	c.conn, err = listenUDPInPortRange(portMin, portMax, net.ParseIP(listenAddr))
-
+	c.conn, err = ListenUDPPortRange(portMin, portMax, net.ParseIP(listenAddr))
 	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Conn) ListenAndServe(portMin, portMax int, listenAddr string) error {
+	if err := c.Listen(portMin, portMax, listenAddr); err != nil {
 		return err
 	}
 	go c.readLoop()
 	return nil
 }
 
-func (c *MediaConn) readLoop() {
-	conn := c.conn
-	buf := make([]byte, 1500) // MTU
+func (c *Conn) readLoop() {
+	conn, buf := c.conn, c.readBuf
 	var p rtp.Packet
 	for {
 		n, srcAddr, err := conn.ReadFromUDP(buf)
@@ -111,7 +118,7 @@ func (c *MediaConn) readLoop() {
 	}
 }
 
-func (c *MediaConn) WriteRTP(p *rtp.Packet) error {
+func (c *Conn) WriteRTP(p *rtp.Packet) error {
 	addr := c.dest.Load()
 	if addr == nil {
 		return nil
@@ -124,4 +131,17 @@ func (c *MediaConn) WriteRTP(p *rtp.Packet) error {
 	defer c.wmu.Unlock()
 	_, err = c.conn.WriteTo(data, addr)
 	return err
+}
+
+func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
+	buf := c.readBuf
+	n, addr, err := c.conn.ReadFromUDP(buf)
+	if err != nil {
+		return nil, nil, err
+	}
+	var p rtp.Packet
+	if err = p.Unmarshal(buf[:n]); err != nil {
+		return nil, addr, err
+	}
+	return &p, addr, nil
 }

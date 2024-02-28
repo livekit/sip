@@ -37,6 +37,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
+	lkrtp "github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
 	webmm "github.com/livekit/sip/pkg/media/webm"
 )
@@ -54,7 +55,7 @@ type ClientConfig struct {
 	AuthUser string
 	AuthPass string
 	Log      *slog.Logger
-	OnBye    func(req *sip.Request, tx sip.ServerTransaction)
+	OnBye    func()
 }
 
 func NewClient(id string, conf ClientConfig) (*Client, error) {
@@ -82,18 +83,14 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 			SSRC:    5000,
 		},
 	}
+	cli.media = lkrtp.NewConn()
 
-	var err error
-	cli.media, err = net.ListenUDP("udp", &net.UDPAddr{
-		Port: 0,
-		IP:   net.ParseIP("0.0.0.0"),
-	})
+	err := cli.media.Listen(0, 0, "0.0.0.0")
 	if err != nil {
 		cli.Close()
 		return nil, err
 	}
-	cli.mediaAddr = cli.media.LocalAddr().(*net.UDPAddr)
-	conf.Log.Info("media address", "addr", cli.mediaAddr)
+	conf.Log.Info("media address", "addr", cli.media.LocalAddr())
 
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(conf.Number),
@@ -116,7 +113,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	}
 
 	if conf.OnBye != nil {
-		cli.sipServer.OnBye(conf.OnBye)
+		cli.sipServer.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+			conf.OnBye()
+		})
 	}
 
 	return cli, nil
@@ -125,9 +124,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 type Client struct {
 	conf       ClientConfig
 	log        *slog.Logger
-	media      *net.UDPConn
-	mediaAddr  *net.UDPAddr
-	mediaDst   *net.UDPAddr
+	media      *lkrtp.Conn
 	sipClient  *sipgo.Client
 	sipServer  *sipgo.Server
 	inviteReq  *sip.Request
@@ -157,21 +154,13 @@ func (c *Client) Close() {
 }
 
 func (c *Client) record(w io.WriteCloser) error {
-	buf := make([]byte, 1500)
-
 	ws := webmm.NewPCM16Writer(w, sampleRate, sampleDur)
 	for {
-		n, _, err := c.media.ReadFromUDP(buf)
+		p, _, err := c.media.ReadRTP()
 		if err != nil {
+			c.log.Error("cannot read rtp packet", "err", err)
 			return err
 		}
-
-		var p rtp.Packet
-		if err := p.Unmarshal(buf[:n]); err != nil {
-			c.log.Warn("cannot parse rtp packet", "err", err)
-			continue
-		}
-
 		decoded := ulaw.DecodeUlaw(p.Payload)
 		if err = ws.WriteSample(decoded); err != nil {
 			return err
@@ -266,7 +255,7 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 	}
 	c.inviteReq = req
 	c.inviteResp = resp
-	c.mediaDst = dstAddr
+	c.media.SetDestAddr(dstAddr)
 	c.log.Debug("client connected", "media-dst", dstAddr)
 	return nil
 }
@@ -335,15 +324,10 @@ func (c *Client) SendDTMF(dtmf string) error {
 		c.rtp.Marker = true
 		c.rtp.Payload = data
 
-		raw, err := c.rtp.Marshal()
-		if err != nil {
+		if err := c.media.WriteRTP(c.rtp); err != nil {
 			return err
 		}
 		c.rtpNext()
-
-		if _, err = c.media.WriteTo(raw, c.mediaDst); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -379,7 +363,7 @@ func (c *Client) createOffer() ([]byte, error) {
 			{
 				MediaName: sdp.MediaName{
 					Media:   "audio",
-					Port:    sdp.RangedPort{Value: c.mediaAddr.Port},
+					Port:    sdp.RangedPort{Value: c.media.LocalAddr().Port},
 					Protos:  []string{"RTP", "AVP"},
 					Formats: []string{"0"},
 				},
@@ -425,15 +409,9 @@ func (c *Client) SendAudio(path string) error {
 		c.rtp.Marker = false
 		c.rtp.Payload = audioFrames[i]
 
-		raw, err := c.rtp.Marshal()
-		if err != nil {
+		if err = c.media.WriteRTP(c.rtp); err != nil {
 			return err
 		}
-
-		if _, err = c.media.WriteTo(raw, c.mediaDst); err != nil {
-			return err
-		}
-
 		c.rtpNext()
 		i++
 	}
@@ -474,11 +452,7 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 		c.rtp.Marker = false
 		c.rtp.Payload = data
 
-		raw, err := c.rtp.Marshal()
-		if err != nil {
-			return err
-		}
-		if _, err = c.media.WriteTo(raw, c.mediaDst); err != nil {
+		if err := c.media.WriteRTP(c.rtp); err != nil {
 			return err
 		}
 		c.rtpNext()
@@ -489,7 +463,6 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 
 // WaitSignals waits for an audio frame to contain all signals.
 func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
-	buf := make([]byte, 1500)
 	var ws media.PCM16WriteCloser
 	if w != nil {
 		ws = webmm.NewPCM16Writer(w, sampleRate, sampleDur)
@@ -497,8 +470,9 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	}
 	lastLog := time.Now()
 	for {
-		n, _, err := c.media.ReadFromUDP(buf)
+		p, _, err := c.media.ReadRTP()
 		if err != nil {
+			c.log.Error("cannot read rtp packet", "err", err)
 			return err
 		}
 		select {
@@ -507,11 +481,6 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 		default:
 		}
 
-		var p rtp.Packet
-		if err := p.Unmarshal(buf[:n]); err != nil {
-			c.log.Warn("cannot parse rtp packet", "err", err)
-			continue
-		}
 		if p.PayloadType != 0 {
 			c.log.Debug("skipping payload", "type", p.PayloadType)
 			continue

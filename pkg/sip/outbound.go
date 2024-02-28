@@ -42,7 +42,7 @@ type sipOutboundConfig struct {
 
 type outboundCall struct {
 	c       *Client
-	rtpConn *MediaConn
+	rtpConn *rtp.Conn
 	stopped core.Fuse
 
 	mu            sync.RWMutex
@@ -59,7 +59,7 @@ type outboundCall struct {
 func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall, error) {
 	call := &outboundCall{
 		c:       c,
-		rtpConn: NewMediaConn(),
+		rtpConn: rtp.NewConn(),
 	}
 	if err := call.startMedia(conf); err != nil {
 		call.close("media-failed")
@@ -166,9 +166,10 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	if c.mediaRunning {
 		return nil
 	}
-	if err := c.rtpConn.Start(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	if err := c.rtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
+	logger.Debugw("begin listening on UDP", "port", c.rtpConn.LocalAddr().Port)
 	c.mediaRunning = true
 	return nil
 }
