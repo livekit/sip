@@ -18,6 +18,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/rtp"
@@ -25,17 +26,26 @@ import (
 
 var _ Writer = (*Conn)(nil)
 
-func NewConn() *Conn {
-	return &Conn{
+const (
+	timeoutCheckInterval = time.Second * 30
+)
+
+func NewConn(timeoutCallback func()) *Conn {
+	c := &Conn{
 		readBuf: make([]byte, 1500), // MTU
 	}
+	if timeoutCallback != nil {
+		c.onTimeout(timeoutCallback)
+	}
+	return c
 }
 
 type Conn struct {
-	wmu     sync.Mutex
-	conn    *net.UDPConn
-	closed  core.Fuse
-	readBuf []byte
+	wmu         sync.Mutex
+	conn        *net.UDPConn
+	closed      core.Fuse
+	readBuf     []byte
+	packetCount atomic.Uint64
 
 	dest  atomic.Pointer[net.UDPAddr]
 	onRTP atomic.Pointer[Handler]
@@ -112,6 +122,8 @@ func (c *Conn) readLoop() {
 		if err := p.Unmarshal(buf[:n]); err != nil {
 			continue
 		}
+
+		c.packetCount.Add(1)
 		if h := c.onRTP.Load(); h != nil {
 			_ = (*h).HandleRTP(&p)
 		}
@@ -144,4 +156,27 @@ func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
 		return nil, addr, err
 	}
 	return &p, addr, nil
+}
+
+func (c *Conn) onTimeout(timeoutCallback func()) {
+	go func() {
+		ticker := time.NewTicker(timeoutCheckInterval)
+		defer ticker.Stop()
+
+		var lastPacketCount uint64
+		for {
+			select {
+			case <-c.closed.Watch():
+				return
+			case <-ticker.C:
+				currentPacketCount := c.packetCount.Load()
+				if currentPacketCount == lastPacketCount {
+					timeoutCallback()
+					return
+				}
+
+				lastPacketCount = currentPacketCount
+			}
+		}
+	}()
 }
