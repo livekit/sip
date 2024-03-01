@@ -83,7 +83,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 			SSRC:    5000,
 		},
 	}
-	cli.media = lkrtp.NewConn()
+	cli.media = lkrtp.NewConn(func() {
+		panic("media-timeout")
+	})
 
 	err := cli.media.Listen(0, 0, "0.0.0.0")
 	if err != nil {

@@ -373,7 +373,9 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
 	}
-	conn := rtp.NewConn()
+	conn := rtp.NewConn(func() {
+		c.close("media-timeout")
+	})
 	conn.OnRTP(&rtpStatsHandler{mon: c.mon, h: c})
 	if dst := sdpGetAudioDest(offer); dst != nil {
 		conn.SetDestAddr(dst)

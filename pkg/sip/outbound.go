@@ -58,9 +58,12 @@ type outboundCall struct {
 
 func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall, error) {
 	call := &outboundCall{
-		c:       c,
-		rtpConn: rtp.NewConn(),
+		c: c,
 	}
+	call.rtpConn = rtp.NewConn(func() {
+		call.close("media-timeout")
+	})
+
 	if err := call.startMedia(conf); err != nil {
 		call.close("media-failed")
 		return nil, fmt.Errorf("start media failed: %w", err)
