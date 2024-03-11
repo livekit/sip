@@ -52,6 +52,11 @@ jobs:
           set -euo pipefail
           go test -coverpkg=./... -race -json -v -coverprofile=coverage.out -covermode=atomic ./pkg/... 2>&1 | tee /tmp/gotest.log | gotestfmt
 
+      - name: Pull LiveKit Docker image
+        run: |
+          docker pull redis
+          docker pull livekit/livekit-server:master
+
       - name: Test E2E
         run: |
           set -euo pipefail

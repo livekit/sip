@@ -10,7 +10,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/redis"
-	lksdk "github.com/livekit/server-sdk-go"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/ory/dockertest/v3"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +55,21 @@ func (lk *LiveKit) RoomParticipants(t testing.TB, room string) []*livekit.Partic
 		t.Fatal(err)
 	}
 	return resp.Participants
+}
+
+func (lk *LiveKit) Connect(t testing.TB, room string, cb *lksdk.RoomCallback) *lksdk.Room {
+	r := lksdk.NewRoom(cb)
+	err := r.Join(lk.WsUrl, lksdk.ConnectInfo{
+		APIKey:              lk.ApiKey,
+		APISecret:           lk.ApiSecret,
+		RoomName:            room,
+		ParticipantIdentity: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Disconnect)
+	return r
 }
 
 type Participant struct {
@@ -146,7 +161,7 @@ func runLiveKit(t testing.TB) *LiveKit {
 
 	c, err := Docker.RunWithOptions(&dockertest.RunOptions{
 		Name:       "siptest-livekit",
-		Repository: "livekit/livekit-server", Tag: "latest",
+		Repository: "livekit/livekit-server", Tag: "master",
 		Cmd: []string{
 			"--dev",
 			// TODO: We use Docker bridge IP here instead of the host IP.

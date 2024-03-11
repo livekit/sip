@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
-	lksdk "github.com/livekit/server-sdk-go"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
@@ -196,9 +197,25 @@ const (
 
 func TestSIPJoinOpenRoom(t *testing.T) {
 	lk := runLiveKit(t)
+	var (
+		dmu  sync.Mutex
+		dtmf string
+	)
+	const roomName = "test-open"
+	r := lk.Connect(t, roomName, &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+				switch data := data.(type) {
+				case *livekit.SipDTMF:
+					dmu.Lock()
+					dtmf += data.Digit
+					dmu.Unlock()
+				}
+			},
+		},
+	})
 	srv := runSIPServer(t, lk)
 
-	const roomName = "test-open"
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
 
 	cli := runClient(t, nc, "", clientNumber, false)
@@ -208,10 +225,26 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
+		{Identity: "test"},
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 
+	// Wait for WebRTC to come online.
+	time.Sleep(2 * time.Second)
+
+	// Test that we can send DTMF data to LK participants.
+	const dtmfDigits = "*111#"
+	err := cli.SendDTMF(dtmfDigits)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+		return dtmf == dtmfDigits
+	}, 5*time.Second, time.Second/2)
+
 	cli.Close()
+	r.Disconnect()
 
 	// SIP participant must disconnect from LK room on hangup.
 	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
@@ -221,9 +254,25 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 func TestSIPJoinPinRoom(t *testing.T) {
 	lk := runLiveKit(t)
+	var (
+		dmu  sync.Mutex
+		dtmf string
+	)
+	const roomName = "test-priv"
+	r := lk.Connect(t, roomName, &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+				switch data := data.(type) {
+				case *livekit.SipDTMF:
+					dmu.Lock()
+					dtmf += data.Digit
+					dmu.Unlock()
+				}
+			},
+		},
+	})
 	srv := runSIPServer(t, lk)
 
-	const roomName = "test-priv"
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234")
 
 	cli := runClient(t, nc, "", clientNumber, false)
@@ -234,10 +283,26 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
+		{Identity: "test"},
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 
+	// Wait for WebRTC to come online.
+	time.Sleep(2 * time.Second)
+
+	// Test that we can send DTMF data to LK participants.
+	const dtmfDigits = "*111#"
+	err := cli.SendDTMF(dtmfDigits)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+		return dtmf == dtmfDigits
+	}, 5*time.Second, time.Second/2)
+
 	cli.Close()
+	r.Disconnect()
 
 	// SIP participant must disconnect from LK room on hangup.
 	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)

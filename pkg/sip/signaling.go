@@ -20,6 +20,8 @@ import (
 	"net/netip"
 
 	"github.com/pion/sdp/v2"
+
+	"github.com/livekit/sip/pkg/media/dtmf"
 )
 
 func sdpMediaDesc(rtpListenerPort int) []*sdp.MediaDescription {
@@ -36,7 +38,7 @@ func sdpMediaDesc(rtpListenerPort int) []*sdp.MediaDescription {
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "0 PCMU/8000"},
-				{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				{Key: "rtpmap", Value: "101 " + dtmf.SDPName},
 				{Key: "fmtp", Value: "101 0-16"},
 				{Key: "ptime", Value: "20"},
 				{Key: "maxptime", Value: "150"},
