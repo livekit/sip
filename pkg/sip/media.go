@@ -18,9 +18,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pion/rtp"
-
-	srtp "github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -32,46 +30,49 @@ const (
 	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
 )
 
+func newRTPStatsHandler(mon *stats.CallMonitor, typ string, h rtp.Handler) rtp.Handler {
+	if h == nil {
+		h = rtp.HandlerFunc(func(p *rtp.Packet) error {
+			return nil
+		})
+	}
+	return &rtpStatsHandler{h: h, typ: typ, mon: mon}
+}
+
 type rtpStatsHandler struct {
-	h   srtp.Handler
+	h   rtp.Handler
+	typ string
 	mon *stats.CallMonitor
 }
 
 func (h *rtpStatsHandler) HandleRTP(p *rtp.Packet) error {
 	if h.mon != nil {
-		if typ, ok := rtpPacketType(p); ok {
-			h.mon.RTPPacketRecv(typ)
+		typ := h.typ
+		if typ == "" {
+			typ = strconv.Itoa(int(p.PayloadType))
 		}
+		h.mon.RTPPacketRecv(typ)
 	}
 	return h.h.HandleRTP(p)
 }
 
+func newRTPStatsWriter(mon *stats.CallMonitor, typ string, w rtp.Writer) rtp.Writer {
+	return &rtpStatsWriter{w: w, typ: typ, mon: mon}
+}
+
 type rtpStatsWriter struct {
-	w   srtp.Writer
+	w   rtp.Writer
+	typ string
 	mon *stats.CallMonitor
 }
 
 func (h *rtpStatsWriter) WriteRTP(p *rtp.Packet) error {
 	if h.mon != nil {
-		if typ, ok := rtpPacketType(p); ok {
-			h.mon.RTPPacketSend(typ)
+		typ := h.typ
+		if typ == "" {
+			typ = strconv.Itoa(int(p.PayloadType))
 		}
+		h.mon.RTPPacketSend(typ)
 	}
 	return h.w.WriteRTP(p)
-}
-
-func rtpPacketType(p *rtp.Packet) (string, bool) {
-	switch p.PayloadType {
-	case 101:
-		if p.Marker {
-			return "dtmf", true
-		}
-	default:
-		if p.PayloadType == 0 {
-			return "audio", true
-		} else {
-			return strconv.Itoa(int(p.PayloadType)), true
-		}
-	}
-	return "", false
 }
