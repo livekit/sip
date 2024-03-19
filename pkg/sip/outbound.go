@@ -25,6 +25,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	prtp "github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -232,20 +233,17 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	s := rtp.NewMediaStreamOut[ulaw.Sample](&rtpStatsWriter{mon: c.mon, w: c.rtpConn}, rtpPacketDur)
+	s := rtp.NewMediaStreamOut[ulaw.Sample](newRTPStatsWriter(c.mon, "audio", c.rtpConn), rtpPacketDur)
 	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	// Decoding pipeline (SIP -> LK)
 	law := ulaw.Decode(c.lkRoomIn)
 	h := rtp.NewMediaStreamIn(law)
-	c.rtpConn.OnRTP(&rtpStatsHandler{mon: c.mon, h: rtp.HandlerFunc(func(p *rtp.Packet) error {
-		switch p.PayloadType {
-		case 101:
-			return c.handleDTMF(p)
-		default:
-			return h.HandleRTP(p)
-		}
-	})})
+	mux := rtp.NewMux(nil)
+	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
+	mux.Register(prtp.PayloadTypePCMU, newRTPStatsHandler(c.mon, "audio", h))
+	mux.Register(101, newRTPStatsHandler(c.mon, "dtmf", rtp.HandlerFunc(c.handleDTMF)))
+	c.rtpConn.OnRTP(mux)
 }
 
 func (c *outboundCall) SendDTMF(ctx context.Context, digits string) error {

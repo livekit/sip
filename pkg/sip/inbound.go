@@ -25,6 +25,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	prtp "github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -380,7 +381,11 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	conn := rtp.NewConn(func() {
 		c.close("media-timeout")
 	})
-	conn.OnRTP(&rtpStatsHandler{mon: c.mon, h: c})
+	mux := rtp.NewMux(nil)
+	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
+	mux.Register(prtp.PayloadTypePCMU, newRTPStatsHandler(c.mon, "audio", rtp.HandlerFunc(c.handlePCMU)))
+	mux.Register(101, newRTPStatsHandler(c.mon, "dtmf", rtp.HandlerFunc(c.handleDTMF)))
+	conn.OnRTP(mux)
 	if dst := sdpGetAudioDest(offer); dst != nil {
 		conn.SetDestAddr(dst)
 	}
@@ -392,7 +397,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
-	s := rtp.NewMediaStreamOut[ulaw.Sample](&rtpStatsWriter{mon: c.mon, w: conn}, rtpPacketDur)
+	s := rtp.NewMediaStreamOut[ulaw.Sample](newRTPStatsWriter(c.mon, "audio", conn), rtpPacketDur)
 	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)
@@ -482,18 +487,12 @@ func (c *inboundCall) closeMedia() {
 	}
 }
 
-func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
-	switch p.PayloadType {
-	case 101:
-		return c.handleDTMF(p)
-	default:
-		if c.audioReceived.CompareAndSwap(false, true) {
-			close(c.audioRecvChan)
-		}
-		// TODO: Audio data appears to be coming with PayloadType=0, so maybe enforce it?
-		if h := c.audioHandler.Load(); h != nil {
-			return (*h).HandleRTP(p)
-		}
+func (c *inboundCall) handlePCMU(p *rtp.Packet) error {
+	if c.audioReceived.CompareAndSwap(false, true) {
+		close(c.audioRecvChan)
+	}
+	if h := c.audioHandler.Load(); h != nil {
+		return (*h).HandleRTP(p)
 	}
 	return nil
 }
