@@ -22,11 +22,14 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/pkg/stats"
@@ -234,7 +237,15 @@ func (c *outboundCall) relinkMedia() {
 
 	// Decoding pipeline (SIP -> LK)
 	law := ulaw.Decode(c.lkRoomIn)
-	c.rtpConn.OnRTP(&rtpStatsHandler{mon: c.mon, h: rtp.NewMediaStreamIn(law)})
+	h := rtp.NewMediaStreamIn(law)
+	c.rtpConn.OnRTP(&rtpStatsHandler{mon: c.mon, h: rtp.HandlerFunc(func(p *rtp.Packet) error {
+		switch p.PayloadType {
+		case 101:
+			return c.handleDTMF(p)
+		default:
+			return h.HandleRTP(p)
+		}
+	})})
 }
 
 func (c *outboundCall) SendDTMF(ctx context.Context, digits string) error {
@@ -445,4 +456,16 @@ func (c *outboundCall) sipBye() error {
 	}
 	_, err = sipResponse(tx)
 	return err
+}
+
+func (c *outboundCall) handleDTMF(p *rtp.Packet) error {
+	tone, ok := dtmf.DecodeRTP(p)
+	if !ok {
+		return nil
+	}
+	_ = c.lkRoom.SendData(&livekit.SipDTMF{
+		Code:  uint32(tone.Code),
+		Digit: string([]byte{tone.Digit}),
+	}, lksdk.WithDataPublishReliable(true))
+	return nil
 }

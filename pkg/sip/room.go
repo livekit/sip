@@ -16,12 +16,13 @@ package sip
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/protocol/logger"
-	lksdk "github.com/livekit/server-sdk-go"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -41,6 +42,7 @@ type Room struct {
 	mix     *mixer.Mixer
 	out     media.SwitchWriter[media.PCM16Sample]
 	p       Participant
+	ready   atomic.Bool
 	stopped core.Fuse
 }
 
@@ -115,6 +117,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 	r.room = room
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
+	r.ready.Store(true)
 	return nil
 }
 
@@ -130,6 +133,7 @@ func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
 }
 
 func (r *Room) Close() error {
+	r.ready.Store(false)
 	if r.room != nil {
 		r.room.Disconnect()
 		r.room = nil
@@ -165,6 +169,13 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], error) {
 		return nil, err
 	}
 	return pw, nil
+}
+
+func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {
+	if r == nil || !r.ready.Load() {
+		return nil
+	}
+	return r.room.LocalParticipant.PublishDataPacket(data, opts...)
 }
 
 func (r *Room) NewTrack() *Track {

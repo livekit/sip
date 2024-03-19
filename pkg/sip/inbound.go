@@ -22,11 +22,14 @@ import (
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/pkg/stats"
@@ -208,10 +211,11 @@ type inboundCall struct {
 	audioHandler  atomic.Pointer[rtp.Handler]
 	audioReceived atomic.Bool
 	audioRecvChan chan struct{}
-	dtmf          chan byte // buffered; DTMF digits as characters
-	lkRoom        *Room     // LiveKit room; only active after correct pin is entered
+	dtmf          chan dtmf.Tone // buffered; DTMF digits as characters
+	lkRoom        *Room          // LiveKit room; only active after correct pin is entered
 	callDur       func() time.Duration
 	joinDur       func() time.Duration
+	forwardDTMF   atomic.Bool
 	done          atomic.Bool
 }
 
@@ -224,7 +228,7 @@ func (s *Server) newInboundCall(mon *stats.CallMonitor, tag string, from *sip.Fr
 		to:            to,
 		src:           src,
 		audioRecvChan: make(chan struct{}),
-		dtmf:          make(chan byte, 10),
+		dtmf:          make(chan dtmf.Tone, 10),
 		lkRoom:        NewRoom(), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -409,10 +413,10 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				c.Close()
 				return
 			}
-			if b == 0 {
+			if b.Digit == 0 {
 				continue // unrecognized
 			}
-			if b == '#' {
+			if b.Digit == '#' {
 				// End of the pin
 				noPin = pin == ""
 
@@ -436,7 +440,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				return
 			}
 			// Gather pin numbers
-			pin += string(b)
+			pin += string(b.Digit)
 			if len(pin) > pinLimit {
 				c.playAudio(ctx, c.s.res.wrongPin)
 				c.close("wrong-pin")
@@ -471,23 +475,17 @@ func (c *inboundCall) Close() error {
 
 func (c *inboundCall) closeMedia() {
 	c.audioHandler.Store(nil)
-	if p := c.lkRoom; p != nil {
-		p.Close()
-		c.lkRoom = nil
-	}
+	c.lkRoom.Close()
 	if c.rtpConn != nil {
 		c.rtpConn.Close()
 		c.rtpConn = nil
 	}
-	close(c.dtmf)
 }
 
 func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
 	switch p.PayloadType {
 	case 101:
-		if p.Marker {
-			c.handleDTMF(p.Payload)
-		}
+		return c.handleDTMF(p)
 	default:
 		if c.audioReceived.CompareAndSwap(false, true) {
 			close(c.audioRecvChan)
@@ -501,6 +499,7 @@ func (c *inboundCall) HandleRTP(p *rtp.Packet) error {
 }
 
 func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, participantIdentity, wsUrl, token string) error {
+	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -542,15 +541,22 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample)
 	t.PlayAudio(ctx, frames)
 }
 
-func (c *inboundCall) handleDTMF(data []byte) { // RFC2833
-	if len(data) < 4 {
-		return
+func (c *inboundCall) handleDTMF(p *rtp.Packet) error {
+	tone, ok := dtmf.DecodeRTP(p)
+	if !ok {
+		return nil
 	}
-	ev := data[0]
-	b := dtmfEventToChar[ev]
+	if c.forwardDTMF.Load() {
+		_ = c.lkRoom.SendData(&livekit.SipDTMF{
+			Code:  uint32(tone.Code),
+			Digit: string([]byte{tone.Digit}),
+		}, lksdk.WithDataPublishReliable(true))
+		return nil
+	}
 	// We should have enough buffer here.
 	select {
-	case c.dtmf <- b:
+	case c.dtmf <- tone:
 	default:
 	}
+	return nil
 }
