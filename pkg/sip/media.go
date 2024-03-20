@@ -16,18 +16,13 @@ package sip
 
 import (
 	"strconv"
-	"time"
 
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/stats"
 )
 
 const (
-	channels      = 1
-	sampleRate    = 8000
-	sampleDur     = 20 * time.Millisecond
-	sampleDurPart = int(time.Second / sampleDur)
-	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
+	channels = 1
 )
 
 func newRTPStatsHandler(mon *stats.CallMonitor, typ string, h rtp.Handler) rtp.Handler {

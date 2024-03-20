@@ -212,8 +212,8 @@ type inboundCall struct {
 	audioHandler  atomic.Pointer[rtp.Handler]
 	audioReceived atomic.Bool
 	audioRecvChan chan struct{}
-	dtmf          chan dtmf.Tone // buffered; DTMF digits as characters
-	lkRoom        *Room          // LiveKit room; only active after correct pin is entered
+	dtmf          chan dtmf.Event // buffered
+	lkRoom        *Room           // LiveKit room; only active after correct pin is entered
 	callDur       func() time.Duration
 	joinDur       func() time.Duration
 	forwardDTMF   atomic.Bool
@@ -229,7 +229,7 @@ func (s *Server) newInboundCall(mon *stats.CallMonitor, tag string, from *sip.Fr
 		to:            to,
 		src:           src,
 		audioRecvChan: make(chan struct{}),
-		dtmf:          make(chan dtmf.Tone, 10),
+		dtmf:          make(chan dtmf.Event, 10),
 		lkRoom:        NewRoom(), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -397,7 +397,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
-	s := rtp.NewMediaStreamOut[ulaw.Sample](newRTPStatsWriter(c.mon, "audio", conn), rtpPacketDur)
+	s := rtp.NewMediaStreamOut[ulaw.Sample](newRTPStatsWriter(c.mon, "audio", conn), prtp.PayloadTypePCMU, rtp.DefPacketDur)
 	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)

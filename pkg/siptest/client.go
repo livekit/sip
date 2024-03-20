@@ -32,22 +32,16 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"github.com/pion/rtp"
+	prtp "github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
-	lkrtp "github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/dtmf"
+	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/ulaw"
 	webmm "github.com/livekit/sip/pkg/media/webm"
-)
-
-const (
-	sampleRate    = 8000
-	sampleDur     = 20 * time.Millisecond
-	sampleDurPart = int(time.Second / sampleDur)
-	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
 )
 
 type ClientConfig struct {
@@ -78,22 +72,17 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.Number = "1000"
 	}
 	cli := &Client{conf: conf, log: conf.Log}
-	cli.rtp = &rtp.Packet{
-		Header: rtp.Header{
-			Version: 2,
-			SSRC:    5000,
-		},
-	}
-	cli.media = lkrtp.NewConn(func() {
+	cli.mediaConn = rtp.NewConn(func() {
 		panic("media-timeout")
 	})
+	cli.media = rtp.NewStream(cli.mediaConn, rtp.DefPacketDur)
 
-	err := cli.media.Listen(0, 0, "0.0.0.0")
+	err := cli.mediaConn.Listen(0, 0, "0.0.0.0")
 	if err != nil {
 		cli.Close()
 		return nil, err
 	}
-	conf.Log.Info("media address", "addr", cli.media.LocalAddr())
+	conf.Log.Info("media address", "addr", cli.mediaConn.LocalAddr())
 
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(conf.Number),
@@ -127,12 +116,12 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 type Client struct {
 	conf       ClientConfig
 	log        *slog.Logger
-	media      *lkrtp.Conn
+	mediaConn  *rtp.Conn
+	media      *rtp.Stream
 	sipClient  *sipgo.Client
 	sipServer  *sipgo.Server
 	inviteReq  *sip.Request
 	inviteResp *sip.Response
-	rtp        *rtp.Packet
 }
 
 func (c *Client) LocalIP() string {
@@ -152,14 +141,14 @@ func (c *Client) Close() {
 		c.sipServer.Close()
 	}
 	if c.media != nil {
-		c.media.Close()
+		c.mediaConn.Close()
 	}
 }
 
 func (c *Client) record(w io.WriteCloser) error {
-	ws := webmm.NewPCM16Writer(w, sampleRate, sampleDur)
+	ws := webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefSampleDur)
 	for {
-		p, _, err := c.media.ReadRTP()
+		p, _, err := c.mediaConn.ReadRTP()
 		if err != nil {
 			c.log.Error("cannot read rtp packet", "err", err)
 			return err
@@ -258,7 +247,7 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 	}
 	c.inviteReq = req
 	c.inviteResp = resp
-	c.media.SetDestAddr(dstAddr)
+	c.mediaConn.SetDestAddr(dstAddr)
 	c.log.Debug("client connected", "media-dst", dstAddr)
 	return nil
 }
@@ -301,38 +290,9 @@ func (c *Client) sendBye() {
 	}
 }
 
-func (c *Client) rtpNext() {
-	c.rtp.Header.Timestamp += 160
-	c.rtp.Header.SequenceNumber += 1
-	// reset
-	c.rtp.PayloadType = 0
-	c.rtp.Payload = nil
-	c.rtp.Marker = false
-}
-
-var dtmfCharToEvent = map[rune]byte{
-	'0': 0, '1': 1, '2': 2, '3': 3, '4': 4,
-	'5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-	'*': 10, '#': 11,
-	'a': 12, 'b': 13, 'c': 14, 'd': 15,
-}
-
-func (c *Client) SendDTMF(dtmf string) error {
-	c.log.Debug("sending dtmf", "str", dtmf)
-	data := make([]byte, 4)
-	for _, r := range dtmf {
-		// TODO: this is just enough for us to think it's DTMF; make a proper one later
-		data[0] = dtmfCharToEvent[r]
-		c.rtp.PayloadType = 101
-		c.rtp.Marker = true
-		c.rtp.Payload = data
-
-		if err := c.media.WriteRTP(c.rtp); err != nil {
-			return err
-		}
-		c.rtpNext()
-	}
-	return nil
+func (c *Client) SendDTMF(digits string) error {
+	c.log.Debug("sending dtmf", "str", digits)
+	return dtmf.WriteRTP(context.Background(), c.media, 101, digits)
 }
 
 func (c *Client) createOffer() ([]byte, error) {
@@ -366,7 +326,7 @@ func (c *Client) createOffer() ([]byte, error) {
 			{
 				MediaName: sdp.MediaName{
 					Media:   "audio",
-					Port:    sdp.RangedPort{Value: c.media.LocalAddr().Port},
+					Port:    sdp.RangedPort{Value: c.mediaConn.LocalAddr().Port},
 					Protos:  []string{"RTP", "AVP"},
 					Formats: []string{"0"},
 				},
@@ -403,19 +363,13 @@ func (c *Client) SendAudio(path string) error {
 	}
 
 	i := 0
-	for range time.NewTicker(sampleDur).C {
+	for range time.NewTicker(rtp.DefSampleDur).C {
 		if i >= len(audioFrames) {
 			break
 		}
-
-		c.rtp.PayloadType = 0
-		c.rtp.Marker = false
-		c.rtp.Payload = audioFrames[i]
-
-		if err = c.media.WriteRTP(c.rtp); err != nil {
+		if err = c.media.WritePayload(prtp.PayloadTypePCMU, audioFrames[i]); err != nil {
 			return err
 		}
-		c.rtpNext()
 		i++
 	}
 	return nil
@@ -430,12 +384,12 @@ const (
 // SendSignal generate an audio signal with a given value. It repeats the signal n times, each frame containing one signal.
 // If n <= 0, it will send the signal until the context is cancelled.
 func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
-	signal := make(media.PCM16Sample, rtpPacketDur)
+	signal := make(media.PCM16Sample, rtp.DefPacketDur)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	data := ulaw.EncodeUlaw(signal)
 	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
 
-	ticker := time.NewTicker(sampleDur)
+	ticker := time.NewTicker(rtp.DefSampleDur)
 	defer ticker.Stop()
 	i := 0
 	for {
@@ -451,14 +405,10 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 			return ctx.Err()
 		case <-ticker.C:
 		}
-		c.rtp.PayloadType = 0
-		c.rtp.Marker = false
-		c.rtp.Payload = data
 
-		if err := c.media.WriteRTP(c.rtp); err != nil {
+		if err := c.media.WritePayload(prtp.PayloadTypePCMU, data); err != nil {
 			return err
 		}
-		c.rtpNext()
 		i++
 	}
 	return nil
@@ -468,12 +418,12 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	var ws media.PCM16WriteCloser
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, sampleRate, sampleDur)
+		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefSampleDur)
 		defer ws.Close()
 	}
 	lastLog := time.Now()
 	for {
-		p, _, err := c.media.ReadRTP()
+		p, _, err := c.mediaConn.ReadRTP()
 		if err != nil {
 			c.log.Error("cannot read rtp packet", "err", err)
 			return err

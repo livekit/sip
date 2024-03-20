@@ -15,6 +15,8 @@
 package rtp
 
 import (
+	"sync"
+
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
 
@@ -68,13 +70,22 @@ func NewStream(w Writer, packetDur uint32) *Stream {
 type Packet = rtp.Packet
 
 type Stream struct {
+	mu        sync.Mutex
 	w         Writer
 	p         Packet
 	packetDur uint32
 }
 
-func (s *Stream) WritePayload(data []byte) error {
+func (s *Stream) WritePayload(typ byte, data []byte) error {
+	return s.WritePayloadMarker(typ, false, data)
+}
+
+func (s *Stream) WritePayloadMarker(typ byte, mark bool, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.p.PayloadType = typ
 	s.p.Payload = data
+	s.p.Marker = mark
 	if err := s.w.WriteRTP(&s.p); err != nil {
 		return err
 	}
@@ -83,16 +94,21 @@ func (s *Stream) WritePayload(data []byte) error {
 	return nil
 }
 
-func NewMediaStreamOut[T ~[]byte](w Writer, packetDur uint32) *MediaStreamOut[T] {
-	return &MediaStreamOut[T]{s: NewStream(w, packetDur)}
+func NewMediaStreamOut[T ~[]byte](w Writer, typ byte, packetDur uint32) *MediaStreamOut[T] {
+	return NewMediaStreamFor[T](NewStream(w, packetDur), typ)
+}
+
+func NewMediaStreamFor[T ~[]byte](s *Stream, typ byte) *MediaStreamOut[T] {
+	return &MediaStreamOut[T]{s: s, typ: typ}
 }
 
 type MediaStreamOut[T ~[]byte] struct {
-	s *Stream
+	s   *Stream
+	typ byte
 }
 
 func (s *MediaStreamOut[T]) WriteSample(sample T) error {
-	return s.s.WritePayload([]byte(sample))
+	return s.s.WritePayload(s.typ, []byte(sample))
 }
 
 func NewMediaStreamIn[T ~[]byte](w media.Writer[T]) *MediaStreamIn[T] {

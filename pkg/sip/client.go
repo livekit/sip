@@ -21,6 +21,7 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
@@ -37,6 +38,7 @@ type Client struct {
 	signalingIp      string
 	signalingIpLocal string
 
+	closing     core.Fuse
 	cmu         sync.Mutex
 	activeCalls map[*outboundCall]struct{}
 }
@@ -89,6 +91,7 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 }
 
 func (c *Client) Stop() {
+	c.closing.Break()
 	c.cmu.Lock()
 	calls := maps.Keys(c.activeCalls)
 	c.activeCalls = make(map[*outboundCall]struct{})
@@ -132,6 +135,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			to:      req.CallTo,
 			user:    req.Username,
 			pass:    req.Password,
+			dtmf:    req.Dtmf,
 		})
 		if err != nil {
 			logger.Errorw("SIP call failed", err,

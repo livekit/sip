@@ -463,9 +463,10 @@ func TestSIPOutbound(t *testing.T) {
 	const (
 		roomOut  = "outbound"
 		roomIn   = "inbound"
-		roomPin  = ""
 		userName = "test-user"
 		userPass = "test-pass"
+		roomPin  = "*1234"
+		dtmfPin  = "ww*12w34ww#" // with added delays
 	)
 
 	// LK participants that will generate/listen for audio.
@@ -478,7 +479,7 @@ func TestSIPOutbound(t *testing.T) {
 
 	// Configure Trunk for outbound server and make a SIP call.
 	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
-	lkOut.CreateSIPParticipant(t, trunkOut, roomOut, "Outbound Call", serverNumber)
+	lkOut.CreateSIPParticipant(t, trunkOut, roomOut, "Outbound Call", serverNumber, dtmfPin)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

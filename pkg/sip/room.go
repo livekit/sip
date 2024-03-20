@@ -55,7 +55,7 @@ type lkRoomConfig struct {
 
 func NewRoom() *Room {
 	r := &Room{}
-	r.mix = mixer.NewMixer(&r.out, sampleDur, sampleRate)
+	r.mix = mixer.NewMixer(&r.out, rtp.DefSampleDur, rtp.DefSampleRate)
 	return r
 }
 
@@ -85,7 +85,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				mTrack := r.NewTrack()
 				defer mTrack.Close()
 
-				odec, err := opus.Decode(mTrack, sampleRate, channels)
+				odec, err := opus.Decode(mTrack, rtp.DefSampleRate, channels)
 				if err != nil {
 					return
 				}
@@ -163,8 +163,8 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, sampleDur)
-	pw, err := opus.Encode(ow, sampleRate, channels)
+	ow := media.FromSampleWriter[opus.Sample](track, rtp.DefSampleDur)
+	pw, err := opus.Encode(ow, rtp.DefSampleRate, channels)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +194,7 @@ func (t *Track) Close() error {
 }
 
 func (t *Track) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
-	_ = media.PlayAudio[media.PCM16Sample](ctx, t, sampleDur, frames)
+	_ = media.PlayAudio[media.PCM16Sample](ctx, t, rtp.DefSampleDur, frames)
 }
 
 func (t *Track) WriteSample(pcm media.PCM16Sample) error {
