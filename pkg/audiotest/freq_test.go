@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package siptest
+package audiotest
 
 import (
 	"testing"
@@ -23,15 +23,15 @@ import (
 )
 
 func TestFreq(t *testing.T) {
-	sig := make(media.PCM16Sample, rtpPacketDur)
+	sig := make(media.PCM16Sample, 160)
 	const amp = 100
-	inp := []wave{
+	inp := []Wave{
 		{0, amp},
 		{3, amp / 2},
 		{1, amp / 4},
 	}
-	genSignal(sig, inp)
+	GenSignal(sig, inp)
 
-	out := findSignal(sig)
+	out := FindSignal(sig)
 	require.Equal(t, inp, out)
 }

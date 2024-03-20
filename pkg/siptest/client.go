@@ -35,6 +35,7 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 
+	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	lkrtp "github.com/livekit/sip/pkg/media/rtp"
@@ -430,7 +431,7 @@ const (
 // If n <= 0, it will send the signal until the context is cancelled.
 func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 	signal := make(media.PCM16Sample, rtpPacketDur)
-	genSignal(signal, []wave{{Ind: val, Amp: signalAmp}})
+	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	data := ulaw.EncodeUlaw(signal)
 	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
 
@@ -497,12 +498,12 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 		if !slices.ContainsFunc(decoded, func(v int16) bool { return v != 0 }) {
 			continue // Ignore silence.
 		}
-		out := findSignal(decoded)
+		out := audiotest.FindSignal(decoded)
 		if len(out) >= len(vals) {
 			// Only consider first N strongest signals.
 			out = out[:len(vals)]
 			// Sort them again by index, so it's easier to compare.
-			slices.SortFunc(out, func(a, b wave) int {
+			slices.SortFunc(out, func(a, b audiotest.Wave) int {
 				return a.Ind - b.Ind
 			})
 			ok := true
