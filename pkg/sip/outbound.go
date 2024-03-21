@@ -17,6 +17,8 @@ package sip
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 
 	"github.com/emiago/sipgo/sip"
@@ -312,14 +314,22 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, authHeader string) (*sip.Request, *sip.Response, error) {
 	c.mon.InviteReq()
 
+	dest := conf.address + ":5060"
 	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060}
+	if addr, sport, err := net.SplitHostPort(conf.address); err == nil {
+		if port, err := strconv.Atoi(sport); err == nil {
+			to.Host = addr
+			to.Port = port
+			dest = conf.address
+		}
+	}
 	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp}
 
 	fromHeader := &sip.FromHeader{Address: *from, DisplayName: conf.from, Params: sip.NewParams()}
 	fromHeader.Params.Add("tag", sip.GenerateTagN(16))
 
 	req := sip.NewRequest(sip.INVITE, to)
-	req.SetDestination(conf.address + ":5060")
+	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(&sip.ToHeader{Address: *to})
 	req.AppendHeader(fromHeader)

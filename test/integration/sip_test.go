@@ -3,7 +3,9 @@ package integration
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"strconv"
 	"sync"
@@ -46,12 +48,13 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sipPort := 5060 + rand.Intn(100)
 	conf := &config.Config{
 		ApiKey:        lk.ApiKey,
 		ApiSecret:     lk.ApiSecret,
 		WsUrl:         lk.WsUrl,
 		Redis:         lk.Redis,
-		SIPPort:       5060, // TODO: randomize port
+		SIPPort:       sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: 20000, End: 20010},
 		UseExternalIP: false,
 		Logging:       logger.Config{Level: "debug"},
@@ -101,28 +104,43 @@ type NumberConfig struct {
 	AuthPass string
 }
 
-func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string) *NumberConfig {
+func (s *SIPServer) CreateTrunkOut(t testing.TB, number, addr, user, pass string) string {
 	ctx := context.Background()
 	tr, err := s.Client.CreateSIPTrunk(ctx, &livekit.CreateSIPTrunkRequest{
-		OutboundNumber: number,
+		OutboundNumber:   number,
+		OutboundAddress:  addr,
+		OutboundUsername: user,
+		OutboundPassword: pass,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Trunk:", tr.SipTrunkId)
+	t.Log("Trunk (out):", tr.SipTrunkId)
+	return tr.SipTrunkId
+}
+
+func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) string {
+	ctx := context.Background()
+	tr, err := s.Client.CreateSIPTrunk(ctx, &livekit.CreateSIPTrunkRequest{
+		OutboundNumber:  number,
+		InboundUsername: user,
+		InboundPassword: pass,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Trunk (in):", tr.SipTrunkId)
+	return tr.SipTrunkId
+}
+
+func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string) *NumberConfig {
+	s.CreateTrunkIn(t, number, "", "")
 	s.CreateDirectDispatch(t, room, pin)
 	return &NumberConfig{SIP: s, Number: number, Pin: pin}
 }
 
 func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string) *NumberConfig {
-	ctx := context.Background()
-	tr, err := s.Client.CreateSIPTrunk(ctx, &livekit.CreateSIPTrunkRequest{
-		OutboundNumber: number,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log("Trunk:", tr.SipTrunkId)
+	s.CreateTrunkIn(t, number, "", "")
 	s.CreateIndividualDispatch(t, room, pin)
 	return &NumberConfig{SIP: s, Number: number, Pin: pin}
 }
@@ -202,7 +220,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		dtmf string
 	)
 	const roomName = "test-open"
-	r := lk.Connect(t, roomName, &lksdk.RoomCallback{
+	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
@@ -224,7 +242,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	// SIP participant should be visible and have a proper kind.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []ParticipantInfo{
 		{Identity: "test"},
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
@@ -259,7 +277,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		dtmf string
 	)
 	const roomName = "test-priv"
-	r := lk.Connect(t, roomName, &lksdk.RoomCallback{
+	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
@@ -282,7 +300,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []ParticipantInfo{
 		{Identity: "test"},
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
@@ -323,7 +341,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, []Participant{
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []ParticipantInfo{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 }
@@ -341,9 +359,53 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	// SIP participant should be visible and have a proper kind.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
-	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []Participant{
+	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []ParticipantInfo{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
+}
+
+type AudioParticipant interface {
+	SendSignal(ctx context.Context, n int, val int) error
+	WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error
+}
+
+func CheckAudioForParticipants(t testing.TB, ctx context.Context, participants ...AudioParticipant) {
+	// Participants can only subscribe to tracks that are "live", so give them the chance to do so.
+	for _, p := range participants {
+		err := p.SendSignal(ctx, 3, 0)
+		require.NoError(t, err)
+	}
+
+	// Each client will emit its own audio signal.
+	var allSig []int
+	for i, p := range participants {
+		p := p
+		sig := i + 1
+		allSig = append(allSig, sig)
+		go func() {
+			err := p.SendSignal(ctx, -1, sig)
+			require.NoError(t, err)
+		}()
+	}
+
+	// And they will wait for the other one's signal.
+	errc := make(chan error, len(participants))
+	for i, p := range participants {
+		p := p
+		// Expect all signals except its own.
+		var signals []int
+		signals = append(signals, allSig[:i]...)
+		signals = append(signals, allSig[i+1:]...)
+		go func() {
+			errc <- p.WaitSignals(ctx, signals, nil)
+		}()
+	}
+
+	// Wait for the signal sequence to be received by both (or the timeout).
+	for i := 0; i < len(participants); i++ {
+		err := <-errc
+		require.NoError(t, err)
+	}
 }
 
 func TestSIPAudio(t *testing.T) {
@@ -357,60 +419,29 @@ func TestSIPAudio(t *testing.T) {
 			nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
 
 			// Connect clients and wait for them to join.
-			var clients []*siptest.Client
+			var (
+				clients []*siptest.Client
+				audios  []AudioParticipant
+			)
 			for i := 0; i < N; i++ {
 				cli := runClient(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), false)
 				clients = append(clients, cli)
+				audios = append(audios, cli)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout*time.Duration(N))
 			defer cancel()
-			var exp []Participant
+			var exp []ParticipantInfo
 			for i := range clients {
-				exp = append(exp, Participant{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
+				exp = append(exp, ParticipantInfo{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
 			}
 			lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
 
 			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-
-			// Participants can only subscribe to tracks that are "live", so give them the chance to do so.
-			for _, cli := range clients {
-				err := cli.SendSignal(ctx, 3, 0)
-				require.NoError(t, err)
-			}
-
-			// Each client will emit its own audio signal.
-			var allSig []int
-			for i, cli := range clients {
-				cli := cli
-				sig := i + 1
-				allSig = append(allSig, sig)
-				go func() {
-					err := cli.SendSignal(ctx, -1, sig)
-					require.NoError(t, err)
-				}()
-			}
-
-			// And they will wait for the other one's signal.
-			errc := make(chan error, N)
-			for i, cli := range clients {
-				cli := cli
-				// Expect all signals except its own.
-				var signals []int
-				signals = append(signals, allSig[:i]...)
-				signals = append(signals, allSig[i+1:]...)
-				go func() {
-					errc <- cli.WaitSignals(ctx, signals, nil)
-				}()
-			}
-			// Wait for the signal sequence to be received by both (or the timeout).
-			for i := 0; i < N; i++ {
-				err := <-errc
-				require.NoError(t, err)
-			}
+			CheckAudioForParticipants(t, ctx, audios...)
+			cancel()
 
 			// Stop everything and ensure the room is empty afterward.
-			cancel()
 			for _, cli := range clients {
 				cli.Close()
 			}
@@ -420,4 +451,45 @@ func TestSIPAudio(t *testing.T) {
 			lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 		})
 	}
+}
+
+func TestSIPOutbound(t *testing.T) {
+	// Run two LK and SIP servers and make a SIP call from one to the other.
+	lkOut := runLiveKit(t)
+	lkIn := runLiveKit(t)
+	srvOut := runSIPServer(t, lkOut)
+	srvIn := runSIPServer(t, lkIn)
+
+	const (
+		roomOut  = "outbound"
+		roomIn   = "inbound"
+		roomPin  = ""
+		userName = "test-user"
+		userPass = "test-pass"
+	)
+
+	// LK participants that will generate/listen for audio.
+	pOut := lkOut.ConnectParticipant(t, roomOut, "testOut", nil)
+	pIn := lkIn.ConnectParticipant(t, roomIn, "testIn", nil)
+
+	// Configure Trunk for inbound server.
+	srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
+	srvIn.CreateDirectDispatch(t, roomIn, roomPin)
+
+	// Configure Trunk for outbound server and make a SIP call.
+	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
+	lkOut.CreateSIPParticipant(t, trunkOut, roomOut, "Outbound Call", serverNumber)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	lkOut.ExpectRoomWithParticipants(t, ctx, roomOut, []ParticipantInfo{
+		{Identity: "testOut", Kind: livekit.ParticipantInfo_STANDARD},
+		{Identity: "Outbound Call", Kind: livekit.ParticipantInfo_SIP},
+	})
+	lkIn.ExpectRoomWithParticipants(t, ctx, roomIn, []ParticipantInfo{
+		{Identity: "testIn", Kind: livekit.ParticipantInfo_STANDARD},
+		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
+	})
+
+	CheckAudioForParticipants(t, ctx, pOut, pIn)
 }

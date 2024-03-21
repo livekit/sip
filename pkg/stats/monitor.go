@@ -63,7 +63,12 @@ func NewMonitor() *Monitor {
 }
 
 func mustRegister[T prometheus.Collector](m *Monitor, c T) T {
-	prometheus.MustRegister(c)
+	err := prometheus.Register(c)
+	if e, ok := err.(prometheus.AlreadyRegisteredError); ok {
+		return e.ExistingCollector.(T)
+	} else if err != nil {
+		panic(err)
+	}
 	m.metrics = append(m.metrics, c)
 	return c
 }

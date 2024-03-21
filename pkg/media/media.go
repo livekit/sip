@@ -14,7 +14,18 @@
 
 package media
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
+
+type Reader[T any] interface {
+	ReadSample(buf T) (int, error)
+}
+
+type ReadCloser[T any] interface {
+	Reader[T]
+	Close() error
+}
 
 type Writer[T any] interface {
 	WriteSample(sample T) error
