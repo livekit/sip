@@ -22,11 +22,12 @@ import (
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/media/dtmf"
+	"github.com/livekit/sip/pkg/media/rtp"
 )
 
 func sdpMediaDesc(rtpListenerPort int) []*sdp.MediaDescription {
 	// Static compiler check for sample rate hardcoded below.
-	var _ = [1]struct{}{}[8000-sampleRate]
+	var _ = [1]struct{}{}[8000-rtp.DefSampleRate]
 
 	return []*sdp.MediaDescription{
 		{

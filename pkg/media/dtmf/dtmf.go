@@ -14,9 +14,21 @@
 
 package dtmf
 
-import "github.com/pion/rtp"
+import (
+	"context"
+	"encoding/binary"
+	"io"
+	"time"
+
+	"github.com/livekit/sip/pkg/media/rtp"
+)
 
 const SDPName = "telephone-event/8000"
+
+const (
+	defVolume = 10
+	defRTPDur = rtp.DefPacketDur
+)
 
 var eventToChar = [256]byte{
 	0: '0', 1: '1', 2: '2', 3: '3', 4: '4',
@@ -25,26 +37,92 @@ var eventToChar = [256]byte{
 	12: 'a', 13: 'b', 14: 'c', 15: 'd',
 }
 
-type Tone struct {
-	Code  byte
-	Digit byte
+var charToEvent = map[byte]byte{
+	'0': 0, '1': 1, '2': 2, '3': 3, '4': 4,
+	'5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
+	'*': 10, '#': 11,
+	'a': 12, 'b': 13, 'c': 14, 'd': 15,
 }
 
-func Decode(data []byte) (Tone, bool) {
+type Event struct {
+	Code   byte
+	Digit  byte
+	Volume byte   // in dBm0 (without sign)
+	Dur    uint16 // in timestamp units
+	End    bool
+}
+
+func Decode(data []byte) (Event, error) {
 	if len(data) < 4 {
-		return Tone{}, false
+		return Event{}, io.ErrUnexpectedEOF
 	}
 	ev := data[0] // RFC2833
 	b := eventToChar[ev]
-	return Tone{
-		Code:  ev,
-		Digit: b,
-	}, true
+	return Event{
+		Code:   ev,
+		Digit:  b,
+		End:    data[1]>>7 != 0,
+		Volume: data[1] & 0x3F,
+		Dur:    binary.BigEndian.Uint16(data[2:4]),
+	}, nil
 }
 
-func DecodeRTP(p *rtp.Packet) (Tone, bool) {
+func DecodeRTP(p *rtp.Packet) (Event, bool) {
 	if !p.Marker {
-		return Tone{}, false
+		return Event{}, false
 	}
-	return Decode(p.Payload)
+	ev, err := Decode(p.Payload)
+	if err != nil {
+		return Event{}, false
+	}
+	return ev, true
+}
+
+func Encode(out []byte, ev Event) (int, error) {
+	if len(out) < 4 {
+		return 0, io.ErrShortBuffer
+	}
+	if ev.Digit != 0 {
+		ev.Code = charToEvent[ev.Digit]
+	}
+	out[0] = ev.Code
+	out[1] = ev.Volume & 0x3f
+	if ev.End {
+		out[1] |= 1 << 7
+	}
+	binary.BigEndian.PutUint16(out[2:4], ev.Dur)
+	return 4, nil
+}
+
+// WriteRTP writes DTMF tones to RTP stream using a given payload type.
+//
+// Digits may contain a special character 'w' which adds a 0.5 sec delay.
+func WriteRTP(ctx context.Context, out *rtp.Stream, typ byte, digits string) error {
+	var buf [4]byte
+	for _, digit := range digits {
+		if digit == 'w' {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second / 2):
+			}
+			continue
+		}
+		n, err := Encode(buf[:], Event{
+			Digit:  byte(digit),
+			Volume: defVolume,
+			Dur:    uint16(defRTPDur),
+			End:    true,
+		})
+		if err != nil {
+			return err
+		}
+		// TODO: Generate non-mark packets as well?
+		//       Technically, we shouldn't need them as long as End bit is set.
+		err = out.WritePayloadMarker(typ, true, buf[:n])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

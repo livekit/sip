@@ -28,11 +28,7 @@ import (
 )
 
 const (
-	channels      = 1
-	sampleRate    = 8000
-	sampleDur     = 20 * time.Millisecond
-	sampleDurPart = int(time.Second / sampleDur)
-	rtpPacketDur  = uint32(sampleRate / sampleDurPart)
+	channels = 1
 )
 
 var redisLast uint32
@@ -80,12 +76,13 @@ func (lk *LiveKit) RoomParticipants(t testing.TB, room string) []*livekit.Partic
 	return resp.Participants
 }
 
-func (lk *LiveKit) CreateSIPParticipant(t testing.TB, trunk, room, identity, number string) {
+func (lk *LiveKit) CreateSIPParticipant(t testing.TB, trunk, room, identity, number, dtmf string) {
 	_, err := lk.SIP.CreateSIPParticipant(context.Background(), &livekit.CreateSIPParticipantRequest{
 		SipTrunkId:          trunk,
 		SipCallTo:           number,
 		RoomName:            room,
 		ParticipantIdentity: identity,
+		Dtmf:                dtmf,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +115,7 @@ func (lk *LiveKit) ConnectParticipant(t testing.TB, room, identity string, cb *l
 		pr.Close()
 	})
 	p.AudioIn = pr
-	p.mix = mixer.NewMixer(pw, sampleDur, sampleRate)
+	p.mix = mixer.NewMixer(pw, rtp.DefSampleDur, rtp.DefSampleRate)
 	cb.ParticipantCallback.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if pub.Kind() == lksdk.TrackKindAudio {
 			if err := pub.SetSubscribed(true); err != nil {
@@ -130,7 +127,7 @@ func (lk *LiveKit) ConnectParticipant(t testing.TB, room, identity string, cb *l
 		inp := p.mix.NewInput()
 		defer p.mix.RemoveInput(inp)
 
-		odec, err := opus.Decode(inp, sampleRate, channels)
+		odec, err := opus.Decode(inp, rtp.DefSampleRate, channels)
 		if err != nil {
 			return
 		}
@@ -166,8 +163,8 @@ func (p *Participant) newAudioTrack() (media.Writer[media.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, sampleDur)
-	pw, err := opus.Encode(ow, sampleRate, channels)
+	ow := media.FromSampleWriter[opus.Sample](track, rtp.DefSampleDur)
+	pw, err := opus.Encode(ow, rtp.DefSampleRate, channels)
 	if err != nil {
 		return nil, err
 	}
@@ -181,11 +178,11 @@ const (
 )
 
 func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
-	signal := make(media.PCM16Sample, rtpPacketDur)
+	signal := make(media.PCM16Sample, rtp.DefPacketDur)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	p.t.Log("sending signal", "len", len(signal), "n", n, "sig", val)
 
-	ticker := time.NewTicker(sampleDur)
+	ticker := time.NewTicker(rtp.DefSampleDur)
 	defer ticker.Stop()
 	i := 0
 	for {
@@ -213,11 +210,11 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 func (c *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	var ws media.PCM16WriteCloser
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, sampleRate, sampleDur)
+		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefSampleDur)
 		defer ws.Close()
 	}
 	lastLog := time.Now()
-	buf := make(media.PCM16Sample, rtpPacketDur)
+	buf := make(media.PCM16Sample, rtp.DefPacketDur)
 	for {
 		n, err := c.AudioIn.ReadSample(buf)
 		if err != nil {

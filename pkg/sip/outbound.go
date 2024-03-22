@@ -44,11 +44,13 @@ type sipOutboundConfig struct {
 	to      string
 	user    string
 	pass    string
+	dtmf    string
 }
 
 type outboundCall struct {
 	c       *Client
 	rtpConn *rtp.Conn
+	rtpOut  *rtp.Stream
 	stopped core.Fuse
 
 	mu            sync.RWMutex
@@ -157,7 +159,7 @@ func (c *outboundCall) UpdateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		return nil
 	}
 	c.startMonitor(sipNew)
-	if err := c.updateSIP(sipNew); err != nil {
+	if err := c.updateSIP(ctx, sipNew); err != nil {
 		c.close("invite-failed")
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
@@ -203,7 +205,7 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 	return nil
 }
 
-func (c *outboundCall) updateSIP(sipNew sipOutboundConfig) error {
+func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) error {
 	if c.sipCur == sipNew {
 		return nil
 	}
@@ -222,6 +224,14 @@ func (c *outboundCall) updateSIP(sipNew sipOutboundConfig) error {
 			c.rtpConn.SetDestAddr(dst)
 		}
 	}
+	// TODO: this says "audio", but will actually count DTMF too
+	c.rtpOut = rtp.NewStream(newRTPStatsWriter(c.mon, "audio", c.rtpConn), rtp.DefPacketDur)
+
+	if sipNew.dtmf != "" {
+		if err := dtmf.WriteRTP(ctx, c.rtpOut, 101, sipNew.dtmf); err != nil {
+			return err
+		}
+	}
 
 	c.sipRunning = true
 	c.sipCur = sipNew
@@ -235,7 +245,7 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	s := rtp.NewMediaStreamOut[ulaw.Sample](newRTPStatsWriter(c.mon, "audio", c.rtpConn), rtpPacketDur)
+	s := rtp.NewMediaStreamFor[ulaw.Sample](c.rtpOut, prtp.PayloadTypePCMU)
 	c.lkRoom.SetOutput(ulaw.Encode(s))
 
 	// Decoding pipeline (SIP -> LK)
@@ -462,18 +472,21 @@ func (c *outboundCall) sipBye() error {
 	if err != nil {
 		return err
 	}
+	if c.c.closing.IsBroken() {
+		return nil // do not wait for a response
+	}
 	_, err = sipResponse(tx)
 	return err
 }
 
 func (c *outboundCall) handleDTMF(p *rtp.Packet) error {
-	tone, ok := dtmf.DecodeRTP(p)
+	ev, ok := dtmf.DecodeRTP(p)
 	if !ok {
 		return nil
 	}
 	_ = c.lkRoom.SendData(&livekit.SipDTMF{
-		Code:  uint32(tone.Code),
-		Digit: string([]byte{tone.Digit}),
+		Code:  uint32(ev.Code),
+		Digit: string([]byte{ev.Digit}),
 	}, lksdk.WithDataPublishReliable(true))
 	return nil
 }

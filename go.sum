@@ -121,16 +121,14 @@ github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1 h1:jm09419p0lqTkD
 github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
 github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8 h1:xawydPEACNO5Ncs2LgioTjWghXQ0eUN1q1RnVUUyVnI=
 github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8/go.mod h1:jwKUCmObuiEDH0iiuJHaGMXwRs3RjrB4G6qqgkr/5oE=
-github.com/livekit/protocol v1.11.1-0.20240314043420-feb177f2165c h1:LfxLLiQHDgrbFNd5HucOolB+e8FTMbsMs83XeGPMbZo=
-github.com/livekit/protocol v1.11.1-0.20240314043420-feb177f2165c/go.mod h1:G7Pa985GhZv2MCC3UnUocBhZfi3DsWA6WmlSkkpQYTM=
+github.com/livekit/protocol v1.12.0 h1:B7qsqq5xf9MmyG9WEk9/gMsfMVXuyLNxX5cO6TQil6s=
+github.com/livekit/protocol v1.12.0/go.mod h1:G7Pa985GhZv2MCC3UnUocBhZfi3DsWA6WmlSkkpQYTM=
 github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5 h1:I2noW2VjGcf8E0pCJVK5p3x9G3O2u57DaPgSCJWtkRo=
 github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5/go.mod h1:CQUBSPfYYAaevg1TNCc6/aYsa8DJH4jSRFdCeSZk5u0=
 github.com/livekit/server-sdk-go/v2 v2.0.7-0.20240314040650-9d935fd3b501 h1:7tGgsJOkI5wDS4iZuRlPeGT0EF0pTt7iyA3QI4VWjC8=
 github.com/livekit/server-sdk-go/v2 v2.0.7-0.20240314040650-9d935fd3b501/go.mod h1:/Q2TmpioLWL2raKnSLE+HQswtsgiFlY7iM8ogRvPcqM=
 github.com/livekit/sipgo v0.13.2-0.20240319152110-0b1be6f289ef h1:Q5lM/UCwoBdhHql2WWgYVzACcK0J1fJvFKoEGTKFT0o=
 github.com/livekit/sipgo v0.13.2-0.20240319152110-0b1be6f289ef/go.mod h1:BY01/cjS7NQGCKAvgD+4FtIJ/8hPXwcDKnSan5uvklc=
-github.com/mackerelio/go-osstat v0.2.4 h1:qxGbdPkFo65PXOb/F/nhDKpF2nGmGaCFDLXoZjJTtUs=
-github.com/mackerelio/go-osstat v0.2.4/go.mod h1:Zy+qzGdZs3A9cuIqmgbJvwbmLQH9dJvtio5ZjJTbdlQ=
 github.com/magefile/mage v1.15.0 h1:BvGheCMAsG3bWUDbZ8AyXXpCNwU9u5CB6sM+HNb9HYg=
 github.com/magefile/mage v1.15.0/go.mod h1:z5UZb/iS3GoOSn0JgWuiw7dxlurVYTu+/jHXqQg881A=
 github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=
@@ -182,7 +180,6 @@ github.com/pion/rtcp v1.2.12/go.mod h1:sn6qjxvnwyAkkPzPULIbVqSKI5Dv54Rv7VG0kNxh9
 github.com/pion/rtcp v1.2.14 h1:KCkGV3vJ+4DAJmvP0vaQShsb0xkRfWkO540Gy102KyE=
 github.com/pion/rtcp v1.2.14/go.mod h1:sn6qjxvnwyAkkPzPULIbVqSKI5Dv54Rv7VG0kNxh9L4=
 github.com/pion/rtp v1.8.2/go.mod h1:pBGHaFt/yW7bf1jjWAoUjpSNoDnw98KTMg+jWWvziqU=
-github.com/pion/rtp v1.8.3 h1:VEHxqzSVQxCkKDSHro5/4IUUG1ea+MFdqR2R3xSpNU8=
 github.com/pion/rtp v1.8.3/go.mod h1:pBGHaFt/yW7bf1jjWAoUjpSNoDnw98KTMg+jWWvziqU=
 github.com/pion/rtp v1.8.4 h1:VqNGMNjMDMy9y0d+h+0dfjiWVKUEDQvA963jhJwu200=
 github.com/pion/rtp v1.8.4/go.mod h1:pBGHaFt/yW7bf1jjWAoUjpSNoDnw98KTMg+jWWvziqU=
