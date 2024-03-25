@@ -44,7 +44,14 @@ func PlayAudio[T any](ctx context.Context, w Writer[T], sampleDur time.Duration,
 	}
 }
 
+var _ PCM16Writer = (*PCM16Sample)(nil)
+
 type PCM16Sample []int16
+
+func (s *PCM16Sample) WriteSample(data PCM16Sample) error {
+	*s = append(*s, data...)
+	return nil
+}
 
 type PCM16Writer = Writer[PCM16Sample]
 type PCM16WriteCloser = WriteCloser[PCM16Sample]

@@ -20,10 +20,19 @@ import (
 	"io"
 	"time"
 
+	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 )
 
 const SDPName = "telephone-event/8000"
+
+func init() {
+	media.RegisterCodec(media.NewCodec(media.CodecInfo{
+		SDPName:     SDPName,
+		RTPIsStatic: false,
+		Priority:    100, // let it be first in SDP
+	}))
+}
 
 const (
 	defVolume = 10

@@ -25,14 +25,12 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	prtp "github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
-	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -209,9 +207,11 @@ type inboundCall struct {
 	to            *sip.ToHeader
 	src           string
 	rtpConn       *rtp.Conn
+	audioCodec    rtp.AudioCodec
 	audioHandler  atomic.Pointer[rtp.Handler]
 	audioReceived atomic.Bool
 	audioRecvChan chan struct{}
+	audioType     byte
 	dtmf          chan dtmf.Event // buffered
 	lkRoom        *Room           // LiveKit room; only active after correct pin is entered
 	callDur       func() time.Duration
@@ -378,13 +378,20 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err := offer.Unmarshal(offerData); err != nil {
 		return nil, err
 	}
+	res, err := sdpGetAudioCodec(offer)
+	if err != nil {
+		return nil, err
+	}
+
 	conn := rtp.NewConn(func() {
 		c.close("media-timeout")
 	})
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	mux.Register(prtp.PayloadTypePCMU, newRTPStatsHandler(c.mon, "audio", rtp.HandlerFunc(c.handlePCMU)))
-	mux.Register(101, newRTPStatsHandler(c.mon, "dtmf", rtp.HandlerFunc(c.handleDTMF)))
+	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, rtp.HandlerFunc(c.handleAudio)))
+	if res.DTMFType != 0 {
+		mux.Register(res.DTMFType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
+	}
 	conn.OnRTP(mux)
 	if dst := sdpGetAudioDest(offer); dst != nil {
 		conn.SetDestAddr(dst)
@@ -394,13 +401,16 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	}
 	logger.Debugw("begin listening on UDP", "port", conn.LocalAddr().Port)
 	c.rtpConn = conn
+	c.audioCodec = res.Audio
+	c.audioType = res.AudioType
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
-	s := rtp.NewMediaStreamOut[ulaw.Sample](newRTPStatsWriter(c.mon, "audio", conn), prtp.PayloadTypePCMU, rtp.DefPacketDur)
-	c.lkRoom.SetOutput(ulaw.Encode(s))
+	s := rtp.NewStream(newRTPStatsWriter(c.mon, "audio", conn), rtp.DefPacketDur)
+	audio := c.audioCodec.EncodeRTP(s, c.audioType)
+	c.lkRoom.SetOutput(audio)
 
-	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port)
+	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port, res)
 }
 
 func (c *inboundCall) pinPrompt(ctx context.Context) {
@@ -487,7 +497,7 @@ func (c *inboundCall) closeMedia() {
 	}
 }
 
-func (c *inboundCall) handlePCMU(p *rtp.Packet) error {
+func (c *inboundCall) handleAudio(p *rtp.Packet) error {
 	if c.audioReceived.CompareAndSwap(false, true) {
 		close(c.audioRecvChan)
 	}
@@ -515,8 +525,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	}
 
 	// Decoding pipeline (SIP -> LK)
-	law := ulaw.Decode(local)
-	var h rtp.Handler = rtp.NewMediaStreamIn(law)
+	var h rtp.Handler = c.audioCodec.DecodeRTP(local, c.audioType)
 	c.audioHandler.Store(&h)
 
 	return nil

@@ -22,6 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media/g722"
+	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
@@ -180,11 +182,16 @@ func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string) {
 }
 
 func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin)
+}
+
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool) *siptest.Client {
 	cli, err := siptest.NewClient(id, siptest.ClientConfig{
 		//IP: dockerBridgeIP,
 		Number:   number,
 		AuthUser: conf.AuthUser,
 		AuthPass: conf.AuthPass,
+		Codec:    codec,
 		Log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	if err != nil {
@@ -409,46 +416,60 @@ func CheckAudioForParticipants(t testing.TB, ctx context.Context, participants .
 }
 
 func TestSIPAudio(t *testing.T) {
-	for _, N := range []int{2, 3} {
-		N := N
-		t.Run(fmt.Sprintf("%d clients", N), func(t *testing.T) {
-			lk := runLiveKit(t)
-			srv := runSIPServer(t, lk)
+	for _, codec := range []string{
+		ulaw.SDPName,
+		g722.SDPName,
+	} {
+		codec := codec
+		t.Run(codec, func(t *testing.T) {
+			for _, N := range []int{2, 3} {
+				N := N
+				t.Run(fmt.Sprintf("%d clients", N), func(t *testing.T) {
+					lk := runLiveKit(t)
+					srv := runSIPServer(t, lk)
 
-			const roomName = "test-open"
-			nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
+					const roomName = "test-open"
+					nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
 
-			// Connect clients and wait for them to join.
-			var (
-				clients []*siptest.Client
-				audios  []AudioParticipant
-			)
-			for i := 0; i < N; i++ {
-				cli := runClient(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), false)
-				clients = append(clients, cli)
-				audios = append(audios, cli)
+					// Connect clients and wait for them to join.
+					var (
+						clients []*siptest.Client
+						audios  []AudioParticipant
+					)
+					for i := 0; i < N; i++ {
+						codec := codec
+						if i == 0 {
+							// Make first client always use the same codec.
+							// This way we can see how different codecs interact.
+							codec = ulaw.SDPName
+						}
+						cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false)
+						clients = append(clients, cli)
+						audios = append(audios, cli)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout*time.Duration(N))
+					defer cancel()
+					var exp []ParticipantInfo
+					for i := range clients {
+						exp = append(exp, ParticipantInfo{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
+					}
+					lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
+
+					ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					CheckAudioForParticipants(t, ctx, audios...)
+					cancel()
+
+					// Stop everything and ensure the room is empty afterward.
+					for _, cli := range clients {
+						cli.Close()
+					}
+
+					ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
+					defer cancel()
+					lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
+				})
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout*time.Duration(N))
-			defer cancel()
-			var exp []ParticipantInfo
-			for i := range clients {
-				exp = append(exp, ParticipantInfo{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
-			}
-			lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
-
-			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			CheckAudioForParticipants(t, ctx, audios...)
-			cancel()
-
-			// Stop everything and ensure the room is empty afterward.
-			for _, cli := range clients {
-				cli.Close()
-			}
-
-			ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
-			defer cancel()
-			lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 		})
 	}
 }
