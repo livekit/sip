@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand"
 	"os"
@@ -27,6 +26,7 @@ import (
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
+	"github.com/livekit/sip/test/lktest"
 )
 
 type SIPServer struct {
@@ -249,7 +249,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	// SIP participant should be visible and have a proper kind.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, []ParticipantInfo{
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
@@ -307,7 +307,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, []ParticipantInfo{
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
@@ -348,7 +348,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, []ParticipantInfo{
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
 }
@@ -366,53 +366,9 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	// SIP participant should be visible and have a proper kind.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
-	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []ParticipantInfo{
+	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []lktest.ParticipantInfo{
 		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
 	})
-}
-
-type AudioParticipant interface {
-	SendSignal(ctx context.Context, n int, val int) error
-	WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error
-}
-
-func CheckAudioForParticipants(t testing.TB, ctx context.Context, participants ...AudioParticipant) {
-	// Participants can only subscribe to tracks that are "live", so give them the chance to do so.
-	for _, p := range participants {
-		err := p.SendSignal(ctx, 3, 0)
-		require.NoError(t, err)
-	}
-
-	// Each client will emit its own audio signal.
-	var allSig []int
-	for i, p := range participants {
-		p := p
-		sig := i + 1
-		allSig = append(allSig, sig)
-		go func() {
-			err := p.SendSignal(ctx, -1, sig)
-			require.NoError(t, err)
-		}()
-	}
-
-	// And they will wait for the other one's signal.
-	errc := make(chan error, len(participants))
-	for i, p := range participants {
-		p := p
-		// Expect all signals except its own.
-		var signals []int
-		signals = append(signals, allSig[:i]...)
-		signals = append(signals, allSig[i+1:]...)
-		go func() {
-			errc <- p.WaitSignals(ctx, signals, nil)
-		}()
-	}
-
-	// Wait for the signal sequence to be received by both (or the timeout).
-	for i := 0; i < len(participants); i++ {
-		err := <-errc
-		require.NoError(t, err)
-	}
 }
 
 func TestSIPAudio(t *testing.T) {
@@ -434,7 +390,7 @@ func TestSIPAudio(t *testing.T) {
 					// Connect clients and wait for them to join.
 					var (
 						clients []*siptest.Client
-						audios  []AudioParticipant
+						audios  []lktest.AudioParticipant
 					)
 					for i := 0; i < N; i++ {
 						codec := codec
@@ -449,15 +405,15 @@ func TestSIPAudio(t *testing.T) {
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout*time.Duration(N))
 					defer cancel()
-					var exp []ParticipantInfo
+					var exp []lktest.ParticipantInfo
 					for i := range clients {
-						exp = append(exp, ParticipantInfo{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
+						exp = append(exp, lktest.ParticipantInfo{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
 					}
 					lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
 
 					ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					CheckAudioForParticipants(t, ctx, audios...)
+					lktest.CheckAudioForParticipants(t, ctx, audios...)
 					cancel()
 
 					// Stop everything and ensure the room is empty afterward.
@@ -482,7 +438,6 @@ func TestSIPOutbound(t *testing.T) {
 	srvIn := runSIPServer(t, lkIn)
 
 	const (
-		roomOut  = "outbound"
 		roomIn   = "inbound"
 		userName = "test-user"
 		userPass = "test-pass"
@@ -490,28 +445,22 @@ func TestSIPOutbound(t *testing.T) {
 		dtmfPin  = "ww*12w34ww#" // with added delays
 	)
 
-	// LK participants that will generate/listen for audio.
-	pOut := lkOut.ConnectParticipant(t, roomOut, "testOut", nil)
-	pIn := lkIn.ConnectParticipant(t, roomIn, "testIn", nil)
-
 	// Configure Trunk for inbound server.
 	srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
 	srvIn.CreateDirectDispatch(t, roomIn, roomPin)
 
 	// Configure Trunk for outbound server and make a SIP call.
 	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
-	lkOut.CreateSIPParticipant(t, trunkOut, roomOut, "Outbound Call", serverNumber, dtmfPin)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	lkOut.ExpectRoomWithParticipants(t, ctx, roomOut, []ParticipantInfo{
-		{Identity: "testOut", Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: "Outbound Call", Kind: livekit.ParticipantInfo_SIP},
-	})
-	lkIn.ExpectRoomWithParticipants(t, ctx, roomIn, []ParticipantInfo{
-		{Identity: "testIn", Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
-	})
 
-	CheckAudioForParticipants(t, ctx, pOut, pIn)
+	lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
+		TrunkOut:  trunkOut,
+		NumberOut: clientNumber,
+		RoomOut:   "outbound",
+		NumberIn:  serverNumber,
+		RoomIn:    roomIn,
+		RoomPin:   dtmfPin,
+	})
 }
