@@ -1,4 +1,4 @@
-// Copyright 2023 LiveKit, Inc.
+// Copyright 2024 LiveKit, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,51 +12,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ulaw
+package g722
 
 import (
+	"github.com/gotranspile/g722"
 	prtp "github.com/pion/rtp"
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 )
 
-const SDPName = "PCMU/8000"
+const SDPName = "G722/8000"
 
 func init() {
 	media.RegisterCodec(rtp.NewAudioCodec(media.CodecInfo{
 		SDPName:     SDPName,
-		RTPDefType:  prtp.PayloadTypePCMU,
+		RTPDefType:  prtp.PayloadTypeG722,
 		RTPIsStatic: true,
-		Priority:    -10,
+		Priority:    1,
 	}, Decode, Encode))
 }
 
 type Sample []byte
 
 func (s Sample) Decode() media.PCM16Sample {
-	return DecodeUlaw(s)
+	return g722.Decode(s, g722.Rate64000, g722.FlagSampleRate8000)
 }
 
 func (s *Sample) Encode(data media.PCM16Sample) {
-	*s = EncodeUlaw(data)
+	*s = g722.Encode(data, g722.Rate64000, g722.FlagSampleRate8000)
 }
 
 type Writer = media.Writer[Sample]
 
 type Decoder struct {
-	w   media.PCM16Writer
-	buf media.PCM16Sample
+	w media.PCM16Writer
 }
 
 func (d *Decoder) WriteSample(in Sample) error {
-	if len(in) >= cap(d.buf) {
-		d.buf = make(media.PCM16Sample, len(in))
-	} else {
-		d.buf = d.buf[:len(in)]
-	}
-	DecodeUlawTo(d.buf, in)
-	return d.w.WriteSample(d.buf)
+	// TODO: reuse buffer
+	out := in.Decode()
+	return d.w.WriteSample(out)
 }
 
 func Decode(w media.PCM16Writer) Writer {
@@ -64,18 +60,14 @@ func Decode(w media.PCM16Writer) Writer {
 }
 
 type Encoder struct {
-	w   Writer
-	buf Sample
+	w Writer
 }
 
 func (e *Encoder) WriteSample(in media.PCM16Sample) error {
-	if len(in) >= cap(e.buf) {
-		e.buf = make(Sample, len(in))
-	} else {
-		e.buf = e.buf[:len(in)]
-	}
-	EncodeUlawTo(e.buf, in)
-	return e.w.WriteSample(e.buf)
+	// TODO: reuse buffer
+	var out Sample
+	out.Encode(in)
+	return e.w.WriteSample(out)
 }
 
 func Encode(w Writer) media.PCM16Writer {

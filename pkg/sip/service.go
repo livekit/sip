@@ -21,6 +21,7 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
@@ -72,6 +73,14 @@ func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {
 
 func (s *Service) Start() error {
 	logger.Debugw("starting sip service", "version", version.Version)
+	for name, enabled := range s.conf.Codecs {
+		if enabled {
+			logger.Warnw("codec enabled", nil, "name", name)
+		} else {
+			logger.Warnw("codec disabled", nil, "name", name)
+		}
+	}
+	media.CodecsSetEnabled(s.conf.Codecs)
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err

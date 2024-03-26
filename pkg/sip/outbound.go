@@ -27,14 +27,12 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	prtp "github.com/pion/rtp"
 	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
-	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -48,10 +46,13 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c       *Client
-	rtpConn *rtp.Conn
-	rtpOut  *rtp.Stream
-	stopped core.Fuse
+	c          *Client
+	rtpConn    *rtp.Conn
+	rtpOut     *rtp.Stream
+	audioCodec rtp.AudioCodec
+	audioType  byte
+	dtmfType   byte
+	stopped    core.Fuse
 
 	mu            sync.RWMutex
 	mon           *stats.CallMonitor
@@ -210,22 +211,10 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		return nil
 	}
 	c.stopSIP("update")
-	if err := c.sipSignal(sipNew); err != nil {
+	err := c.sipSignal(sipNew)
+	if err != nil {
 		return err
 	}
-
-	if c.sipInviteResp != nil && c.rtpConn != nil {
-		offer := sdp.SessionDescription{}
-		if err := offer.Unmarshal(c.sipInviteResp.Body()); err != nil {
-			return err
-		}
-
-		if dst := sdpGetAudioDest(offer); dst != nil {
-			c.rtpConn.SetDestAddr(dst)
-		}
-	}
-	// TODO: this says "audio", but will actually count DTMF too
-	c.rtpOut = rtp.NewStream(newRTPStatsWriter(c.mon, "audio", c.rtpConn), rtp.DefPacketDur)
 
 	if sipNew.dtmf != "" {
 		if err := dtmf.WriteRTP(ctx, c.rtpOut, 101, sipNew.dtmf); err != nil {
@@ -245,16 +234,17 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	s := rtp.NewMediaStreamFor[ulaw.Sample](c.rtpOut, prtp.PayloadTypePCMU)
-	c.lkRoom.SetOutput(ulaw.Encode(s))
+	audio := c.audioCodec.EncodeRTP(c.rtpOut, c.audioType)
+	c.lkRoom.SetOutput(audio)
 
 	// Decoding pipeline (SIP -> LK)
-	law := ulaw.Decode(c.lkRoomIn)
-	h := rtp.NewMediaStreamIn(law)
+	h := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	mux.Register(prtp.PayloadTypePCMU, newRTPStatsHandler(c.mon, "audio", h))
-	mux.Register(101, newRTPStatsHandler(c.mon, "dtmf", rtp.HandlerFunc(c.handleDTMF)))
+	mux.Register(c.audioType, newRTPStatsHandler(c.mon, c.audioCodec.Info().SDPName, h))
+	if c.dtmfType != 0 {
+		mux.Register(c.dtmfType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
+	}
 	c.rtpConn.OnRTP(mux)
 }
 
@@ -310,6 +300,19 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		logger.Errorw("SIP invite failed", err)
 		return err // TODO: should we retry? maybe new offer will work
 	}
+	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
+
+	answer := sdp.SessionDescription{}
+	if err := answer.Unmarshal(c.sipInviteResp.Body()); err != nil {
+		return err
+	}
+	res, err := sdpGetAudioCodec(answer)
+	if err != nil {
+		c.mon.CallEnd()
+		logger.Errorw("SIP SDP failed", err)
+		return err
+	}
+
 	err = c.sipAccept(inviteReq, inviteResp)
 	if err != nil {
 		c.mon.CallEnd()
@@ -317,7 +320,16 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		return err
 	}
 	joinDur()
-	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
+
+	c.audioCodec = res.Audio
+	c.audioType = res.AudioType
+	c.dtmfType = res.DTMFType
+	if dst := sdpGetAudioDest(answer); dst != nil {
+		c.rtpConn.SetDestAddr(dst)
+	}
+
+	// TODO: this says "audio", but will actually count DTMF too
+	c.rtpOut = rtp.NewStream(newRTPStatsWriter(c.mon, "audio", c.rtpConn), rtp.DefPacketDur)
 	return nil
 }
 

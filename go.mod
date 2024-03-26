@@ -1,11 +1,14 @@
 module github.com/livekit/sip
 
-go 1.21
+go 1.21.6
+
+toolchain go1.22.1
 
 require (
 	github.com/at-wat/ebml-go v0.17.0
 	github.com/emiago/sipgo v0.13.1
 	github.com/frostbyte73/core v0.0.10
+	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19
 	github.com/icholy/digest v0.1.22
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8
