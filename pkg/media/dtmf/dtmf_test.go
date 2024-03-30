@@ -15,10 +15,13 @@
 package dtmf
 
 import (
+	"context"
 	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sip/pkg/media/rtp"
 )
 
 func TestDTMF(t *testing.T) {
@@ -67,4 +70,15 @@ func TestDTMF(t *testing.T) {
 			require.Equal(t, c.data, hex.EncodeToString(buf[:n]))
 		})
 	}
+}
+
+func TestDTMFDelay(t *testing.T) {
+	var buf rtp.Buffer
+	w := rtp.NewSeqWriter(&buf).NewStream(101)
+	err := WriteRTP(context.Background(), w, "1w23")
+	require.NoError(t, err)
+	require.Len(t, buf, 3)
+	require.EqualValues(t, 0, buf[0].Timestamp)
+	require.EqualValues(t, rtp.DefSampleRate/2+rtp.DefPacketDur, buf[1].Timestamp)
+	require.EqualValues(t, rtp.DefSampleRate/2+rtp.DefPacketDur*2, buf[2].Timestamp)
 }

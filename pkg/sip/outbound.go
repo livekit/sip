@@ -48,7 +48,9 @@ type sipOutboundConfig struct {
 type outboundCall struct {
 	c          *Client
 	rtpConn    *rtp.Conn
-	rtpOut     *rtp.Stream
+	rtpOut     *rtp.SeqWriter
+	rtpAudio   *rtp.Stream
+	rtpDTMF    *rtp.Stream
 	audioCodec rtp.AudioCodec
 	audioType  byte
 	dtmfType   byte
@@ -217,7 +219,7 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 	}
 
 	if sipNew.dtmf != "" {
-		if err := dtmf.WriteRTP(ctx, c.rtpOut, 101, sipNew.dtmf); err != nil {
+		if err := dtmf.WriteRTP(ctx, c.rtpDTMF, sipNew.dtmf); err != nil {
 			return err
 		}
 	}
@@ -234,7 +236,7 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	audio := c.audioCodec.EncodeRTP(c.rtpOut, c.audioType)
+	audio := c.audioCodec.EncodeRTP(c.rtpAudio)
 	c.lkRoom.SetOutput(audio)
 
 	// Decoding pipeline (SIP -> LK)
@@ -329,7 +331,9 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	}
 
 	// TODO: this says "audio", but will actually count DTMF too
-	c.rtpOut = rtp.NewStream(newRTPStatsWriter(c.mon, "audio", c.rtpConn), rtp.DefPacketDur)
+	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
+	c.rtpAudio = c.rtpOut.NewStream(c.audioType)
+	c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType)
 	return nil
 }
 

@@ -37,7 +37,7 @@ func CodecByPayloadType(typ byte) media.Codec {
 
 type AudioCodec interface {
 	media.Codec
-	EncodeRTP(w *Stream, typ byte) media.PCM16Writer
+	EncodeRTP(w *Stream) media.PCM16Writer
 	DecodeRTP(w media.PCM16Writer, typ byte) Handler
 }
 
@@ -79,8 +79,8 @@ func (c *audioCodec[S]) Encode(w media.Writer[S]) media.PCM16Writer {
 	return c.encode(w)
 }
 
-func (c *audioCodec[S]) EncodeRTP(w *Stream, typ byte) media.PCM16Writer {
-	return c.encode(NewMediaStreamFor[S](w, typ))
+func (c *audioCodec[S]) EncodeRTP(w *Stream) media.PCM16Writer {
+	return c.encode(NewMediaStreamOut[S](w))
 }
 
 func (c *audioCodec[S]) DecodeRTP(w media.PCM16Writer, typ byte) Handler {

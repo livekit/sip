@@ -37,6 +37,13 @@ func init() {
 const (
 	defVolume = 10
 	defRTPDur = rtp.DefPacketDur
+
+	// dtmfUserDelay is a delay per each 'w' character in DTMF.
+	dtmfUserDelay = time.Second / 2
+
+	dtmfDelayRate = int(time.Second / dtmfUserDelay)
+	// dtmfDelayDur is a duration of dtmfUserDelay in RTP time units.
+	dtmfDelayDur = uint32(rtp.DefSampleRate / dtmfDelayRate)
 )
 
 var eventToChar = [256]byte{
@@ -103,17 +110,18 @@ func Encode(out []byte, ev Event) (int, error) {
 	return 4, nil
 }
 
-// WriteRTP writes DTMF tones to RTP stream using a given payload type.
+// WriteRTP writes DTMF tones to RTP stream.
 //
 // Digits may contain a special character 'w' which adds a 0.5 sec delay.
-func WriteRTP(ctx context.Context, out *rtp.Stream, typ byte, digits string) error {
+func WriteRTP(ctx context.Context, out *rtp.Stream, digits string) error {
 	var buf [4]byte
 	for _, digit := range digits {
 		if digit == 'w' {
+			out.Delay(dtmfDelayDur)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Second / 2):
+			case <-time.After(dtmfUserDelay):
 			}
 			continue
 		}
@@ -128,7 +136,7 @@ func WriteRTP(ctx context.Context, out *rtp.Stream, typ byte, digits string) err
 		}
 		// TODO: Generate non-mark packets as well?
 		//       Technically, we shouldn't need them as long as End bit is set.
-		err = out.WritePayloadMarker(typ, true, buf[:n])
+		err = out.WritePayload(buf[:n], true)
 		if err != nil {
 			return err
 		}
