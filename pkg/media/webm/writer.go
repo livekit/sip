@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math/rand"
+	"slices"
 	"time"
 
 	"github.com/at-wat/ebml-go/webm"
@@ -62,7 +63,7 @@ func (w *writerPCM16) WriteSample(sample media.PCM16Sample) error {
 	for i, v := range sample {
 		binary.LittleEndian.PutUint16(w.buf[2*i:], uint16(v))
 	}
-	_, err := w.ws.Write(true, w.ts, w.buf)
+	_, err := w.ws.Write(true, w.ts, slices.Clone(w.buf))
 	w.ts += w.dur.Milliseconds()
 	return err
 }

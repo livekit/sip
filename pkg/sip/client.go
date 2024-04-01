@@ -130,12 +130,13 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	go func() {
 		ctx := context.WithoutCancel(ctx)
 		err := call.UpdateSIP(ctx, sipOutboundConfig{
-			address: req.Address,
-			from:    req.Number,
-			to:      req.CallTo,
-			user:    req.Username,
-			pass:    req.Password,
-			dtmf:    req.Dtmf,
+			address:  req.Address,
+			from:     req.Number,
+			to:       req.CallTo,
+			user:     req.Username,
+			pass:     req.Password,
+			dtmf:     req.Dtmf,
+			ringtone: req.PlayRingtone,
 		})
 		if err != nil {
 			logger.Errorw("SIP call failed", err,

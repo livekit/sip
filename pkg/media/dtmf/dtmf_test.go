@@ -75,10 +75,17 @@ func TestDTMF(t *testing.T) {
 func TestDTMFDelay(t *testing.T) {
 	var buf rtp.Buffer
 	w := rtp.NewSeqWriter(&buf).NewStream(101)
-	err := WriteRTP(context.Background(), w, "1w23")
+	err := Write(context.Background(), nil, w, "1w23")
 	require.NoError(t, err)
-	require.Len(t, buf, 3)
-	require.EqualValues(t, 0, buf[0].Timestamp)
-	require.EqualValues(t, rtp.DefSampleRate/2+rtp.DefPacketDur, buf[1].Timestamp)
-	require.EqualValues(t, rtp.DefSampleRate/2+rtp.DefPacketDur*2, buf[2].Timestamp)
+	require.Len(t, buf, 39)
+	for i, p := range buf {
+		ts := rtp.DefPacketDur * uint32(i)
+		if i >= 26 {
+			ts += 4 * (rtp.DefSampleRate / 4) // 2 * 250ms + 500ms
+		} else if i >= 13 {
+			ts += 3 * (rtp.DefSampleRate / 4) // 250ms after tone + 500ms user-defined
+		}
+		require.EqualValues(t, uint16(i), p.SequenceNumber)
+		require.EqualValues(t, ts, p.Timestamp, "i=%d, dt=%v", i, p.Timestamp-ts)
+	}
 }

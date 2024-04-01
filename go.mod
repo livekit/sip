@@ -12,7 +12,7 @@ require (
 	github.com/icholy/digest v0.1.22
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8
-	github.com/livekit/protocol v1.12.0
+	github.com/livekit/protocol v1.12.1-0.20240331203140-766ababa37ae
 	github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5
 	github.com/livekit/server-sdk-go/v2 v2.0.7-0.20240314040650-9d935fd3b501
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -106,6 +106,7 @@ require (
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
+	go.uber.org/zap/exp v0.2.0 // indirect
 	golang.org/x/crypto v0.21.0 // indirect
 	golang.org/x/mod v0.16.0 // indirect
 	golang.org/x/net v0.22.0 // indirect

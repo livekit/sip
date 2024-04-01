@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -33,16 +34,18 @@ import (
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 )
 
 type sipOutboundConfig struct {
-	address string
-	from    string
-	to      string
-	user    string
-	pass    string
-	dtmf    string
+	address  string
+	from     string
+	to       string
+	user     string
+	pass     string
+	dtmf     string
+	ringtone bool
 }
 
 type outboundCall struct {
@@ -52,6 +55,7 @@ type outboundCall struct {
 	rtpAudio   *rtp.Stream
 	rtpDTMF    *rtp.Stream
 	audioCodec rtp.AudioCodec
+	audioOut   media.Writer[media.PCM16Sample]
 	audioType  byte
 	dtmfType   byte
 	stopped    core.Fuse
@@ -213,13 +217,20 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		return nil
 	}
 	c.stopSIP("update")
+	if sipNew.ringtone {
+		const ringVolume = math.MaxInt16 / 2
+		rctx, rcancel := context.WithCancel(ctx)
+		defer rcancel()
+
+		go tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
+	}
 	err := c.sipSignal(sipNew)
 	if err != nil {
 		return err
 	}
 
 	if sipNew.dtmf != "" {
-		if err := dtmf.WriteRTP(ctx, c.rtpDTMF, sipNew.dtmf); err != nil {
+		if err := dtmf.Write(ctx, c.audioOut, c.rtpDTMF, sipNew.dtmf); err != nil {
 			return err
 		}
 	}
@@ -236,8 +247,7 @@ func (c *outboundCall) relinkMedia() {
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	audio := c.audioCodec.EncodeRTP(c.rtpAudio)
-	c.lkRoom.SetOutput(audio)
+	c.lkRoom.SetOutput(c.audioOut)
 
 	// Decoding pipeline (SIP -> LK)
 	h := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
@@ -257,7 +267,7 @@ func (c *outboundCall) SendDTMF(ctx context.Context, digits string) error {
 	if !running {
 		return fmt.Errorf("call is not active")
 	}
-	// FIXME: c.media.WriteRTP()
+	// FIXME: c.media.WriteOffBand()
 	return nil
 }
 
@@ -334,6 +344,9 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
 	c.rtpAudio = c.rtpOut.NewStream(c.audioType)
 	c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType)
+
+	// Encoding pipeline (LK -> SIP)
+	c.audioOut = c.audioCodec.EncodeRTP(c.rtpAudio)
 	return nil
 }
 

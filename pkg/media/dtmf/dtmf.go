@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"math"
 	"time"
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/tones"
 )
 
 const SDPName = "telephone-event/8000"
@@ -35,29 +37,100 @@ func init() {
 }
 
 const (
-	defVolume = 10
-	defRTPDur = rtp.DefPacketDur
+	eventVolume = 10
+	toneVolume  = math.MaxInt16 / 2
 
-	// dtmfUserDelay is a delay per each 'w' character in DTMF.
-	dtmfUserDelay = time.Second / 2
+	// eventDur is a duration of a DTMF tone. Tone is followed by a delay with the same duration.
+	eventDur = 250 * time.Millisecond
 
-	dtmfDelayRate = int(time.Second / dtmfUserDelay)
-	// dtmfDelayDur is a duration of dtmfUserDelay in RTP time units.
-	dtmfDelayDur = uint32(rtp.DefSampleRate / dtmfDelayRate)
+	// delayDur is a delay per each 'w' character in DTMF.
+	delayDur = time.Second / 2
 )
 
-var eventToChar = [256]byte{
-	0: '0', 1: '1', 2: '2', 3: '3', 4: '4',
-	5: '5', 6: '6', 7: '7', 8: '8', 9: '9',
-	10: '*', 11: '#',
-	12: 'a', 13: 'b', 14: 'c', 15: 'd',
+const (
+	code0 = byte(iota)
+	code1
+	code2
+	code3
+	code4
+	code5
+	code6
+	code7
+	code8
+	code9
+	codeStar
+	codeHash
+	codeA
+	codeB
+	codeC
+	codeD
+)
+
+const (
+	dtmfLow1 = 697
+	dtmfLow2 = 770
+	dtmfLow3 = 852
+	dtmfLow4 = 941
+
+	dtmfHigh1 = 1209
+	dtmfHigh2 = 1336
+	dtmfHigh3 = 1477
+	dtmfHigh4 = 1633
+)
+
+// eventFreq maps DTMF codes to frequencies.
+//
+// This table follows a keypad layout:
+//
+//			HI1		HI2		HI3		HI4
+//	LO1		1		2		3		A
+//	LO2		4		5		6		B
+//	LO3		7		8		9		C
+//	LO4		*		0		#		D
+var eventFreq = [16][2]tones.Hz{
+	code1: {dtmfLow1, dtmfHigh1},
+	code2: {dtmfLow1, dtmfHigh2},
+	code3: {dtmfLow1, dtmfHigh3},
+	codeA: {dtmfLow1, dtmfHigh4},
+
+	code4: {dtmfLow2, dtmfHigh1},
+	code5: {dtmfLow2, dtmfHigh2},
+	code6: {dtmfLow2, dtmfHigh3},
+	codeB: {dtmfLow2, dtmfHigh4},
+
+	code7: {dtmfLow3, dtmfHigh1},
+	code8: {dtmfLow3, dtmfHigh2},
+	code9: {dtmfLow3, dtmfHigh3},
+	codeC: {dtmfLow3, dtmfHigh4},
+
+	codeStar: {dtmfLow4, dtmfHigh1},
+	code0:    {dtmfLow4, dtmfHigh2},
+	codeHash: {dtmfLow4, dtmfHigh3},
+	codeD:    {dtmfLow4, dtmfHigh4},
+}
+
+// Tone returns DTMF tone frequencies for a given digit.
+func Tone(digit byte) (code byte, freq []tones.Hz) {
+	code, ok := charToEvent[digit]
+	if !ok || int(code) > len(eventFreq) {
+		return 0, nil
+	}
+	f := eventFreq[code]
+	return code, f[:]
+}
+
+var eventToChar = [16]byte{
+	code0: '0', code1: '1', code2: '2', code3: '3', code4: '4',
+	code5: '5', code6: '6', code7: '7', code8: '8', code9: '9',
+	codeStar: '*', codeHash: '#',
+	codeA: 'a', codeB: 'b', codeC: 'c', codeD: 'd',
 }
 
 var charToEvent = map[byte]byte{
-	'0': 0, '1': 1, '2': 2, '3': 3, '4': 4,
-	'5': 5, '6': 6, '7': 7, '8': 8, '9': 9,
-	'*': 10, '#': 11,
-	'a': 12, 'b': 13, 'c': 14, 'd': 15,
+	'0': code0, '1': code1, '2': code2, '3': code3, '4': code4,
+	'5': code5, '6': code6, '7': code7, '8': code8, '9': code9,
+	'*': codeStar, '#': codeHash,
+	'a': codeA, 'b': codeB, 'c': codeC, 'd': codeD,
 }
 
 type Event struct {
@@ -73,10 +146,13 @@ func Decode(data []byte) (Event, error) {
 		return Event{}, io.ErrUnexpectedEOF
 	}
 	ev := data[0] // RFC2833
-	b := eventToChar[ev]
+	digit := byte(0)
+	if int(ev) < len(eventToChar) {
+		digit = eventToChar[ev]
+	}
 	return Event{
 		Code:   ev,
-		Digit:  b,
+		Digit:  digit,
 		End:    data[1]>>7 != 0,
 		Volume: data[1] & 0x3F,
 		Dur:    binary.BigEndian.Uint16(data[2:4]),
@@ -110,36 +186,97 @@ func Encode(out []byte, ev Event) (int, error) {
 	return 4, nil
 }
 
-// WriteRTP writes DTMF tones to RTP stream.
+// Write in-band (analog) and off-band (digital) DTMF tones to audio and RTP streams respectively.
 //
 // Digits may contain a special character 'w' which adds a 0.5 sec delay.
-func WriteRTP(ctx context.Context, out *rtp.Stream, digits string) error {
-	var buf [4]byte
-	for _, digit := range digits {
-		if digit == 'w' {
-			out.Delay(dtmfDelayDur)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(dtmfUserDelay):
-			}
-			continue
-		}
-		n, err := Encode(buf[:], Event{
-			Digit:  byte(digit),
-			Volume: defVolume,
-			Dur:    uint16(defRTPDur),
-			End:    true,
-		})
-		if err != nil {
-			return err
-		}
-		// TODO: Generate non-mark packets as well?
-		//       Technically, we shouldn't need them as long as End bit is set.
-		err = out.WritePayload(buf[:n], true)
-		if err != nil {
-			return err
+func Write(ctx context.Context, audio media.PCM16Writer, events *rtp.Stream, digits string) error {
+	var (
+		buf    [4]byte
+		pcmBuf media.PCM16Sample
+	)
+	if audio != nil {
+		pcmBuf = make(media.PCM16Sample, rtp.DefPacketDur)
+	}
+
+	const step = rtp.DefFrameDur
+	ticker := time.NewTicker(step)
+	defer ticker.Stop()
+
+	var (
+		ts        time.Duration
+		code      = byte(0xff)
+		freq      []tones.Hz
+		nextDelay time.Duration
+		totalDur  time.Duration
+		remaining time.Duration
+	)
+	setDelay := func(dt time.Duration) {
+		code, freq = 0xff, nil
+		remaining = dt
+		totalDur = dt
+		nextDelay = 0
+		if events != nil {
+			events.Delay(uint32(dt / (time.Second / rtp.DefSampleRate)))
 		}
 	}
-	return nil
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+		// current tone/delay ended
+		if remaining <= 0 {
+			if nextDelay != 0 {
+				// play delay after a digit
+				setDelay(nextDelay)
+			} else {
+				// pick the next digit
+				if len(digits) == 0 {
+					return nil
+				}
+				b := digits[0]
+				digits = digits[1:]
+				if b == 'w' {
+					setDelay(delayDur)
+				} else {
+					code, freq = Tone(b)
+					remaining = eventDur
+					nextDelay = eventDur
+					totalDur = remaining
+				}
+			}
+		}
+		// generate audio tones or silence
+		if audio != nil {
+			if len(freq) == 0 {
+				pcmBuf.Clear() // silence
+			} else {
+				tones.Generate(pcmBuf, ts, step, toneVolume, freq)
+			}
+			if err := audio.WriteSample(pcmBuf); err != nil {
+				return err
+			}
+		}
+		// generate telephony events
+		if events != nil && len(freq) != 0 {
+			dur := step + totalDur - remaining
+
+			n, err := Encode(buf[:], Event{
+				Code:   code,
+				Volume: eventVolume,
+				Dur:    uint16(dur / (time.Second / rtp.DefSampleRate)),
+				End:    remaining-step <= 0,
+			})
+			if err != nil {
+				return err
+			}
+			err = events.WritePayload(buf[:n], totalDur == remaining)
+			if err != nil {
+				return err
+			}
+		}
+		remaining -= step
+		ts += step
+	}
 }
