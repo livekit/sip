@@ -313,7 +313,8 @@ func (c *Client) sendBye() {
 
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
-	return dtmf.WriteRTP(context.Background(), c.mediaDTMF, digits)
+	w := c.audioCodec.EncodeRTP(c.mediaAudio)
+	return dtmf.Write(context.Background(), w, c.mediaDTMF, digits)
 }
 
 func (c *Client) createOffer() ([]byte, error) {

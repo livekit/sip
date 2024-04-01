@@ -48,6 +48,12 @@ var _ PCM16Writer = (*PCM16Sample)(nil)
 
 type PCM16Sample []int16
 
+func (s PCM16Sample) Clear() {
+	for i := range s {
+		s[i] = 0
+	}
+}
+
 func (s *PCM16Sample) WriteSample(data PCM16Sample) error {
 	*s = append(*s, data...)
 	return nil
