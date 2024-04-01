@@ -113,7 +113,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		pr.Close()
 	})
 	p.AudioIn = pr
-	p.mix = mixer.NewMixer(pw, rtp.DefSampleDur, rtp.DefSampleRate)
+	p.mix = mixer.NewMixer(pw, rtp.DefFrameDur, rtp.DefSampleRate)
 	cb.ParticipantCallback.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if pub.Kind() == lksdk.TrackKindAudio {
 			if err := pub.SetSubscribed(true); err != nil {
@@ -161,7 +161,7 @@ func (p *Participant) newAudioTrack() (media.Writer[media.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, rtp.DefSampleDur)
+	ow := media.FromSampleWriter[opus.Sample](track, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, rtp.DefSampleRate, channels)
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	p.t.Log("sending signal", "len", len(signal), "n", n, "sig", val)
 
-	ticker := time.NewTicker(rtp.DefSampleDur)
+	ticker := time.NewTicker(rtp.DefFrameDur)
 	defer ticker.Stop()
 	i := 0
 	for {
@@ -208,7 +208,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 func (c *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	var ws media.PCM16WriteCloser
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefSampleDur)
+		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefFrameDur)
 		defer ws.Close()
 	}
 	lastLog := time.Now()

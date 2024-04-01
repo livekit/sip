@@ -406,8 +406,9 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
-	s := rtp.NewStream(newRTPStatsWriter(c.mon, "audio", conn), rtp.DefPacketDur)
-	audio := c.audioCodec.EncodeRTP(s, c.audioType)
+	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", conn))
+	sa := s.NewStream(c.audioType)
+	audio := c.audioCodec.EncodeRTP(sa)
 	c.lkRoom.SetOutput(audio)
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port, res)

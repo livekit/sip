@@ -90,7 +90,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.mediaConn = rtp.NewConn(func() {
 		panic("media-timeout")
 	})
-	cli.media = rtp.NewStream(cli.mediaConn, rtp.DefPacketDur)
+	cli.media = rtp.NewSeqWriter(cli.mediaConn)
+	cli.mediaAudio = cli.media.NewStream(cli.audioType)
+	cli.mediaDTMF = cli.media.NewStream(101)
 
 	err := cli.mediaConn.Listen(0, 0, "0.0.0.0")
 	if err != nil {
@@ -134,7 +136,9 @@ type Client struct {
 	audioCodec rtp.AudioCodec
 	audioType  byte
 	mediaConn  *rtp.Conn
-	media      *rtp.Stream
+	media      *rtp.SeqWriter
+	mediaAudio *rtp.Stream
+	mediaDTMF  *rtp.Stream
 	sipClient  *sipgo.Client
 	sipServer  *sipgo.Server
 	inviteReq  *sip.Request
@@ -163,7 +167,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) record(w io.WriteCloser) error {
-	ws := webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefSampleDur)
+	ws := webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefFrameDur)
 	h := c.audioCodec.DecodeRTP(ws, c.audioType)
 	for {
 		p, _, err := c.mediaConn.ReadRTP()
@@ -309,7 +313,7 @@ func (c *Client) sendBye() {
 
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
-	return dtmf.WriteRTP(context.Background(), c.media, 101, digits)
+	return dtmf.WriteRTP(context.Background(), c.mediaDTMF, digits)
 }
 
 func (c *Client) createOffer() ([]byte, error) {
@@ -387,8 +391,8 @@ func (c *Client) SendAudio(path string) error {
 	}
 
 	i := 0
-	w := c.audioCodec.EncodeRTP(c.media, c.audioType)
-	for range time.NewTicker(rtp.DefSampleDur).C {
+	w := c.audioCodec.EncodeRTP(c.mediaAudio)
+	for range time.NewTicker(rtp.DefFrameDur).C {
 		if i >= len(audioFrames) {
 			break
 		}
@@ -411,10 +415,10 @@ const (
 func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 	signal := make(media.PCM16Sample, rtp.DefPacketDur)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
-	wr := c.audioCodec.EncodeRTP(c.media, c.audioType)
+	wr := c.audioCodec.EncodeRTP(c.mediaAudio)
 	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
 
-	ticker := time.NewTicker(rtp.DefSampleDur)
+	ticker := time.NewTicker(rtp.DefFrameDur)
 	defer ticker.Stop()
 	i := 0
 	for {
@@ -443,7 +447,7 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	var ws media.PCM16WriteCloser
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefSampleDur)
+		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefFrameDur)
 		defer ws.Close()
 	}
 	decoded := make(media.PCM16Sample, rtp.DefPacketDur)
