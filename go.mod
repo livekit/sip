@@ -14,13 +14,13 @@ require (
 	github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8
 	github.com/livekit/protocol v1.12.1-0.20240331203140-766ababa37ae
 	github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5
-	github.com/livekit/server-sdk-go/v2 v2.0.7-0.20240314040650-9d935fd3b501
+	github.com/livekit/server-sdk-go/v2 v2.1.0
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.25
 	github.com/pion/rtp v1.8.4
 	github.com/pion/sdp/v2 v2.4.0
-	github.com/pion/webrtc/v3 v3.2.28
+	github.com/pion/webrtc/v3 v3.2.29
 	github.com/prometheus/client_golang v1.19.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
@@ -83,7 +83,7 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.14 // indirect
 	github.com/pion/sctp v1.8.12 // indirect
-	github.com/pion/sdp/v3 v3.0.6 // indirect
+	github.com/pion/sdp/v3 v3.0.8 // indirect
 	github.com/pion/srtp/v2 v2.0.18 // indirect
 	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/transport/v2 v2.2.4 // indirect
