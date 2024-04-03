@@ -30,6 +30,7 @@ func init() {
 		RTPDefType:  prtp.PayloadTypeG722,
 		RTPIsStatic: true,
 		Priority:    1,
+		Disabled:    true,
 	}, Decode, Encode))
 }
 
