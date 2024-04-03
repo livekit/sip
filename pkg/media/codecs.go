@@ -24,6 +24,7 @@ type CodecInfo struct {
 	RTPDefType  byte
 	RTPIsStatic bool
 	Priority    int
+	Disabled    bool
 }
 
 type Codec interface {
@@ -86,6 +87,9 @@ func EnabledCodecs() []Codec {
 
 func RegisterCodec(c Codec) {
 	codecs = append(codecs, c)
+	if info := c.Info(); info.Disabled {
+		CodecSetEnabled(info.SDPName, false)
+	}
 	for _, fnc := range codecOnRegister {
 		fnc(c)
 	}
