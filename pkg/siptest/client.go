@@ -407,7 +407,7 @@ func (c *Client) SendAudio(path string) error {
 
 const (
 	signalAmp    = math.MaxInt16 / 4
-	signalAmpMin = signalAmp - signalAmp/10
+	signalAmpMin = signalAmp - signalAmp/4 // TODO: why it's so low?
 	signalAmpMax = signalAmp + signalAmp/10
 )
 
