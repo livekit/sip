@@ -178,7 +178,8 @@ const (
 func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 	signal := make(media.PCM16Sample, rtp.DefPacketDur)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
-	p.t.Log("sending signal", "len", len(signal), "n", n, "sig", val)
+	sid, id := p.Room.LocalParticipant.SID(), p.Room.LocalParticipant.Identity()
+	p.t.Log("sending signal", "sid", sid, "id", id, "len", len(signal), "n", n, "sig", val)
 
 	ticker := time.NewTicker(rtp.DefFrameDur)
 	defer ticker.Stop()
@@ -190,7 +191,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 		select {
 		case <-ctx.Done():
 			if n <= 0 {
-				p.t.Log("stopping signal", "n", i, "sig", val)
+				p.t.Log("stopping signal", "sid", sid, "id", id, "n", i, "sig", val)
 				return nil
 			}
 			return ctx.Err()
@@ -205,7 +206,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 	return nil
 }
 
-func (c *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
+func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	var ws media.PCM16WriteCloser
 	if w != nil {
 		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefFrameDur)
@@ -213,10 +214,11 @@ func (c *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 	}
 	lastLog := time.Now()
 	buf := make(media.PCM16Sample, rtp.DefPacketDur)
+	sid, id := p.Room.LocalParticipant.SID(), p.Room.LocalParticipant.Identity()
 	for {
-		n, err := c.AudioIn.ReadSample(buf)
+		n, err := p.AudioIn.ReadSample(buf)
 		if err != nil {
-			c.t.Log("cannot read rtp packet", "err", err)
+			p.t.Log("cannot read rtp packet", "err", err)
 			return err
 		}
 		decoded := buf[:n]
@@ -251,7 +253,7 @@ func (c *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 				}
 			}
 			if ok {
-				c.t.Log("signal found", "sig", vals)
+				p.t.Log("signal found", "sid", sid, "id", id, "sig", vals)
 				return nil
 			}
 		}
@@ -261,7 +263,7 @@ func (c *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 		}
 		if time.Since(lastLog) > time.Second {
 			lastLog = time.Now()
-			c.t.Log("skipping signal", "len", len(decoded), "signals", out)
+			p.t.Log("skipping signal", "sid", sid, "id", id, "len", len(decoded), "signals", out)
 		}
 	}
 }
@@ -301,12 +303,21 @@ wait:
 	}
 }
 
-func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool) []*livekit.Room {
+func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool, filter func(r *livekit.Room) bool) []*livekit.Room {
 	var rooms []*livekit.Room
 	ticker := time.NewTicker(time.Second / 4)
 	defer ticker.Stop()
 	for {
 		rooms = lk.ListRooms(t)
+		if filter != nil {
+			var out []*livekit.Room
+			for _, r := range rooms {
+				if filter(r) {
+					out = append(out, r)
+				}
+			}
+			rooms = out
+		}
 		if !none {
 			if len(rooms) >= 1 {
 				return rooms
@@ -325,21 +336,26 @@ func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool) []*livekit.Ro
 }
 
 func (lk *LiveKit) ExpectRoomWithParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) {
-	rooms := lk.waitRooms(t, ctx, len(participants) == 0)
+	filter := func(r *livekit.Room) bool {
+		return r.Name == room
+	}
+	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter)
 	if len(participants) == 0 && len(rooms) == 0 {
 		return
 	}
 	require.Len(t, rooms, 1)
-	require.Equal(t, room, rooms[0].Name)
+	require.True(t, filter(rooms[0]))
 
 	lk.ExpectParticipants(t, ctx, room, participants)
 }
 
 func (lk *LiveKit) ExpectRoomPrefWithParticipants(t TB, ctx context.Context, pref, number string, participants []ParticipantInfo) {
-	rooms := lk.waitRooms(t, ctx, len(participants) == 0)
+	filter := func(r *livekit.Room) bool {
+		return r.Name != pref && strings.HasPrefix(r.Name, pref+"_"+number+"_")
+	}
+	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter)
 	require.Len(t, rooms, 1)
-	require.NotEqual(t, pref, rooms[0].Name)
-	require.True(t, strings.HasPrefix(rooms[0].Name, pref+"_"+number+"_"))
+	require.True(t, filter(rooms[0]))
 	t.Log("Room:", rooms[0].Name)
 
 	lk.ExpectParticipants(t, ctx, rooms[0].Name, participants)
