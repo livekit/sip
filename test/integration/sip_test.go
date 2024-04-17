@@ -218,6 +218,7 @@ const (
 	participantsJoinTimeout        = 2 * time.Second
 	participantsJoinWithPinTimeout = participantsJoinTimeout + 5*time.Second
 	participantsLeaveTimeout       = 3 * time.Second
+	webrtcSetupDelay               = 5 * time.Second
 )
 
 func TestSIPJoinOpenRoom(t *testing.T) {
@@ -255,7 +256,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	})
 
 	// Wait for WebRTC to come online.
-	time.Sleep(2 * time.Second)
+	time.Sleep(webrtcSetupDelay)
 
 	// Test that we can send DTMF data to LK participants.
 	const dtmfDigits = "*111#"
@@ -313,7 +314,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	})
 
 	// Wait for WebRTC to come online.
-	time.Sleep(2 * time.Second)
+	time.Sleep(webrtcSetupDelay)
 
 	// Test that we can send DTMF data to LK participants.
 	const dtmfDigits = "*111#"
@@ -455,12 +456,18 @@ func TestSIPOutbound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
-		TrunkOut:  trunkOut,
-		NumberOut: clientNumber,
-		RoomOut:   "outbound",
-		NumberIn:  serverNumber,
-		RoomIn:    roomIn,
-		RoomPin:   dtmfPin,
-	})
+	// Run the test twice to make sure participants with the same identities can be re-created.
+	for i := 0; i < 2; i++ {
+		// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
+		t.Run(strconv.Itoa(i+1), func(t *testing.T) {
+			lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
+				TrunkOut:  trunkOut,
+				NumberOut: clientNumber,
+				RoomOut:   "outbound",
+				NumberIn:  serverNumber,
+				RoomIn:    roomIn,
+				RoomPin:   dtmfPin,
+			})
+		})
+	}
 }

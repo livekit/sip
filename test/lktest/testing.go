@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 )
 
@@ -66,6 +67,21 @@ func TestMain(run func(ctx context.Context, t TB)) {
 	}
 }
 
+func fixLogArgs(args []any) []any {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make([]any, 0, 2*len(args))
+	for i, v := range args {
+		if s, ok := v.(string); ok && strings.HasSuffix(s, " ") && i != len(args)-1 {
+			out = append(out, v)
+		} else {
+			out = append(out, v, " ")
+		}
+	}
+	return out
+}
+
 type fatal struct{}
 type skip struct{}
 
@@ -98,6 +114,7 @@ func (t *testingImpl) setError(err error) {
 }
 
 func (t *testingImpl) Error(args ...any) {
+	args = fixLogArgs(args)
 	msg := fmt.Sprint(args...)
 	t.setError(errors.New(msg))
 	slog.Error(msg)
@@ -124,6 +141,7 @@ func (t *testingImpl) Fatalf(format string, args ...any) {
 }
 
 func (t *testingImpl) Log(args ...any) {
+	args = fixLogArgs(args)
 	msg := fmt.Sprint(args...)
 	slog.Info(msg)
 }
