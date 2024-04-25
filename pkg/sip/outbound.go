@@ -50,6 +50,7 @@ type sipOutboundConfig struct {
 
 type outboundCall struct {
 	c          *Client
+	log        logger.Logger
 	rtpConn    *rtp.Conn
 	rtpOut     *rtp.SeqWriter
 	rtpAudio   *rtp.Stream
@@ -71,9 +72,10 @@ type outboundCall struct {
 	sipRunning    bool
 }
 
-func (c *Client) newCall(conf *config.Config, room lkRoomConfig) (*outboundCall, error) {
+func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room lkRoomConfig) (*outboundCall, error) {
 	call := &outboundCall{
-		c: c,
+		c:   c,
+		log: log,
 	}
 	call.rtpConn = rtp.NewConn(func() {
 		call.close("media-timeout")
@@ -157,10 +159,8 @@ func (c *outboundCall) UpdateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 	if c.sipCur == sipNew {
 		return nil
 	}
-	p := c.lkRoom.Participant()
 	if sipNew.address == "" || sipNew.to == "" {
-		logger.Infow("Shutdown of outbound SIP call",
-			"roomName", p.RoomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
+		c.log.Infow("Shutdown of outbound SIP call")
 		// shutdown the call
 		c.close("shutdown")
 		return nil
@@ -171,8 +171,7 @@ func (c *outboundCall) UpdateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.relinkMedia()
-	logger.Infow("Outbound SIP update complete",
-		"roomName", p.RoomName, "from", sipNew.from, "to", sipNew.to, "address", sipNew.address)
+	c.log.Infow("Outbound SIP update complete")
 	return nil
 }
 
@@ -187,7 +186,7 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	if err := c.rtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return err
 	}
-	logger.Debugw("begin listening on UDP", "port", c.rtpConn.LocalAddr().Port)
+	c.log.Debugw("begin listening on UDP", "port", c.rtpConn.LocalAddr().Port)
 	c.mediaRunning = true
 	return nil
 }
@@ -198,8 +197,8 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 		c.lkRoom = nil
 		c.lkRoomIn = nil
 	}
-	r := NewRoom()
-	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.wsUrl, lkNew.token); err != nil {
+	r := NewRoom(c.log)
+	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.name, lkNew.meta, lkNew.wsUrl, lkNew.token); err != nil {
 		return err
 	}
 	local, err := r.NewParticipantTrack()
@@ -286,7 +285,7 @@ func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
 func (c *outboundCall) stopSIP(reason string) {
 	if c.sipInviteReq != nil {
 		if err := c.sipBye(); err != nil {
-			logger.Errorw("SIP bye failed", err)
+			c.log.Errorw("SIP bye failed", err)
 		}
 		if c.mon != nil {
 			c.mon.CallTerminate(reason)
@@ -309,7 +308,7 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	inviteReq, inviteResp, err := c.sipInvite(offer, conf)
 	if err != nil {
 		c.mon.CallEnd()
-		logger.Errorw("SIP invite failed", err)
+		c.log.Errorw("SIP invite failed", err)
 		return err // TODO: should we retry? maybe new offer will work
 	}
 	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
@@ -321,14 +320,18 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	res, err := sdpGetAudioCodec(answer)
 	if err != nil {
 		c.mon.CallEnd()
-		logger.Errorw("SIP SDP failed", err)
+		c.log.Errorw("SIP SDP failed", err)
 		return err
 	}
+	c.log.Infow("Using codecs",
+		"audio-codec", res.Audio.Info().SDPName, "audio-rtp", res.AudioType,
+		"dtmf-rtp", res.DTMFType,
+	)
 
 	err = c.sipAccept(inviteReq, inviteResp)
 	if err != nil {
 		c.mon.CallEnd()
-		logger.Errorw("SIP accept failed", err)
+		c.log.Errorw("SIP accept failed", err)
 		return err
 	}
 	joinDur()

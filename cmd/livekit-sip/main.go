@@ -65,6 +65,7 @@ func runService(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	log := logger.GetLogger()
 
 	rc, err := redis.GetRedisClient(conf.Redis)
 	if err != nil {
@@ -83,12 +84,12 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
-	sipsrv, err := sip.NewService(conf)
+	sipsrv, err := sip.NewService(conf, log)
 	if err != nil {
 		return err
 	}
 
-	svc := service.NewService(conf, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus)
+	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
@@ -98,10 +99,10 @@ func runService(c *cli.Context) error {
 	go func() {
 		select {
 		case sig := <-stopChan:
-			logger.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
+			log.Infow("exit requested, finishing all SIP then shutting down", "signal", sig)
 			svc.Stop(false)
 		case sig := <-killChan:
-			logger.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
+			log.Infow("exit requested, stopping all SIP and shutting down", "signal", sig)
 			svc.Stop(true)
 		}
 	}()

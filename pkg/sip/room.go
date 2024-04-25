@@ -35,9 +35,12 @@ type Participant struct {
 	ID       string
 	RoomName string
 	Identity string
+	Name     string
+	Metadata string
 }
 
 type Room struct {
+	log     logger.Logger
 	room    *lksdk.Room
 	mix     *mixer.Mixer
 	out     media.SwitchWriter[media.PCM16Sample]
@@ -49,12 +52,14 @@ type Room struct {
 type lkRoomConfig struct {
 	roomName string
 	identity string
+	name     string
+	meta     string
 	wsUrl    string
 	token    string
 }
 
-func NewRoom() *Room {
-	r := &Room{}
+func NewRoom(log logger.Logger) *Room {
+	r := &Room{log: log}
 	r.mix = mixer.NewMixer(&r.out, rtp.DefFrameDur, rtp.DefSampleRate)
 	return r
 }
@@ -66,18 +71,23 @@ func (r *Room) Closed() <-chan struct{} {
 	return r.stopped.Watch()
 }
 
-func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token string) error {
+func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUrl, token string) error {
 	var (
 		err  error
 		room *lksdk.Room
 	)
-	r.p = Participant{RoomName: roomName, Identity: identity}
+	r.p = Participant{
+		RoomName: roomName,
+		Identity: identity,
+		Name:     name,
+		Metadata: meta,
+	}
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 				if publication.Kind() == lksdk.TrackKindAudio {
 					if err := publication.SetSubscribed(true); err != nil {
-						logger.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
+						r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
 					}
 				}
 			},
@@ -105,6 +115,8 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, wsUrl, token str
 				APISecret:           conf.ApiSecret,
 				RoomName:            roomName,
 				ParticipantIdentity: identity,
+				ParticipantName:     name,
+				ParticipantMetadata: meta,
 				ParticipantKind:     lksdk.ParticipantSIP,
 			}, roomCallback, lksdk.WithAutoSubscribe(false))
 	} else {

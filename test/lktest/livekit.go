@@ -74,12 +74,14 @@ func (lk *LiveKit) RoomParticipants(t TB, room string) []*livekit.ParticipantInf
 	return resp.Participants
 }
 
-func (lk *LiveKit) CreateSIPParticipant(t TB, trunk, room, identity, number, dtmf string) {
+func (lk *LiveKit) CreateSIPParticipant(t TB, trunk, room, identity, name, meta, number, dtmf string) {
 	_, err := lk.SIP.CreateSIPParticipant(context.Background(), &livekit.CreateSIPParticipantRequest{
 		SipTrunkId:          trunk,
 		SipCallTo:           number,
 		RoomName:            room,
 		ParticipantIdentity: identity,
+		ParticipantName:     name,
+		ParticipantMetadata: meta,
 		Dtmf:                dtmf,
 	})
 	if err != nil {
@@ -270,7 +272,9 @@ func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 
 type ParticipantInfo struct {
 	Identity string
+	Name     string
 	Kind     livekit.ParticipantInfo_Kind
+	Metadata string
 }
 
 func (lk *LiveKit) ExpectParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) {
@@ -299,7 +303,11 @@ wait:
 	for i := range participants {
 		exp, got := participants[i], list[i]
 		require.Equal(t, exp.Identity, got.Identity)
-		//require.Equal(t, exp.Kind, got.Kind) // FIXME
+		require.Equal(t, exp.Kind, got.Kind)
+		if exp.Name != "" {
+			require.Equal(t, exp.Name, got.Name)
+		}
+		require.Equal(t, exp.Metadata, got.Metadata)
 	}
 }
 

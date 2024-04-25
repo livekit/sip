@@ -23,7 +23,7 @@ on:
       - 'v*.*.*'
 
 env:
-  GOVERSION: "1.21"
+  GOVERSION: "1.22"
 
 jobs:
   docker:
@@ -54,7 +54,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: "1.21"
+          go-version: "1.22"
 
       - name: Download Go modules
         run: go mod download

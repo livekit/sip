@@ -28,11 +28,18 @@ type SIPOutboundTestParams struct {
 	NumberIn    string // number to call to
 	RoomIn      string // room for inbound call
 	RoomPin     string // room pin for inbound call
+	MetaIn      string // expected metadata for inbound participants
 }
 
 func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundTestParams) {
 	t.Log("creating sip participant")
-	lkOut.CreateSIPParticipant(t, params.TrunkOut, params.RoomOut, "Outbound Call", params.NumberIn, params.RoomPin)
+	const (
+		outIdentity = "siptest_outbound"
+		outName     = "Outbound Call"
+		outMeta     = `{"test":true, "dir": "out"}`
+	)
+
+	lkOut.CreateSIPParticipant(t, params.TrunkOut, params.RoomOut, outIdentity, outName, outMeta, params.NumberIn, params.RoomPin)
 
 	const (
 		nameOut = "testOut"
@@ -48,12 +55,12 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	t.Log("checking rooms (outbound)")
 	lkOut.ExpectRoomWithParticipants(t, ctx, params.RoomOut, []ParticipantInfo{
 		{Identity: nameOut, Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: "Outbound Call", Kind: livekit.ParticipantInfo_SIP},
+		{Identity: outIdentity, Name: outName, Kind: livekit.ParticipantInfo_SIP, Metadata: outMeta},
 	})
 	t.Log("checking rooms (inbound)")
 	lkIn.ExpectRoomWithParticipants(t, ctx, params.RoomIn, []ParticipantInfo{
 		{Identity: nameIn, Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: "Phone " + params.NumberOut, Kind: livekit.ParticipantInfo_SIP},
+		{Identity: "sip_" + params.NumberOut, Name: "Phone " + params.NumberOut, Kind: livekit.ParticipantInfo_SIP, Metadata: params.MetaIn},
 	})
 
 	t.Log("testing audio")

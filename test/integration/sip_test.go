@@ -62,13 +62,14 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		Logging:       logger.Config{Level: "debug"},
 	}
 	_ = conf.InitLogger()
+	log := logger.GetLogger()
 
-	sipsrv, err := sip.NewService(conf)
+	sipsrv, err := sip.NewService(conf, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	svc := service.NewService(conf, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus)
+	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus)
 	sipsrv.SetHandler(svc)
 	t.Cleanup(func() {
 		svc.Stop(true)
@@ -135,21 +136,22 @@ func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) strin
 	return tr.SipTrunkId
 }
 
-func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string) *NumberConfig {
+func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string, meta string) *NumberConfig {
 	s.CreateTrunkIn(t, number, "", "")
-	s.CreateDirectDispatch(t, room, pin)
+	s.CreateDirectDispatch(t, room, pin, meta)
 	return &NumberConfig{SIP: s, Number: number, Pin: pin}
 }
 
-func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string) *NumberConfig {
+func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string, meta string) *NumberConfig {
 	s.CreateTrunkIn(t, number, "", "")
-	s.CreateIndividualDispatch(t, room, pin)
+	s.CreateIndividualDispatch(t, room, pin, meta)
 	return &NumberConfig{SIP: s, Number: number, Pin: pin}
 }
 
-func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string) {
+func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta string) {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
+		Metadata: meta,
 		Rule: &livekit.SIPDispatchRule{
 			Rule: &livekit.SIPDispatchRule_DispatchRuleDirect{
 				DispatchRuleDirect: &livekit.SIPDispatchRuleDirect{
@@ -164,9 +166,10 @@ func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string) {
 	t.Log("Dispatch (direct):", dr.SipDispatchRuleId)
 }
 
-func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string) {
+func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, meta string) {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
+		Metadata: meta,
 		Rule: &livekit.SIPDispatchRule{
 			Rule: &livekit.SIPDispatchRule_DispatchRuleIndividual{
 				DispatchRuleIndividual: &livekit.SIPDispatchRuleIndividual{
@@ -227,7 +230,10 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		dmu  sync.Mutex
 		dtmf string
 	)
-	const roomName = "test-open"
+	const (
+		roomName = "test-open"
+		meta     = `{"test":true}`
+	)
 	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
@@ -242,7 +248,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	})
 	srv := runSIPServer(t, lk)
 
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
+	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
 
 	cli := runClient(t, nc, "", clientNumber, false)
 
@@ -252,7 +258,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
-		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
+		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
 	})
 
 	// Wait for WebRTC to come online.
@@ -284,7 +290,10 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		dmu  sync.Mutex
 		dtmf string
 	)
-	const roomName = "test-priv"
+	const (
+		roomName = "test-priv"
+		meta     = `{"test":true}`
+	)
 	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
@@ -299,7 +308,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	})
 	srv := runSIPServer(t, lk)
 
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234")
+	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234", meta)
 
 	cli := runClient(t, nc, "", clientNumber, false)
 
@@ -310,7 +319,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
-		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
+		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
 	})
 
 	// Wait for WebRTC to come online.
@@ -340,9 +349,12 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	lk := runLiveKit(t)
 	srv := runSIPServer(t, lk)
 
-	const roomName = "test-open"
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
-	srv.CreateDirectDispatch(t, "test-priv", "1234")
+	const (
+		roomName = "test-open"
+		meta     = `{"test":true}`
+	)
+	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
+	srv.CreateDirectDispatch(t, "test-priv", "1234", "")
 
 	runClient(t, nc, "", clientNumber, true)
 
@@ -350,7 +362,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
-		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
+		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
 	})
 }
 
@@ -358,8 +370,11 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	lk := runLiveKit(t)
 	srv := runSIPServer(t, lk)
 
-	const roomName = "test-open"
-	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "")
+	const (
+		roomName = "test-open"
+		meta     = `{"test":true}`
+	)
+	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "", meta)
 
 	runClient(t, nc, "", clientNumber, false)
 
@@ -368,7 +383,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
 	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []lktest.ParticipantInfo{
-		{Identity: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP},
+		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
 	})
 }
 
@@ -385,8 +400,11 @@ func TestSIPAudio(t *testing.T) {
 					lk := runLiveKit(t)
 					srv := runSIPServer(t, lk)
 
-					const roomName = "test-open"
-					nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "")
+					const (
+						roomName = "test-open"
+						meta     = `{"test":true}`
+					)
+					nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
 
 					// Connect clients and wait for them to join.
 					var (
@@ -408,7 +426,12 @@ func TestSIPAudio(t *testing.T) {
 					defer cancel()
 					var exp []lktest.ParticipantInfo
 					for i := range clients {
-						exp = append(exp, lktest.ParticipantInfo{Identity: fmt.Sprintf("Phone +%d", 111111111*(i+1)), Kind: livekit.ParticipantInfo_SIP})
+						exp = append(exp, lktest.ParticipantInfo{
+							Identity: fmt.Sprintf("sip_+%d", 111111111*(i+1)),
+							Name:     fmt.Sprintf("Phone +%d", 111111111*(i+1)),
+							Kind:     livekit.ParticipantInfo_SIP,
+							Metadata: meta,
+						})
 					}
 					lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
 
@@ -444,11 +467,12 @@ func TestSIPOutbound(t *testing.T) {
 		userPass = "test-pass"
 		roomPin  = "*1234"
 		dtmfPin  = "ww*12w34ww#" // with added delays
+		meta     = `{"test":true}`
 	)
 
 	// Configure Trunk for inbound server.
 	srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
-	srvIn.CreateDirectDispatch(t, roomIn, roomPin)
+	srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta)
 
 	// Configure Trunk for outbound server and make a SIP call.
 	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
@@ -467,6 +491,7 @@ func TestSIPOutbound(t *testing.T) {
 				NumberIn:  serverNumber,
 				RoomIn:    roomIn,
 				RoomPin:   dtmfPin,
+				MetaIn:    meta,
 			})
 		})
 	}

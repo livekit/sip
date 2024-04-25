@@ -124,6 +124,9 @@ func (c *Config) InitLogger(values ...interface{}) error {
 
 // To use with zap logger
 func (c *Config) GetLoggerValues() []interface{} {
+	if c.NodeID == "" {
+		return nil
+	}
 	return []interface{}{"nodeID", c.NodeID}
 }
 
