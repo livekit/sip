@@ -40,6 +40,7 @@ type sipServiceActiveCallsFunc func() int
 
 type Service struct {
 	conf *config.Config
+	log  logger.Logger
 
 	psrpcServer rpc.SIPInternalServerImpl
 	psrpcClient rpc.IOInfoClient
@@ -56,11 +57,12 @@ type Service struct {
 }
 
 func NewService(
-	conf *config.Config, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
+	conf *config.Config, log logger.Logger, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
 	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoClient, bus psrpc.MessageBus,
 ) *Service {
 	s := &Service{
 		conf: conf,
+		log:  log,
 
 		psrpcServer: srv,
 		psrpcClient: cli,
@@ -84,7 +86,7 @@ func (s *Service) Stop(kill bool) {
 }
 
 func (s *Service) Run() error {
-	logger.Debugw("starting service", "version", version.Version)
+	s.log.Debugw("starting service", "version", version.Version)
 
 	if s.promServer != nil {
 		promListener, err := net.Listen("tcp", s.promServer.Addr)
@@ -107,12 +109,12 @@ func (s *Service) Run() error {
 		return err
 	}
 
-	logger.Debugw("service ready")
+	s.log.Debugw("service ready")
 
 	for { //nolint: gosimple
 		select {
 		case <-s.shutdown.Watch():
-			logger.Infow("shutting down")
+			s.log.Infow("shutting down")
 			s.DeregisterCreateSIPParticipantTopic()
 
 			if !s.killed.Load() {
@@ -147,6 +149,7 @@ func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcA
 
 func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{
+
 		CallingNumber: info.FromUser,
 		CalledNumber:  info.ToUser,
 		CalledHost:    info.ToHost,
@@ -156,34 +159,46 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 	})
 
 	if err != nil {
-		logger.Warnw("SIP handle dispatch rule error", err)
+		s.log.Warnw("SIP handle dispatch rule error", err)
 		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
 	}
 	switch resp.Result {
 	default:
-		logger.Errorw("SIP handle dispatch rule error", fmt.Errorf("unexpected dispatch result: %v", resp.Result))
+		s.log.Errorw("SIP handle dispatch rule error", fmt.Errorf("unexpected dispatch result: %v", resp.Result))
 		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
 	case rpc.SIPDispatchResult_LEGACY_ACCEPT_OR_PIN:
 		if resp.RequestPin {
 			return sip.CallDispatch{Result: sip.DispatchRequestPin}
 		}
+		// TODO: finally deprecate and drop
 		return sip.CallDispatch{
-			Result:   sip.DispatchAccept,
-			RoomName: resp.RoomName,
-			Identity: resp.ParticipantIdentity,
-			WsUrl:    resp.WsUrl,
-			Token:    resp.Token,
+			Result:         sip.DispatchAccept,
+			RoomName:       resp.RoomName,
+			Identity:       resp.ParticipantIdentity,
+			Name:           resp.ParticipantName,
+			Metadata:       resp.ParticipantMetadata,
+			WsUrl:          resp.WsUrl,
+			Token:          resp.Token,
+			TrunkID:        resp.SipTrunkId,
+			DispatchRuleID: resp.SipDispatchRuleId,
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
-			Result:   sip.DispatchAccept,
-			RoomName: resp.RoomName,
-			Identity: resp.ParticipantIdentity,
-			WsUrl:    resp.WsUrl,
-			Token:    resp.Token,
+			Result:         sip.DispatchAccept,
+			RoomName:       resp.RoomName,
+			Identity:       resp.ParticipantIdentity,
+			Name:           resp.ParticipantName,
+			Metadata:       resp.ParticipantMetadata,
+			WsUrl:          resp.WsUrl,
+			Token:          resp.Token,
+			TrunkID:        resp.SipTrunkId,
+			DispatchRuleID: resp.SipDispatchRuleId,
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
-		return sip.CallDispatch{Result: sip.DispatchRequestPin}
+		return sip.CallDispatch{
+			Result:  sip.DispatchRequestPin,
+			TrunkID: resp.SipTrunkId,
+		}
 	case rpc.SIPDispatchResult_REJECT:
 		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
 	case rpc.SIPDispatchResult_DROP:

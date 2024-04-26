@@ -1,8 +1,8 @@
 module github.com/livekit/sip
 
-go 1.21.6
+go 1.22
 
-toolchain go1.22.1
+toolchain go1.22.2
 
 require (
 	github.com/at-wat/ebml-go v0.17.0
@@ -12,7 +12,7 @@ require (
 	github.com/icholy/digest v0.1.22
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8
-	github.com/livekit/protocol v1.12.1-0.20240331203140-766ababa37ae
+	github.com/livekit/protocol v1.14.1-0.20240426104403-e7962f444464
 	github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5
 	github.com/livekit/server-sdk-go/v2 v2.1.1-0.20240417144842-1151c20f6dd8
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -35,6 +35,7 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 // indirect
+	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect

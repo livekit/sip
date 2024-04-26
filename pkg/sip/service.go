@@ -28,20 +28,25 @@ import (
 
 type Service struct {
 	conf *config.Config
+	log  logger.Logger
 	mon  *stats.Monitor
 	cli  *Client
 	srv  *Server
 }
 
-func NewService(conf *config.Config) (*Service, error) {
+func NewService(conf *config.Config, log logger.Logger) (*Service, error) {
+	if log == nil {
+		log = logger.GetLogger()
+	}
 	mon := stats.NewMonitor()
-	cli := NewClient(conf, mon)
+	cli := NewClient(conf, log, mon)
 	s := &Service{
 		conf: conf,
+		log:  log,
 		mon:  mon,
 		cli:  cli,
 	}
-	s.srv = NewServer(conf, mon)
+	s.srv = NewServer(conf, log, mon)
 	return s, nil
 }
 
@@ -72,12 +77,12 @@ func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {
 }
 
 func (s *Service) Start() error {
-	logger.Debugw("starting sip service", "version", version.Version)
+	s.log.Debugw("starting sip service", "version", version.Version)
 	for name, enabled := range s.conf.Codecs {
 		if enabled {
-			logger.Warnw("codec enabled", nil, "name", name)
+			s.log.Warnw("codec enabled", nil, "name", name)
 		} else {
-			logger.Warnw("codec disabled", nil, "name", name)
+			s.log.Warnw("codec disabled", nil, "name", name)
 		}
 	}
 	media.CodecsSetEnabled(s.conf.Codecs)
@@ -104,6 +109,6 @@ func (s *Service) Start() error {
 	if err := s.srv.Start(ua, s.cli.OnRequest); err != nil {
 		return err
 	}
-	logger.Debugw("sip service ready")
+	s.log.Debugw("sip service ready")
 	return nil
 }

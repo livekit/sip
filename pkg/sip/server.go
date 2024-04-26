@@ -40,6 +40,7 @@ var (
 )
 
 type CallInfo struct {
+	ID         string
 	FromUser   string
 	ToUser     string
 	ToHost     string
@@ -58,11 +59,15 @@ const (
 )
 
 type CallDispatch struct {
-	Result   DispatchResult
-	RoomName string
-	Identity string
-	WsUrl    string
-	Token    string
+	Result         DispatchResult
+	RoomName       string
+	Identity       string
+	Name           string
+	Metadata       string
+	WsUrl          string
+	Token          string
+	TrunkID        string
+	DispatchRuleID string
 }
 
 type Handler interface {
@@ -71,6 +76,7 @@ type Handler interface {
 }
 
 type Server struct {
+	log              logger.Logger
 	mon              *stats.Monitor
 	sipSrv           *sipgo.Server
 	sipConn          *net.UDPConn
@@ -94,8 +100,12 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(conf *config.Config, mon *stats.Monitor) *Server {
+func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Server {
+	if log == nil {
+		log = logger.GetLogger()
+	}
 	s := &Server{
+		log:               log,
 		conf:              conf,
 		mon:               mon,
 		activeCalls:       make(map[string]*inboundCall),
@@ -145,7 +155,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) e
 		}
 		s.signalingIpLocal = s.signalingIp
 	}
-	logger.Infow("server starting", "local", s.signalingIpLocal, "external", s.signalingIp)
+	s.log.Infow("server starting", "local", s.signalingIpLocal, "external", s.signalingIp)
 
 	if agent == nil {
 		ua, err := sipgo.NewUA(

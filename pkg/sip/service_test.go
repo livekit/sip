@@ -10,6 +10,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
+	"github.com/livekit/protocol/logger"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
@@ -68,7 +69,7 @@ func testInvite(t *testing.T, h Handler, from, to string, test func(tx sip.Clien
 	s, err := NewService(&config.Config{
 		SIPPort: sipPort,
 		RTPPort: rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	})
+	}, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)

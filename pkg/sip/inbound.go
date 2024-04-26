@@ -24,6 +24,7 @@ import (
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	lksip "github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/sdp/v2"
 
@@ -52,7 +53,7 @@ func sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
 	}
 }
 
-func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
+func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
 	if username == "" || password == "" {
 		return true
 	}
@@ -79,7 +80,7 @@ func (s *Server) handleInviteAuth(req *sip.Request, tx sip.ServerTransaction, fr
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
-		logger.Infow("Requesting inbound auth", "from", from)
+		log.Infow("Requesting inbound auth")
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
 			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
@@ -148,30 +149,35 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	cmon.InviteReq()
 	defer cmon.SessionDur()()
+	callID := lksip.NewCallID()
 	joinDur := cmon.JoinDur()
-	logger.Infow("INVITE received", "tag", tag, "from", from, "to", to)
+	log := s.log.WithValues(
+		"call-id", callID, "sip-tag", tag,
+		"from-ip", src, "from-host", from.Address.Host, "from-user", from.Address.User,
+		"to-ip", req.Destination(), "to-host", to.Address.Host, "to-user", to.Address.User,
+	)
+	log.Infow("INVITE received")
 
 	username, password, drop, err := s.handler.GetAuthCredentials(ctx, from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
 		cmon.InviteErrorShort("no-rule")
-		logger.Warnw("Rejecting inbound, doesn't match any Trunks", err,
-			"tag", tag, "src", src, "from", from, "to", to, "to-host", to.Address.Host)
+		log.Warnw("Rejecting inbound, doesn't match any Trunks", err)
 		sipErrorResponse(tx, req)
 		return
 	} else if drop {
 		cmon.InviteErrorShort("flood")
-		logger.Debugw("Dropping inbound flood", "src", src, "from", from, "to", to, "to-host", to.Address.Host)
+		log.Debugw("Dropping inbound flood")
 		tx.Terminate()
 		return
 	}
-	if !s.handleInviteAuth(req, tx, from.Address.User, username, password) {
+	if !s.handleInviteAuth(log, req, tx, from.Address.User, username, password) {
 		cmon.InviteErrorShort("unauthorized")
 		// handleInviteAuth will generate the SIP Response as needed
 		return
 	}
 	cmon.InviteAccept()
 
-	call := s.newInboundCall(cmon, tag, from, to, src)
+	call := s.newInboundCall(log, cmon, callID, tag, from, to, src)
 	call.joinDur = joinDur
 	call.handleInvite(call.ctx, req, tx, s.conf)
 }
@@ -182,7 +188,7 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 		sipErrorResponse(tx, req)
 		return
 	}
-	logger.Infow("BYE", "tag", tag)
+	s.log.Infow("BYE", "sip-tag", tag)
 
 	s.cmu.RLock()
 	c := s.activeCalls[tag]
@@ -197,7 +203,9 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 
 type inboundCall struct {
 	s             *Server
+	log           logger.Logger
 	mon           *stats.CallMonitor
+	id            string
 	tag           string
 	ctx           context.Context
 	cancel        func()
@@ -220,17 +228,19 @@ type inboundCall struct {
 	done          atomic.Bool
 }
 
-func (s *Server) newInboundCall(mon *stats.CallMonitor, tag string, from *sip.FromHeader, to *sip.ToHeader, src string) *inboundCall {
+func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, tag string, from *sip.FromHeader, to *sip.ToHeader, src string) *inboundCall {
 	c := &inboundCall{
 		s:             s,
+		log:           log,
 		mon:           mon,
+		id:            id,
 		tag:           tag,
 		from:          from,
 		to:            to,
 		src:           src,
 		audioRecvChan: make(chan struct{}),
 		dtmf:          make(chan dtmf.Event, 10),
-		lkRoom:        NewRoom(), // we need it created earlier so that the audio mixer is available for pin prompts
+		lkRoom:        NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
@@ -246,6 +256,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+		ID:         c.id,
 		FromUser:   c.from.Address.User,
 		ToUser:     c.to.Address.User,
 		ToHost:     c.to.Address.Host,
@@ -253,19 +264,25 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		Pin:        "",
 		NoPin:      false,
 	})
+	if disp.TrunkID != "" {
+		c.log = c.log.WithValues("sip-trunk", disp.TrunkID)
+	}
+	if disp.DispatchRuleID != "" {
+		c.log = c.log.WithValues("sip-rule", disp.DispatchRuleID)
+	}
 	switch disp.Result {
 	default:
-		logger.Errorw("Rejecting inbound call", fmt.Errorf("unexpected dispatch result: %v", disp.Result), "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		c.log.Errorw("Rejecting inbound call", fmt.Errorf("unexpected dispatch result: %v", disp.Result))
 		sipErrorResponse(tx, req)
 		c.close("unexpected-result")
 		return
 	case DispatchNoRuleDrop:
-		logger.Debugw("Rejecting inbound flood", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		c.log.Debugw("Rejecting inbound flood")
 		tx.Terminate()
 		c.close("flood")
 		return
 	case DispatchNoRuleReject:
-		logger.Infow("Rejecting inbound call, doesn't match any Dispatch Rules", "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		c.log.Infow("Rejecting inbound call, doesn't match any Dispatch Rules")
 		sipErrorResponse(tx, req)
 		c.close("no-dispatch")
 		return
@@ -301,7 +318,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 
 	res.AppendHeader(&contentTypeHeaderSDP)
 	if err = tx.Respond(res); err != nil {
-		logger.Errorw("Cannot respond to INVITE", err)
+		c.log.Errorw("Cannot respond to INVITE", err)
 		return
 	}
 	c.inviteReq = req
@@ -329,14 +346,14 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	}
 	switch disp.Result {
 	default:
-		logger.Errorw("Rejecting inbound call", fmt.Errorf("unreachable dispatch result path: %v", disp.Result), "from", c.from.Address.User, "to", c.to.Address.User, "to-host", c.to.Address.Host, "src", c.src)
+		c.log.Errorw("Rejecting inbound call", fmt.Errorf("unreachable dispatch result path: %v", disp.Result))
 		sipErrorResponse(tx, req)
 		c.close("unreachable-path")
 		return
 	case DispatchRequestPin:
 		c.pinPrompt(ctx)
 	case DispatchAccept:
-		c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.WsUrl, disp.Token)
+		c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.WsUrl, disp.Token)
 	}
 	// Wait for the caller to terminate the call.
 	select {
@@ -382,6 +399,10 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err != nil {
 		return nil, err
 	}
+	c.log.Infow("Using codecs",
+		"audio-codec", res.Audio.Info().SDPName, "audio-rtp", res.AudioType,
+		"dtmf-rtp", res.DTMFType,
+	)
 
 	conn := rtp.NewConn(func() {
 		c.close("media-timeout")
@@ -399,7 +420,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err := conn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
-	logger.Debugw("begin listening on UDP", "port", conn.LocalAddr().Port)
+	c.log.Debugw("begin listening on UDP", "port", conn.LocalAddr().Port)
 	c.rtpConn = conn
 	c.audioCodec = res.Audio
 	c.audioType = res.AudioType
@@ -415,7 +436,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 }
 
 func (c *inboundCall) pinPrompt(ctx context.Context) {
-	logger.Infow("Requesting Pin for SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User)
+	c.log.Infow("Requesting Pin for SIP call")
 	const pinLimit = 16
 	c.playAudio(ctx, c.s.res.enterPin)
 	pin := ""
@@ -436,8 +457,9 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				// End of the pin
 				noPin = pin == ""
 
-				logger.Infow("Checking Pin for SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
+				c.log.Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
 				disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+					ID:         c.id,
 					FromUser:   c.from.Address.User,
 					ToUser:     c.to.Address.User,
 					ToHost:     c.to.Address.Host,
@@ -445,14 +467,20 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 					Pin:        pin,
 					NoPin:      noPin,
 				})
+				if disp.TrunkID != "" {
+					c.log = c.log.WithValues("sip-trunk", disp.TrunkID)
+				}
+				if disp.DispatchRuleID != "" {
+					c.log = c.log.WithValues("sip-rule", disp.DispatchRuleID)
+				}
 				if disp.Result != DispatchAccept || disp.RoomName == "" {
-					logger.Infow("Rejecting call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "pin", pin, "noPin", noPin)
+					c.log.Infow("Rejecting call", "pin", pin, "noPin", noPin)
 					c.playAudio(ctx, c.s.res.wrongPin)
 					c.close("wrong-pin")
 					return
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
-				c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.WsUrl, disp.Token)
+				c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.WsUrl, disp.Token)
 				return
 			}
 			// Gather pin numbers
@@ -472,7 +500,7 @@ func (c *inboundCall) close(reason string) {
 		return
 	}
 	c.mon.CallTerminate(reason)
-	logger.Infow("Closing inbound call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "reason", reason)
+	c.log.Infow("Closing inbound call", "reason", reason)
 	c.sendBye()
 	c.closeMedia()
 	if c.callDur != nil {
@@ -508,14 +536,14 @@ func (c *inboundCall) handleAudio(p *rtp.Packet) error {
 	return nil
 }
 
-func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, participantIdentity, wsUrl, token string) error {
+func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, parIdentity, parName, parMeta, wsUrl, token string) error {
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
-	err := c.lkRoom.Connect(c.s.conf, roomName, participantIdentity, wsUrl, token)
+	err := c.lkRoom.Connect(c.s.conf, roomName, parIdentity, parName, parMeta, wsUrl, token)
 	if err != nil {
 		return err
 	}
@@ -532,14 +560,15 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	return nil
 }
 
-func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, wsUrl, token string) {
+func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, meta, wsUrl, token string) {
 	if c.joinDur != nil {
 		c.joinDur()
 	}
 	c.callDur = c.mon.CallDur()
-	logger.Infow("Bridging SIP call", "tag", c.tag, "from", c.from.Address.User, "to", c.to.Address.User, "roomName", roomName, "identity", identity)
-	if err := c.createLiveKitParticipant(ctx, roomName, identity, wsUrl, token); err != nil {
-		logger.Errorw("Cannot create LiveKit participant", err, "tag", c.tag)
+	c.log = c.log.WithValues("roomName", roomName, "identity", identity, "name", name)
+	c.log.Infow("Bridging SIP call")
+	if err := c.createLiveKitParticipant(ctx, roomName, identity, name, meta, wsUrl, token); err != nil {
+		c.log.Errorw("Cannot create LiveKit participant", err)
 		c.close("participant-failed")
 	}
 }

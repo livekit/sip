@@ -32,6 +32,7 @@ import (
 
 type Client struct {
 	conf *config.Config
+	log  logger.Logger
 	mon  *stats.Monitor
 
 	sipCli           *sipgo.Client
@@ -43,9 +44,13 @@ type Client struct {
 	activeCalls map[*outboundCall]struct{}
 }
 
-func NewClient(conf *config.Config, mon *stats.Monitor) *Client {
+func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
+	if log == nil {
+		log = logger.GetLogger()
+	}
 	c := &Client{
 		conf:        conf,
+		log:         log,
 		mon:         mon,
 		activeCalls: make(map[*outboundCall]struct{}),
 	}
@@ -70,7 +75,7 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		}
 		c.signalingIpLocal = c.signalingIp
 	}
-	logger.Infow("client starting", "local", c.signalingIpLocal, "external", c.signalingIp)
+	c.log.Infow("client starting", "local", c.signalingIpLocal, "external", c.signalingIp)
 
 	if agent == nil {
 		ua, err := sipgo.NewUA(
@@ -115,11 +120,18 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	} else if req.RoomName == "" {
 		return nil, fmt.Errorf("room name must be set")
 	}
-	logger.Infow("Creating SIP participant",
-		"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
-	call, err := c.newCall(c.conf, lkRoomConfig{
+	log := c.log.WithValues(
+		"call-id", req.SipCallId,
+		"roomName", req.RoomName, "identity", req.ParticipantIdentity, "name", req.ParticipantName,
+		"from-user", req.Number,
+		"to-host", req.Address, "to-user", req.CallTo,
+	)
+	log.Infow("Creating SIP participant")
+	call, err := c.newCall(c.conf, log, req.SipCallId, lkRoomConfig{
 		roomName: req.RoomName,
 		identity: req.ParticipantIdentity,
+		name:     req.ParticipantName,
+		meta:     req.ParticipantMetadata,
 		wsUrl:    req.WsUrl,
 		token:    req.Token,
 	})
@@ -139,8 +151,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			ringtone: req.PlayRingtone,
 		})
 		if err != nil {
-			logger.Errorw("SIP call failed", err,
-				"roomName", req.RoomName, "from", req.Number, "to", req.CallTo, "address", req.Address)
+			log.Errorw("SIP call failed", err)
 			return
 		}
 		select {
@@ -151,7 +162,11 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}()
 
 	p := call.Participant()
-	return &rpc.InternalCreateSIPParticipantResponse{ParticipantId: p.ID, ParticipantIdentity: p.Identity}, nil
+	return &rpc.InternalCreateSIPParticipantResponse{
+		ParticipantId:       p.ID,
+		ParticipantIdentity: p.Identity,
+		SipCallId:           req.SipCallId,
+	}, nil
 }
 
 func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) {
@@ -163,7 +178,7 @@ func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) {
 
 func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	tag, _ := getTagValue(req)
-	logger.Infow("BYE", "tag", tag)
+	c.log.Infow("BYE", "sip-tag", tag)
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
 
