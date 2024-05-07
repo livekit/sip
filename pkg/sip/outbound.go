@@ -486,7 +486,9 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 func (c *outboundCall) sipAccept(inviteReq *sip.Request, inviteResp *sip.Response) error {
 	if cont, ok := inviteResp.Contact(); ok {
 		inviteReq.Recipient = &cont.Address
-		inviteReq.Recipient.Port = 5060
+		if inviteReq.Recipient.Port == 0 {
+			inviteReq.Recipient.Port = 5060
+		}
 	}
 
 	if recordRouteHeader, ok := inviteResp.RecordRoute(); ok {
