@@ -248,7 +248,9 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 
 	if contactHeader, ok := resp.Contact(); ok {
 		req.Recipient = &contactHeader.Address
-		req.Recipient.Port = 5060
+		if req.Recipient.Port == 0 {
+			req.Recipient.Port = 5060
+		}
 	}
 
 	if recordRouteHeader, ok := resp.RecordRoute(); ok {
