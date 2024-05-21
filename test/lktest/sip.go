@@ -38,7 +38,24 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 		outName     = "Outbound Call"
 		outMeta     = `{"test":true, "dir": "out"}`
 	)
+	var (
+		inIdentity = "sip_" + params.NumberOut
+		inName     = "Phone " + params.NumberOut
+	)
+	// Make sure we remove rooms when the test ends.
+	// Some tests may reuse LK server, in which case the participants could stay in rooms for a long time.
+	t.Cleanup(func() {
+		_, _ = lkOut.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: params.RoomOut})
+		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: params.RoomIn})
+	})
+	// Make sure we delete inbound SIP participant. Outbound is deleted automatically by CreateSIPParticipant.
+	t.Cleanup(func() {
+		_, _ = lkIn.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
+			Room: params.RoomIn, Identity: inIdentity,
+		})
+	})
 
+	// Start the outbound call. It should hit Trunk Provider and initiate an inbound call back to the second server.
 	lkOut.CreateSIPParticipant(t, params.TrunkOut, params.RoomOut, outIdentity, outName, outMeta, params.NumberIn, params.RoomPin)
 
 	const (
@@ -60,7 +77,7 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	t.Log("checking rooms (inbound)")
 	lkIn.ExpectRoomWithParticipants(t, ctx, params.RoomIn, []ParticipantInfo{
 		{Identity: nameIn, Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: "sip_" + params.NumberOut, Name: "Phone " + params.NumberOut, Kind: livekit.ParticipantInfo_SIP, Metadata: params.MetaIn},
+		{Identity: inIdentity, Name: inName, Kind: livekit.ParticipantInfo_SIP, Metadata: params.MetaIn},
 	})
 
 	t.Log("testing audio")

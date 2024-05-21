@@ -121,10 +121,10 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		return nil, fmt.Errorf("room name must be set")
 	}
 	log := c.log.WithValues(
-		"call-id", req.SipCallId,
+		"callID", req.SipCallId,
 		"roomName", req.RoomName, "identity", req.ParticipantIdentity, "name", req.ParticipantName,
-		"from-user", req.Number,
-		"to-host", req.Address, "to-user", req.CallTo,
+		"fromUser", req.Number,
+		"toHost", req.Address, "toUser", req.CallTo,
 	)
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(c.conf, log, req.SipCallId, lkRoomConfig{
@@ -178,10 +178,10 @@ func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) {
 
 func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	tag, _ := getTagValue(req)
-	c.log.Infow("BYE", "sip-tag", tag)
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
 
+	found := false
 	for c := range c.activeCalls {
 		toHeader, ok := req.To()
 		if !ok {
@@ -194,10 +194,15 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
 		}
 
 		if c.sipCur.to == fromHeader.Address.User && c.sipCur.from == toHeader.Address.User {
+			found = true
+			c.log.Infow("BYE")
 			go func(call *outboundCall) {
 				call.CloseWithReason("bye")
 			}(c)
 		}
+	}
+	if !found {
+		c.log.Infow("BYE", "sipTag", tag)
 	}
 }
 

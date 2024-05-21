@@ -306,6 +306,13 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	c.mon.CallStart()
 	joinDur := c.mon.JoinDur()
 	inviteReq, inviteResp, err := c.sipInvite(offer, conf)
+	if inviteResp != nil {
+		for hdr, name := range headerToLog {
+			if h := inviteResp.GetHeader(hdr); h != nil {
+				c.log = c.log.WithValues(name, h.Value())
+			}
+		}
+	}
 	if err != nil {
 		c.mon.CallEnd()
 		c.log.Errorw("SIP invite failed", err)
@@ -323,7 +330,7 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		c.log.Errorw("SIP SDP failed", err)
 		return err
 	}
-	c.log.Infow("Using codecs",
+	c.log.Infow("selected codecs",
 		"audio-codec", res.Audio.Info().SDPName, "audio-rtp", res.AudioType,
 		"dtmf-rtp", res.DTMFType,
 	)
@@ -435,7 +442,7 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 		switch resp.StatusCode {
 		default:
 			c.mon.InviteError(fmt.Sprintf("status-%d", resp.StatusCode))
-			return nil, nil, fmt.Errorf("Unexpected StatusCode from INVITE response %d", resp.StatusCode)
+			return nil, resp, fmt.Errorf("Unexpected StatusCode from INVITE response %d", resp.StatusCode)
 		case 400:
 			c.mon.InviteError("status-400")
 			var reason string
@@ -445,9 +452,9 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 				reason = s.Value()
 			}
 			if reason != "" {
-				return nil, nil, fmt.Errorf("INVITE failed: %s", reason)
+				return nil, resp, fmt.Errorf("INVITE failed: %s", reason)
 			}
-			return nil, nil, fmt.Errorf("INVITE failed with status %d", resp.StatusCode)
+			return nil, resp, fmt.Errorf("INVITE failed with status %d", resp.StatusCode)
 		case 200:
 			c.mon.InviteAccept()
 			return req, resp, nil
@@ -456,17 +463,17 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 			c.mon.InviteError("auth-required")
 		}
 		if conf.user == "" || conf.pass == "" {
-			return nil, nil, fmt.Errorf("Server responded with 407, but no username or password was provided")
+			return nil, resp, fmt.Errorf("Server responded with 407, but no username or password was provided")
 		}
 		headerVal := resp.GetHeader("Proxy-Authenticate")
 		challenge, err := digest.ParseChallenge(headerVal.Value())
 		if err != nil {
-			return nil, nil, err
+			return nil, resp, err
 		}
 
 		toHeader, ok := resp.To()
 		if !ok {
-			return nil, nil, fmt.Errorf("No To Header on Request")
+			return nil, resp, fmt.Errorf("No To Header on Request")
 		}
 
 		cred, err := digest.Digest(challenge, digest.Options{
@@ -476,7 +483,7 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 			Password: conf.pass,
 		})
 		if err != nil {
-			return nil, nil, err
+			return nil, resp, err
 		}
 		authHeader = cred.String()
 		// Try again with a computed digest

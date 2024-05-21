@@ -75,7 +75,7 @@ func (lk *LiveKit) RoomParticipants(t TB, room string) []*livekit.ParticipantInf
 }
 
 func (lk *LiveKit) CreateSIPParticipant(t TB, trunk, room, identity, name, meta, number, dtmf string) {
-	_, err := lk.SIP.CreateSIPParticipant(context.Background(), &livekit.CreateSIPParticipantRequest{
+	r, err := lk.SIP.CreateSIPParticipant(context.Background(), &livekit.CreateSIPParticipantRequest{
 		SipTrunkId:          trunk,
 		SipCallTo:           number,
 		RoomName:            room,
@@ -87,6 +87,13 @@ func (lk *LiveKit) CreateSIPParticipant(t TB, trunk, room, identity, name, meta,
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Make sure we delete outbound SIP participant.
+	// Some tests may reuse LK server, in which case the participant could stay in a room for a long time.
+	t.Cleanup(func() {
+		_, _ = lk.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
+			Room: room, Identity: r.ParticipantIdentity,
+		})
+	})
 }
 
 func (lk *LiveKit) Connect(t TB, room, identity string, cb *lksdk.RoomCallback) *lksdk.Room {
@@ -302,12 +309,12 @@ wait:
 	})
 	for i := range participants {
 		exp, got := participants[i], list[i]
-		require.Equal(t, exp.Identity, got.Identity)
+		require.Equal(t, exp.Identity, got.Identity, "unexpected participant identity")
 		require.Equal(t, exp.Kind, got.Kind)
 		if exp.Name != "" {
-			require.Equal(t, exp.Name, got.Name)
+			require.Equal(t, exp.Name, got.Name, "unexpected participant name")
 		}
-		require.Equal(t, exp.Metadata, got.Metadata)
+		require.Equal(t, exp.Metadata, got.Metadata, "unexpected participant metadata")
 	}
 }
 

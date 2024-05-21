@@ -196,6 +196,9 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		AuthPass: conf.AuthPass,
 		Codec:    codec,
 		Log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		OnMediaTimeout: func() {
+			t.Fatal("media timeout")
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
