@@ -47,18 +47,24 @@ import (
 )
 
 type ClientConfig struct {
-	IP       string
-	Number   string
-	AuthUser string
-	AuthPass string
-	Log      *slog.Logger
-	OnBye    func()
-	Codec    string
+	IP             string
+	Number         string
+	AuthUser       string
+	AuthPass       string
+	Log            *slog.Logger
+	OnBye          func()
+	OnMediaTimeout func()
+	Codec          string
 }
 
 func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if conf.Log == nil {
 		conf.Log = slog.Default()
+	}
+	if conf.OnMediaTimeout == nil {
+		conf.OnMediaTimeout = func() {
+			panic("media-timeout")
+		}
 	}
 	if id != "" {
 		conf.Log = conf.Log.With("id", id)
@@ -87,9 +93,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if !codec.Info().RTPIsStatic {
 		cli.audioType = 102
 	}
-	cli.mediaConn = rtp.NewConn(func() {
-		panic("media-timeout")
-	})
+	cli.mediaConn = rtp.NewConn(conf.OnMediaTimeout)
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType)
 	cli.mediaDTMF = cli.media.NewStream(101)

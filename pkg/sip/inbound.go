@@ -45,6 +45,11 @@ const (
 	audioBridgeMaxDelay = 1 * time.Second
 )
 
+var headerToLog = map[string]string{
+	"X-Twilio-AccountSid": "twilioAccSID",
+	"X-Twilio-CallSid":    "twilioCallSID",
+}
+
 func sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
 	if inboundHidePort {
 		tx.Terminate()
@@ -122,6 +127,19 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	ctx := context.Background()
 	s.mon.InviteReqRaw(stats.Inbound)
+	callID := lksip.NewCallID()
+	src := req.Source()
+	log := s.log.WithValues(
+		"callID", callID,
+		"fromIP", src, "fromHost",
+		"toIP", req.Destination(),
+	)
+	for hdr, name := range headerToLog {
+		if h := req.GetHeader(hdr); h != nil {
+			log = log.WithValues(name, h.Value())
+		}
+	}
+	log.Debugw("invite received")
 
 	if !inboundHidePort {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
@@ -131,6 +149,9 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		sipErrorOrDrop(tx, req)
 		return
 	}
+	log = log.WithValues(
+		"sipTag", tag,
+	)
 
 	from, ok := req.From()
 	if !ok {
@@ -143,20 +164,17 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		sipErrorOrDrop(tx, req)
 		return
 	}
-	src := req.Source()
 
 	cmon := s.mon.NewCall(stats.Inbound, from.Address.String(), to.Address.String())
 
 	cmon.InviteReq()
 	defer cmon.SessionDur()()
-	callID := lksip.NewCallID()
 	joinDur := cmon.JoinDur()
-	log := s.log.WithValues(
-		"call-id", callID, "sip-tag", tag,
-		"from-ip", src, "from-host", from.Address.Host, "from-user", from.Address.User,
-		"to-ip", req.Destination(), "to-host", to.Address.Host, "to-user", to.Address.User,
+	log = log.WithValues(
+		"fromHost", from.Address.Host, "fromUser", from.Address.User,
+		"toHost", to.Address.Host, "toUser", to.Address.User,
 	)
-	log.Infow("INVITE received")
+	log.Infow("processing invite")
 
 	username, password, drop, err := s.handler.GetAuthCredentials(ctx, from.Address.User, to.Address.User, to.Address.Host, src)
 	if err != nil {
@@ -188,15 +206,18 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 		sipErrorResponse(tx, req)
 		return
 	}
-	s.log.Infow("BYE", "sip-tag", tag)
 
 	s.cmu.RLock()
 	c := s.activeCalls[tag]
 	s.cmu.RUnlock()
 	if c != nil {
+		c.log.Infow("BYE")
 		c.Close()
-	} else if s.sipUnhandled != nil {
-		s.sipUnhandled(req, tx)
+	} else {
+		s.log.Infow("BYE", "sipTag", tag)
+		if s.sipUnhandled != nil {
+			s.sipUnhandled(req, tx)
+		}
 	}
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 }
@@ -265,10 +286,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		NoPin:      false,
 	})
 	if disp.TrunkID != "" {
-		c.log = c.log.WithValues("sip-trunk", disp.TrunkID)
+		c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
 	}
 	if disp.DispatchRuleID != "" {
-		c.log = c.log.WithValues("sip-rule", disp.DispatchRuleID)
+		c.log = c.log.WithValues("sipRule", disp.DispatchRuleID)
 	}
 	switch disp.Result {
 	default:
@@ -400,8 +421,8 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 		return nil, err
 	}
 	c.log.Infow("Using codecs",
-		"audio-codec", res.Audio.Info().SDPName, "audio-rtp", res.AudioType,
-		"dtmf-rtp", res.DTMFType,
+		"audioCodec", res.Audio.Info().SDPName, "audioRTP", res.AudioType,
+		"dtmfRTP", res.DTMFType,
 	)
 
 	conn := rtp.NewConn(func() {
@@ -468,10 +489,10 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 					NoPin:      noPin,
 				})
 				if disp.TrunkID != "" {
-					c.log = c.log.WithValues("sip-trunk", disp.TrunkID)
+					c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
 				}
 				if disp.DispatchRuleID != "" {
-					c.log = c.log.WithValues("sip-rule", disp.DispatchRuleID)
+					c.log = c.log.WithValues("sipRule", disp.DispatchRuleID)
 				}
 				if disp.Result != DispatchAccept || disp.RoomName == "" {
 					c.log.Infow("Rejecting call", "pin", pin, "noPin", noPin)
