@@ -502,7 +502,9 @@ func (c *outboundCall) sipAccept(inviteReq *sip.Request, inviteResp *sip.Respons
 		inviteReq.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
-	return c.c.sipCli.WriteRequest(sip.NewAckRequest(inviteReq, inviteResp, nil))
+	ack := sip.NewAckRequest(inviteReq, inviteResp, nil)
+	ack.SetDestination(inviteReq.Recipient.HostPort())
+	return c.c.sipCli.WriteRequest(ack)
 }
 
 func (c *outboundCall) sipBye() error {
