@@ -211,15 +211,15 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	c := s.activeCalls[tag]
 	s.cmu.RUnlock()
 	if c != nil {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 		c.log.Infow("BYE")
 		c.Close()
 	} else {
-		s.log.Infow("BYE", "sipTag", tag)
+		s.log.Infow("BYE for non-existent call", "sipTag", tag)
 		if s.sipUnhandled != nil {
 			s.sipUnhandled(req, tx)
 		}
 	}
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 }
 
 type inboundCall struct {
@@ -406,9 +406,20 @@ func (c *inboundCall) sendBye() {
 		bye.RemoveHeader("Record-Route")
 		bye.AppendHeader(&sip.RouteHeader{Address: route.Address})
 	}
-	_ = c.s.sipSrv.TransportLayer().WriteMsg(bye)
 	c.inviteReq = nil
 	c.inviteResp = nil
+	tx, err := c.s.sipSrv.TransactionLayer().Request(bye)
+	if err != nil {
+		return
+	}
+	defer tx.Terminate()
+	r, err := sipResponse(tx)
+	if err != nil {
+		return
+	}
+	if r.StatusCode == 200 {
+		_ = c.s.sipSrv.TransportLayer().WriteMsg(sip.NewAckRequest(bye, r, nil))
+	}
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
@@ -522,8 +533,8 @@ func (c *inboundCall) close(reason string) {
 	}
 	c.mon.CallTerminate(reason)
 	c.log.Infow("Closing inbound call", "reason", reason)
-	c.sendBye()
 	c.closeMedia()
+	c.sendBye()
 	if c.callDur != nil {
 		c.callDur()
 	}
