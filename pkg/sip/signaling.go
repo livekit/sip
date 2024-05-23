@@ -136,10 +136,13 @@ func sdpAnswerMediaDesc(rtpListenerPort int, res *sdpCodecResult) []*sdp.MediaDe
 	return []*sdp.MediaDescription{
 		{
 			MediaName: sdp.MediaName{
-				Media:   "audio",
-				Port:    sdp.RangedPort{Value: rtpListenerPort},
-				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0", "101"},
+				Media:  "audio",
+				Port:   sdp.RangedPort{Value: rtpListenerPort},
+				Protos: []string{"RTP", "AVP"},
+				Formats: []string{
+					strconv.Itoa(int(res.AudioType)),
+					strconv.Itoa(int(res.DTMFType)),
+				},
 			},
 			Attributes: attrs,
 		},
