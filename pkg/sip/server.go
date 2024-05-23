@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -79,7 +80,8 @@ type Server struct {
 	log              logger.Logger
 	mon              *stats.Monitor
 	sipSrv           *sipgo.Server
-	sipConn          *net.UDPConn
+	sipConnUDP       *net.UDPConn
+	sipConnTCP       *net.TCPListener
 	sipUnhandled     sipgo.RequestHandler
 	signalingIp      string
 	signalingIpLocal string
@@ -137,6 +139,44 @@ func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
 
+func (s *Server) startUDP() error {
+	lis, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.IPv4(0, 0, 0, 0),
+		Port: s.conf.SIPPort,
+	})
+	if err != nil {
+		return fmt.Errorf("cannot listen on the UDP signaling port %d: %w", s.conf.SIPPort, err)
+	}
+	s.sipConnUDP = lis
+	s.log.Infow("sip signaling listening on", "local", s.signalingIpLocal, "external", s.signalingIp, "port", s.conf.SIPPort, "proto", "udp")
+
+	go func() {
+		if err := s.sipSrv.ServeUDP(lis); err != nil {
+			panic(fmt.Errorf("SIP listen UDP error: %w", err))
+		}
+	}()
+	return nil
+}
+
+func (s *Server) startTCP() error {
+	lis, err := net.ListenTCP("tcp", &net.TCPAddr{
+		IP:   net.IPv4(0, 0, 0, 0),
+		Port: s.conf.SIPPort,
+	})
+	if err != nil {
+		return fmt.Errorf("cannot listen on the TCP signaling port %d: %w", s.conf.SIPPort, err)
+	}
+	s.sipConnTCP = lis
+	s.log.Infow("sip signaling listening on", "local", s.signalingIpLocal, "external", s.signalingIp, "port", s.conf.SIPPort, "proto", "tcp")
+
+	go func() {
+		if err := s.sipSrv.ServeTCP(lis); err != nil && !errors.Is(err, net.ErrClosed) {
+			panic(fmt.Errorf("SIP listen TCP error: %w", err))
+		}
+	}()
+	return nil
+}
+
 func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) error {
 	var err error
 	if s.conf.UseExternalIP {
@@ -179,20 +219,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) e
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 
-	lis, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.IPv4(0, 0, 0, 0),
-		Port: s.conf.SIPPort,
-	})
-	if err != nil {
-		return fmt.Errorf("cannot listen on the signaling port %d: %w", s.conf.SIPPort, err)
+	if err := s.startUDP(); err != nil {
+		return err
 	}
-	s.sipConn = lis
-
-	go func() {
-		if err := s.sipSrv.ServeUDP(lis); err != nil {
-			panic(fmt.Errorf("SIP listen UDP error: %w", err))
-		}
-	}()
+	if err := s.startTCP(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -208,7 +240,10 @@ func (s *Server) Stop() {
 	if s.sipSrv != nil {
 		s.sipSrv.Close()
 	}
-	if s.sipConn != nil {
-		s.sipConn.Close()
+	if s.sipConnUDP != nil {
+		s.sipConnUDP.Close()
+	}
+	if s.sipConnTCP != nil {
+		s.sipConnTCP.Close()
 	}
 }

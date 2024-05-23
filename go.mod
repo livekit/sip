@@ -12,7 +12,7 @@ require (
 	github.com/icholy/digest v0.1.22
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240302142739-1c3dd691a1b8
-	github.com/livekit/protocol v1.14.1-0.20240426104403-e7962f444464
+	github.com/livekit/protocol v1.16.1-0.20240523171447-90dfd668f42f
 	github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5
 	github.com/livekit/server-sdk-go/v2 v2.1.1-0.20240417144842-1151c20f6dd8
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12

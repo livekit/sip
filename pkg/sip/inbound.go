@@ -131,7 +131,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	src := req.Source()
 	log := s.log.WithValues(
 		"callID", callID,
-		"fromIP", src, "fromHost",
+		"fromIP", src,
 		"toIP", req.Destination(),
 	)
 	for hdr, name := range headerToLog {
