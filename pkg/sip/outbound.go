@@ -39,13 +39,14 @@ import (
 )
 
 type sipOutboundConfig struct {
-	address  string
-	from     string
-	to       string
-	user     string
-	pass     string
-	dtmf     string
-	ringtone bool
+	address   string
+	transport livekit.SIPTransport
+	from      string
+	to        string
+	user      string
+	pass      string
+	dtmf      string
+	ringtone  bool
 }
 
 type outboundCall struct {
@@ -364,7 +365,13 @@ func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, au
 	c.mon.InviteReq()
 
 	dest := conf.address + ":5060"
-	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060}
+	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060, UriParams: make(sip.HeaderParams)}
+	switch conf.transport {
+	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
+		to.UriParams.Add("transport", "udp")
+	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
+		to.UriParams.Add("transport", "tcp")
+	}
 	if addr, sport, err := net.SplitHostPort(conf.address); err == nil {
 		if port, err := strconv.Atoi(sport); err == nil {
 			to.Host = addr
