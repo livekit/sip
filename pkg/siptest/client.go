@@ -86,6 +86,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	codec := lksdp.CodecByName(conf.Codec).(rtp.AudioCodec)
 	cli := &Client{
 		conf:       conf,
+		ack:        make(chan struct{}, 1),
 		log:        conf.Log,
 		audioCodec: codec,
 		audioType:  codec.Info().RTPDefType,
@@ -125,11 +126,19 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	if conf.OnBye != nil {
-		cli.sipServer.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+	cli.sipServer.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+		tx.Terminate()
+		if conf.OnBye != nil {
 			conf.OnBye()
-		})
-	}
+		}
+	})
+	cli.sipServer.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+		select {
+		case cli.ack <- struct{}{}:
+		default:
+		}
+	})
 
 	return cli, nil
 }
@@ -137,6 +146,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 type Client struct {
 	conf       ClientConfig
 	log        *slog.Logger
+	ack        chan struct{}
 	audioCodec rtp.AudioCodec
 	audioType  byte
 	mediaConn  *rtp.Conn
@@ -311,9 +321,14 @@ func (c *Client) sendBye() {
 	if err != nil {
 		return
 	}
+	defer tx.Terminate()
 	select {
+	case <-c.ack:
 	case <-tx.Done():
-	case <-tx.Responses():
+	case r := <-tx.Responses():
+		if r.StatusCode == 200 {
+			_ = c.sipClient.WriteRequest(sip.NewAckRequest(req, r, nil))
+		}
 	}
 }
 

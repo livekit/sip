@@ -129,8 +129,8 @@ github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5 h1:I2noW2VjGcf8E0p
 github.com/livekit/psrpc v0.5.3-0.20240315045730-ba2e5b9923b5/go.mod h1:CQUBSPfYYAaevg1TNCc6/aYsa8DJH4jSRFdCeSZk5u0=
 github.com/livekit/server-sdk-go/v2 v2.1.1-0.20240417144842-1151c20f6dd8 h1:aVbBFbysNvM++6njl72DW9tnlrJbOSL3rnmyDo72YYM=
 github.com/livekit/server-sdk-go/v2 v2.1.1-0.20240417144842-1151c20f6dd8/go.mod h1:c1zLXd89WrteaKxmgKf4Fa1VcO6x4nhSz3wsz1EOhws=
-github.com/livekit/sipgo v0.13.2-0.20240319152110-0b1be6f289ef h1:Q5lM/UCwoBdhHql2WWgYVzACcK0J1fJvFKoEGTKFT0o=
-github.com/livekit/sipgo v0.13.2-0.20240319152110-0b1be6f289ef/go.mod h1:BY01/cjS7NQGCKAvgD+4FtIJ/8hPXwcDKnSan5uvklc=
+github.com/livekit/sipgo v0.13.2-0.20240523154935-38b4a6ef60b0 h1:i5Ju8ZksRJbPfppc1dGvxitbuxG65y4gniHngY+BIvo=
+github.com/livekit/sipgo v0.13.2-0.20240523154935-38b4a6ef60b0/go.mod h1:BY01/cjS7NQGCKAvgD+4FtIJ/8hPXwcDKnSan5uvklc=
 github.com/magefile/mage v1.15.0 h1:BvGheCMAsG3bWUDbZ8AyXXpCNwU9u5CB6sM+HNb9HYg=
 github.com/magefile/mage v1.15.0/go.mod h1:z5UZb/iS3GoOSn0JgWuiw7dxlurVYTu+/jHXqQg881A=
 github.com/mitchellh/mapstructure v1.5.0 h1:jeMsZIYE/09sWLaz43PL7Gy6RuMjD2eJVyuac5Z2hdY=

@@ -516,15 +516,24 @@ func (c *outboundCall) sipBye() error {
 	req := sip.NewByeRequest(c.sipInviteReq, c.sipInviteResp, nil)
 	c.sipInviteReq.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 
+	if c.c.closing.IsBroken() {
+		// do not wait for a response
+		_ = c.c.sipCli.TransportLayer().WriteMsg(req)
+		return nil
+	}
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
 		return err
 	}
-	if c.c.closing.IsBroken() {
-		return nil // do not wait for a response
+	defer tx.Terminate()
+	r, err := sipResponse(tx)
+	if err != nil {
+		return err
 	}
-	_, err = sipResponse(tx)
-	return err
+	if r.StatusCode == 200 {
+		_ = c.c.sipCli.WriteRequest(sip.NewAckRequest(req, r, nil))
+	}
+	return nil
 }
 
 func (c *outboundCall) handleDTMF(p *rtp.Packet) error {
