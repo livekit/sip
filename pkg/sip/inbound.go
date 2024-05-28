@@ -36,10 +36,6 @@ import (
 )
 
 const (
-	// inboundHidePort controls how SIP endpoint responds to unverified inbound requests.
-	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
-	// Doing so hides our SIP endpoint from (a low effort) port scanners.
-	inboundHidePort = true
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
@@ -50,8 +46,8 @@ var headerToLog = map[string]string{
 	"X-Twilio-CallSid":    "twilioCallSID",
 }
 
-func sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
-	if inboundHidePort {
+func (s *Server) sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
+	if s.conf.HideInboundPort {
 		tx.Terminate()
 	} else {
 		sipErrorResponse(tx, req)
@@ -62,9 +58,9 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	if username == "" || password == "" {
 		return true
 	}
-	if inboundHidePort {
+	if s.conf.HideInboundPort {
 		// We will send password request anyway, so might as well signal that the progress is made.
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
 
 	var inviteState *inProgressInvite
@@ -141,12 +137,12 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	log.Debugw("invite received")
 
-	if !inboundHidePort {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
+	if !s.conf.HideInboundPort {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
 	tag, err := getTagValue(req)
 	if err != nil {
-		sipErrorOrDrop(tx, req)
+		s.sipErrorOrDrop(tx, req)
 		return
 	}
 	log = log.WithValues(
@@ -155,13 +151,13 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	from, ok := req.From()
 	if !ok {
-		sipErrorOrDrop(tx, req)
+		s.sipErrorOrDrop(tx, req)
 		return
 	}
 
 	to, ok := req.To()
 	if !ok {
-		sipErrorOrDrop(tx, req)
+		s.sipErrorOrDrop(tx, req)
 		return
 	}
 
@@ -194,6 +190,9 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 	cmon.InviteAccept()
+	if !s.conf.HideInboundPort {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
+	}
 
 	call := s.newInboundCall(log, cmon, callID, tag, from, to, src)
 	call.joinDur = joinDur
