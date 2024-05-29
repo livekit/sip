@@ -59,6 +59,11 @@ type Config struct {
 
 	Codecs map[string]bool `yaml:"codecs"`
 
+	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
+	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
+	// Doing so hides our SIP endpoint from (a low effort) port scanners.
+	HideInboundPort bool `yaml:"hide_inbound_port"`
+
 	// internal
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten

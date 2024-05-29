@@ -59,7 +59,7 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 	return h.DispatchCall(ctx, info)
 }
 
-func testInvite(t *testing.T, h Handler, from, to string, test func(tx sip.ClientTransaction)) {
+func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction)) {
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)
@@ -67,8 +67,9 @@ func testInvite(t *testing.T, h Handler, from, to string, test func(tx sip.Clien
 	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
 
 	s, err := NewService(&config.Config{
-		SIPPort: sipPort,
-		RTPPort: rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+		HideInboundPort: hidden,
+		SIPPort:         sipPort,
+		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}, logger.GetLogger())
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -112,21 +113,16 @@ func TestService_AuthFailure(t *testing.T) {
 			return "", "", false, fmt.Errorf("Auth Failure")
 		},
 	}
-	testInvite(t, h, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
-		if !inboundHidePort {
-			res := getResponseOrFail(t, tx)
-			require.Equal(t, sip.StatusCode(180), res.StatusCode)
-		}
-
+	testInvite(t, h, false, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
 		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
 		require.Equal(t, sip.StatusCode(400), res.StatusCode)
 	})
 }
 
 func TestService_AuthDrop(t *testing.T) {
-	if !inboundHidePort {
-		t.Skip()
-	}
 	const (
 		expectedFromUser = "foo"
 		expectedToUser   = "bar"
@@ -138,7 +134,7 @@ func TestService_AuthDrop(t *testing.T) {
 			return "", "", true, nil
 		},
 	}
-	testInvite(t, h, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
+	testInvite(t, h, true, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
 		expectNoResponse(t, tx)
 	})
 }
