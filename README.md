@@ -8,11 +8,7 @@
 
 <!--END_BANNER_IMAGE-->
 
-<h1 align="center">Project is in active development</h1>
-<h4 align="center">SIP should not be used in production and APIs are subject to change</h4>
-<br>
-
-# LiveKit SIP
+# LiveKit SIP Service
 
 <!--BEGIN_DESCRIPTION-->
 WebRTC is proving to be a versatile and scalable transport protocol both for media ingestion and delivery. However, not all devices support WebRTC. SIP provides a way to bring SIP traffic into a LiveKit room.
@@ -20,19 +16,18 @@ WebRTC is proving to be a versatile and scalable transport protocol both for med
 
 ## Capabilities
 
-SIP is meant to be a full featured SIP bridge, not all features are implemented yet. Currently, the following features are supported:
+SIP is designed to be a full-featured SIP bridge, connecting LiveKit sessions with Telephony networks with SIP Trunking.
+Currently, the following features are supported:
 - Dialing Out (Sending INVITEs)
 - Dialing In (Accepting INVITEs)
 - Digest Authentication
 - Touch Tone (Sending and Reading DTMF)
 
-If you need something added, we would love to hear from you!
-
 ## Documentation
 
 ### Workflow
 
-To accept SIP traffic into your running SIP service, the workflow goes like this:
+To accept inbound calls, the workflow goes like this:
 
 * create an SIP Trunk with `CreateSIPTrunk` API (to livekit-server)
 * create an SIP Dispatch Rule with `CreateSIPDispatchRule` API (to livekit-server)
