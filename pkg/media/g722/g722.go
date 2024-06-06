@@ -26,51 +26,102 @@ const SDPName = "G722/8000"
 
 func init() {
 	media.RegisterCodec(rtp.NewAudioCodec(media.CodecInfo{
-		SDPName:     SDPName,
-		RTPDefType:  prtp.PayloadTypeG722,
-		RTPIsStatic: true,
-		Priority:    1,
-		Disabled:    true,
+		SDPName:      SDPName,
+		SampleRate:   16000,
+		RTPClockRate: 8000,
+		RTPDefType:   prtp.PayloadTypeG722,
+		RTPIsStatic:  true,
+		Priority:     -5,
 	}, Decode, Encode))
 }
 
 type Sample []byte
 
-func (s Sample) Decode() media.PCM16Sample {
-	return g722.Decode(s, g722.Rate64000, g722.FlagSampleRate8000)
+func decodeSize(flags g722.Flags, g722Len int) int {
+	mul := 2
+	if flags&g722.FlagSampleRate8000 != 0 {
+		mul = 1
+	}
+	return g722Len * mul
 }
 
-func (s *Sample) Encode(data media.PCM16Sample) {
-	*s = g722.Encode(data, g722.Rate64000, g722.FlagSampleRate8000)
+func encodeSize(flags g722.Flags, pcmLen int) int {
+	div := 2
+	if flags&g722.FlagSampleRate8000 != 0 {
+		div = 1
+	}
+	n := pcmLen / div
+	if pcmLen%div != 0 {
+		n++
+	}
+	return n
 }
 
 type Writer = media.Writer[Sample]
 
 type Decoder struct {
-	w media.PCM16Writer
+	f   g722.Flags
+	d   *g722.Decoder
+	buf media.PCM16Sample
+	w   media.PCM16Writer
+}
+
+func (d *Decoder) SampleRate() int {
+	return d.w.SampleRate()
 }
 
 func (d *Decoder) WriteSample(in Sample) error {
-	// TODO: reuse buffer
-	out := in.Decode()
-	return d.w.WriteSample(out)
+	sz := decodeSize(d.f, len(in))
+	if cap(d.buf) < sz {
+		d.buf = make([]int16, sz)
+	}
+	n := d.d.Decode(d.buf, in)
+	return d.w.WriteSample(d.buf[:n])
 }
 
 func Decode(w media.PCM16Writer) Writer {
-	return &Decoder{w: w}
+	var f g722.Flags
+	switch w.SampleRate() {
+	case 8000:
+		f |= g722.FlagSampleRate8000
+	default:
+		w = media.ResampleWriter(w, 16000)
+		fallthrough
+	case 16000:
+		// default
+	}
+	return &Decoder{w: w, f: f, d: g722.NewDecoder(g722.Rate64000, f)}
 }
 
 type Encoder struct {
-	w Writer
+	f   g722.Flags
+	e   *g722.Encoder
+	buf Sample
+	w   Writer
+}
+
+func (e *Encoder) SampleRate() int {
+	return e.w.SampleRate()
 }
 
 func (e *Encoder) WriteSample(in media.PCM16Sample) error {
-	// TODO: reuse buffer
-	var out Sample
-	out.Encode(in)
-	return e.w.WriteSample(out)
+	sz := encodeSize(e.f, len(in))
+	if cap(e.buf) < sz {
+		e.buf = make(Sample, sz)
+	}
+	n := e.e.Encode(e.buf, in)
+	return e.w.WriteSample(e.buf[:n])
 }
 
 func Encode(w Writer) media.PCM16Writer {
-	return &Encoder{w: w}
+	var f g722.Flags
+	switch w.SampleRate() {
+	default:
+		panic("unsupported sample rate")
+	case 8000:
+		f |= g722.FlagSampleRate8000
+	case 16000:
+		// default
+	}
+	return &Encoder{w: w, f: f, e: g722.NewEncoder(g722.Rate64000, f)}
 }

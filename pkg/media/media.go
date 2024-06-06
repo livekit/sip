@@ -28,6 +28,7 @@ type ReadCloser[T any] interface {
 }
 
 type Writer[T any] interface {
+	SampleRate() int
 	WriteSample(sample T) error
 }
 
@@ -36,14 +37,37 @@ type WriteCloser[T any] interface {
 	Close() error
 }
 
+func NewWriterFunc[T any](sampleRate int, fnc WriterFunc[T]) Writer[T] {
+	return &writerFunc[T]{
+		fnc:        fnc,
+		sampleRate: sampleRate,
+	}
+}
+
+type writerFunc[T any] struct {
+	fnc        WriterFunc[T]
+	sampleRate int
+}
+
+func (w *writerFunc[T]) SampleRate() int {
+	return w.sampleRate
+}
+
+func (w *writerFunc[T]) WriteSample(in T) error {
+	return w.fnc(in)
+}
+
 type WriterFunc[T any] func(in T) error
 
-func (fnc WriterFunc[T]) WriteSample(in T) error {
-	return fnc(in)
+func NewSwitchWriter[T any](sampleRate int) *SwitchWriter[T] {
+	return &SwitchWriter[T]{
+		sampleRate: sampleRate,
+	}
 }
 
 type SwitchWriter[T any] struct {
-	ptr atomic.Pointer[Writer[T]]
+	sampleRate int
+	ptr        atomic.Pointer[Writer[T]]
 }
 
 func (s *SwitchWriter[T]) Get() Writer[T] {
@@ -60,6 +84,10 @@ func (s *SwitchWriter[T]) Set(w Writer[T]) {
 	} else {
 		s.ptr.Store(&w)
 	}
+}
+
+func (s *SwitchWriter[T]) SampleRate() int {
+	return s.sampleRate
 }
 
 func (s *SwitchWriter[T]) WriteSample(sample T) error {

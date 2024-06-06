@@ -16,12 +16,12 @@ package sip
 
 import (
 	"bytes"
+	"io"
 
-	"github.com/at-wat/ebml-go"
-	"github.com/at-wat/ebml-go/webm"
+	"github.com/jfreymuth/oggvorbis"
 
 	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/ulaw"
+	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/res"
 )
 
@@ -31,29 +31,53 @@ type mediaRes struct {
 	wrongPin []media.PCM16Sample
 }
 
+const embedSampleRate = 48000
+
 func (s *Server) initMediaRes() {
-	s.res.enterPin = readMkvAudioFile(res.EnterPinMkv)
-	s.res.roomJoin = readMkvAudioFile(res.RoomJoinMkv)
-	s.res.wrongPin = readMkvAudioFile(res.WrongPinMkv)
+	s.res.enterPin = readOggAudioFile(res.EnterPinOgg)
+	s.res.roomJoin = readOggAudioFile(res.RoomJoinOgg)
+	s.res.wrongPin = readOggAudioFile(res.WrongPinOgg)
 }
 
-func readMkvAudioFile(data []byte) []media.PCM16Sample {
-	var ret struct {
-		Header  webm.EBMLHeader `ebml:"EBML"`
-		Segment webm.Segment    `ebml:"Segment"`
-	}
-	if err := ebml.Unmarshal(bytes.NewReader(data), &ret); err != nil {
+func readOggAudioFile(data []byte) []media.PCM16Sample {
+	const perFrame = embedSampleRate / rtp.DefFramesPerSec
+	r, err := oggvorbis.NewReader(bytes.NewReader(data))
+	if err != nil {
 		panic(err)
 	}
-
-	var frames []media.PCM16Sample
-	for _, cluster := range ret.Segment.Cluster {
-		for _, block := range cluster.SimpleBlock {
-			for _, data := range block.Data {
-				lpcm := ulaw.Sample(data).Decode()
-				frames = append(frames, lpcm)
+	if r.SampleRate() != embedSampleRate {
+		panic("unexpected sample rate")
+	}
+	if r.Channels() != 1 {
+		panic("expected mono audio")
+	}
+	// Frames in the source file may be shorter,
+	// so we collect all samples and split them to frames again.
+	var samples media.PCM16Sample
+	buf := make([]float32, perFrame)
+	for {
+		n, err := r.Read(buf)
+		if n != 0 {
+			frame := make(media.PCM16Sample, n)
+			for i := range frame {
+				frame[i] = int16(buf[i] * 0x7fff)
 			}
+			samples = append(samples, frame...)
 		}
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			panic(err)
+		}
+	}
+	var frames []media.PCM16Sample
+	for len(samples) > 0 {
+		cur := samples
+		if len(cur) > perFrame {
+			cur = cur[:perFrame]
+		}
+		frames = append(frames, cur)
+		samples = samples[len(cur):]
 	}
 	return frames
 }

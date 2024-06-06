@@ -149,7 +149,15 @@ func (r *PipeReader[T, E]) CloseWithError(err error) error {
 }
 
 // A PipeWriter is the write half of a pipe.
-type PipeWriter[T ~[]E, E comparable] struct{ r PipeReader[T, E] }
+type PipeWriter[T ~[]E, E comparable] struct {
+	r          PipeReader[T, E]
+	sampleRate int
+}
+
+// SampleRate implements the Writer interface.
+func (w *PipeWriter[T, E]) SampleRate() int {
+	return w.sampleRate
+}
 
 // WriteSample implements the Writer interface.
 func (w *PipeWriter[T, E]) WriteSample(data T) (err error) {
@@ -176,11 +184,14 @@ func (w *PipeWriter[T, E]) CloseWithError(err error) error {
 // Pipe creates a synchronous in-memory pipe.
 // It can be used to connect code expecting a [Reader]
 // with code expecting a [Writer].
-func Pipe[T ~[]E, E comparable]() (*PipeReader[T, E], *PipeWriter[T, E]) {
-	pw := &PipeWriter[T, E]{r: PipeReader[T, E]{pipe: pipe[T, E]{
-		wrCh: make(chan T),
-		rdCh: make(chan int),
-		done: make(chan struct{}),
-	}}}
+func Pipe[T ~[]E, E comparable](sampleRate int) (*PipeReader[T, E], *PipeWriter[T, E]) {
+	pw := &PipeWriter[T, E]{
+		r: PipeReader[T, E]{pipe: pipe[T, E]{
+			wrCh: make(chan T),
+			rdCh: make(chan int),
+			done: make(chan struct{}),
+		}},
+		sampleRate: sampleRate,
+	}
 	return &pw.r, pw
 }

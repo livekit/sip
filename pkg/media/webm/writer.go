@@ -26,7 +26,7 @@ import (
 	"github.com/livekit/sip/pkg/media"
 )
 
-func NewPCM16Writer(w io.WriteCloser, sampleRate float64, sampleDur time.Duration) media.PCM16WriteCloser {
+func NewPCM16Writer(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.PCM16WriteCloser {
 	ws, err := webm.NewSimpleBlockWriter(w, []webm.TrackEntry{
 		{
 			Name:            "Audio",
@@ -36,7 +36,7 @@ func NewPCM16Writer(w io.WriteCloser, sampleRate float64, sampleDur time.Duratio
 			TrackType:       2,
 			DefaultDuration: uint64(sampleDur.Nanoseconds()),
 			Audio: &webm.Audio{
-				SamplingFrequency: sampleRate,
+				SamplingFrequency: float64(sampleRate),
 				Channels:          1,
 			},
 		},
@@ -44,14 +44,19 @@ func NewPCM16Writer(w io.WriteCloser, sampleRate float64, sampleDur time.Duratio
 	if err != nil {
 		panic(err)
 	}
-	return &writerPCM16{ws: ws[0], dur: sampleDur}
+	return &writerPCM16{ws: ws[0], sampleRate: sampleRate, dur: sampleDur}
 }
 
 type writerPCM16 struct {
-	ws  webm.BlockWriteCloser
-	dur time.Duration
-	ts  int64
-	buf []byte
+	ws         webm.BlockWriteCloser
+	sampleRate int
+	dur        time.Duration
+	ts         int64
+	buf        []byte
+}
+
+func (w *writerPCM16) SampleRate() int {
+	return w.sampleRate
 }
 
 func (w *writerPCM16) WriteSample(sample media.PCM16Sample) error {

@@ -10,6 +10,7 @@ require (
 	github.com/frostbyte73/core v0.0.10
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19
 	github.com/icholy/digest v0.1.22
+	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240613015318-84b69facfb75
 	github.com/livekit/protocol v1.17.1-0.20240617184219-32c577d805ed
@@ -62,6 +63,7 @@ require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.2 // indirect
+	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/jxskiss/base62 v1.1.0 // indirect
 	github.com/klauspost/compress v1.17.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect

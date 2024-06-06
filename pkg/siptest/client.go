@@ -96,8 +96,8 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	}
 	cli.mediaConn = rtp.NewConn(conf.OnMediaTimeout)
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
-	cli.mediaAudio = cli.media.NewStream(cli.audioType)
-	cli.mediaDTMF = cli.media.NewStream(101)
+	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
+	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
 
 	err := cli.mediaConn.Listen(0, 0, "0.0.0.0")
 	if err != nil {
@@ -181,7 +181,7 @@ func (c *Client) Close() {
 }
 
 func (c *Client) record(w io.WriteCloser) error {
-	ws := webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefFrameDur)
+	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
 	h := c.audioCodec.DecodeRTP(ws, c.audioType)
 	for {
 		p, _, err := c.mediaConn.ReadRTP()
@@ -435,7 +435,8 @@ const (
 // SendSignal generate an audio signal with a given value. It repeats the signal n times, each frame containing one signal.
 // If n <= 0, it will send the signal until the context is cancelled.
 func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
-	signal := make(media.PCM16Sample, rtp.DefPacketDur)
+	const framesPerSec = int(time.Second / rtp.DefFrameDur)
+	signal := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	wr := c.audioCodec.EncodeRTP(c.mediaAudio)
 	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
@@ -467,13 +468,15 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 
 // WaitSignals waits for an audio frame to contain all signals.
 func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
+	sampleRate := c.audioCodec.Info().SampleRate
 	var ws media.PCM16WriteCloser
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, rtp.DefSampleRate, rtp.DefFrameDur)
+		ws = webmm.NewPCM16Writer(w, sampleRate, rtp.DefFrameDur)
 		defer ws.Close()
 	}
-	decoded := make(media.PCM16Sample, rtp.DefPacketDur)
-	dec := c.audioCodec.DecodeRTP(&decoded, c.audioType)
+	const framesPerSec = int(time.Second / rtp.DefFrameDur)
+	decoded := make(media.PCM16Sample, sampleRate/framesPerSec)
+	dec := c.audioCodec.DecodeRTP(media.NewPCM16BufferWriter(&decoded, sampleRate), c.audioType)
 	lastLog := time.Now()
 	for {
 		p, _, err := c.mediaConn.ReadRTP()

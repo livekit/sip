@@ -20,11 +20,13 @@ import (
 )
 
 type CodecInfo struct {
-	SDPName     string
-	RTPDefType  byte
-	RTPIsStatic bool
-	Priority    int
-	Disabled    bool
+	SDPName      string
+	SampleRate   int
+	RTPClockRate int
+	RTPDefType   byte
+	RTPIsStatic  bool
+	Priority     int
+	Disabled     bool
 }
 
 type Codec interface {
@@ -47,7 +49,6 @@ func CodecSetEnabled(name string, enabled bool) {
 }
 
 func CodecsSetEnabled(codecs map[string]bool) {
-	disabled = make(map[string]struct{})
 	for name, enabled := range codecs {
 		CodecSetEnabled(name, enabled)
 	}
@@ -96,6 +97,12 @@ func RegisterCodec(c Codec) {
 }
 
 func NewCodec(info CodecInfo) Codec {
+	if info.SampleRate <= 0 {
+		panic("invalid sample rate")
+	}
+	if info.RTPClockRate == 0 {
+		info.RTPClockRate = info.SampleRate
+	}
 	return &baseCodec{info: info}
 }
 

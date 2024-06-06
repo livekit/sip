@@ -48,6 +48,7 @@ type Config struct {
 
 	HealthPort     int                 `yaml:"health_port"`
 	PrometheusPort int                 `yaml:"prometheus_port"`
+	PProfPort      int                 `yaml:"pprof_port"`
 	SIPPort        int                 `yaml:"sip_port"`
 	RTPPort        rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging        logger.Config       `yaml:"logging"`

@@ -54,6 +54,12 @@ func NewAudioCodec[S ~[]byte](
 	decode func(writer media.PCM16Writer) media.Writer[S],
 	encode func(writer media.Writer[S]) media.PCM16Writer,
 ) AudioCodec {
+	if info.SampleRate <= 0 {
+		panic("invalid sample rate")
+	}
+	if info.RTPClockRate == 0 {
+		info.RTPClockRate = info.SampleRate
+	}
 	return &audioCodec[S]{
 		info:   info,
 		encode: encode,
@@ -80,7 +86,7 @@ func (c *audioCodec[S]) Encode(w media.Writer[S]) media.PCM16Writer {
 }
 
 func (c *audioCodec[S]) EncodeRTP(w *Stream) media.PCM16Writer {
-	return c.encode(NewMediaStreamOut[S](w))
+	return c.encode(NewMediaStreamOut[S](w, c.info.SampleRate))
 }
 
 func (c *audioCodec[S]) DecodeRTP(w media.PCM16Writer, typ byte) Handler {

@@ -23,6 +23,27 @@ import (
 	"github.com/livekit/sip/pkg/media"
 )
 
+func newTestWriter(buf *media.PCM16Sample, sampleRate int) media.PCM16Writer {
+	return &testWriter{
+		buf:        buf,
+		sampleRate: sampleRate,
+	}
+}
+
+type testWriter struct {
+	buf        *media.PCM16Sample
+	sampleRate int
+}
+
+func (b *testWriter) SampleRate() int {
+	return b.sampleRate
+}
+
+func (b *testWriter) WriteSample(data media.PCM16Sample) error {
+	*b.buf = data
+	return nil
+}
+
 type testMixer struct {
 	t      testing.TB
 	sample media.PCM16Sample
@@ -31,10 +52,8 @@ type testMixer struct {
 
 func newTestMixer(t testing.TB) *testMixer {
 	m := &testMixer{t: t}
-	m.Mixer = newMixer(media.WriterFunc[media.PCM16Sample](func(s media.PCM16Sample) error {
-		m.sample = s
-		return nil
-	}), 5)
+
+	m.Mixer = newMixer(newTestWriter(&m.sample, 8000), 5)
 	return m
 }
 
