@@ -120,7 +120,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUr
 				ParticipantKind:     lksdk.ParticipantSIP,
 			}, roomCallback, lksdk.WithAutoSubscribe(false))
 	} else {
-		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback)
+		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback, lksdk.WithAutoSubscribe(false))
 	}
 
 	if err != nil {
