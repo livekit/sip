@@ -79,15 +79,15 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room
 		log: log,
 	}
 	call.rtpConn = rtp.NewConn(func() {
-		call.close("media-timeout")
+		call.close(true, "media-timeout")
 	})
 
 	if err := call.startMedia(conf); err != nil {
-		call.close("media-failed")
+		call.close(true, "media-failed")
 		return nil, fmt.Errorf("start media failed: %w", err)
 	}
 	if err := call.updateRoom(room); err != nil {
-		call.close("join-failed")
+		call.close(true, "join-failed")
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
 
@@ -111,21 +111,26 @@ func (c *outboundCall) Disconnected() <-chan struct{} {
 func (c *outboundCall) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close("shutdown")
+	c.close(false, "shutdown")
 	return nil
 }
 
 func (c *outboundCall) CloseWithReason(reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(reason)
+	c.close(false, reason)
 }
 
-func (c *outboundCall) close(reason string) {
+func (c *outboundCall) close(error bool, reason string) {
 	if c.stopped.IsBroken() {
 		return
 	}
 	c.stopped.Break()
+	if error {
+		c.log.Warnw("Closing outbound call with error", nil, "reason", reason)
+	} else {
+		c.log.Infow("Closing outbound call", "reason", reason)
+	}
 	c.rtpConn.OnRTP(nil)
 	c.lkRoom.SetOutput(nil)
 
@@ -163,12 +168,12 @@ func (c *outboundCall) UpdateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 	if sipNew.address == "" || sipNew.to == "" {
 		c.log.Infow("Shutdown of outbound SIP call")
 		// shutdown the call
-		c.close("shutdown")
+		c.close(false, "shutdown")
 		return nil
 	}
 	c.startMonitor(sipNew)
 	if err := c.updateSIP(ctx, sipNew); err != nil {
-		c.close("invite-failed")
+		c.close(true, "invite-failed")
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.relinkMedia()
