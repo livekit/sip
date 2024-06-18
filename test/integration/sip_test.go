@@ -109,11 +109,13 @@ type NumberConfig struct {
 
 func (s *SIPServer) CreateTrunkOut(t testing.TB, number, addr, user, pass string) string {
 	ctx := context.Background()
-	tr, err := s.Client.CreateSIPTrunk(ctx, &livekit.CreateSIPTrunkRequest{
-		OutboundNumber:   number,
-		OutboundAddress:  addr,
-		OutboundUsername: user,
-		OutboundPassword: pass,
+	tr, err := s.Client.CreateSIPOutboundTrunk(ctx, &livekit.CreateSIPOutboundTrunkRequest{
+		Trunk: &livekit.SIPOutboundTrunkInfo{
+			Address:      addr,
+			Numbers:      []string{number},
+			AuthUsername: user,
+			AuthPassword: pass,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,10 +126,12 @@ func (s *SIPServer) CreateTrunkOut(t testing.TB, number, addr, user, pass string
 
 func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) string {
 	ctx := context.Background()
-	tr, err := s.Client.CreateSIPTrunk(ctx, &livekit.CreateSIPTrunkRequest{
-		OutboundNumber:  number,
-		InboundUsername: user,
-		InboundPassword: pass,
+	tr, err := s.Client.CreateSIPInboundTrunk(ctx, &livekit.CreateSIPInboundTrunkRequest{
+		Trunk: &livekit.SIPInboundTrunkInfo{
+			Numbers:      []string{number},
+			AuthUsername: user,
+			AuthPassword: pass,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
