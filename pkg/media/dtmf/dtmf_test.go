@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -74,16 +75,17 @@ func TestDTMF(t *testing.T) {
 
 func TestDTMFDelay(t *testing.T) {
 	var buf rtp.Buffer
-	w := rtp.NewSeqWriter(&buf).NewStream(101)
+	w := rtp.NewSeqWriter(&buf).NewStream(101, SampleRate)
 	err := Write(context.Background(), nil, w, "1w23")
 	require.NoError(t, err)
 	require.Len(t, buf, 39)
+	const packetDur = uint32(SampleRate / int(time.Second/rtp.DefFrameDur))
 	for i, p := range buf {
-		ts := rtp.DefPacketDur * uint32(i)
+		ts := packetDur * uint32(i)
 		if i >= 26 {
-			ts += 4 * (rtp.DefSampleRate / 4) // 2 * 250ms + 500ms
+			ts += 4 * (SampleRate / 4) // 2 * 250ms + 500ms
 		} else if i >= 13 {
-			ts += 3 * (rtp.DefSampleRate / 4) // 250ms after tone + 500ms user-defined
+			ts += 3 * (SampleRate / 4) // 250ms after tone + 500ms user-defined
 		}
 		require.EqualValues(t, uint16(i), p.SequenceNumber)
 		require.EqualValues(t, ts, p.Timestamp, "i=%d, dt=%v", i, p.Timestamp-ts)

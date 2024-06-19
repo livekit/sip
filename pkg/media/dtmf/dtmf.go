@@ -27,12 +27,14 @@ import (
 )
 
 const SDPName = "telephone-event/8000"
+const SampleRate = 8000
 
 func init() {
 	media.RegisterCodec(media.NewCodec(media.CodecInfo{
 		SDPName:     SDPName,
+		SampleRate:  SampleRate,
 		RTPIsStatic: false,
-		Priority:    100, // let it be first in SDP
+		Priority:    -100, // let it be last in SDP
 	}))
 }
 
@@ -190,12 +192,13 @@ func Encode(out []byte, ev Event) (int, error) {
 //
 // Digits may contain a special character 'w' which adds a 0.5 sec delay.
 func Write(ctx context.Context, audio media.PCM16Writer, events *rtp.Stream, digits string) error {
+	const framesPerSec = int(time.Second / rtp.DefFrameDur)
 	var (
 		buf    [4]byte
 		pcmBuf media.PCM16Sample
 	)
 	if audio != nil {
-		pcmBuf = make(media.PCM16Sample, rtp.DefPacketDur)
+		pcmBuf = make(media.PCM16Sample, audio.SampleRate()/framesPerSec)
 	}
 
 	const step = rtp.DefFrameDur
@@ -216,7 +219,7 @@ func Write(ctx context.Context, audio media.PCM16Writer, events *rtp.Stream, dig
 		totalDur = dt
 		nextDelay = 0
 		if events != nil {
-			events.Delay(uint32(dt / (time.Second / rtp.DefSampleRate)))
+			events.Delay(uint32(dt / (time.Second / SampleRate)))
 		}
 	}
 	for {
@@ -265,7 +268,7 @@ func Write(ctx context.Context, audio media.PCM16Writer, events *rtp.Stream, dig
 			n, err := Encode(buf[:], Event{
 				Code:   code,
 				Volume: eventVolume,
-				Dur:    uint16(dur / (time.Second / rtp.DefSampleRate)),
+				Dur:    uint16(dur / (time.Second / SampleRate)),
 				End:    remaining-step <= 0,
 			})
 			if err != nil {

@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	channels = 1
+	channels       = 1
+	RoomSampleRate = 48000
 )
 
 func newRTPStatsHandler(mon *stats.CallMonitor, typ string, h rtp.Handler) rtp.Handler {

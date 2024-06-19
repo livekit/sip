@@ -26,6 +26,7 @@ const SDPName = "PCMU/8000"
 func init() {
 	media.RegisterCodec(rtp.NewAudioCodec(media.CodecInfo{
 		SDPName:     SDPName,
+		SampleRate:  8000,
 		RTPDefType:  prtp.PayloadTypePCMU,
 		RTPIsStatic: true,
 		Priority:    -10,
@@ -49,6 +50,10 @@ type Decoder struct {
 	buf media.PCM16Sample
 }
 
+func (d *Decoder) SampleRate() int {
+	return d.w.SampleRate()
+}
+
 func (d *Decoder) WriteSample(in Sample) error {
 	if len(in) >= cap(d.buf) {
 		d.buf = make(media.PCM16Sample, len(in))
@@ -60,12 +65,21 @@ func (d *Decoder) WriteSample(in Sample) error {
 }
 
 func Decode(w media.PCM16Writer) Writer {
+	switch w.SampleRate() {
+	default:
+		w = media.ResampleWriter(w, 8000)
+	case 8000:
+	}
 	return &Decoder{w: w}
 }
 
 type Encoder struct {
 	w   Writer
 	buf Sample
+}
+
+func (e *Encoder) SampleRate() int {
+	return e.w.SampleRate()
 }
 
 func (e *Encoder) WriteSample(in media.PCM16Sample) error {
@@ -79,5 +93,10 @@ func (e *Encoder) WriteSample(in media.PCM16Sample) error {
 }
 
 func Encode(w Writer) media.PCM16Writer {
+	switch w.SampleRate() {
+	default:
+		panic("unsupported sample rate")
+	case 8000:
+	}
 	return &Encoder{w: w}
 }

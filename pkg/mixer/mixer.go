@@ -35,13 +35,15 @@ const (
 )
 
 type Input struct {
-	mu        sync.Mutex
-	buf       *ringbuf.Buffer[int16]
-	buffering bool
+	sampleRate int
+	mu         sync.Mutex
+	buf        *ringbuf.Buffer[int16]
+	buffering  bool
 }
 
 type Mixer struct {
-	out media.Writer[media.PCM16Sample]
+	out        media.Writer[media.PCM16Sample]
+	sampleRate int
 
 	mu     sync.Mutex
 	inputs []*Input
@@ -56,8 +58,8 @@ type Mixer struct {
 	mixCnt  uint
 }
 
-func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration, sampleRate int) *Mixer {
-	mixSize := int(time.Duration(sampleRate) * bufferDur / time.Second)
+func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mixer {
+	mixSize := int(time.Duration(out.SampleRate()) * bufferDur / time.Second)
 	m := newMixer(out, mixSize)
 	m.tickerDur = bufferDur
 	m.ticker = time.NewTicker(bufferDur)
@@ -69,9 +71,10 @@ func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration, samp
 
 func newMixer(out media.Writer[media.PCM16Sample], mixSize int) *Mixer {
 	return &Mixer{
-		out:    out,
-		mixBuf: make([]int32, mixSize),
-		mixTmp: make(media.PCM16Sample, mixSize),
+		out:        out,
+		sampleRate: out.SampleRate(),
+		mixBuf:     make([]int32, mixSize),
+		mixTmp:     make(media.PCM16Sample, mixSize),
 	}
 }
 
@@ -160,8 +163,9 @@ func (m *Mixer) NewInput() *Input {
 	defer m.mu.Unlock()
 
 	inp := &Input{
-		buf:       ringbuf.New[int16](len(m.mixBuf) * inputBufferFrames),
-		buffering: true, // buffer some data initially
+		sampleRate: m.sampleRate,
+		buf:        ringbuf.New[int16](len(m.mixBuf) * inputBufferFrames),
+		buffering:  true, // buffer some data initially
 	}
 	m.inputs = append(m.inputs, inp)
 	return inp
@@ -181,6 +185,10 @@ func (m *Mixer) RemoveInput(inp *Input) {
 	}
 }
 
+func (m *Mixer) SampleRate() int {
+	return m.sampleRate
+}
+
 func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -196,6 +204,10 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 		i.buffering = true // starving; pause the input and start buffering again
 	}
 	return n, err
+}
+
+func (i *Input) SampleRate() int {
+	return i.sampleRate
 }
 
 func (i *Input) WriteSample(sample media.PCM16Sample) error {

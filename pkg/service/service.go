@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"sync/atomic"
 	"time"
 
@@ -47,6 +48,7 @@ type Service struct {
 	bus         psrpc.MessageBus
 
 	promServer   *http.Server
+	pprofServer  *http.Server
 	rpcSIPServer rpc.SIPInternalServer
 
 	sipServiceStop        sipServiceStopFunc
@@ -77,6 +79,18 @@ func NewService(
 			Handler: promhttp.Handler(),
 		}
 	}
+	if conf.PProfPort > 0 {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		s.pprofServer = &http.Server{
+			Addr:    fmt.Sprintf(":%d", conf.PProfPort),
+			Handler: mux,
+		}
+	}
 	return s
 }
 
@@ -88,14 +102,25 @@ func (s *Service) Stop(kill bool) {
 func (s *Service) Run() error {
 	s.log.Debugw("starting service", "version", version.Version)
 
-	if s.promServer != nil {
-		promListener, err := net.Listen("tcp", s.promServer.Addr)
+	if srv := s.promServer; srv != nil {
+		l, err := net.Listen("tcp", srv.Addr)
 		if err != nil {
 			return err
 		}
-		defer promListener.Close()
+		defer l.Close()
 		go func() {
-			_ = s.promServer.Serve(promListener)
+			_ = srv.Serve(l)
+		}()
+	}
+
+	if srv := s.pprofServer; srv != nil {
+		l, err := net.Listen("tcp", srv.Addr)
+		if err != nil {
+			return err
+		}
+		defer l.Close()
+		go func() {
+			_ = srv.Serve(l)
 		}()
 	}
 

@@ -56,10 +56,13 @@ var (
 
 // Play specified audio tones in a loop until the context is cancelled.
 func Play(ctx context.Context, audio media.PCM16Writer, vol int16, tones []Tone) error {
-	pcmBuf := make(media.PCM16Sample, rtp.DefPacketDur)
+	const (
+		frameDur     = rtp.DefFrameDur
+		framesPerSec = int(time.Second / frameDur)
+	)
+	pcmBuf := make(media.PCM16Sample, audio.SampleRate()/framesPerSec)
 
-	const step = rtp.DefFrameDur
-	ticker := time.NewTicker(step)
+	ticker := time.NewTicker(frameDur)
 	defer ticker.Stop()
 
 	var (
@@ -98,12 +101,12 @@ func Play(ctx context.Context, audio media.PCM16Writer, vol int16, tones []Tone)
 		if len(freq) == 0 {
 			pcmBuf.Clear() // silence
 		} else {
-			Generate(pcmBuf, ts, step, vol, freq)
+			Generate(pcmBuf, ts, frameDur, vol, freq)
 		}
 		if err := audio.WriteSample(pcmBuf); err != nil {
 			return err
 		}
-		remaining -= step
-		ts += step
+		remaining -= frameDur
+		ts += frameDur
 	}
 }

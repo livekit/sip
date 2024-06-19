@@ -106,8 +106,8 @@ func (s *SeqWriter) WriteEvent(ev *Event) error {
 }
 
 // NewStream creates a new media stream in RTP and tracks timestamps associated with it.
-func (s *SeqWriter) NewStream(typ byte) *Stream {
-	return s.NewStreamWithDur(typ, DefPacketDur)
+func (s *SeqWriter) NewStream(typ byte, clockRate int) *Stream {
+	return s.NewStreamWithDur(typ, uint32(clockRate/DefFramesPerSec))
 }
 
 func (s *SeqWriter) NewStreamWithDur(typ byte, packetDur uint32) *Stream {
@@ -141,12 +141,17 @@ func (s *Stream) Delay(dur uint32) {
 	s.ev.Timestamp += dur
 }
 
-func NewMediaStreamOut[T ~[]byte](s *Stream) *MediaStreamOut[T] {
-	return &MediaStreamOut[T]{s: s}
+func NewMediaStreamOut[T ~[]byte](s *Stream, sampleRate int) *MediaStreamOut[T] {
+	return &MediaStreamOut[T]{s: s, sampleRate: sampleRate}
 }
 
 type MediaStreamOut[T ~[]byte] struct {
-	s *Stream
+	s          *Stream
+	sampleRate int
+}
+
+func (s *MediaStreamOut[T]) SampleRate() int {
+	return s.sampleRate
 }
 
 func (s *MediaStreamOut[T]) WriteSample(sample T) error {

@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"slices"
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
@@ -43,7 +44,7 @@ type Room struct {
 	log     logger.Logger
 	room    *lksdk.Room
 	mix     *mixer.Mixer
-	out     media.SwitchWriter[media.PCM16Sample]
+	out     *media.SwitchWriter[media.PCM16Sample]
 	p       Participant
 	ready   atomic.Bool
 	stopped core.Fuse
@@ -59,8 +60,8 @@ type lkRoomConfig struct {
 }
 
 func NewRoom(log logger.Logger) *Room {
-	r := &Room{log: log}
-	r.mix = mixer.NewMixer(&r.out, rtp.DefFrameDur, rtp.DefSampleRate)
+	r := &Room{log: log, out: media.NewSwitchWriter[media.PCM16Sample](RoomSampleRate)}
+	r.mix = mixer.NewMixer(r.out, rtp.DefFrameDur)
 	return r
 }
 
@@ -95,7 +96,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUr
 				mTrack := r.NewTrack()
 				defer mTrack.Close()
 
-				odec, err := opus.Decode(mTrack, rtp.DefSampleRate, channels)
+				odec, err := opus.Decode(mTrack, channels)
 				if err != nil {
 					return
 				}
@@ -141,7 +142,11 @@ func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
 	if r == nil {
 		return
 	}
-	r.out.Set(out)
+	if out == nil {
+		r.out.Set(nil)
+		return
+	}
+	r.out.Set(media.ResampleWriter(out, r.mix.SampleRate()))
 }
 
 func (r *Room) Close() error {
@@ -164,7 +169,7 @@ func (r *Room) Participant() Participant {
 	return r.p
 }
 
-func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], error) {
+func (r *Room) NewParticipantTrack(sampleRate int) (media.Writer[media.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		return nil, err
@@ -175,8 +180,8 @@ func (r *Room) NewParticipantTrack() (media.Writer[media.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, rtp.DefFrameDur)
-	pw, err := opus.Encode(ow, rtp.DefSampleRate, channels)
+	ow := media.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
+	pw, err := opus.Encode(ow, channels)
 	if err != nil {
 		return nil, err
 	}
@@ -205,8 +210,18 @@ func (t *Track) Close() error {
 	return nil
 }
 
-func (t *Track) PlayAudio(ctx context.Context, frames []media.PCM16Sample) {
+func (t *Track) PlayAudio(ctx context.Context, sampleRate int, frames []media.PCM16Sample) {
+	if t.SampleRate() != sampleRate {
+		frames = slices.Clone(frames)
+		for i := range frames {
+			frames[i] = media.Resample(nil, t.SampleRate(), frames[i], sampleRate)
+		}
+	}
 	_ = media.PlayAudio[media.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
+}
+
+func (t *Track) SampleRate() int {
+	return t.mix.SampleRate()
 }
 
 func (t *Track) WriteSample(pcm media.PCM16Sample) error {

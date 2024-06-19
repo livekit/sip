@@ -17,13 +17,10 @@ package rtp
 import "time"
 
 const (
-	// DefSampleRate is a default number of audio samples per second.
-	DefSampleRate = 8000
+	// DefClockRate is a default clock rate at which RTP timestamps increment.
+	DefClockRate = 8000
 	// DefFrameDur is a default duration of an audio frame.
 	DefFrameDur = 20 * time.Millisecond
-	// DefFrameRate is a default number of audio frames per second.
-	DefFrameRate = int(time.Second / DefFrameDur)
-	// DefPacketDur is a default duration of frame packet in DefFrameDur units (aka samples per frame).
-	// It is used as an increment for RTP timestamps.
-	DefPacketDur = uint32(DefSampleRate / DefFrameRate)
+	// DefFramesPerSec is a default number of audio frames per second.
+	DefFramesPerSec = int(time.Second / DefFrameDur)
 )

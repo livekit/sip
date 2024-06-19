@@ -460,7 +460,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	// Encoding pipeline (LK -> SIP)
 	// Need to be created earlier to send the pin prompts.
 	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", conn))
-	sa := s.NewStream(c.audioType)
+	sa := s.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
 	audio := c.audioCodec.EncodeRTP(sa)
 	c.lkRoom.SetOutput(audio)
 
@@ -583,7 +583,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	if err != nil {
 		return err
 	}
-	local, err := c.lkRoom.NewParticipantTrack()
+	local, err := c.lkRoom.NewParticipantTrack(c.audioCodec.Info().SampleRate)
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err
@@ -612,7 +612,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, me
 func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample) {
 	t := c.lkRoom.NewTrack()
 	defer t.Close()
-	t.PlayAudio(ctx, frames)
+	t.PlayAudio(ctx, embedSampleRate, frames)
 }
 
 func (c *inboundCall) handleDTMF(p *rtp.Packet) error {

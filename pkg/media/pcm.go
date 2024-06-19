@@ -21,6 +21,7 @@ import (
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
+// PlayAudio into a given writer. It assumes that frames are already at the writer's sample rate.
 func PlayAudio[T any](ctx context.Context, w Writer[T], sampleDur time.Duration, frames []T) error {
 	if len(frames) == 0 {
 		return nil
@@ -44,7 +45,64 @@ func PlayAudio[T any](ctx context.Context, w Writer[T], sampleDur time.Duration,
 	}
 }
 
-var _ PCM16Writer = (*PCM16Sample)(nil)
+func NewPCM16FrameWriter(buf *[]PCM16Sample, sampleRate int) PCM16Writer {
+	return &frameWriterPCM16{
+		buf:        buf,
+		sampleRate: sampleRate,
+	}
+}
+
+type frameWriterPCM16 struct {
+	buf        *[]PCM16Sample
+	sampleRate int
+}
+
+func (b *frameWriterPCM16) SampleRate() int {
+	return b.sampleRate
+}
+
+func (b *frameWriterPCM16) WriteSample(data PCM16Sample) error {
+	*b.buf = append(*b.buf, data)
+	return nil
+}
+
+func NewPCM16BufferWriter(buf *PCM16Sample, sampleRate int) PCM16Writer {
+	return &bufferWriterPCM16{
+		buf:        buf,
+		sampleRate: sampleRate,
+	}
+}
+
+type bufferWriterPCM16 struct {
+	buf        *PCM16Sample
+	sampleRate int
+}
+
+func (b *bufferWriterPCM16) SampleRate() int {
+	return b.sampleRate
+}
+
+func (b *bufferWriterPCM16) WriteSample(data PCM16Sample) error {
+	*b.buf = append(*b.buf, data...)
+	return nil
+}
+
+func NewPCM16BufferReader(buf PCM16Sample) Reader[PCM16Sample] {
+	return &bufferReaderPCM16{
+		buf: buf,
+	}
+}
+
+type bufferReaderPCM16 struct {
+	buf        PCM16Sample
+	sampleRate int
+}
+
+func (b *bufferReaderPCM16) ReadSample(data PCM16Sample) (int, error) {
+	n := copy(data, b.buf)
+	b.buf = b.buf[n:]
+	return n, nil
+}
 
 type PCM16Sample []int16
 
@@ -66,8 +124,8 @@ type MediaSampleWriter interface {
 	WriteSample(sample media.Sample) error
 }
 
-func FromSampleWriter[T ~[]byte](w MediaSampleWriter, sampleDur time.Duration) Writer[T] {
-	return WriterFunc[T](func(in T) error {
+func FromSampleWriter[T ~[]byte](w MediaSampleWriter, sampleRate int, sampleDur time.Duration) Writer[T] {
+	return NewWriterFunc(sampleRate, func(in T) error {
 		data := make([]byte, len(in))
 		copy(data, in)
 		return w.WriteSample(media.Sample{Data: data, Duration: sampleDur})

@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pion/sdp/v2"
 
@@ -37,13 +38,12 @@ func getCodecs() []sdpCodecInfo {
 	codecs := media.EnabledCodecs()
 	slices.SortFunc(codecs, func(a, b media.Codec) int {
 		ai, bi := a.Info(), b.Info()
-		if ai.RTPIsStatic && bi.RTPIsStatic {
-			return int(ai.RTPDefType) - int(bi.RTPDefType)
-		}
-		if ai.RTPIsStatic {
-			return -1
-		} else if bi.RTPIsStatic {
-			return 1
+		if ai.RTPIsStatic != bi.RTPIsStatic {
+			if ai.RTPIsStatic {
+				return -1
+			} else if bi.RTPIsStatic {
+				return 1
+			}
 		}
 		return bi.Priority - ai.Priority
 	})
@@ -72,8 +72,8 @@ type sdpCodecInfo struct {
 }
 
 func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
-	// Static compiler check for sample rate hardcoded below.
-	var _ = [1]struct{}{}[8000-rtp.DefSampleRate]
+	// Static compiler check for frame duration hardcoded below.
+	var _ = [1]struct{}{}[20*time.Millisecond-rtp.DefFrameDur]
 
 	codecs := getCodecs()
 	attrs := make([]sdp.Attribute, 0, len(codecs)+4)
@@ -90,6 +90,16 @@ func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
 			Value: styp + " " + codec.Codec.Info().SDPName,
 		})
 	}
+	slices.SortFunc(formats, func(a, b string) int {
+		if len(a) != len(b) {
+			if len(a) < len(b) {
+				return -1
+			} else if len(a) > len(b) {
+				return +1
+			}
+		}
+		return strings.Compare(a, b)
+	})
 	if dtmfType > 0 {
 		attrs = append(attrs, sdp.Attribute{
 			Key: "fmtp", Value: fmt.Sprintf("%d 0-16", dtmfType),
@@ -97,7 +107,6 @@ func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
 	}
 	attrs = append(attrs, []sdp.Attribute{
 		{Key: "ptime", Value: "20"},
-		{Key: "maxptime", Value: "150"},
 		{Key: "sendrecv"},
 	}...)
 
@@ -115,8 +124,8 @@ func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
 }
 
 func sdpAnswerMediaDesc(rtpListenerPort int, res *sdpCodecResult) []*sdp.MediaDescription {
-	// Static compiler check for sample rate hardcoded below.
-	var _ = [1]struct{}{}[8000-rtp.DefSampleRate]
+	// Static compiler check for frame duration hardcoded below.
+	var _ = [1]struct{}{}[20*time.Millisecond-rtp.DefFrameDur]
 
 	attrs := make([]sdp.Attribute, 0, 6)
 	attrs = append(attrs, sdp.Attribute{
@@ -130,7 +139,6 @@ func sdpAnswerMediaDesc(rtpListenerPort int, res *sdpCodecResult) []*sdp.MediaDe
 	}
 	attrs = append(attrs, []sdp.Attribute{
 		{Key: "ptime", Value: "20"},
-		{Key: "maxptime", Value: "150"},
 		{Key: "sendrecv"},
 	}...)
 	return []*sdp.MediaDescription{

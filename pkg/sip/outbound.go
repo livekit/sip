@@ -66,7 +66,7 @@ type outboundCall struct {
 	mon           *stats.CallMonitor
 	mediaRunning  bool
 	lkRoom        *Room
-	lkRoomIn      media.Writer[media.PCM16Sample]
+	lkRoomIn      media.Writer[media.PCM16Sample] // output to room; OPUS at 48k
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
@@ -207,7 +207,9 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.name, lkNew.meta, lkNew.wsUrl, lkNew.token); err != nil {
 		return err
 	}
-	local, err := r.NewParticipantTrack()
+	// We have to create the track early because we might play a ringtone while SIP connects.
+	// Thus, we are forced to set full sample rate here instead of letting the codec adapt to the SIP source sample rate.
+	local, err := r.NewParticipantTrack(RoomSampleRate)
 	if err != nil {
 		_ = r.Close()
 		return err
@@ -227,6 +229,7 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
+		// Play a ringtone to the room while participant connects
 		go tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
 	}
 	err := c.sipSignal(sipNew)
@@ -235,6 +238,7 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 	}
 
 	if sipNew.dtmf != "" {
+		// Write DTMF to SIP
 		if err := dtmf.Write(ctx, c.audioOut, c.rtpDTMF, sipNew.dtmf); err != nil {
 			return err
 		}
@@ -358,8 +362,8 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 
 	// TODO: this says "audio", but will actually count DTMF too
 	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
-	c.rtpAudio = c.rtpOut.NewStream(c.audioType)
-	c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType)
+	c.rtpAudio = c.rtpOut.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
+	c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType, dtmf.SampleRate)
 
 	// Encoding pipeline (LK -> SIP)
 	c.audioOut = c.audioCodec.EncodeRTP(c.rtpAudio)
