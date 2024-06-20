@@ -83,15 +83,16 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUr
 		Name:     name,
 		Metadata: meta,
 	}
+	handleTrackPublished := func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+		if publication.Kind() == lksdk.TrackKindAudio {
+			if err := publication.SetSubscribed(true); err != nil {
+				r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
+			}
+		}
+	}
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				if publication.Kind() == lksdk.TrackKindAudio {
-					if err := publication.SetSubscribed(true); err != nil {
-						r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
-					}
-				}
-			},
+			OnTrackPublished: handleTrackPublished,
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 				mTrack := r.NewTrack()
 				defer mTrack.Close()
@@ -131,6 +132,16 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUr
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
 	r.ready.Store(true)
+
+	// since TrackPublished isn't fired for tracks published *before* the participant is in the room, we'll
+	// need to handle them manually
+	for _, rp := range room.GetRemoteParticipants() {
+		for _, pub := range rp.TrackPublications() {
+			if remotePub, ok := pub.(*lksdk.RemoteTrackPublication); ok {
+				handleTrackPublished(remotePub, rp)
+			}
+		}
+	}
 	return nil
 }
 

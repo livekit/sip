@@ -22,10 +22,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/webrtc/v3"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/media"
@@ -143,6 +144,11 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		_ = rtp.HandleLoop(track, h)
 	}
 	p.Room = lk.Connect(t, room, identity, cb)
+	for _, rp := range p.Room.GetRemoteParticipants() {
+		for _, pub := range rp.TrackPublications() {
+			cb.ParticipantCallback.OnTrackPublished(pub.(*lksdk.RemoteTrackPublication), rp)
+		}
+	}
 	track, err := p.newAudioTrack()
 	if err != nil {
 		t.Fatal(err)
