@@ -5,28 +5,28 @@ go 1.22
 toolchain go1.22.2
 
 require (
-	github.com/at-wat/ebml-go v0.17.0
+	github.com/at-wat/ebml-go v0.17.1
 	github.com/emiago/sipgo v0.13.1
 	github.com/frostbyte73/core v0.0.10
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19
-	github.com/icholy/digest v0.1.22
+	github.com/icholy/digest v0.1.23
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
-	github.com/livekit/mediatransportutil v0.0.0-20240613015318-84b69facfb75
-	github.com/livekit/protocol v1.17.1-0.20240617184219-32c577d805ed
-	github.com/livekit/psrpc v0.5.3-0.20240526192918-fbdaf10e6aa5
-	github.com/livekit/server-sdk-go/v2 v2.1.4-0.20240617190011-685af9bc2555
+	github.com/livekit/mediatransportutil v0.0.0-20240625074155-301bb4a816b7
+	github.com/livekit/protocol v1.19.0
+	github.com/livekit/psrpc v0.5.3-0.20240616012458-ac39c8549a0a
+	github.com/livekit/server-sdk-go/v2 v2.2.0
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.29
 	github.com/pion/rtp v1.8.6
 	github.com/pion/sdp/v2 v2.4.0
-	github.com/pion/webrtc/v3 v3.2.40
-	github.com/prometheus/client_golang v1.19.0
+	github.com/pion/webrtc/v3 v3.2.43
+	github.com/prometheus/client_golang v1.19.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
-	github.com/urfave/cli/v2 v2.25.7
-	golang.org/x/exp v0.0.0-20240604190554-fc45aab8b7f8
+	github.com/urfave/cli/v2 v2.27.2
+	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -40,9 +40,9 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
-	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/continuity v0.4.3 // indirect
-	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/docker/cli v25.0.3+incompatible // indirect
@@ -62,16 +62,16 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.2 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/jxskiss/base62 v1.1.0 // indirect
-	github.com/klauspost/compress v1.17.7 // indirect
-	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
+	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.8 // indirect
 	github.com/lithammer/shortuuid/v4 v4.0.0 // indirect
 	github.com/magefile/mage v1.15.0 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/moby/term v0.5.0 // indirect
-	github.com/nats-io/nats.go v1.33.1 // indirect
+	github.com/nats-io/nats.go v1.36.0 // indirect
 	github.com/nats-io/nkeys v0.4.7 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
@@ -79,7 +79,7 @@ require (
 	github.com/opencontainers/runc v1.1.12 // indirect
 	github.com/pion/datachannel v1.5.6 // indirect
 	github.com/pion/dtls/v2 v2.2.11 // indirect
-	github.com/pion/ice/v2 v2.3.24 // indirect
+	github.com/pion/ice/v2 v2.3.25 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns v0.0.12 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
@@ -95,15 +95,15 @@ require (
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.48.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
-	github.com/puzpuzpuz/xsync/v3 v3.1.0 // indirect
-	github.com/redis/go-redis/v9 v9.5.1 // indirect
+	github.com/puzpuzpuz/xsync/v3 v3.2.0 // indirect
+	github.com/redis/go-redis/v9 v9.5.3 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
-	github.com/xrash/smetrics v0.0.0-20201216005158-039620a65673 // indirect
+	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
@@ -116,9 +116,9 @@ require (
 	golang.org/x/sys v0.21.0 // indirect
 	golang.org/x/text v0.16.0 // indirect
 	golang.org/x/tools v0.22.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
-	google.golang.org/grpc v1.63.2 // indirect
-	google.golang.org/protobuf v1.34.1 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240617180043-68d350f18fd4 // indirect
+	google.golang.org/grpc v1.64.0 // indirect
+	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
