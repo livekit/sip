@@ -15,7 +15,7 @@ require (
 	github.com/livekit/mediatransportutil v0.0.0-20240625074155-301bb4a816b7
 	github.com/livekit/protocol v1.19.0
 	github.com/livekit/psrpc v0.5.3-0.20240616012458-ac39c8549a0a
-	github.com/livekit/server-sdk-go/v2 v2.2.0
+	github.com/livekit/server-sdk-go/v2 v2.2.1-0.20240702001219-93c9f96c6d5f
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.29

@@ -85,6 +85,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	}
 	codec := lksdp.CodecByName(conf.Codec).(rtp.AudioCodec)
 	cli := &Client{
+		id:         id,
 		conf:       conf,
 		ack:        make(chan struct{}, 1),
 		log:        conf.Log,
@@ -144,6 +145,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 }
 
 type Client struct {
+	id         string
 	conf       ClientConfig
 	log        *slog.Logger
 	ack        chan struct{}
@@ -296,6 +298,9 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.IP)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	if c.id != "" {
+		req.AppendHeader(sip.NewHeader("X-Lk-Test-Id", c.id))
+	}
 
 	if authHeader != "" {
 		req.AppendHeader(sip.NewHeader("Proxy-Authorization", authHeader))

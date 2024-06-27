@@ -46,6 +46,12 @@ var headerToLog = map[string]string{
 	"X-Twilio-CallSid":    "twilioCallSID",
 }
 
+var headerToAttr = map[string]string{
+	"X-Twilio-AccountSid": livekit.AttrSIPPrefix + "twilio.accountSid",
+	"X-Twilio-CallSid":    livekit.AttrSIPPrefix + "twilio.callSid",
+	"X-Lk-Test-Id":        "lktest.id",
+}
+
 func (s *Server) sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
 	if s.conf.HideInboundPort {
 		tx.Terminate()
@@ -194,7 +200,13 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 180, "Ringing", nil))
 	}
 
-	call := s.newInboundCall(log, cmon, callID, tag, from, to, src)
+	extra := make(map[string]string)
+	for hdr, name := range headerToAttr {
+		if h := req.GetHeader(hdr); h != nil {
+			extra[name] = h.Value()
+		}
+	}
+	call := s.newInboundCall(log, cmon, callID, tag, from, to, src, extra)
 	call.joinDur = joinDur
 	call.handleInvite(call.ctx, req, tx, s.conf)
 }
@@ -227,6 +239,7 @@ type inboundCall struct {
 	mon           *stats.CallMonitor
 	id            string
 	tag           string
+	extraAttrs    map[string]string
 	ctx           context.Context
 	cancel        func()
 	inviteReq     *sip.Request
@@ -248,7 +261,7 @@ type inboundCall struct {
 	done          atomic.Bool
 }
 
-func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, tag string, from *sip.FromHeader, to *sip.ToHeader, src string) *inboundCall {
+func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, tag string, from *sip.FromHeader, to *sip.ToHeader, src string, extra map[string]string) *inboundCall {
 	c := &inboundCall{
 		s:             s,
 		log:           log,
@@ -258,6 +271,7 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, t
 		from:          from,
 		to:            to,
 		src:           src,
+		extraAttrs:    extra,
 		audioRecvChan: make(chan struct{}),
 		dtmf:          make(chan dtmf.Event, 10),
 		lkRoom:        NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
@@ -374,7 +388,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	case DispatchRequestPin:
 		c.pinPrompt(ctx)
 	case DispatchAccept:
-		c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.WsUrl, disp.Token)
+		c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.Attributes, disp.WsUrl, disp.Token)
 	}
 	// Wait for the caller to terminate the call.
 	select {
@@ -512,7 +526,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 					return
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
-				c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.WsUrl, disp.Token)
+				c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.Attributes, disp.WsUrl, disp.Token)
 				return
 			}
 			// Gather pin numbers
@@ -572,14 +586,20 @@ func (c *inboundCall) handleAudio(p *rtp.Packet) error {
 	return nil
 }
 
-func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, parIdentity, parName, parMeta, wsUrl, token string) error {
+func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, parIdentity, parName, parMeta string, parAttr map[string]string, wsUrl, token string) error {
+	if parAttr == nil {
+		parAttr = make(map[string]string)
+	}
+	for k, v := range c.extraAttrs {
+		parAttr[k] = v
+	}
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
-	err := c.lkRoom.Connect(c.s.conf, roomName, parIdentity, parName, parMeta, wsUrl, token)
+	err := c.lkRoom.Connect(c.s.conf, roomName, parIdentity, parName, parMeta, parAttr, wsUrl, token)
 	if err != nil {
 		return err
 	}
@@ -596,14 +616,14 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	return nil
 }
 
-func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, meta, wsUrl, token string) {
+func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, meta string, attrs map[string]string, wsUrl, token string) {
 	if c.joinDur != nil {
 		c.joinDur()
 	}
 	c.callDur = c.mon.CallDur()
 	c.log = c.log.WithValues("roomName", roomName, "identity", identity, "name", name)
 	c.log.Infow("Bridging SIP call")
-	if err := c.createLiveKitParticipant(ctx, roomName, identity, name, meta, wsUrl, token); err != nil {
+	if err := c.createLiveKitParticipant(ctx, roomName, identity, name, meta, attrs, wsUrl, token); err != nil {
 		c.log.Errorw("Cannot create LiveKit participant", err)
 		c.close(true, "participant-failed")
 	}

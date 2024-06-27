@@ -294,10 +294,11 @@ func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 }
 
 type ParticipantInfo struct {
-	Identity string
-	Name     string
-	Kind     livekit.ParticipantInfo_Kind
-	Metadata string
+	Identity   string
+	Name       string
+	Kind       livekit.ParticipantInfo_Kind
+	Metadata   string
+	Attributes map[string]string
 }
 
 func (lk *LiveKit) ExpectParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) {
@@ -331,6 +332,9 @@ wait:
 			require.Equal(t, exp.Name, got.Name, "unexpected participant name")
 		}
 		require.Equal(t, exp.Metadata, got.Metadata, "unexpected participant metadata")
+		expAttrs, gotAttrs := exp.Attributes, got.Attributes
+		expAttrs, gotAttrs = checkSIPCallID(t, expAttrs, gotAttrs)
+		require.Equal(t, expAttrs, gotAttrs, "unexpected participant attributes")
 	}
 }
 
