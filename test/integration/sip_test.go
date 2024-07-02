@@ -101,6 +101,8 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 
 type NumberConfig struct {
 	SIP      *SIPServer
+	TrunkID  string
+	RuleID   string
 	Number   string
 	Pin      string
 	AuthUser string
@@ -141,18 +143,26 @@ func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) strin
 }
 
 func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string, meta string) *NumberConfig {
-	s.CreateTrunkIn(t, number, "", "")
-	s.CreateDirectDispatch(t, room, pin, meta)
-	return &NumberConfig{SIP: s, Number: number, Pin: pin}
+	trunkID := s.CreateTrunkIn(t, number, "", "")
+	ruleID := s.CreateDirectDispatch(t, room, pin, meta)
+	return &NumberConfig{
+		SIP:     s,
+		TrunkID: trunkID, RuleID: ruleID,
+		Number: number, Pin: pin,
+	}
 }
 
 func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string, meta string) *NumberConfig {
-	s.CreateTrunkIn(t, number, "", "")
-	s.CreateIndividualDispatch(t, room, pin, meta)
-	return &NumberConfig{SIP: s, Number: number, Pin: pin}
+	trunkID := s.CreateTrunkIn(t, number, "", "")
+	ruleID := s.CreateIndividualDispatch(t, room, pin, meta)
+	return &NumberConfig{
+		SIP:     s,
+		TrunkID: trunkID, RuleID: ruleID,
+		Number: number, Pin: pin,
+	}
 }
 
-func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta string) {
+func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta string) string {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
 		Metadata: meta,
@@ -168,9 +178,10 @@ func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta st
 		t.Fatal(err)
 	}
 	t.Log("Dispatch (direct):", dr.SipDispatchRuleId)
+	return dr.SipDispatchRuleId
 }
 
-func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, meta string) {
+func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, meta string) string {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
 		Metadata: meta,
@@ -186,6 +197,7 @@ func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, met
 		t.Fatal(err)
 	}
 	t.Log("Dispatch (individual):", dr.SipDispatchRuleId)
+	return dr.SipDispatchRuleId
 }
 
 func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool) *siptest.Client {
@@ -225,7 +237,7 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 const (
 	serverNumber                   = "+000000000"
 	clientNumber                   = "+111111111"
-	participantsJoinTimeout        = 2 * time.Second
+	participantsJoinTimeout        = 5 * time.Second
 	participantsJoinWithPinTimeout = participantsJoinTimeout + 5*time.Second
 	participantsLeaveTimeout       = 3 * time.Second
 	webrtcSetupDelay               = 5 * time.Second
@@ -238,6 +250,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		dtmf string
 	)
 	const (
+		clientID = "test-cli"
 		roomName = "test-open"
 		meta     = `{"test":true}`
 	)
@@ -257,7 +270,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
 
-	cli := runClient(t, nc, "", clientNumber, false)
+	cli := runClient(t, nc, clientID, clientNumber, false)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
@@ -265,7 +278,20 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
-		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+			},
+		},
 	})
 
 	// Wait for WebRTC to come online.
@@ -298,6 +324,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		dtmf string
 	)
 	const (
+		clientID = "test-cli"
 		roomName = "test-priv"
 		meta     = `{"test":true}`
 	)
@@ -317,7 +344,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234", meta)
 
-	cli := runClient(t, nc, "", clientNumber, false)
+	cli := runClient(t, nc, clientID, clientNumber, false)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
@@ -326,7 +353,20 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
-		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+			},
+		},
 	})
 
 	// Wait for WebRTC to come online.
@@ -357,19 +397,33 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	srv := runSIPServer(t, lk)
 
 	const (
+		clientID = "test-cli"
 		roomName = "test-open"
 		meta     = `{"test":true}`
 	)
 	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "")
 
-	runClient(t, nc, "", clientNumber, true)
+	runClient(t, nc, clientID, clientNumber, true)
 
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
-		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+			},
+		},
 	})
 }
 
@@ -378,19 +432,33 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	srv := runSIPServer(t, lk)
 
 	const (
+		clientID = "test-cli"
 		roomName = "test-open"
 		meta     = `{"test":true}`
 	)
 	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "", meta)
 
-	runClient(t, nc, "", clientNumber, false)
+	runClient(t, nc, clientID, clientNumber, false)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
 	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []lktest.ParticipantInfo{
-		{Identity: "sip_" + clientNumber, Name: "Phone " + clientNumber, Kind: livekit.ParticipantInfo_SIP, Metadata: meta},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+			},
+		},
 	})
 }
 
@@ -438,6 +506,14 @@ func TestSIPAudio(t *testing.T) {
 							Name:     fmt.Sprintf("Phone +%d", 111111111*(i+1)),
 							Kind:     livekit.ParticipantInfo_SIP,
 							Metadata: meta,
+							Attributes: map[string]string{
+								"sip.callID":           "<test>", // special case
+								"sip.trunkPhoneNumber": serverNumber,
+								"sip.phoneNumber":      fmt.Sprintf("+%d", 111111111*(i+1)),
+								"sip.ruleID":           nc.RuleID,
+								"sip.trunkID":          nc.TrunkID,
+								"lktest.id":            strconv.Itoa(i + 1),
+							},
 						})
 					}
 					lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
@@ -478,8 +554,8 @@ func TestSIPOutbound(t *testing.T) {
 	)
 
 	// Configure Trunk for inbound server.
-	srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
-	srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta)
+	trunkIn := srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
+	ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta)
 
 	// Configure Trunk for outbound server and make a SIP call.
 	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
@@ -495,6 +571,8 @@ func TestSIPOutbound(t *testing.T) {
 				TrunkOut:  trunkOut,
 				NumberOut: clientNumber,
 				RoomOut:   "outbound",
+				TrunkIn:   trunkIn,
+				RuleIn:    ruleIn,
 				NumberIn:  serverNumber,
 				RoomIn:    roomIn,
 				RoomPin:   dtmfPin,

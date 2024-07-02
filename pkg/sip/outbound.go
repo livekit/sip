@@ -204,7 +204,7 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 		c.lkRoomIn = nil
 	}
 	r := NewRoom(c.log)
-	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.name, lkNew.meta, lkNew.wsUrl, lkNew.token); err != nil {
+	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.name, lkNew.meta, lkNew.attrs, lkNew.wsUrl, lkNew.token); err != nil {
 		return err
 	}
 	// We have to create the track early because we might play a ringtone while SIP connects.
@@ -352,6 +352,18 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		return err
 	}
 	joinDur()
+
+	if inviteResp != nil {
+		extra := make(map[string]string)
+		for hdr, name := range headerToAttr {
+			if h := inviteResp.GetHeader(hdr); h != nil {
+				extra[name] = h.Value()
+			}
+		}
+		if len(extra) != 0 {
+			c.lkRoom.Room().LocalParticipant.SetAttributes(extra)
+		}
+	}
 
 	c.audioCodec = res.Audio
 	c.audioType = res.AudioType

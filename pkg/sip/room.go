@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
+	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/sip"
 	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/protocol/logger"
@@ -55,6 +57,7 @@ type lkRoomConfig struct {
 	identity string
 	name     string
 	meta     string
+	attrs    map[string]string
 	wsUrl    string
 	token    string
 }
@@ -72,11 +75,14 @@ func (r *Room) Closed() <-chan struct{} {
 	return r.stopped.Watch()
 }
 
-func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUrl, token string) error {
-	var (
-		err  error
-		room *lksdk.Room
-	)
+func (r *Room) Room() *lksdk.Room {
+	return r.room
+}
+
+func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta string, attrs map[string]string, wsUrl, token string) error {
+	if wsUrl == "" {
+		wsUrl = conf.WsUrl
+	}
 	r.p = Participant{
 		RoomName: roomName,
 		Identity: identity,
@@ -110,27 +116,42 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta, wsUr
 		},
 	}
 
-	if wsUrl == "" || token == "" {
-		room, err = lksdk.ConnectToRoom(conf.WsUrl,
-			lksdk.ConnectInfo{
-				APIKey:              conf.ApiKey,
-				APISecret:           conf.ApiSecret,
-				RoomName:            roomName,
-				ParticipantIdentity: identity,
-				ParticipantName:     name,
-				ParticipantMetadata: meta,
-				ParticipantKind:     lksdk.ParticipantSIP,
-			}, roomCallback, lksdk.WithAutoSubscribe(false))
-	} else {
-		room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback, lksdk.WithAutoSubscribe(false))
+	var (
+		err  error
+		room *lksdk.Room
+	)
+	if token == "" {
+		// TODO: Remove this code path, always sign tokens on LiveKit server.
+		//       For now, match Cloud behavior and do not send extra attrs in the token.
+		tokenAttrs := make(map[string]string, len(attrs))
+		for _, k := range []string{
+			livekit.AttrSIPCallID,
+			livekit.AttrSIPTrunkID,
+			livekit.AttrSIPDispatchRuleID,
+			livekit.AttrSIPTrunkNumber,
+			livekit.AttrSIPPhoneNumber,
+		} {
+			if v, ok := attrs[k]; ok {
+				tokenAttrs[k] = v
+			}
+		}
+		token, err = sip.BuildSIPToken(
+			conf.ApiKey, conf.ApiSecret, roomName,
+			identity, name, meta,
+			tokenAttrs,
+		)
+		if err != nil {
+			return err
+		}
 	}
-
+	room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return err
 	}
 	r.room = room
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
+	room.LocalParticipant.SetAttributes(attrs)
 	r.ready.Store(true)
 
 	// since TrackPublished isn't fired for tracks published *before* the participant is in the room, we'll

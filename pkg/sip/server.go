@@ -65,6 +65,7 @@ type CallDispatch struct {
 	Identity       string
 	Name           string
 	Metadata       string
+	Attributes     map[string]string
 	WsUrl          string
 	Token          string
 	TrunkID        string

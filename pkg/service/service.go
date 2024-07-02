@@ -174,7 +174,7 @@ func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcA
 
 func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {
 	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{
-
+		SipCallId:     info.ID,
 		CallingNumber: info.FromUser,
 		CalledNumber:  info.ToUser,
 		CalledHost:    info.ToHost,
@@ -202,6 +202,7 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 			Identity:       resp.ParticipantIdentity,
 			Name:           resp.ParticipantName,
 			Metadata:       resp.ParticipantMetadata,
+			Attributes:     resp.ParticipantAttributes,
 			WsUrl:          resp.WsUrl,
 			Token:          resp.Token,
 			TrunkID:        resp.SipTrunkId,
@@ -214,6 +215,7 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 			Identity:       resp.ParticipantIdentity,
 			Name:           resp.ParticipantName,
 			Metadata:       resp.ParticipantMetadata,
+			Attributes:     resp.ParticipantAttributes,
 			WsUrl:          resp.WsUrl,
 			Token:          resp.Token,
 			TrunkID:        resp.SipTrunkId,

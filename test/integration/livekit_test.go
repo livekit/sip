@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -11,9 +12,12 @@ import (
 	"github.com/livekit/protocol/redis"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 
 	"github.com/livekit/sip/test/lktest"
 )
+
+var debugLKServer = os.Getenv("DEBUG_LK_SERVER") != ""
 
 var redisLast uint32
 
@@ -65,9 +69,22 @@ func runLiveKit(t testing.TB) *LiveKit {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
+		cancel()
 		_ = Docker.Purge(c)
 	})
+	if debugLKServer {
+		go Docker.Client.Logs(docker.LogsOptions{
+			Context:      lctx,
+			Container:    c.Container.ID,
+			OutputStream: os.Stderr,
+			ErrorStream:  os.Stderr,
+			Follow:       true,
+			Stdout:       true,
+			Stderr:       true,
+		})
+	}
 	wsaddr := c.GetHostPort("7880/tcp")
 	waitTCPPort(t, wsaddr)
 	wsurl := "ws://" + wsaddr

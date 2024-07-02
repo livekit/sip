@@ -16,15 +16,32 @@ package lktest
 
 import (
 	"context"
+	"maps"
+	"strings"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/utils/guid"
+	"github.com/stretchr/testify/require"
 )
+
+func checkSIPCallID(t TB, exp, got map[string]string) (_, _ map[string]string) {
+	if _, ok := exp[livekit.AttrSIPCallID]; !ok {
+		return // not required
+	}
+	require.True(t, strings.HasPrefix(got[livekit.AttrSIPCallID], guid.SIPCallPrefix))
+	exp, got = maps.Clone(exp), maps.Clone(got)
+	delete(exp, livekit.AttrSIPCallID)
+	delete(got, livekit.AttrSIPCallID)
+	return exp, got
+}
 
 type SIPOutboundTestParams struct {
 	TrunkOut    string // trunk ID for outbound call
 	NumberOut   string // number to call fom
 	RoomOut     string // room for outbound call
 	IdentityOut string
+	TrunkIn     string // trunk ID for inbound call
+	RuleIn      string // rule ID for inbound call
 	NumberIn    string // number to call to
 	RoomIn      string // room for inbound call
 	RoomPin     string // room pin for inbound call
@@ -72,12 +89,35 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	t.Log("checking rooms (outbound)")
 	lkOut.ExpectRoomWithParticipants(t, ctx, params.RoomOut, []ParticipantInfo{
 		{Identity: nameOut, Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: outIdentity, Name: outName, Kind: livekit.ParticipantInfo_SIP, Metadata: outMeta},
+		{
+			Identity: outIdentity,
+			Name:     outName,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: outMeta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.trunkPhoneNumber": params.NumberOut,
+				"sip.phoneNumber":      params.NumberIn,
+				"sip.trunkID":          params.TrunkOut,
+			},
+		},
 	})
 	t.Log("checking rooms (inbound)")
 	lkIn.ExpectRoomWithParticipants(t, ctx, params.RoomIn, []ParticipantInfo{
 		{Identity: nameIn, Kind: livekit.ParticipantInfo_STANDARD},
-		{Identity: inIdentity, Name: inName, Kind: livekit.ParticipantInfo_SIP, Metadata: params.MetaIn},
+		{
+			Identity: inIdentity,
+			Name:     inName,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: params.MetaIn,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.trunkPhoneNumber": params.NumberIn,
+				"sip.phoneNumber":      params.NumberOut,
+				"sip.trunkID":          params.TrunkIn,
+				"sip.ruleID":           params.RuleIn,
+			},
+		},
 	})
 
 	t.Log("testing audio")

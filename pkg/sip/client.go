@@ -132,6 +132,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		identity: req.ParticipantIdentity,
 		name:     req.ParticipantName,
 		meta:     req.ParticipantMetadata,
+		attrs:    req.ParticipantAttributes,
 		wsUrl:    req.WsUrl,
 		token:    req.Token,
 	})
