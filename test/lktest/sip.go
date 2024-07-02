@@ -32,7 +32,6 @@ func checkSIPCallID(t TB, exp, got map[string]string) (_, _ map[string]string) {
 	exp, got = maps.Clone(exp), maps.Clone(got)
 	delete(exp, livekit.AttrSIPCallID)
 	delete(got, livekit.AttrSIPCallID)
-	require.Equal(t, exp, got)
 	return exp, got
 }
 

@@ -16,7 +16,9 @@ package lktest
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -301,40 +303,55 @@ type ParticipantInfo struct {
 	Attributes map[string]string
 }
 
+func compareParticipants(t TB, exp *ParticipantInfo, got *livekit.ParticipantInfo) error {
+	require.Equal(t, exp.Identity, got.Identity, "unexpected participant identity")
+	require.Equal(t, exp.Kind, got.Kind)
+	if exp.Name != "" {
+		require.Equal(t, exp.Name, got.Name, "unexpected participant name")
+	}
+	require.Equal(t, exp.Metadata, got.Metadata, "unexpected participant metadata")
+	expAttrs, gotAttrs := exp.Attributes, got.Attributes
+	expAttrs, gotAttrs = checkSIPCallID(t, expAttrs, gotAttrs)
+	if !maps.Equal(expAttrs, gotAttrs) {
+		return fmt.Errorf("unexpected participant attributes: exp %#v, got %#v", expAttrs, gotAttrs)
+	}
+	return nil
+}
+
 func (lk *LiveKit) ExpectParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) {
-	var list []*livekit.ParticipantInfo
+	slices.SortFunc(participants, func(a, b ParticipantInfo) int {
+		return strings.Compare(a.Identity, b.Identity)
+	})
 	ticker := time.NewTicker(time.Second / 4)
 	defer ticker.Stop()
 wait:
 	for {
-		list = lk.RoomParticipants(t, room)
-		if len(list) == len(participants) {
-			break
+		list := lk.RoomParticipants(t, room)
+		if len(list) != len(participants) {
+			select {
+			case <-ctx.Done():
+				require.Len(t, list, len(participants), "timeout waiting for participants")
+				return
+			case <-ticker.C:
+				continue wait
+			}
 		}
-		select {
-		case <-ctx.Done():
-			break wait
-		case <-ticker.C:
+		slices.SortFunc(list, func(a, b *livekit.ParticipantInfo) int {
+			return strings.Compare(a.Identity, b.Identity)
+		})
+		for i := range participants {
+			err := compareParticipants(t, &participants[i], list[i])
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					require.NoError(t, err)
+					return
+				case <-ticker.C:
+					continue wait
+				}
+			}
 		}
-	}
-	require.Len(t, list, len(participants))
-	slices.SortFunc(participants, func(a, b ParticipantInfo) int {
-		return strings.Compare(a.Identity, b.Identity)
-	})
-	slices.SortFunc(list, func(a, b *livekit.ParticipantInfo) int {
-		return strings.Compare(a.Identity, b.Identity)
-	})
-	for i := range participants {
-		exp, got := participants[i], list[i]
-		require.Equal(t, exp.Identity, got.Identity, "unexpected participant identity")
-		require.Equal(t, exp.Kind, got.Kind)
-		if exp.Name != "" {
-			require.Equal(t, exp.Name, got.Name, "unexpected participant name")
-		}
-		require.Equal(t, exp.Metadata, got.Metadata, "unexpected participant metadata")
-		expAttrs, gotAttrs := exp.Attributes, got.Attributes
-		expAttrs, gotAttrs = checkSIPCallID(t, expAttrs, gotAttrs)
-		require.Equal(t, expAttrs, gotAttrs, "unexpected participant attributes")
+		return // all good
 	}
 }
 
