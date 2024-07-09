@@ -41,17 +41,6 @@ const (
 	audioBridgeMaxDelay = 1 * time.Second
 )
 
-var headerToLog = map[string]string{
-	"X-Twilio-AccountSid": "twilioAccSID",
-	"X-Twilio-CallSid":    "twilioCallSID",
-}
-
-var headerToAttr = map[string]string{
-	"X-Twilio-AccountSid": livekit.AttrSIPPrefix + "twilio.accountSid",
-	"X-Twilio-CallSid":    livekit.AttrSIPPrefix + "twilio.callSid",
-	"X-Lk-Test-Id":        "lktest.id",
-}
-
 func (s *Server) sipErrorOrDrop(tx sip.ServerTransaction, req *sip.Request) {
 	if s.conf.HideInboundPort {
 		tx.Terminate()
@@ -286,7 +275,7 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, t
 func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip.ServerTransaction, conf *config.Config) {
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
-	defer c.close(true, "other")
+	defer c.close(true, callDropped, "other")
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
@@ -308,17 +297,17 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	default:
 		c.log.Errorw("Rejecting inbound call", fmt.Errorf("unexpected dispatch result: %v", disp.Result))
 		sipErrorResponse(tx, req)
-		c.close(true, "unexpected-result")
+		c.close(true, callDropped, "unexpected-result")
 		return
 	case DispatchNoRuleDrop:
 		c.log.Debugw("Rejecting inbound flood")
 		tx.Terminate()
-		c.close(false, "flood")
+		c.close(false, callDropped, "flood")
 		return
 	case DispatchNoRuleReject:
 		c.log.Infow("Rejecting inbound call, doesn't match any Dispatch Rules")
 		sipErrorResponse(tx, req)
-		c.close(false, "no-dispatch")
+		c.close(false, callDropped, "no-dispatch")
 		return
 	case DispatchAccept, DispatchRequestPin:
 		// continue
@@ -329,7 +318,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	if err != nil {
 		c.log.Errorw("Cannot start media", err)
 		sipErrorResponse(tx, req)
-		c.close(true, "media-failed")
+		c.close(true, callDropped, "media-failed")
 		return
 	}
 
@@ -373,7 +362,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	select {
 	case <-ctx.Done():
 		delay.Stop()
-		c.close(false, "hangup")
+		c.close(false, CallHangup, "hangup")
 		return
 	case <-c.audioRecvChan:
 		delay.Stop()
@@ -383,7 +372,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	default:
 		c.log.Errorw("Rejecting inbound call", fmt.Errorf("unreachable dispatch result path: %v", disp.Result))
 		sipErrorResponse(tx, req)
-		c.close(true, "unreachable-path")
+		c.close(true, callDropped, "unreachable-path")
 		return
 	case DispatchRequestPin:
 		c.pinPrompt(ctx)
@@ -393,9 +382,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	// Wait for the caller to terminate the call.
 	select {
 	case <-ctx.Done():
-		c.close(false, "hangup")
+		c.close(false, CallHangup, "hangup")
 	case <-c.lkRoom.Closed():
-		c.close(false, "removed")
+		c.close(false, callDropped, "removed")
 	}
 }
 
@@ -451,7 +440,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	)
 
 	conn := rtp.NewConn(func() {
-		c.close(true, "media-timeout")
+		c.close(true, callDropped, "media-timeout")
 	})
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
@@ -522,7 +511,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				if disp.Result != DispatchAccept || disp.RoomName == "" {
 					c.log.Infow("Rejecting call", "pin", pin, "noPin", noPin)
 					c.playAudio(ctx, c.s.res.wrongPin)
-					c.close(false, "wrong-pin")
+					c.close(false, callDropped, "wrong-pin")
 					return
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
@@ -533,7 +522,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 			pin += string(b.Digit)
 			if len(pin) > pinLimit {
 				c.playAudio(ctx, c.s.res.wrongPin)
-				c.close(false, "wrong-pin")
+				c.close(false, callDropped, "wrong-pin")
 				return
 			}
 		}
@@ -541,9 +530,12 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 }
 
 // close should only be called from handleInvite.
-func (c *inboundCall) close(error bool, reason string) {
+func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	if !c.done.CompareAndSwap(false, true) {
 		return
+	}
+	if status != "" {
+		c.setStatus(status)
 	}
 	c.mon.CallTerminate(reason)
 	if error {
@@ -576,6 +568,15 @@ func (c *inboundCall) closeMedia() {
 	}
 }
 
+func (c *inboundCall) setStatus(v CallStatus) {
+	if c.lkRoom == nil {
+		return
+	}
+	c.lkRoom.Room().LocalParticipant.SetAttributes(map[string]string{
+		AttrSIPCallStatus: string(v),
+	})
+}
+
 func (c *inboundCall) handleAudio(p *rtp.Packet) error {
 	if c.audioReceived.CompareAndSwap(false, true) {
 		close(c.audioRecvChan)
@@ -593,6 +594,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	for k, v := range c.extraAttrs {
 		parAttr[k] = v
 	}
+	parAttr[AttrSIPCallStatus] = string(CallActive)
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
@@ -625,7 +627,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, me
 	c.log.Infow("Bridging SIP call")
 	if err := c.createLiveKitParticipant(ctx, roomName, identity, name, meta, attrs, wsUrl, token); err != nil {
 		c.log.Errorw("Cannot create LiveKit participant", err)
-		c.close(true, "participant-failed")
+		c.close(true, callDropped, "participant-failed")
 	}
 }
 
