@@ -21,6 +21,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/utils/guid"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,11 +81,34 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 		nameIn  = "testIn"
 	)
 
+	var (
+		dataOut = make(chan lksdk.DataPacket, 20)
+		dataIn  = make(chan lksdk.DataPacket, 20)
+	)
+
 	// LK participants that will generate/listen for audio.
 	t.Log("connecting lk participant (outbound)")
-	pOut := lkOut.ConnectParticipant(t, params.RoomOut, nameOut, nil)
+	pOut := lkOut.ConnectParticipant(t, params.RoomOut, nameOut, &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+				select {
+				case dataOut <- data:
+				default:
+				}
+			},
+		},
+	})
 	t.Log("connecting lk participant (inbound)")
-	pIn := lkIn.ConnectParticipant(t, params.RoomIn, nameIn, nil)
+	pIn := lkIn.ConnectParticipant(t, params.RoomIn, nameIn, &lksdk.RoomCallback{
+		ParticipantCallback: lksdk.ParticipantCallback{
+			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+				select {
+				case dataIn <- data:
+				default:
+				}
+			},
+		},
+	})
 
 	t.Log("checking rooms (outbound)")
 	lkOut.ExpectRoomWithParticipants(t, ctx, params.RoomOut, []ParticipantInfo{
@@ -124,4 +148,6 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 
 	t.Log("testing audio")
 	CheckAudioForParticipants(t, ctx, pOut, pIn)
+	t.Log("testing dtmf")
+	CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
 }

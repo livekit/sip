@@ -22,6 +22,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v3"
@@ -299,6 +300,44 @@ func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 			lastLog = time.Now()
 			p.t.Log("skipping signal", "sid", sid, "id", id, "len", len(decoded), "signals", out)
 		}
+	}
+}
+
+func (p *Participant) SendDTMF(ctx context.Context, digits string) error {
+	return p.Room.LocalParticipant.PublishDataPacket(
+		&livekit.SipDTMF{Digit: digits},
+		lksdk.WithDataPublishReliable(true),
+	)
+}
+
+func (p *Participant) WaitDTMF(ctx context.Context, digits string) error {
+	l := p.Room.LocalParticipant
+	old := l.Callback.OnDataPacket
+	defer func() {
+		l.Callback.OnDataPacket = old
+	}()
+	var (
+		done = make(chan struct{})
+		mu   sync.Mutex
+		got  string
+	)
+	l.Callback.OnDataPacket = func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+		switch data := data.(type) {
+		case *livekit.SipDTMF:
+			mu.Lock()
+			got += data.Digit
+			cur := got
+			mu.Unlock()
+			if cur == digits {
+				close(done)
+			}
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
 	}
 }
 

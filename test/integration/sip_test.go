@@ -571,7 +571,7 @@ func TestSIPOutbound(t *testing.T) {
 	// Run the test twice to make sure participants with the same identities can be re-created.
 	for i := 0; i < 2; i++ {
 		// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
-		t.Run(strconv.Itoa(i+1), func(t *testing.T) {
+		t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
 			lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
 				TrunkOut:  trunkOut,
 				NumberOut: clientNumber,

@@ -21,7 +21,7 @@ require (
 	github.com/pion/interceptor v0.1.29
 	github.com/pion/rtp v1.8.6
 	github.com/pion/sdp/v2 v2.4.0
-	github.com/pion/webrtc/v3 v3.2.43
+	github.com/pion/webrtc/v3 v3.2.44
 	github.com/prometheus/client_golang v1.19.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
@@ -79,7 +79,7 @@ require (
 	github.com/opencontainers/runc v1.1.12 // indirect
 	github.com/pion/datachannel v1.5.6 // indirect
 	github.com/pion/dtls/v2 v2.2.11 // indirect
-	github.com/pion/ice/v2 v2.3.25 // indirect
+	github.com/pion/ice/v2 v2.3.27 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns v0.0.12 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
