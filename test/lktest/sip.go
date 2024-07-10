@@ -96,6 +96,7 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 			Metadata: outMeta,
 			Attributes: map[string]string{
 				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": params.NumberOut,
 				"sip.phoneNumber":      params.NumberIn,
 				"sip.trunkID":          params.TrunkOut,
@@ -112,6 +113,7 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 			Metadata: params.MetaIn,
 			Attributes: map[string]string{
 				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": params.NumberIn,
 				"sip.phoneNumber":      params.NumberOut,
 				"sip.trunkID":          params.TrunkIn,

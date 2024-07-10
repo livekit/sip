@@ -145,6 +145,13 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		h := rtp.NewMediaStreamIn[opus.Sample](odec)
 		_ = rtp.HandleLoop(track, h)
 	}
+	cb.OnAttributesChanged = func(changed map[string]string, p lksdk.Participant) {
+		name := ""
+		if p != nil {
+			name = p.Name()
+		}
+		t.Logf("attributes changed: %s: %v", name, changed)
+	}
 	p.Room = lk.Connect(t, room, identity, cb)
 	for _, rp := range p.Room.GetRemoteParticipants() {
 		for _, pub := range rp.TrackPublications() {

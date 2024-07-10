@@ -285,6 +285,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 			Metadata: meta,
 			Attributes: map[string]string{
 				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
 				"sip.ruleID":           nc.RuleID,
@@ -360,6 +361,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 			Metadata: meta,
 			Attributes: map[string]string{
 				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
 				"sip.ruleID":           nc.RuleID,
@@ -417,6 +419,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 			Metadata: meta,
 			Attributes: map[string]string{
 				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
 				"sip.ruleID":           nc.RuleID,
@@ -452,6 +455,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 			Metadata: meta,
 			Attributes: map[string]string{
 				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
 				"sip.ruleID":           nc.RuleID,
@@ -508,6 +512,7 @@ func TestSIPAudio(t *testing.T) {
 							Metadata: meta,
 							Attributes: map[string]string{
 								"sip.callID":           "<test>", // special case
+								"sip.callStatus":       "active",
 								"sip.trunkPhoneNumber": serverNumber,
 								"sip.phoneNumber":      fmt.Sprintf("+%d", 111111111*(i+1)),
 								"sip.ruleID":           nc.RuleID,

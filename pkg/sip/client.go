@@ -158,7 +158,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		}
 		select {
 		case <-call.Disconnected():
-			call.CloseWithReason("removed")
+			call.CloseWithReason(callDropped, "removed")
 		case <-call.Closed():
 		}
 	}()
@@ -199,7 +199,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
 			found = true
 			c.log.Infow("BYE")
 			go func(call *outboundCall) {
-				call.CloseWithReason("bye")
+				call.CloseWithReason(CallHangup, "bye")
 			}(c)
 		}
 	}
