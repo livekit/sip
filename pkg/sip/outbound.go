@@ -248,7 +248,7 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 
 	if sipNew.dtmf != "" {
 		c.setStatus(CallAutomation)
-		// Write DTMF to SIP
+		// Write initial DTMF to SIP
 		if err := dtmf.Write(ctx, c.audioOut, c.rtpDTMF, sipNew.dtmf); err != nil {
 			return err
 		}
@@ -263,11 +263,13 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 func (c *outboundCall) relinkMedia() {
 	if c.lkRoom == nil || !c.mediaRunning {
 		c.lkRoom.SetOutput(nil)
+		c.lkRoom.SetDTMFOutput(nil)
 		c.rtpConn.OnRTP(nil)
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
 	c.lkRoom.SetOutput(c.audioOut)
+	c.lkRoom.SetDTMFOutput(c.rtpDTMF)
 
 	// Decoding pipeline (SIP -> LK)
 	h := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
@@ -395,7 +397,9 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	// TODO: this says "audio", but will actually count DTMF too
 	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
 	c.rtpAudio = c.rtpOut.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
-	c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType, dtmf.SampleRate)
+	if c.dtmfType != 0 {
+		c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType, dtmf.SampleRate)
+	}
 
 	// Encoding pipeline (LK -> SIP)
 	c.audioOut = c.audioCodec.EncodeRTP(c.rtpAudio)

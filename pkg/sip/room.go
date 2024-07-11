@@ -29,6 +29,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/opus"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/mixer"
@@ -47,6 +48,7 @@ type Room struct {
 	room    *lksdk.Room
 	mix     *mixer.Mixer
 	out     *media.SwitchWriter[media.PCM16Sample]
+	outDtmf atomic.Pointer[rtp.Stream]
 	p       Participant
 	ready   atomic.Bool
 	stopped core.Fuse
@@ -109,6 +111,14 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 				}
 				h := rtp.NewMediaStreamIn[opus.Sample](odec)
 				_ = rtp.HandleLoop(track, h)
+			},
+			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+				switch data := data.(type) {
+				case *livekit.SipDTMF:
+					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
+					//       DTMF audio tone will be automatically mixed in any case.
+					r.sendDTMF(data)
+				}
 			},
 		},
 		OnDisconnected: func() {
@@ -181,8 +191,41 @@ func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
 	r.out.Set(media.ResampleWriter(out, r.mix.SampleRate()))
 }
 
+func (r *Room) SetDTMFOutput(out *rtp.Stream) {
+	if r == nil {
+		return
+	}
+	if out == nil {
+		r.outDtmf.Store(nil)
+		return
+	}
+	r.outDtmf.Store(out)
+}
+
+func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
+	outAudio := r.Output()
+	outDTMF := r.outDtmf.Load()
+	if outAudio == nil && outDTMF == nil {
+		r.log.Infow("ignoring dtmf", "digit", msg.Digit)
+		return
+	}
+	if outAudio != nil {
+		// We should still mix other audio too. Need a separate track for DTMF tones.
+		t := r.NewTrack()
+		defer t.Close()
+		outAudio = t
+	}
+	// TODO: Separate goroutine?
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.log.Infow("forwarding dtmf to sip", "digit", msg.Digit)
+	_ = dtmf.Write(ctx, outAudio, outDTMF, msg.Digit)
+}
+
 func (r *Room) Close() error {
 	r.ready.Store(false)
+	r.SetOutput(nil)
+	r.SetDTMFOutput(nil)
 	if r.room != nil {
 		r.room.Disconnect()
 		r.room = nil
