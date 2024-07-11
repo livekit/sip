@@ -99,6 +99,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
+	cli.audioOut = cli.audioCodec.EncodeRTP(cli.mediaAudio)
 
 	err := cli.mediaConn.Listen(0, 0, "0.0.0.0")
 	if err != nil {
@@ -155,6 +156,7 @@ type Client struct {
 	media      *rtp.SeqWriter
 	mediaAudio *rtp.Stream
 	mediaDTMF  *rtp.Stream
+	audioOut   media.PCM16Writer
 	sipClient  *sipgo.Client
 	sipServer  *sipgo.Server
 	inviteReq  *sip.Request
@@ -339,8 +341,7 @@ func (c *Client) sendBye() {
 
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
-	w := c.audioCodec.EncodeRTP(c.mediaAudio)
-	return dtmf.Write(context.Background(), w, c.mediaDTMF, digits)
+	return dtmf.Write(context.Background(), c.audioOut, c.mediaDTMF, digits)
 }
 
 func (c *Client) createOffer() ([]byte, error) {
@@ -418,7 +419,7 @@ func (c *Client) SendAudio(path string) error {
 	}
 
 	i := 0
-	w := c.audioCodec.EncodeRTP(c.mediaAudio)
+	w := c.audioOut
 	for range time.NewTicker(rtp.DefFrameDur).C {
 		if i >= len(audioFrames) {
 			break
@@ -429,6 +430,25 @@ func (c *Client) SendAudio(path string) error {
 		i++
 	}
 	return nil
+}
+
+func (c *Client) SendSilence(ctx context.Context) error {
+	const framesPerSec = int(time.Second / rtp.DefFrameDur)
+	buf := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
+	wr := c.audioOut
+
+	ticker := time.NewTicker(rtp.DefFrameDur)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		if err := wr.WriteSample(buf); err != nil {
+			return err
+		}
+	}
 }
 
 const (
@@ -443,7 +463,7 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
 	signal := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
-	wr := c.audioCodec.EncodeRTP(c.mediaAudio)
+	wr := c.audioOut
 	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
 
 	ticker := time.NewTicker(rtp.DefFrameDur)
