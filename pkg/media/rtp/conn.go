@@ -27,7 +27,8 @@ import (
 var _ Writer = (*Conn)(nil)
 
 const (
-	timeoutCheckInterval = time.Second * 30
+	timeoutCheckInterval = 5 * time.Second
+	timeoutMediaInitial  = 30 * time.Second
 )
 
 func NewConn(timeoutCallback func()) *Conn {
@@ -163,6 +164,8 @@ func (c *Conn) onTimeout(timeoutCallback func()) {
 		ticker := time.NewTicker(timeoutCheckInterval)
 		defer ticker.Stop()
 
+		start := time.Now()
+
 		var lastPacketCount uint64
 		for {
 			select {
@@ -171,6 +174,9 @@ func (c *Conn) onTimeout(timeoutCallback func()) {
 			case <-ticker.C:
 				currentPacketCount := c.packetCount.Load()
 				if currentPacketCount == lastPacketCount {
+					if lastPacketCount == 0 && time.Since(start) < timeoutMediaInitial {
+						continue
+					}
 					timeoutCallback()
 					return
 				}

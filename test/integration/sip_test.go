@@ -352,6 +352,10 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
+
+	// Send audio of silence in the background so that the media channel won't timeout.
+	go cli.SendSilence(ctx)
+
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
 		{
@@ -373,6 +377,9 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	// Wait for WebRTC to come online.
 	time.Sleep(webrtcSetupDelay)
+
+	// Stop sending audio. We need it for DTMF tones now.
+	cancel()
 
 	// Test that we can send DTMF data to LK participants.
 	const dtmfDigits = "*111#"
