@@ -80,15 +80,20 @@ func TestSDPMediaAnswer(t *testing.T) {
 	const port = 12345
 	cases := []struct {
 		name  string
-		offer []sdp.Attribute
+		offer sdp.MediaDescription
 		exp   *sdpCodecResult
 	}{
 		{
 			name: "default",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "0 PCMU/8000"},
-				{Key: "rtpmap", Value: "9 G722/8000"},
-				{Key: "rtpmap", Value: "101 telephone-event/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "9", "101"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
+					{Key: "rtpmap", Value: "9 G722/8000"},
+					{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				},
 			},
 			exp: &sdpCodecResult{
 				Audio:     getCodec(g722.SDPName),
@@ -98,10 +103,15 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 		{
 			name: "lowercase",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "0 pcmu/8000"},
-				{Key: "rtpmap", Value: "9 g722/8000"},
-				{Key: "rtpmap", Value: "101 telephone-event/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "9", "101"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 pcmu/8000"},
+					{Key: "rtpmap", Value: "9 g722/8000"},
+					{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				},
 			},
 			exp: &sdpCodecResult{
 				Audio:     getCodec(g722.SDPName),
@@ -111,9 +121,14 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 		{
 			name: "no dtmf",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "0 PCMU/8000"},
-				{Key: "rtpmap", Value: "9 G722/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "9"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
+					{Key: "rtpmap", Value: "9 G722/8000"},
+				},
 			},
 			exp: &sdpCodecResult{
 				Audio:     getCodec(g722.SDPName),
@@ -122,10 +137,15 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 		{
 			name: "custom dtmf",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "0 PCMU/8000"},
-				{Key: "rtpmap", Value: "9 G722/8000"},
-				{Key: "rtpmap", Value: "103 telephone-event/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "9", "103"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
+					{Key: "rtpmap", Value: "9 G722/8000"},
+					{Key: "rtpmap", Value: "103 telephone-event/8000"},
+				},
 			},
 			exp: &sdpCodecResult{
 				Audio:     getCodec(g722.SDPName),
@@ -135,9 +155,14 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 		{
 			name: "only ulaw",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "0 PCMU/8000"},
-				{Key: "rtpmap", Value: "101 telephone-event/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "101"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
+					{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				},
 			},
 			exp: &sdpCodecResult{
 				Audio:     getCodec(ulaw.SDPName),
@@ -147,9 +172,14 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 		{
 			name: "only g722",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "9 G722/8000"},
-				{Key: "rtpmap", Value: "101 telephone-event/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"9", "101"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "9 G722/8000"},
+					{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				},
 			},
 			exp: &sdpCodecResult{
 				Audio:     getCodec(g722.SDPName),
@@ -159,17 +189,38 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 		{
 			name: "unsupported",
-			offer: []sdp.Attribute{
-				{Key: "rtpmap", Value: "101 telephone-event/8000"},
-				{Key: "rtpmap", Value: "102 FOOBAR/8000"},
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"101", "102"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "101 telephone-event/8000"},
+					{Key: "rtpmap", Value: "102 FOOBAR/8000"},
+				},
 			},
 			exp: nil,
+		},
+		{
+			name: "format only",
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "101"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "101 telephone-event/8000"},
+				},
+			},
+			exp: &sdpCodecResult{
+				Audio:     getCodec(ulaw.SDPName),
+				AudioType: 0,
+				DTMFType:  101,
+			},
 		},
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			got, err := sdpGetCodec(c.offer)
+			got, err := sdpGetCodec(&c.offer)
 			if c.exp == nil {
 				require.Error(t, err)
 				return

@@ -263,17 +263,24 @@ func sdpGetAudioCodec(offer sdp.SessionDescription) (*sdpCodecResult, error) {
 	if audio == nil {
 		return nil, errors.New("no audio in sdp")
 	}
-	return sdpGetCodec(audio.Attributes)
+	return sdpGetCodec(audio)
 }
 
-func sdpGetCodec(attrs []sdp.Attribute) (*sdpCodecResult, error) {
+func sdpGetCodec(d *sdp.MediaDescription) (*sdpCodecResult, error) {
 	var (
 		priority   int
 		audioCodec rtp.AudioCodec
 		audioType  byte
 		dtmfType   byte
 	)
-	for _, m := range attrs {
+	considerCodec := func(typ byte, codec rtp.AudioCodec) {
+		if audioCodec == nil || codec.Info().Priority > priority {
+			audioType = typ
+			audioCodec = codec
+			priority = codec.Info().Priority
+		}
+	}
+	for _, m := range d.Attributes {
 		switch m.Key {
 		case "rtpmap":
 			sub := strings.SplitN(m.Value, " ", 2)
@@ -293,12 +300,19 @@ func sdpGetCodec(attrs []sdp.Attribute) (*sdpCodecResult, error) {
 			if !ok {
 				continue
 			}
-			if audioCodec == nil || codec.Info().Priority > priority {
-				audioType = byte(typ)
-				audioCodec = codec
-				priority = codec.Info().Priority
-			}
+			considerCodec(byte(typ), codec)
 		}
+	}
+	for _, f := range d.MediaName.Formats {
+		typ, err := strconv.Atoi(f)
+		if err != nil {
+			continue
+		}
+		codec, ok := rtp.CodecByPayloadType(byte(typ)).(rtp.AudioCodec)
+		if !ok {
+			continue
+		}
+		considerCodec(byte(typ), codec)
 	}
 	if audioCodec == nil {
 		return nil, fmt.Errorf("common audio codec not found")
