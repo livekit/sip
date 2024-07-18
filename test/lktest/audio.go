@@ -27,6 +27,9 @@ type AudioParticipant interface {
 }
 
 func CheckAudioForParticipants(t TB, ctx context.Context, participants ...AudioParticipant) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Participants can only subscribe to tracks that are "live", so give them the chance to do so.
 	for _, p := range participants {
 		err := p.SendSignal(ctx, 3, 0)
