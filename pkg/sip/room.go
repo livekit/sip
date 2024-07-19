@@ -109,7 +109,8 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 				if err != nil {
 					return
 				}
-				h := rtp.NewMediaStreamIn[opus.Sample](odec)
+				var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
+				h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
 				_ = rtp.HandleLoop(track, h)
 			},
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {

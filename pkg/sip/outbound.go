@@ -53,7 +53,6 @@ type outboundCall struct {
 	c          *Client
 	log        logger.Logger
 	rtpConn    *rtp.Conn
-	rtpOut     *rtp.SeqWriter
 	rtpAudio   *rtp.Stream
 	rtpDTMF    *rtp.Stream
 	audioCodec rtp.AudioCodec
@@ -272,10 +271,11 @@ func (c *outboundCall) relinkMedia() {
 	c.lkRoom.SetDTMFOutput(c.rtpDTMF)
 
 	// Decoding pipeline (SIP -> LK)
-	h := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
+	audioHandler := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
+	audioHandler = rtp.HandleJitter(c.audioCodec.Info().RTPClockRate, audioHandler)
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	mux.Register(c.audioType, newRTPStatsHandler(c.mon, c.audioCodec.Info().SDPName, h))
+	mux.Register(c.audioType, newRTPStatsHandler(c.mon, c.audioCodec.Info().SDPName, audioHandler))
 	if c.dtmfType != 0 {
 		mux.Register(c.dtmfType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
 	}
@@ -394,11 +394,9 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		c.rtpConn.SetDestAddr(dst)
 	}
 
-	// TODO: this says "audio", but will actually count DTMF too
-	c.rtpOut = rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
-	c.rtpAudio = c.rtpOut.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
+	c.rtpAudio = rtp.NewStream(newRTPStatsWriter(c.mon, "audio", c.rtpConn), c.audioType, c.audioCodec.Info().RTPClockRate)
 	if c.dtmfType != 0 {
-		c.rtpDTMF = c.rtpOut.NewStream(c.dtmfType, dtmf.SampleRate)
+		c.rtpDTMF = rtp.NewStream(newRTPStatsWriter(c.mon, "dtmf", c.rtpConn), c.dtmfType, dtmf.SampleRate)
 	}
 
 	// Encoding pipeline (LK -> SIP)

@@ -15,6 +15,7 @@
 package rtp
 
 import (
+	"math/rand/v2"
 	"sync"
 
 	"github.com/pion/interceptor"
@@ -69,11 +70,17 @@ func NewSeqWriter(w Writer) *SeqWriter {
 	s.p = rtp.Packet{
 		Header: rtp.Header{
 			Version:        2,
-			SSRC:           5000, // TODO: why this magic number?
+			SSRC:           rand.Uint32(),
 			SequenceNumber: 0,
 		},
 	}
 	return s
+}
+
+// NewStream creates an RTP stream with a given payload time that automatically increments sequence number.
+func NewStream(w Writer, typ byte, clockRate int) *Stream {
+	sq := NewSeqWriter(w)
+	return sq.NewStream(typ, clockRate)
 }
 
 type Packet = rtp.Packet

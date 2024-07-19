@@ -444,7 +444,9 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	})
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, rtp.HandlerFunc(c.handleAudio)))
+	var audioHandler rtp.Handler = rtp.HandlerFunc(c.handleAudio)
+	audioHandler = rtp.HandleJitter(res.Audio.Info().RTPClockRate, audioHandler)
+	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, audioHandler))
 	if res.DTMFType != 0 {
 		mux.Register(res.DTMFType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
 	}
@@ -462,12 +464,12 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	// Encoding pipeline (LK -> SIP)
 	// Must be created earlier to send the pin prompts.
-	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", conn))
-	sa := s.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
+	sa := rtp.NewStream(newRTPStatsWriter(c.mon, "audio", conn), c.audioType, c.audioCodec.Info().RTPClockRate)
 	audio := c.audioCodec.EncodeRTP(sa)
 	c.lkRoom.SetOutput(audio)
 	if res.DTMFType != 0 {
-		c.lkRoom.SetDTMFOutput(s.NewStream(res.DTMFType, dtmf.SampleRate))
+		sd := rtp.NewStream(newRTPStatsWriter(c.mon, "dtmf", conn), res.DTMFType, dtmf.SampleRate)
+		c.lkRoom.SetDTMFOutput(sd)
 	}
 
 	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port, res)
@@ -575,7 +577,11 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	if c.lkRoom == nil {
 		return
 	}
-	c.lkRoom.Room().LocalParticipant.SetAttributes(map[string]string{
+	r := c.lkRoom.Room()
+	if r == nil {
+		return
+	}
+	r.LocalParticipant.SetAttributes(map[string]string{
 		AttrSIPCallStatus: string(v),
 	})
 }
