@@ -357,7 +357,7 @@ func compareParticipants(t TB, exp *ParticipantInfo, got *livekit.ParticipantInf
 	}
 	require.Equal(t, exp.Metadata, got.Metadata, "unexpected participant metadata")
 	expAttrs, gotAttrs := exp.Attributes, got.Attributes
-	expAttrs, gotAttrs = checkSIPCallID(t, expAttrs, gotAttrs)
+	expAttrs, gotAttrs = checkSIPAttrs(t, expAttrs, gotAttrs)
 	if !maps.Equal(expAttrs, gotAttrs) {
 		return fmt.Errorf("unexpected participant attributes: exp %#v, got %#v", expAttrs, gotAttrs)
 	}
