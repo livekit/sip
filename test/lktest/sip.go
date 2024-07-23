@@ -25,14 +25,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func checkSIPCallID(t TB, exp, got map[string]string) (_, _ map[string]string) {
-	if _, ok := exp[livekit.AttrSIPCallID]; !ok {
-		return // not required
-	}
-	require.True(t, strings.HasPrefix(got[livekit.AttrSIPCallID], guid.SIPCallPrefix))
+func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {
 	exp, got = maps.Clone(exp), maps.Clone(got)
-	delete(exp, livekit.AttrSIPCallID)
-	delete(got, livekit.AttrSIPCallID)
+	if _, ok := exp[livekit.AttrSIPCallID]; ok {
+		require.True(t, strings.HasPrefix(got[livekit.AttrSIPCallID], guid.SIPCallPrefix))
+		delete(exp, livekit.AttrSIPCallID)
+		delete(got, livekit.AttrSIPCallID)
+	}
+	// remove extra attributes from comparison
+	for key := range got {
+		if _, ok := exp[key]; !ok {
+			delete(got, key)
+		}
+	}
 	return exp, got
 }
 
@@ -47,6 +52,7 @@ type SIPOutboundTestParams struct {
 	RoomIn      string // room for inbound call
 	RoomPin     string // room pin for inbound call
 	MetaIn      string // expected metadata for inbound participants
+	TestDMTF    bool   // run DTMF test
 }
 
 func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundTestParams) {
@@ -148,6 +154,8 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 
 	t.Log("testing audio")
 	CheckAudioForParticipants(t, ctx, pOut, pIn)
-	t.Log("testing dtmf")
-	CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
+	if params.TestDMTF {
+		t.Log("testing dtmf")
+		CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
+	}
 }
