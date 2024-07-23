@@ -589,6 +589,7 @@ func TestSIPOutbound(t *testing.T) {
 				RoomIn:    roomIn,
 				RoomPin:   dtmfPin,
 				MetaIn:    meta,
+				TestDMTF:  true,
 			})
 		})
 	}
