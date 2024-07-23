@@ -264,19 +264,33 @@ func Write(ctx context.Context, audio media.PCM16Writer, events *rtp.Stream, dig
 		// generate telephony events
 		if events != nil && len(freq) != 0 {
 			dur := step + totalDur - remaining
+			first := totalDur == remaining
+			end := remaining-step <= 0
 
 			n, err := Encode(buf[:], Event{
 				Code:   code,
 				Volume: eventVolume,
 				Dur:    uint16(dur / (time.Second / SampleRate)),
-				End:    remaining-step <= 0,
+				End:    end,
 			})
 			if err != nil {
 				return err
 			}
-			err = events.WritePayload(buf[:n], totalDur == remaining)
+			// all packets for a digit must be sent with the same timestamp
+			err = events.WritePayloadAtCurrent(buf[:n], first)
 			if err != nil {
 				return err
+			}
+			if end {
+				// must repeat edn event 3 times, as per RFC
+				if err = events.WritePayloadAtCurrent(buf[:n], first); err != nil {
+					return err
+				}
+				if err = events.WritePayloadAtCurrent(buf[:n], first); err != nil {
+					return err
+				}
+				// advance the timestamp now
+				events.Delay(uint32(totalDur / (time.Second / SampleRate)))
 			}
 		}
 		remaining -= step
