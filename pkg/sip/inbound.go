@@ -464,11 +464,12 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 
 	// Encoding pipeline (LK -> SIP)
 	// Must be created earlier to send the pin prompts.
-	sa := rtp.NewStream(newRTPStatsWriter(c.mon, "audio", conn), c.audioType, c.audioCodec.Info().RTPClockRate)
+	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", conn))
+	sa := s.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
 	audio := c.audioCodec.EncodeRTP(sa)
 	c.lkRoom.SetOutput(audio)
 	if res.DTMFType != 0 {
-		sd := rtp.NewStream(newRTPStatsWriter(c.mon, "dtmf", conn), res.DTMFType, dtmf.SampleRate)
+		sd := s.NewStream(res.DTMFType, dtmf.SampleRate)
 		c.lkRoom.SetDTMFOutput(sd)
 	}
 

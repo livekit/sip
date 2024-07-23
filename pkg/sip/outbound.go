@@ -248,7 +248,7 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 	if sipNew.dtmf != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
-		if err := dtmf.Write(ctx, c.audioOut, c.rtpDTMF, sipNew.dtmf); err != nil {
+		if err := dtmf.Write(ctx, nil, c.rtpDTMF, sipNew.dtmf); err != nil {
 			return err
 		}
 	}
@@ -394,9 +394,10 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		c.rtpConn.SetDestAddr(dst)
 	}
 
-	c.rtpAudio = rtp.NewStream(newRTPStatsWriter(c.mon, "audio", c.rtpConn), c.audioType, c.audioCodec.Info().RTPClockRate)
+	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
+	c.rtpAudio = s.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
 	if c.dtmfType != 0 {
-		c.rtpDTMF = rtp.NewStream(newRTPStatsWriter(c.mon, "dtmf", c.rtpConn), c.dtmfType, dtmf.SampleRate)
+		c.rtpDTMF = s.NewStream(c.dtmfType, dtmf.SampleRate)
 	}
 
 	// Encoding pipeline (LK -> SIP)
