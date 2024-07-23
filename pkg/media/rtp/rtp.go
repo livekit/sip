@@ -77,12 +77,6 @@ func NewSeqWriter(w Writer) *SeqWriter {
 	return s
 }
 
-// NewStream creates an RTP stream with a given payload time that automatically increments sequence number.
-func NewStream(w Writer, typ byte, clockRate int) *Stream {
-	sq := NewSeqWriter(w)
-	return sq.NewStream(typ, clockRate)
-}
-
 type Packet = rtp.Packet
 
 type Event struct {
