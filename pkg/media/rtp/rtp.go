@@ -124,7 +124,7 @@ type Stream struct {
 	ev        Event
 }
 
-func (s *Stream) WritePayload(data []byte, marker bool) error {
+func (s *Stream) writePayload(inc bool, data []byte, marker bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ev.Payload = data
@@ -132,8 +132,20 @@ func (s *Stream) WritePayload(data []byte, marker bool) error {
 	if err := s.s.WriteEvent(&s.ev); err != nil {
 		return err
 	}
-	s.ev.Timestamp += s.packetDur
+	if inc {
+		s.ev.Timestamp += s.packetDur
+	}
 	return nil
+}
+
+// WritePayload writes the payload to RTP and increments the timestamp.
+func (s *Stream) WritePayload(data []byte, marker bool) error {
+	return s.writePayload(true, data, marker)
+}
+
+// WritePayloadAtCurrent writes the payload to RTP at the current timestamp.
+func (s *Stream) WritePayloadAtCurrent(data []byte, marker bool) error {
+	return s.writePayload(false, data, marker)
 }
 
 func (s *Stream) Delay(dur uint32) {

@@ -78,16 +78,74 @@ func TestDTMFDelay(t *testing.T) {
 	w := rtp.NewSeqWriter(&buf).NewStream(101, SampleRate)
 	err := Write(context.Background(), nil, w, "1w23")
 	require.NoError(t, err)
-	require.Len(t, buf, 39)
+
 	const packetDur = uint32(SampleRate / int(time.Second/rtp.DefFrameDur))
-	for i, p := range buf {
-		ts := packetDur * uint32(i)
-		if i >= 26 {
-			ts += 4 * (SampleRate / 4) // 2 * 250ms + 500ms
-		} else if i >= 13 {
-			ts += 3 * (SampleRate / 4) // 250ms after tone + 500ms user-defined
-		}
-		require.EqualValues(t, uint16(i), p.SequenceNumber)
-		require.EqualValues(t, ts, p.Timestamp, "i=%d, dt=%v", i, p.Timestamp-ts)
+	type packet struct {
+		SequenceNumber uint16
+		Timestamp      uint32
+		Marker         bool
+		Event
 	}
+	var (
+		exp []packet
+		seq uint16
+		ts  uint32
+	)
+	expectDigit := func(code byte, digit byte) {
+		start := ts
+		const n = 13
+		for i := 0; i < n-1; i++ {
+			exp = append(exp, packet{
+				SequenceNumber: seq,
+				Timestamp:      start, // should be the same for all events
+				Marker:         i == 0,
+				Event: Event{
+					Code:   code,
+					Digit:  digit,
+					Volume: eventVolume,
+					Dur:    uint16(i+1) * uint16(packetDur),
+					End:    false,
+				},
+			})
+			ts += packetDur
+			seq++
+		}
+		// end event must be sent 3 times with the same duration
+		for i := 0; i < 3; i++ {
+			exp = append(exp, packet{
+				SequenceNumber: seq,
+				Timestamp:      start, // should be the same for all events
+				Marker:         false,
+				Event: Event{
+					Code:   code,
+					Digit:  digit,
+					Volume: eventVolume,
+					Dur:    uint16(n) * uint16(packetDur),
+					End:    true,
+				},
+			})
+			seq++
+		}
+		ts += packetDur
+		// delay between digits
+		ts += uint32(eventDur / (time.Second / SampleRate))
+		// rounding error (12.5 events in a sec)
+		ts -= packetDur / 2
+	}
+	expectDigit(1, '1')
+	ts += SampleRate / 2 // 500ms delay
+	expectDigit(2, '2')
+	expectDigit(3, '3')
+	var got []packet
+	for _, p := range buf {
+		e, err := Decode(p.Payload)
+		require.NoError(t, err)
+		got = append(got, packet{
+			SequenceNumber: p.SequenceNumber,
+			Timestamp:      p.Timestamp,
+			Marker:         p.Marker,
+			Event:          e,
+		})
+	}
+	require.Equal(t, exp, got)
 }
