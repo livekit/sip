@@ -126,10 +126,6 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 		},
 	}
 
-	var (
-		err  error
-		room *lksdk.Room
-	)
 	if token == "" {
 		// TODO: Remove this code path, always sign tokens on LiveKit server.
 		//       For now, match Cloud behavior and do not send extra attrs in the token.
@@ -145,6 +141,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 				tokenAttrs[k] = v
 			}
 		}
+		var err error
 		token, err = sip.BuildSIPToken(
 			conf.ApiKey, conf.ApiSecret, roomName,
 			identity, name, meta,
@@ -154,7 +151,9 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 			return err
 		}
 	}
-	room, err = lksdk.ConnectToRoomWithToken(wsUrl, token, roomCallback, lksdk.WithAutoSubscribe(false))
+	room := lksdk.NewRoom(roomCallback)
+	room.SetLogger(r.log)
+	err := room.JoinWithToken(wsUrl, token, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return err
 	}

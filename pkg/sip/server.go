@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 
@@ -208,7 +209,9 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) e
 		agent = ua
 	}
 
-	s.sipSrv, err = sipgo.NewServer(agent)
+	s.sipSrv, err = sipgo.NewServer(agent,
+		sipgo.WithServerLogger(slog.New(logger.ToSlogHandler(s.log))),
+	)
 	if err != nil {
 		return err
 	}
