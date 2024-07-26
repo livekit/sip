@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/emiago/sipgo"
@@ -87,7 +88,10 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		agent = ua
 	}
 
-	c.sipCli, err = sipgo.NewClient(agent, sipgo.WithClientHostname(c.signalingIp))
+	c.sipCli, err = sipgo.NewClient(agent,
+		sipgo.WithClientHostname(c.signalingIp),
+		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
+	)
 	if err != nil {
 		return err
 	}
