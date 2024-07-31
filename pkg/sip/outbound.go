@@ -382,7 +382,7 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 				extra[name] = h.Value()
 			}
 		}
-		if len(extra) != 0 {
+		if c.lkRoom != nil && len(extra) != 0 {
 			c.lkRoom.Room().LocalParticipant.SetAttributes(extra)
 		}
 	}
