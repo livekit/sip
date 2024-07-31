@@ -386,7 +386,7 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		if len(extra) != 0 {
 			room := c.lkRoom.Room()
                          if room != nil {
-				c.lkRoom.Room().LocalParticipant.SetAttributes(extra)
+				room.LocalParticipant.SetAttributes(extra)
 			} else {
 				c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
 			}
