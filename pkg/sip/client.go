@@ -23,9 +23,10 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
+	"golang.org/x/exp/maps"
+
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -126,9 +127,12 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}
 	log := c.log.WithValues(
 		"callID", req.SipCallId,
-		"roomName", req.RoomName, "identity", req.ParticipantIdentity, "name", req.ParticipantName,
+		"room", req.RoomName,
+		"participant", req.ParticipantIdentity,
+		"participantName", req.ParticipantName,
 		"fromUser", req.Number,
-		"toHost", req.Address, "toUser", req.CallTo,
+		"toHost", req.Address,
+		"toUser", req.CallTo,
 	)
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(c.conf, log, req.SipCallId, lkRoomConfig{
