@@ -575,13 +575,14 @@ func (c *inboundCall) closeMedia() {
 }
 
 func (c *inboundCall) setStatus(v CallStatus) {
-	if c.lkRoom == nil || c.lkRoom.Room() == nil || c.lkRoom.Room().LocalParticipant == nil {
+	if c.lkRoom == nil {
 		return
 	}
 	r := c.lkRoom.Room()
-	if r == nil {
+	if r == nil || r.LocalParticipant == nil {
 		return
 	}
+
 	r.LocalParticipant.SetAttributes(map[string]string{
 		AttrSIPCallStatus: string(v),
 	})
