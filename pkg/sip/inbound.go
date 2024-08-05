@@ -575,7 +575,7 @@ func (c *inboundCall) closeMedia() {
 }
 
 func (c *inboundCall) setStatus(v CallStatus) {
-	if c.lkRoom == nil {
+	if c.lkRoom == nil || c.lkRoom.Room() == nil || c.lkRoom.Room().LocalParticipant == nil {
 		return
 	}
 	r := c.lkRoom.Room()
