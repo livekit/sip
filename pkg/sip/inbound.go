@@ -575,7 +575,12 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	if c.lkRoom == nil {
 		return
 	}
-	c.lkRoom.Room().LocalParticipant.SetAttributes(map[string]string{
+	r := c.lkRoom.Room()
+	if r == nil || r.LocalParticipant == nil {
+		return
+	}
+
+	r.LocalParticipant.SetAttributes(map[string]string{
 		AttrSIPCallStatus: string(v),
 	})
 }
