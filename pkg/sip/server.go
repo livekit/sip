@@ -221,7 +221,23 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) e
 	s.sipUnhandled = unhandled
 
 	// Ignore ACKs
-	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
+	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+		fromTag, err := getTagValue(req)
+		if err != nil {
+			sipErrorResponse(tx, req)
+			return
+		}
+
+		s.cmu.RLock()
+		c, found := s.activeCalls[fromTag]
+		s.cmu.RUnlock()
+
+		if found {
+			if header, ok := req.To(); ok {
+				c.to.Params["tag"] = header.Params["tag"]
+			}
+		}
+	})
 
 	if err := s.startUDP(); err != nil {
 		return err
