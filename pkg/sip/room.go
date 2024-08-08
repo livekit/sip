@@ -20,9 +20,10 @@ import (
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
+	"github.com/pion/webrtc/v3"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/sip"
-	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -102,11 +103,16 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: handleTrackPublished,
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if !r.ready.Load() {
+					r.log.Warnw("ignoring track, room not ready", nil, "trackID", pub.SID())
+					return
+				}
 				mTrack := r.NewTrack()
 				defer mTrack.Close()
 
 				odec, err := opus.Decode(mTrack, channels)
 				if err != nil {
+					r.log.Errorw("cannot create opus decoder", err, "trackID", pub.SID())
 					return
 				}
 				var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
