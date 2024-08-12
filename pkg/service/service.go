@@ -24,17 +24,16 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/version"
 )
-
-const shutdownTimer = time.Second * 5
 
 type sipServiceStopFunc func()
 type sipServiceActiveCallsFunc func() int
@@ -145,9 +144,16 @@ func (s *Service) Run() error {
 			if !s.killed.Load() {
 				activeCalls := s.sipServiceActiveCalls()
 				if activeCalls > 0 {
-					fmt.Printf("instance waiting for %d calls to finish", activeCalls)
-					time.Sleep(shutdownTimer)
-					continue
+					s.log.Infow("waiting for calls to finish", "calls", activeCalls)
+					shutdownTicker := time.NewTicker(5 * time.Second)
+					for {
+						<-shutdownTicker.C
+						activeCalls = s.sipServiceActiveCalls()
+						if activeCalls == 0 {
+							break
+						}
+						s.log.Infow("waiting for calls to finish", "calls", activeCalls)
+					}
 				}
 			}
 
