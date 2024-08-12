@@ -142,18 +142,17 @@ func (s *Service) Run() error {
 			s.DeregisterCreateSIPParticipantTopic()
 
 			if !s.killed.Load() {
-				activeCalls := s.sipServiceActiveCalls()
-				if activeCalls > 0 {
-					s.log.Infow("waiting for calls to finish", "calls", activeCalls)
-					shutdownTicker := time.NewTicker(5 * time.Second)
-					for {
-						<-shutdownTicker.C
-						activeCalls = s.sipServiceActiveCalls()
-						if activeCalls == 0 {
-							break
-						}
-						s.log.Infow("waiting for calls to finish", "calls", activeCalls)
+				shutdownTicker := time.NewTicker(5 * time.Second)
+				defer shutdownTicker.Stop()
+				var activeCalls int
+
+				for !s.killed.Load() {
+					activeCalls = s.sipServiceActiveCalls()
+					if activeCalls == 0 {
+						break
 					}
+					s.log.Infow("waiting for calls to finish", "calls", activeCalls)
+					<-shutdownTicker.C
 				}
 			}
 
