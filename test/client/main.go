@@ -22,7 +22,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/livekit/sip/pkg/media/ulaw"
+	"github.com/livekit/sip/pkg/media/g711"
 	"github.com/livekit/sip/pkg/siptest"
 )
 
@@ -36,7 +36,7 @@ var (
 	filePathPlay = flag.String("play", "audio.mkv", "play audio")
 	filePathSave = flag.String("save", "save.mkv", "save incoming audio to file")
 	sendDTMF     = flag.String("dtmf", "", "send DTMF sequence")
-	codec        = flag.String("codec", ulaw.SDPName, "audio codec")
+	codec        = flag.String("codec", g711.ULawSDPName, "audio codec")
 )
 
 func main() {

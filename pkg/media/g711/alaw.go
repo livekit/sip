@@ -1,4 +1,4 @@
-// Copyright 2023 LiveKit, Inc.
+// Copyright 2024 LiveKit, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ulaw
+package g711
 
 import (
 	prtp "github.com/pion/rtp"
@@ -21,82 +21,86 @@ import (
 	"github.com/livekit/sip/pkg/media/rtp"
 )
 
-const SDPName = "PCMU/8000"
+const ALawSDPName = "PCMA/8000"
 
 func init() {
 	media.RegisterCodec(rtp.NewAudioCodec(media.CodecInfo{
-		SDPName:     SDPName,
+		SDPName:     ALawSDPName,
 		SampleRate:  8000,
-		RTPDefType:  prtp.PayloadTypePCMU,
+		RTPDefType:  prtp.PayloadTypePCMA,
 		RTPIsStatic: true,
-		Priority:    -10,
-	}, Decode, Encode))
+		Priority:    -20,
+	}, DecodeALaw, EncodeALaw))
 }
 
-type Sample []byte
+type ALawSample []byte
 
-func (s Sample) Decode() media.PCM16Sample {
-	return DecodeUlaw(s)
+func (s ALawSample) Decode() media.PCM16Sample {
+	out := make(media.PCM16Sample, len(s))
+	DecodeALawTo(out, s)
+	return out
 }
 
-func (s *Sample) Encode(data media.PCM16Sample) {
-	*s = EncodeUlaw(data)
+func (s *ALawSample) Encode(data media.PCM16Sample) {
+	out := make(ALawSample, len(data))
+	EncodeALawTo(out, data)
+	*s = out
 }
 
-type Writer = media.Writer[Sample]
+type ALawWriter = media.Writer[ALawSample]
 
-type Decoder struct {
+type ALawDecoder struct {
 	w   media.PCM16Writer
 	buf media.PCM16Sample
 }
 
-func (d *Decoder) SampleRate() int {
+func (d *ALawDecoder) SampleRate() int {
 	return d.w.SampleRate()
 }
 
-func (d *Decoder) WriteSample(in Sample) error {
+func (d *ALawDecoder) WriteSample(in ALawSample) error {
 	if len(in) >= cap(d.buf) {
 		d.buf = make(media.PCM16Sample, len(in))
 	} else {
 		d.buf = d.buf[:len(in)]
 	}
-	DecodeUlawTo(d.buf, in)
+	DecodeALawTo(d.buf, in)
 	return d.w.WriteSample(d.buf)
 }
 
-func Decode(w media.PCM16Writer) Writer {
+func DecodeALaw(w media.PCM16Writer) ALawWriter {
 	switch w.SampleRate() {
 	default:
 		w = media.ResampleWriter(w, 8000)
 	case 8000:
 	}
-	return &Decoder{w: w}
+	return &ALawDecoder{w: w}
 }
 
-type Encoder struct {
-	w   Writer
-	buf Sample
+type ALawEncoder struct {
+	w   ALawWriter
+	buf ALawSample
 }
 
-func (e *Encoder) SampleRate() int {
+func (e *ALawEncoder) SampleRate() int {
 	return e.w.SampleRate()
 }
 
-func (e *Encoder) WriteSample(in media.PCM16Sample) error {
+func (e *ALawEncoder) WriteSample(in media.PCM16Sample) error {
 	if len(in) >= cap(e.buf) {
-		e.buf = make(Sample, len(in))
+		e.buf = make(ALawSample, len(in))
 	} else {
 		e.buf = e.buf[:len(in)]
 	}
-	EncodeUlawTo(e.buf, in)
+	EncodeALawTo(e.buf, in)
 	return e.w.WriteSample(e.buf)
 }
 
-func Encode(w Writer) media.PCM16Writer {
+func EncodeALaw(w ALawWriter) media.PCM16Writer {
 	switch w.SampleRate() {
 	default:
 		panic("unsupported sample rate")
 	case 8000:
 	}
-	return &Encoder{w: w}
+	return &ALawEncoder{w: w}
 }
