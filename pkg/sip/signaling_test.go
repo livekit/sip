@@ -21,10 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/media/g711"
 	"github.com/livekit/sip/pkg/media/g722"
 	"github.com/livekit/sip/pkg/media/rtp"
 	lksdp "github.com/livekit/sip/pkg/media/sdp"
-	"github.com/livekit/sip/pkg/media/ulaw"
 )
 
 func TestSDPMediaOffer(t *testing.T) {
@@ -36,11 +36,12 @@ func TestSDPMediaOffer(t *testing.T) {
 				Media:   "audio",
 				Port:    sdp.RangedPort{Value: port},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0", "9", "101"},
+				Formats: []string{"0", "8", "9", "101"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "9 G722/8000"},
 				{Key: "rtpmap", Value: "0 PCMU/8000"},
+				{Key: "rtpmap", Value: "8 PCMA/8000"},
 				{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				{Key: "fmtp", Value: "101 0-16"},
 				{Key: "ptime", Value: "20"},
@@ -59,10 +60,11 @@ func TestSDPMediaOffer(t *testing.T) {
 				Media:   "audio",
 				Port:    sdp.RangedPort{Value: port},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0", "101"},
+				Formats: []string{"0", "8", "101"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "0 PCMU/8000"},
+				{Key: "rtpmap", Value: "8 PCMA/8000"},
 				{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				{Key: "fmtp", Value: "101 0-16"},
 				{Key: "ptime", Value: "20"},
@@ -87,7 +89,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 			name: "default",
 			offer: sdp.MediaDescription{
 				MediaName: sdp.MediaName{
-					Formats: []string{"0", "9", "101"},
+					Formats: []string{"0", "8", "9", "101"},
 				},
 				Attributes: []sdp.Attribute{
 					{Key: "rtpmap", Value: "0 PCMU/8000"},
@@ -165,7 +167,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 				},
 			},
 			exp: &sdpCodecResult{
-				Audio:     getCodec(ulaw.SDPName),
+				Audio:     getCodec(g711.ULawSDPName),
 				AudioType: 0,
 				DTMFType:  101,
 			},
@@ -211,7 +213,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 				},
 			},
 			exp: &sdpCodecResult{
-				Audio:     getCodec(ulaw.SDPName),
+				Audio:     getCodec(g711.ULawSDPName),
 				AudioType: 0,
 				DTMFType:  101,
 			},
@@ -237,11 +239,12 @@ func TestSDPMediaAnswer(t *testing.T) {
 				Media:   "audio",
 				Port:    sdp.RangedPort{Value: port},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0", "9", "101"},
+				Formats: []string{"0", "8", "9", "101"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "9 G722/8000"},
 				{Key: "rtpmap", Value: "0 PCMU/8000"},
+				{Key: "rtpmap", Value: "8 PCMA/8000"},
 				{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				{Key: "fmtp", Value: "101 0-16"},
 				{Key: "ptime", Value: "20"},

@@ -40,9 +40,9 @@ import (
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
+	"github.com/livekit/sip/pkg/media/g711"
 	"github.com/livekit/sip/pkg/media/rtp"
 	lksdp "github.com/livekit/sip/pkg/media/sdp"
-	"github.com/livekit/sip/pkg/media/ulaw"
 	webmm "github.com/livekit/sip/pkg/media/webm"
 )
 
@@ -81,7 +81,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.Number = "1000"
 	}
 	if conf.Codec == "" {
-		conf.Codec = ulaw.SDPName
+		conf.Codec = g711.ULawSDPName
 	}
 	codec := lksdp.CodecByName(conf.Codec).(rtp.AudioCodec)
 	cli := &Client{

@@ -21,8 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media/g711"
 	"github.com/livekit/sip/pkg/media/g722"
-	"github.com/livekit/sip/pkg/media/ulaw"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
@@ -475,7 +475,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 
 func TestSIPAudio(t *testing.T) {
 	for _, codec := range []string{
-		ulaw.SDPName,
+		g711.ULawSDPName,
 		g722.SDPName,
 	} {
 		codec := codec
@@ -502,7 +502,7 @@ func TestSIPAudio(t *testing.T) {
 						if i == 0 {
 							// Make first client always use the same codec.
 							// This way we can see how different codecs interact.
-							codec = ulaw.SDPName
+							codec = g711.ULawSDPName
 						}
 						cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false)
 						clients = append(clients, cli)
