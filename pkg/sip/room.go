@@ -115,6 +115,8 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 					r.log.Errorw("cannot create opus decoder", err, "trackID", pub.SID())
 					return
 				}
+				defer odec.Close()
+
 				var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
 				h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
 				_ = rtp.HandleLoop(track, h)
@@ -186,15 +188,24 @@ func (r *Room) Output() media.Writer[media.PCM16Sample] {
 	return r.out.Get()
 }
 
-func (r *Room) SetOutput(out media.Writer[media.PCM16Sample]) {
+// SwapOutput sets room audio output and returns the old one.
+// Caller is responsible for closing the old writer.
+func (r *Room) SwapOutput(out media.PCM16Writer) media.PCM16Writer {
 	if r == nil {
-		return
+		return nil
 	}
 	if out == nil {
-		r.out.Set(nil)
-		return
+		return r.out.Swap(nil)
 	}
-	r.out.Set(media.ResampleWriter(out, r.mix.SampleRate()))
+	return r.out.Swap(media.ResampleWriter(out, r.mix.SampleRate()))
+}
+
+func (r *Room) CloseOutput() error {
+	w := r.SwapOutput(nil)
+	if w == nil {
+		return nil
+	}
+	return w.Close()
 }
 
 func (r *Room) SetDTMFOutput(out *rtp.Stream) {
@@ -230,7 +241,7 @@ func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
 
 func (r *Room) Close() error {
 	r.ready.Store(false)
-	r.SetOutput(nil)
+	err := r.CloseOutput()
 	r.SetDTMFOutput(nil)
 	if r.room != nil {
 		r.room.Disconnect()
@@ -240,7 +251,7 @@ func (r *Room) Close() error {
 		r.mix.Stop()
 		r.mix = nil
 	}
-	return nil
+	return err
 }
 
 func (r *Room) Participant() Participant {
@@ -250,7 +261,7 @@ func (r *Room) Participant() Participant {
 	return r.p
 }
 
-func (r *Room) NewParticipantTrack(sampleRate int) (media.Writer[media.PCM16Sample], error) {
+func (r *Room) NewParticipantTrack(sampleRate int) (media.WriteCloser[media.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		return nil, err
@@ -277,18 +288,15 @@ func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) 
 }
 
 func (r *Room) NewTrack() *Track {
-	inp := r.mix.NewInput()
-	return &Track{mix: r.mix, inp: inp}
+	return &Track{inp: r.mix.NewInput()}
 }
 
 type Track struct {
-	mix *mixer.Mixer
 	inp *mixer.Input
 }
 
 func (t *Track) Close() error {
-	t.mix.RemoveInput(t.inp)
-	return nil
+	return t.inp.Close()
 }
 
 func (t *Track) PlayAudio(ctx context.Context, sampleRate int, frames []media.PCM16Sample) {
@@ -302,7 +310,7 @@ func (t *Track) PlayAudio(ctx context.Context, sampleRate int, frames []media.PC
 }
 
 func (t *Track) SampleRate() int {
-	return t.mix.SampleRate()
+	return t.inp.SampleRate()
 }
 
 func (t *Track) WriteSample(pcm media.PCM16Sample) error {

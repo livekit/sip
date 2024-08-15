@@ -55,7 +55,7 @@ var (
 )
 
 // Play specified audio tones in a loop until the context is cancelled.
-func Play(ctx context.Context, audio media.PCM16Writer, vol int16, tones []Tone) error {
+func Play(ctx context.Context, audio media.Writer[media.PCM16Sample], vol int16, tones []Tone) error {
 	const (
 		frameDur     = rtp.DefFrameDur
 		framesPerSec = int(time.Second / frameDur)

@@ -26,7 +26,7 @@ import (
 	"github.com/livekit/sip/pkg/media"
 )
 
-func NewPCM16Writer(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.PCM16WriteCloser {
+func NewPCM16Writer(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.PCM16Writer {
 	ws, err := webm.NewSimpleBlockWriter(w, []webm.TrackEntry{
 		{
 			Name:            "Audio",

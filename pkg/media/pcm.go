@@ -61,6 +61,10 @@ func (b *frameWriterPCM16) SampleRate() int {
 	return b.sampleRate
 }
 
+func (b *frameWriterPCM16) Close() error {
+	return nil
+}
+
 func (b *frameWriterPCM16) WriteSample(data PCM16Sample) error {
 	*b.buf = append(*b.buf, data)
 	return nil
@@ -80,6 +84,10 @@ type bufferWriterPCM16 struct {
 
 func (b *bufferWriterPCM16) SampleRate() int {
 	return b.sampleRate
+}
+
+func (b *bufferWriterPCM16) Close() error {
+	return nil
 }
 
 func (b *bufferWriterPCM16) WriteSample(data PCM16Sample) error {
@@ -117,17 +125,36 @@ func (s *PCM16Sample) WriteSample(data PCM16Sample) error {
 	return nil
 }
 
-type PCM16Writer = Writer[PCM16Sample]
-type PCM16WriteCloser = WriteCloser[PCM16Sample]
+type PCM16Writer = WriteCloser[PCM16Sample]
 
 type MediaSampleWriter interface {
 	WriteSample(sample media.Sample) error
 }
 
-func FromSampleWriter[T ~[]byte](w MediaSampleWriter, sampleRate int, sampleDur time.Duration) Writer[T] {
-	return NewWriterFunc(sampleRate, func(in T) error {
-		data := make([]byte, len(in))
-		copy(data, in)
-		return w.WriteSample(media.Sample{Data: data, Duration: sampleDur})
-	})
+func FromSampleWriter[T ~[]byte](w MediaSampleWriter, sampleRate int, sampleDur time.Duration) WriteCloser[T] {
+	return &sampleWriter[T]{
+		w:          w,
+		sampleRate: sampleRate,
+		sampleDur:  sampleDur,
+	}
+}
+
+type sampleWriter[T ~[]byte] struct {
+	w          MediaSampleWriter
+	sampleRate int
+	sampleDur  time.Duration
+}
+
+func (w *sampleWriter[T]) SampleRate() int {
+	return w.sampleRate
+}
+
+func (w *sampleWriter[T]) Close() error {
+	return nil
+}
+
+func (w *sampleWriter[T]) WriteSample(in T) error {
+	data := make([]byte, len(in))
+	copy(data, in)
+	return w.w.WriteSample(media.Sample{Data: data, Duration: w.sampleDur})
 }

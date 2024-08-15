@@ -47,7 +47,7 @@ func (s *ULawSample) Encode(data media.PCM16Sample) {
 	*s = out
 }
 
-type ULawWriter = media.Writer[ULawSample]
+type ULawWriter = media.WriteCloser[ULawSample]
 
 type ULawDecoder struct {
 	w   media.PCM16Writer
@@ -56,6 +56,10 @@ type ULawDecoder struct {
 
 func (d *ULawDecoder) SampleRate() int {
 	return d.w.SampleRate()
+}
+
+func (d *ULawDecoder) Close() error {
+	return d.w.Close()
 }
 
 func (d *ULawDecoder) WriteSample(in ULawSample) error {
@@ -84,6 +88,10 @@ type ULawEncoder struct {
 
 func (e *ULawEncoder) SampleRate() int {
 	return e.w.SampleRate()
+}
+
+func (e *ULawEncoder) Close() error {
+	return e.w.Close()
 }
 
 func (e *ULawEncoder) WriteSample(in media.PCM16Sample) error {

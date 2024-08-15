@@ -57,7 +57,7 @@ func encodeSize(flags g722.Flags, pcmLen int) int {
 	return n
 }
 
-type Writer = media.Writer[Sample]
+type Writer = media.WriteCloser[Sample]
 
 type Decoder struct {
 	f   g722.Flags
@@ -68,6 +68,10 @@ type Decoder struct {
 
 func (d *Decoder) SampleRate() int {
 	return d.w.SampleRate()
+}
+
+func (d *Decoder) Close() error {
+	return d.w.Close()
 }
 
 func (d *Decoder) WriteSample(in Sample) error {
@@ -102,6 +106,10 @@ type Encoder struct {
 
 func (e *Encoder) SampleRate() int {
 	return e.w.SampleRate()
+}
+
+func (e *Encoder) Close() error {
+	return e.w.Close()
 }
 
 func (e *Encoder) WriteSample(in media.PCM16Sample) error {

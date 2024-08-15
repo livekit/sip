@@ -56,7 +56,7 @@ type outboundCall struct {
 	rtpAudio   *rtp.Stream
 	rtpDTMF    *rtp.Stream
 	audioCodec rtp.AudioCodec
-	audioOut   media.Writer[media.PCM16Sample]
+	audioOut   media.PCM16Writer
 	audioType  byte
 	dtmfType   byte
 	stopped    core.Fuse
@@ -65,7 +65,7 @@ type outboundCall struct {
 	mon           *stats.CallMonitor
 	mediaRunning  bool
 	lkRoom        *Room
-	lkRoomIn      media.Writer[media.PCM16Sample] // output to room; OPUS at 48k
+	lkRoomIn      media.PCM16Writer // output to room; OPUS at 48k
 	sipCur        sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
@@ -134,7 +134,7 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		c.log.Infow("Closing outbound call", "reason", reason)
 	}
 	c.rtpConn.OnRTP(nil)
-	c.lkRoom.SetOutput(nil)
+	_ = c.lkRoom.CloseOutput()
 
 	if c.mediaRunning {
 		_ = c.rtpConn.Close()
@@ -261,13 +261,15 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 
 func (c *outboundCall) relinkMedia() {
 	if c.lkRoom == nil || !c.mediaRunning {
-		c.lkRoom.SetOutput(nil)
+		_ = c.lkRoom.CloseOutput()
 		c.lkRoom.SetDTMFOutput(nil)
 		c.rtpConn.OnRTP(nil)
 		return
 	}
 	// Encoding pipeline (LK -> SIP)
-	c.lkRoom.SetOutput(c.audioOut)
+	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
+		_ = w.Close()
+	}
 	c.lkRoom.SetDTMFOutput(c.rtpDTMF)
 
 	// Decoding pipeline (SIP -> LK)

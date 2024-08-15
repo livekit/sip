@@ -37,27 +37,17 @@ type WriteCloser[T any] interface {
 	Close() error
 }
 
-func NewWriterFunc[T any](sampleRate int, fnc WriterFunc[T]) Writer[T] {
-	return &writerFunc[T]{
-		fnc:        fnc,
-		sampleRate: sampleRate,
-	}
+type writeCloser[T any] struct {
+	Writer[T]
 }
 
-type writerFunc[T any] struct {
-	fnc        WriterFunc[T]
-	sampleRate int
+func (*writeCloser[T]) Close() error {
+	return nil
 }
 
-func (w *writerFunc[T]) SampleRate() int {
-	return w.sampleRate
+func NopCloser[T any](w Writer[T]) WriteCloser[T] {
+	return &writeCloser[T]{w}
 }
-
-func (w *writerFunc[T]) WriteSample(in T) error {
-	return w.fnc(in)
-}
-
-type WriterFunc[T any] func(in T) error
 
 func NewSwitchWriter[T any](sampleRate int) *SwitchWriter[T] {
 	return &SwitchWriter[T]{
@@ -67,10 +57,10 @@ func NewSwitchWriter[T any](sampleRate int) *SwitchWriter[T] {
 
 type SwitchWriter[T any] struct {
 	sampleRate int
-	ptr        atomic.Pointer[Writer[T]]
+	ptr        atomic.Pointer[WriteCloser[T]]
 }
 
-func (s *SwitchWriter[T]) Get() Writer[T] {
+func (s *SwitchWriter[T]) Get() WriteCloser[T] {
 	ptr := s.ptr.Load()
 	if ptr == nil {
 		return nil
@@ -78,16 +68,31 @@ func (s *SwitchWriter[T]) Get() Writer[T] {
 	return *ptr
 }
 
-func (s *SwitchWriter[T]) Set(w Writer[T]) {
+// Swap sets an underlying writer and returns the old one.
+// Caller is responsible for closing the old writer.
+func (s *SwitchWriter[T]) Swap(w WriteCloser[T]) WriteCloser[T] {
+	var old *WriteCloser[T]
 	if w == nil {
-		s.ptr.Store(nil)
+		old = s.ptr.Swap(nil)
 	} else {
-		s.ptr.Store(&w)
+		old = s.ptr.Swap(&w)
 	}
+	if old == nil {
+		return nil
+	}
+	return *old
 }
 
 func (s *SwitchWriter[T]) SampleRate() int {
 	return s.sampleRate
+}
+
+func (s *SwitchWriter[T]) Close() error {
+	ptr := s.ptr.Swap(nil)
+	if ptr == nil {
+		return nil
+	}
+	return (*ptr).Close()
 }
 
 func (s *SwitchWriter[T]) WriteSample(sample T) error {
