@@ -39,6 +39,10 @@ func (b *testWriter) SampleRate() int {
 	return b.sampleRate
 }
 
+func (b *testWriter) Close() error {
+	return nil
+}
+
 func (b *testWriter) WriteSample(data media.PCM16Sample) error {
 	*b.buf = data
 	return nil
@@ -90,7 +94,7 @@ func TestMixer(t *testing.T) {
 	t.Run("one input mixing correctly", func(t *testing.T) {
 		m := newTestMixer(t)
 		inp := m.NewInput()
-		defer m.RemoveInput(inp)
+		defer inp.Close()
 		inp.buffering = false
 
 		WriteSampleN(inp, 1)
@@ -100,12 +104,12 @@ func TestMixer(t *testing.T) {
 	t.Run("two inputs mixing correctly", func(t *testing.T) {
 		m := newTestMixer(t)
 		one := m.NewInput()
-		defer m.RemoveInput(one)
+		defer one.Close()
 		one.buffering = false
 		one.WriteSample([]int16{0xE, 0xD, 0xC, 0xB, 0xA})
 
 		two := m.NewInput()
-		defer m.RemoveInput(two)
+		defer two.Close()
 		two.buffering = false
 		two.WriteSample([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
@@ -120,7 +124,7 @@ func TestMixer(t *testing.T) {
 	t.Run("draining produces silence afterwards", func(t *testing.T) {
 		m := newTestMixer(t)
 		inp := m.NewInput()
-		defer m.RemoveInput(inp)
+		defer inp.Close()
 
 		for i := 0; i < inputBufferFrames; i++ {
 			inp.WriteSample([]int16{0, 1, 2, 3, 4})
@@ -138,7 +142,7 @@ func TestMixer(t *testing.T) {
 	t.Run("drops frames on overflow", func(t *testing.T) {
 		m := newTestMixer(t)
 		input := m.NewInput()
-		defer m.RemoveInput(input)
+		defer input.Close()
 
 		for i := 0; i < inputBufferFrames+3; i++ {
 			input.WriteSample([]int16{0, 1, 2, 3, 4})
@@ -151,7 +155,7 @@ func TestMixer(t *testing.T) {
 	t.Run("buffered initially and after starving", func(t *testing.T) {
 		m := newTestMixer(t)
 		inp := m.NewInput()
-		defer m.RemoveInput(inp)
+		defer inp.Close()
 
 		inp.WriteSample([]int16{10, 11, 12, 13, 14})
 
@@ -191,7 +195,7 @@ func TestMixer(t *testing.T) {
 		m.tickerDur = step
 
 		inp := m.NewInput()
-		defer m.RemoveInput(inp)
+		defer inp.Close()
 
 		for i := 0; i < inputBufferFrames; i++ {
 			WriteSampleN(inp, i)

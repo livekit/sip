@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG GOVERSION
+ARG GOVERSION=1.22
 
-FROM golang:$GOVERSION
+FROM golang:$GOVERSION AS builder
 
 ARG TARGETPLATFORM
 
 WORKDIR /workspace
 
 # install libopus
-RUN apt-get update && apt-get install -y pkg-config libopus-dev libopusfile-dev
+RUN apt-get update && apt-get install -y pkg-config libopus-dev libopusfile-dev libsoxr-dev
 
 # download go modules
 COPY go.mod .
@@ -42,12 +42,12 @@ FROM golang:$GOVERSION
 
 # install wget for health check
 RUN apt-get update && \
-    apt-get install -y libopus0 libopusfile0 && \
+    apt-get install -y libopus0 libopusfile0 libsoxr0 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # copy binary
-COPY --from=0 /workspace/livekit-sip /bin/
+COPY --from=builder /workspace/livekit-sip /bin/
 
 WORKDIR /sip
 

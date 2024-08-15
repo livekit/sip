@@ -167,6 +167,10 @@ func (s *MediaStreamOut[T]) SampleRate() int {
 	return s.sampleRate
 }
 
+func (s *MediaStreamOut[T]) Close() error {
+	return nil
+}
+
 func (s *MediaStreamOut[T]) WriteSample(sample T) error {
 	return s.s.WritePayload([]byte(sample), false)
 }

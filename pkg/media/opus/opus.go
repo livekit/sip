@@ -23,32 +23,72 @@ import (
 
 type Sample []byte
 
-func Decode(w media.Writer[media.PCM16Sample], channels int) (media.Writer[Sample], error) {
+type Writer = media.WriteCloser[Sample]
+
+func Decode(w media.PCM16Writer, channels int) (Writer, error) {
 	dec, err := opus.NewDecoder(w.SampleRate(), channels)
 	if err != nil {
 		return nil, err
 	}
-	buf := make([]int16, w.SampleRate()/rtp.DefFramesPerSec)
-	return media.NewWriterFunc(w.SampleRate(), func(in Sample) error {
-		n, err := dec.Decode(in, buf)
-		if err != nil {
-			return err
-		}
-		return w.WriteSample(buf[:n])
-	}), nil
+	return &decoder{
+		w:   w,
+		dec: dec,
+		buf: make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+	}, nil
 }
 
-func Encode(w media.Writer[Sample], channels int) (media.Writer[media.PCM16Sample], error) {
+func Encode(w Writer, channels int) (media.PCM16Writer, error) {
 	enc, err := opus.NewEncoder(w.SampleRate(), channels, opus.AppVoIP)
 	if err != nil {
 		return nil, err
 	}
-	buf := make([]byte, w.SampleRate()/rtp.DefFramesPerSec)
-	return media.NewWriterFunc(w.SampleRate(), func(in media.PCM16Sample) error {
-		n, err := enc.Encode(in, buf)
-		if err != nil {
-			return err
-		}
-		return w.WriteSample(buf[:n])
-	}), nil
+	return &encoder{
+		w:   w,
+		enc: enc,
+		buf: make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+	}, nil
+}
+
+type decoder struct {
+	w   media.PCM16Writer
+	dec *opus.Decoder
+	buf media.PCM16Sample
+}
+
+func (d *decoder) SampleRate() int {
+	return d.w.SampleRate()
+}
+
+func (d *decoder) WriteSample(in Sample) error {
+	n, err := d.dec.Decode(in, d.buf)
+	if err != nil {
+		return err
+	}
+	return d.w.WriteSample(d.buf[:n])
+}
+
+func (d *decoder) Close() error {
+	return d.w.Close()
+}
+
+type encoder struct {
+	w   Writer
+	enc *opus.Encoder
+	buf Sample
+}
+
+func (e *encoder) SampleRate() int {
+	return e.w.SampleRate()
+}
+
+func (e *encoder) WriteSample(in media.PCM16Sample) error {
+	n, err := e.enc.Encode(in, e.buf)
+	if err != nil {
+		return err
+	}
+	return e.w.WriteSample(e.buf[:n])
+}
+
+func (e *encoder) Close() error {
+	return e.w.Close()
 }

@@ -142,14 +142,13 @@ The SIP service is built in Go. Go >= 1.18 is needed. The SIP services uses [lib
 For Debian
 
 ```
-sudo apt-get install pkg-config libopus-dev libopusfile-dev
+sudo apt-get install pkg-config libopus-dev libopusfile-dev libsoxr-dev
 ```
 
 For Mac
 
 ```
-brew install pkg-config opus opusfile
-
+brew install pkg-config opus opusfile libsoxr
 ```
 
 For more instructions see [hraban/opus' README](https://github.com/hraban/opus#build--installation)

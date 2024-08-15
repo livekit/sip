@@ -22,9 +22,6 @@ on:
     tags:
       - 'v*.*.*'
 
-env:
-  GOVERSION: "1.22"
-
 jobs:
   docker:
     runs-on: ubuntu-latest
@@ -80,5 +77,3 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.docker-md.outputs.tags }}
           labels: ${{ steps.docker-md.outputs.labels }}
-          build-args: |
-            GOVERSION=${{ env.GOVERSION }}

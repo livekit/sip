@@ -494,7 +494,7 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 // WaitSignals waits for an audio frame to contain all signals.
 func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	sampleRate := c.audioCodec.Info().SampleRate
-	var ws media.PCM16WriteCloser
+	var ws media.PCM16Writer
 	if w != nil {
 		ws = webmm.NewPCM16Writer(w, sampleRate, rtp.DefFrameDur)
 		defer ws.Close()

@@ -38,21 +38,21 @@ func CodecByPayloadType(typ byte) media.Codec {
 type AudioCodec interface {
 	media.Codec
 	EncodeRTP(w *Stream) media.PCM16Writer
-	DecodeRTP(w media.PCM16Writer, typ byte) Handler
+	DecodeRTP(w media.Writer[media.PCM16Sample], typ byte) Handler
 }
 
 var _ AudioEncoder[[]byte] = (*audioCodec[[]byte])(nil)
 
 type AudioEncoder[S ~[]byte] interface {
 	AudioCodec
-	Decode(writer media.PCM16Writer) media.Writer[S]
-	Encode(writer media.Writer[S]) media.PCM16Writer
+	Decode(writer media.PCM16Writer) media.WriteCloser[S]
+	Encode(writer media.WriteCloser[S]) media.PCM16Writer
 }
 
 func NewAudioCodec[S ~[]byte](
 	info media.CodecInfo,
-	decode func(writer media.PCM16Writer) media.Writer[S],
-	encode func(writer media.Writer[S]) media.PCM16Writer,
+	decode func(writer media.PCM16Writer) media.WriteCloser[S],
+	encode func(writer media.WriteCloser[S]) media.PCM16Writer,
 ) AudioCodec {
 	if info.SampleRate <= 0 {
 		panic("invalid sample rate")
@@ -69,19 +69,19 @@ func NewAudioCodec[S ~[]byte](
 
 type audioCodec[S ~[]byte] struct {
 	info   media.CodecInfo
-	decode func(writer media.PCM16Writer) media.Writer[S]
-	encode func(writer media.Writer[S]) media.PCM16Writer
+	decode func(writer media.PCM16Writer) media.WriteCloser[S]
+	encode func(writer media.WriteCloser[S]) media.PCM16Writer
 }
 
 func (c *audioCodec[S]) Info() media.CodecInfo {
 	return c.info
 }
 
-func (c *audioCodec[S]) Decode(w media.PCM16Writer) media.Writer[S] {
+func (c *audioCodec[S]) Decode(w media.PCM16Writer) media.WriteCloser[S] {
 	return c.decode(w)
 }
 
-func (c *audioCodec[S]) Encode(w media.Writer[S]) media.PCM16Writer {
+func (c *audioCodec[S]) Encode(w media.WriteCloser[S]) media.PCM16Writer {
 	return c.encode(w)
 }
 
@@ -89,6 +89,6 @@ func (c *audioCodec[S]) EncodeRTP(w *Stream) media.PCM16Writer {
 	return c.encode(NewMediaStreamOut[S](w, c.info.SampleRate))
 }
 
-func (c *audioCodec[S]) DecodeRTP(w media.PCM16Writer, typ byte) Handler {
-	return NewMediaStreamIn(c.decode(w))
+func (c *audioCodec[S]) DecodeRTP(w media.Writer[media.PCM16Sample], typ byte) Handler {
+	return NewMediaStreamIn(c.decode(media.NopCloser(w)))
 }

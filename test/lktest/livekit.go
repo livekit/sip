@@ -137,12 +137,14 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 	}
 	cb.ParticipantCallback.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		inp := p.mix.NewInput()
-		defer p.mix.RemoveInput(inp)
+		defer inp.Close()
 
 		odec, err := opus.Decode(inp, channels)
 		if err != nil {
 			return
 		}
+		defer odec.Close()
+
 		h := rtp.NewMediaStreamIn[opus.Sample](odec)
 		_ = rtp.HandleLoop(track, h)
 	}
@@ -237,7 +239,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 }
 
 func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
-	var ws media.PCM16WriteCloser
+	var ws media.PCM16Writer
 	if w != nil {
 		ws = webmm.NewPCM16Writer(w, RoomSampleRate, rtp.DefFrameDur)
 		defer ws.Close()

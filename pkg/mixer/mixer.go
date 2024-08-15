@@ -35,6 +35,7 @@ const (
 )
 
 type Input struct {
+	m          *Mixer
 	sampleRate int
 	mu         sync.Mutex
 	buf        *ringbuf.Buffer[int16]
@@ -163,6 +164,7 @@ func (m *Mixer) NewInput() *Input {
 	defer m.mu.Unlock()
 
 	inp := &Input{
+		m:          m,
 		sampleRate: m.sampleRate,
 		buf:        ringbuf.New[int16](len(m.mixBuf) * inputBufferFrames),
 		buffering:  true, // buffer some data initially
@@ -208,6 +210,11 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 
 func (i *Input) SampleRate() int {
 	return i.sampleRate
+}
+
+func (i *Input) Close() error {
+	i.m.RemoveInput(i)
+	return nil
 }
 
 func (i *Input) WriteSample(sample media.PCM16Sample) error {
