@@ -22,10 +22,14 @@ import (
 )
 
 const (
+	jitterEnabled    = false
 	jitterMaxLatency = 60 * time.Millisecond // should match mixer's target buffer size
 )
 
 func HandleJitter(clockRate int, h Handler) Handler {
+	if !jitterEnabled {
+		return h
+	}
 	return &jitterHandler{
 		h:   h,
 		buf: jitter.NewBuffer(audioDepacketizer{}, uint32(clockRate), jitterMaxLatency),
