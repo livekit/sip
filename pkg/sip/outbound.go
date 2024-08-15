@@ -25,10 +25,11 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"github.com/pion/sdp/v2"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -384,8 +385,13 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 				extra[name] = h.Value()
 			}
 		}
-		if len(extra) != 0 {
-			c.lkRoom.Room().LocalParticipant.SetAttributes(extra)
+		if c.lkRoom != nil && len(extra) != 0 {
+			room := c.lkRoom.Room()
+			if room != nil {
+				room.LocalParticipant.SetAttributes(extra)
+			} else {
+				c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
+			}
 		}
 	}
 
