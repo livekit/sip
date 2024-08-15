@@ -22,11 +22,12 @@ import (
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+	"github.com/pion/sdp/v2"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/pion/sdp/v2"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -634,7 +635,11 @@ func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, me
 		c.joinDur()
 	}
 	c.callDur = c.mon.CallDur()
-	c.log = c.log.WithValues("roomName", roomName, "identity", identity, "name", name)
+	c.log = c.log.WithValues(
+		"room", roomName,
+		"participant", identity,
+		"participantName", name,
+	)
 	c.log.Infow("Bridging SIP call")
 	if err := c.createLiveKitParticipant(ctx, roomName, identity, name, meta, attrs, wsUrl, token); err != nil {
 		c.log.Errorw("Cannot create LiveKit participant", err)
