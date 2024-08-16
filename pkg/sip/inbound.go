@@ -157,7 +157,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	cmon := s.mon.NewCall(stats.Inbound, from.Address.String(), to.Address.String())
+	cmon := s.mon.NewCall(stats.Inbound, from.Address.Host, to.Address.Host)
 
 	cmon.InviteReq()
 	defer cmon.SessionDur()()

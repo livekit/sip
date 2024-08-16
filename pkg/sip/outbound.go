@@ -67,17 +67,19 @@ type outboundCall struct {
 	mediaRunning  bool
 	lkRoom        *Room
 	lkRoomIn      media.PCM16Writer // output to room; OPUS at 48k
-	sipCur        sipOutboundConfig
+	sipConf       sipOutboundConfig
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
 	sipRunning    bool
 }
 
-func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room lkRoomConfig) (*outboundCall, error) {
+func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room lkRoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	call := &outboundCall{
-		c:   c,
-		log: log,
+		c:       c,
+		log:     log,
+		sipConf: sipConf,
 	}
+	call.mon = c.mon.NewCall(stats.Outbound, c.signalingIp, sipConf.address)
 	call.rtpConn = rtp.NewConn(func() {
 		call.close(true, callDropped, "media-timeout")
 	})
@@ -86,7 +88,7 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room
 		call.close(true, callDropped, "media-failed")
 		return nil, fmt.Errorf("start media failed: %w", err)
 	}
-	if err := call.updateRoom(room); err != nil {
+	if err := call.connectToRoom(room); err != nil {
 		call.close(true, callDropped, "join-failed")
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
@@ -102,9 +104,6 @@ func (c *outboundCall) Closed() <-chan struct{} {
 }
 
 func (c *outboundCall) Disconnected() <-chan struct{} {
-	if c.lkRoom == nil {
-		return nil
-	}
 	return c.lkRoom.Closed()
 }
 
@@ -142,14 +141,10 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.mediaRunning = false
 
-	if c.lkRoom != nil {
-		_ = c.lkRoom.Close()
-	}
-	c.lkRoom = nil
+	_ = c.lkRoom.Close()
 	c.lkRoomIn = nil
 
 	c.stopSIP(reason)
-	c.sipCur = sipOutboundConfig{}
 
 	c.c.cmu.Lock()
 	delete(c.c.activeCalls, c)
@@ -162,30 +157,16 @@ func (c *outboundCall) Participant() Participant {
 	return c.lkRoom.Participant()
 }
 
-func (c *outboundCall) UpdateSIP(ctx context.Context, sipNew sipOutboundConfig) error {
+func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.sipCur == sipNew {
-		return nil
-	}
-	if sipNew.address == "" || sipNew.to == "" {
-		c.log.Infow("Shutdown of outbound SIP call")
-		// shutdown the call
-		c.close(false, callDropped, "shutdown")
-		return nil
-	}
-	c.startMonitor(sipNew)
-	if err := c.updateSIP(ctx, sipNew); err != nil {
+	if err := c.dialSIP(ctx); err != nil {
 		c.close(true, callDropped, "invite-failed")
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
-	c.relinkMedia()
-	c.log.Infow("Outbound SIP update complete")
+	c.connectMedia()
+	c.log.Infow("Outbound SIP call established")
 	return nil
-}
-
-func (c *outboundCall) startMonitor(conf sipOutboundConfig) {
-	c.mon = c.c.mon.NewCall(stats.Outbound, conf.from, conf.to)
 }
 
 func (c *outboundCall) startMedia(conf *config.Config) error {
@@ -200,12 +181,7 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	return nil
 }
 
-func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
-	if c.lkRoom != nil {
-		_ = c.lkRoom.Close()
-		c.lkRoom = nil
-		c.lkRoomIn = nil
-	}
+func (c *outboundCall) connectToRoom(lkNew lkRoomConfig) error {
 	attrs := lkNew.attrs
 	if attrs == nil {
 		attrs = make(map[string]string)
@@ -227,12 +203,8 @@ func (c *outboundCall) updateRoom(lkNew lkRoomConfig) error {
 	return nil
 }
 
-func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) error {
-	if c.sipCur == sipNew {
-		return nil
-	}
-	c.stopSIP("update")
-	if sipNew.ringtone {
+func (c *outboundCall) dialSIP(ctx context.Context) error {
+	if c.sipConf.ringtone {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
@@ -240,28 +212,27 @@ func (c *outboundCall) updateSIP(ctx context.Context, sipNew sipOutboundConfig) 
 		// Play a ringtone to the room while participant connects
 		go tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
 	}
-	err := c.sipSignal(sipNew)
+	err := c.sipSignal(c.sipConf)
 	if err != nil {
 		// TODO: busy, no-response
 		return err
 	}
 
-	if sipNew.dtmf != "" {
+	if digits := c.sipConf.dtmf; digits != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
-		if err := dtmf.Write(ctx, nil, c.rtpDTMF, sipNew.dtmf); err != nil {
+		if err := dtmf.Write(ctx, nil, c.rtpDTMF, digits); err != nil {
 			return err
 		}
 	}
 	c.setStatus(CallActive)
 
 	c.sipRunning = true
-	c.sipCur = sipNew
 	return nil
 }
 
-func (c *outboundCall) relinkMedia() {
-	if c.lkRoom == nil || !c.mediaRunning {
+func (c *outboundCall) connectMedia() {
+	if !c.mediaRunning {
 		_ = c.lkRoom.CloseOutput()
 		c.lkRoom.SetDTMFOutput(nil)
 		c.rtpConn.OnRTP(nil)
@@ -313,22 +284,19 @@ func (c *outboundCall) stopSIP(reason string) {
 		if err := c.sipBye(); err != nil {
 			c.log.Errorw("SIP bye failed", err)
 		}
-		if c.mon != nil {
-			c.mon.CallTerminate(reason)
-			c.mon.CallEnd()
-		}
+		c.mon.CallTerminate(reason)
 	}
 	c.sipInviteReq = nil
 	c.sipInviteResp = nil
-	c.sipCur = sipOutboundConfig{}
 	c.sipRunning = false
 }
 
 func (c *outboundCall) setStatus(v CallStatus) {
-	if c.lkRoom == nil {
+	r := c.lkRoom.Room()
+	if r == nil {
 		return
 	}
-	c.lkRoom.Room().LocalParticipant.SetAttributes(map[string]string{
+	r.LocalParticipant.SetAttributes(map[string]string{
 		AttrSIPCallStatus: string(v),
 	})
 }
@@ -338,7 +306,6 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	if err != nil {
 		return err
 	}
-	c.mon.CallStart()
 	joinDur := c.mon.JoinDur()
 	inviteReq, inviteResp, err := c.sipInvite(offer, conf)
 	if inviteResp != nil {
@@ -349,7 +316,6 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		}
 	}
 	if err != nil {
-		c.mon.CallEnd()
 		c.log.Errorw("SIP invite failed", err)
 		return err // TODO: should we retry? maybe new offer will work
 	}
@@ -361,7 +327,6 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	}
 	res, err := sdpGetAudioCodec(answer)
 	if err != nil {
-		c.mon.CallEnd()
 		c.log.Errorw("SIP SDP failed", err)
 		return err
 	}
@@ -372,7 +337,6 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 
 	err = c.sipAccept(inviteReq, inviteResp)
 	if err != nil {
-		c.mon.CallEnd()
 		c.log.Errorw("SIP accept failed", err)
 		return err
 	}

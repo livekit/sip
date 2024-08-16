@@ -15,6 +15,7 @@
 package stats
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -23,9 +24,17 @@ import (
 	"github.com/livekit/sip/pkg/config"
 )
 
-var durBuckets = []float64{
-	0.1, 0.5, 1, 10, 60, 10 * 60, 30 * 60, 3600, 6 * 3600, 12 * 3600, 24 * 3600,
-}
+// Durations are in seconds
+var (
+	// durBucketsOp lists histogram buckets for relatively short operations like SIP INVITE.
+	durBucketsOp = []float64{
+		0.1, 0.5, 1, 5, 10, 30, 60, 3 * 60,
+	}
+	// durBucketsLong lists histogram buckets for long operations like call/session durations.
+	durBucketsLong = []float64{
+		1, 10, 60, 10 * 60, 30 * 60, 3600, 6 * 3600, 12 * 3600, 24 * 3600,
+	}
+)
 
 type CallDir bool
 
@@ -136,7 +145,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "dur_session_sec",
 		Help:        "SIP session duration (from INVITE to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-		Buckets:     durBuckets,
+		Buckets:     durBucketsLong,
 	}, []string{"dir"}))
 
 	m.durCall = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -145,7 +154,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "dur_call_sec",
 		Help:        "SIP call duration (from successful pin to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-		Buckets:     durBuckets,
+		Buckets:     durBucketsLong,
 	}, []string{"dir"}))
 
 	m.durJoin = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -154,7 +163,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "dur_join_sec",
 		Help:        "SIP room join duration (from INVITE to mixed room audio)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-		Buckets:     durBuckets,
+		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
 
 	m.started.Break()
@@ -185,19 +194,22 @@ func (m *Monitor) InviteReqRaw(dir CallDir) {
 	m.inviteReqRaw.Inc()
 }
 
-func (m *Monitor) NewCall(dir CallDir, from, to string) *CallMonitor {
+func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 	return &CallMonitor{
-		m:    m,
-		dir:  dir,
-		from: from,
-		to:   to,
+		m:        m,
+		dir:      dir,
+		fromHost: fromHost,
+		toHost:   toHost,
 	}
 }
 
 type CallMonitor struct {
-	m        *Monitor
-	dir      CallDir
-	from, to string
+	m          *Monitor
+	dir        CallDir
+	fromHost   string
+	toHost     string
+	started    atomic.Bool
+	terminated atomic.Bool
 }
 
 func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
@@ -209,7 +221,7 @@ func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
 }
 
 func (c *CallMonitor) labels(l prometheus.Labels) prometheus.Labels {
-	out := prometheus.Labels{"dir": c.dir.String(), "to": c.to}
+	out := prometheus.Labels{"dir": c.dir.String(), "to": c.toHost}
 	for k, v := range l {
 		out[k] = v
 	}
@@ -233,14 +245,23 @@ func (c *CallMonitor) InviteError(reason string) {
 }
 
 func (c *CallMonitor) CallStart() {
+	if !c.started.CompareAndSwap(false, true) {
+		return
+	}
 	c.m.callsActive.With(c.labels(nil)).Inc()
 }
 
 func (c *CallMonitor) CallEnd() {
+	if !c.started.CompareAndSwap(true, false) {
+		return
+	}
 	c.m.callsActive.With(c.labels(nil)).Dec()
 }
 
 func (c *CallMonitor) CallTerminate(reason string) {
+	if !c.terminated.CompareAndSwap(false, true) {
+		return
+	}
 	c.m.callsTerminated.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
 }
 

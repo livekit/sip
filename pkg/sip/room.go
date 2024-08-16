@@ -79,6 +79,9 @@ func (r *Room) Closed() <-chan struct{} {
 }
 
 func (r *Room) Room() *lksdk.Room {
+	if r == nil {
+		return nil
+	}
 	return r.room
 }
 
@@ -240,6 +243,9 @@ func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
 }
 
 func (r *Room) Close() error {
+	if r == nil {
+		return nil
+	}
 	r.ready.Store(false)
 	err := r.CloseOutput()
 	r.SetDTMFOutput(nil)
