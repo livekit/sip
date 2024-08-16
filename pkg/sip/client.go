@@ -134,8 +134,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toHost", req.Address,
 		"toUser", req.CallTo,
 	)
-	log.Infow("Creating SIP participant")
-	call, err := c.newCall(c.conf, log, req.SipCallId, lkRoomConfig{
+	roomConf := lkRoomConfig{
 		roomName: req.RoomName,
 		identity: req.ParticipantIdentity,
 		name:     req.ParticipantName,
@@ -143,25 +142,31 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		attrs:    req.ParticipantAttributes,
 		wsUrl:    req.WsUrl,
 		token:    req.Token,
-	})
+	}
+	sipConf := sipOutboundConfig{
+		address:   req.Address,
+		transport: req.Transport,
+		from:      req.Number,
+		to:        req.CallTo,
+		user:      req.Username,
+		pass:      req.Password,
+		dtmf:      req.Dtmf,
+		ringtone:  req.PlayRingtone,
+	}
+	log.Infow("Creating SIP participant")
+	call, err := c.newCall(c.conf, log, req.SipCallId, roomConf, sipConf)
 	if err != nil {
 		return nil, err
 	}
 	// Start actual SIP call async.
 	go func() {
+		call.mon.CallStart()
+		defer call.mon.CallEnd()
 		ctx := context.WithoutCancel(ctx)
-		err := call.UpdateSIP(ctx, sipOutboundConfig{
-			address:   req.Address,
-			transport: req.Transport,
-			from:      req.Number,
-			to:        req.CallTo,
-			user:      req.Username,
-			pass:      req.Password,
-			dtmf:      req.Dtmf,
-			ringtone:  req.PlayRingtone,
-		})
+		err := call.ConnectSIP(ctx)
 		if err != nil {
 			log.Errorw("SIP call failed", err)
+			call.CloseWithReason(callDropped, "connect error")
 			return
 		}
 		select {
@@ -203,7 +208,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
 			continue
 		}
 
-		if c.sipCur.to == fromHeader.Address.User && c.sipCur.from == toHeader.Address.User {
+		if c.sipConf.to == fromHeader.Address.User && c.sipConf.from == toHeader.Address.User {
 			found = true
 			c.log.Infow("BYE")
 			go func(call *outboundCall) {
