@@ -18,6 +18,8 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sip/pkg/stats"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
@@ -52,24 +54,26 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	}
 	sipPort := 5060 + rand.Intn(100)
 	conf := &config.Config{
-		ApiKey:        lk.ApiKey,
-		ApiSecret:     lk.ApiSecret,
-		WsUrl:         lk.WsUrl,
-		Redis:         lk.Redis,
-		SIPPort:       sipPort,
-		RTPPort:       rtcconfig.PortRange{Start: 20000, End: 20010},
-		UseExternalIP: false,
-		Logging:       logger.Config{Level: "debug"},
+		ApiKey:            lk.ApiKey,
+		ApiSecret:         lk.ApiSecret,
+		WsUrl:             lk.WsUrl,
+		Redis:             lk.Redis,
+		SIPPort:           sipPort,
+		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
+		UseExternalIP:     false,
+		MaxCpuUtilization: 0.9,
+		Logging:           logger.Config{Level: "debug"},
 	}
 	_ = conf.InitLogger()
 	log := logger.GetLogger()
 
-	sipsrv, err := sip.NewService(conf, log)
+	mon, err := stats.NewMonitor(conf)
 	if err != nil {
 		t.Fatal(err)
 	}
+	sipsrv := sip.NewService(conf, mon, log)
 
-	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus)
+	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus, mon)
 	sipsrv.SetHandler(svc)
 	t.Cleanup(func() {
 		svc.Stop(true)
@@ -206,7 +210,7 @@ func runClient(t testing.TB, conf *NumberConfig, id string, number string, force
 
 func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool) *siptest.Client {
 	cli, err := siptest.NewClient(id, siptest.ClientConfig{
-		//IP: dockerBridgeIP,
+		// IP: dockerBridgeIP,
 		Number:   number,
 		AuthUser: conf.AuthUser,
 		AuthPass: conf.AuthPass,

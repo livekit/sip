@@ -26,6 +26,7 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sip/pkg/stats"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
@@ -84,12 +85,13 @@ func runService(c *cli.Context) error {
 	killChan := make(chan os.Signal, 1)
 	signal.Notify(killChan, syscall.SIGINT)
 
-	sipsrv, err := sip.NewService(conf, log)
+	mon, err := stats.NewMonitor(conf)
 	if err != nil {
 		return err
 	}
 
-	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus)
+	sipsrv := sip.NewService(conf, mon, log)
+	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {

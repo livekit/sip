@@ -15,12 +15,14 @@
 package stats
 
 import (
+	"errors"
 	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/livekit/protocol/utils/hwstats"
 	"github.com/livekit/sip/pkg/config"
 )
 
@@ -61,22 +63,39 @@ type Monitor struct {
 	durSession      *prometheus.HistogramVec
 	durCall         *prometheus.HistogramVec
 	durJoin         *prometheus.HistogramVec
+	cpuLoad         prometheus.Gauge
+
+	cpu            *hwstats.CPUStats
+	maxUtilization float64
 
 	metrics  []prometheus.Collector
 	started  core.Fuse
 	shutdown core.Fuse
 }
 
-func NewMonitor() *Monitor {
-	return &Monitor{}
+func NewMonitor(conf *config.Config) (*Monitor, error) {
+	m := &Monitor{
+		maxUtilization: conf.MaxCpuUtilization,
+	}
+	cpu, err := hwstats.NewCPUStats(func(idle float64) {
+		m.cpuLoad.Set(1 - idle)
+	})
+	if err != nil {
+		return nil, err
+	}
+	m.cpu = cpu
+	return m, nil
 }
 
 func mustRegister[T prometheus.Collector](m *Monitor, c T) T {
 	err := prometheus.Register(c)
-	if e, ok := err.(prometheus.AlreadyRegisteredError); ok {
-		return e.ExistingCollector.(T)
-	} else if err != nil {
-		panic(err)
+	if err != nil {
+		var e prometheus.AlreadyRegisteredError
+		if errors.As(err, &e) {
+			return e.ExistingCollector.(T)
+		} else {
+			panic(err)
+		}
 	}
 	m.metrics = append(m.metrics, c)
 	return c
@@ -166,6 +185,13 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
 
+	m.cpuLoad = mustRegister(m, prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace:   "livekit",
+		Subsystem:   "node",
+		Name:        "cpu_load",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID, "node_type": "SIP"},
+	}))
+
 	m.started.Break()
 
 	return nil
@@ -183,11 +209,17 @@ func (m *Monitor) Stop() {
 }
 
 func (m *Monitor) CanAccept() bool {
-	if !m.started.IsBroken() || m.shutdown.IsBroken() {
+	if !m.started.IsBroken() ||
+		m.shutdown.IsBroken() ||
+		m.cpu.GetCPUIdle() < m.cpu.NumCPU()*(1-m.maxUtilization) {
 		return false
 	}
 
 	return true
+}
+
+func (m *Monitor) IdleCPU() float64 {
+	return m.cpu.GetCPUIdle()
 }
 
 func (m *Monitor) InviteReqRaw(dir CallDir) {

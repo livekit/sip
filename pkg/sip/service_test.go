@@ -9,8 +9,11 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/sip/pkg/stats"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
@@ -66,12 +69,14 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 
 	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
 
-	s, err := NewService(&config.Config{
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	s := NewService(&config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, logger.GetLogger())
-	require.NoError(t, err)
+	}, mon, logger.GetLogger())
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
 
