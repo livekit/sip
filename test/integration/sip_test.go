@@ -146,9 +146,9 @@ func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) strin
 	return tr.SipTrunkId
 }
 
-func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string, meta string) *NumberConfig {
+func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string, meta string, attrs map[string]string) *NumberConfig {
 	trunkID := s.CreateTrunkIn(t, number, "", "")
-	ruleID := s.CreateDirectDispatch(t, room, pin, meta)
+	ruleID := s.CreateDirectDispatch(t, room, pin, meta, attrs)
 	return &NumberConfig{
 		SIP:     s,
 		TrunkID: trunkID, RuleID: ruleID,
@@ -156,9 +156,9 @@ func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string,
 	}
 }
 
-func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string, meta string) *NumberConfig {
+func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string, meta string, attrs map[string]string) *NumberConfig {
 	trunkID := s.CreateTrunkIn(t, number, "", "")
-	ruleID := s.CreateIndividualDispatch(t, room, pin, meta)
+	ruleID := s.CreateIndividualDispatch(t, room, pin, meta, attrs)
 	return &NumberConfig{
 		SIP:     s,
 		TrunkID: trunkID, RuleID: ruleID,
@@ -166,10 +166,11 @@ func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin str
 	}
 }
 
-func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta string) string {
+func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta string, attrs map[string]string) string {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
-		Metadata: meta,
+		Metadata:   meta,
+		Attributes: attrs,
 		Rule: &livekit.SIPDispatchRule{
 			Rule: &livekit.SIPDispatchRule_DispatchRuleDirect{
 				DispatchRuleDirect: &livekit.SIPDispatchRuleDirect{
@@ -185,10 +186,11 @@ func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta st
 	return dr.SipDispatchRuleId
 }
 
-func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, meta string) string {
+func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, meta string, attrs map[string]string) string {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
-		Metadata: meta,
+		Metadata:   meta,
+		Attributes: attrs,
 		Rule: &livekit.SIPDispatchRule{
 			Rule: &livekit.SIPDispatchRule_DispatchRuleIndividual{
 				DispatchRuleIndividual: &livekit.SIPDispatchRuleIndividual{
@@ -254,9 +256,11 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		dtmf string
 	)
 	const (
-		clientID = "test-cli"
-		roomName = "test-open"
-		meta     = `{"test":true}`
+		clientID   = "test-cli"
+		roomName   = "test-open"
+		meta       = `{"test":true}`
+		customAttr = "my.attr"
+		customVal  = "custom"
 	)
 	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
@@ -272,7 +276,9 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	})
 	srv := runSIPServer(t, lk)
 
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
+	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta, map[string]string{
+		customAttr: customVal,
+	})
 
 	cli := runClient(t, nc, clientID, clientNumber, false)
 
@@ -295,6 +301,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 				"sip.ruleID":           nc.RuleID,
 				"sip.trunkID":          nc.TrunkID,
 				"lktest.id":            clientID,
+				customAttr:             customVal,
 			},
 		},
 	})
@@ -329,9 +336,11 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		dtmf string
 	)
 	const (
-		clientID = "test-cli"
-		roomName = "test-priv"
-		meta     = `{"test":true}`
+		clientID   = "test-cli"
+		roomName   = "test-priv"
+		meta       = `{"test":true}`
+		customAttr = "my.attr"
+		customVal  = "custom"
 	)
 	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
@@ -347,7 +356,9 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	})
 	srv := runSIPServer(t, lk)
 
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234", meta)
+	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234", meta, map[string]string{
+		customAttr: customVal,
+	})
 
 	cli := runClient(t, nc, clientID, clientNumber, false)
 
@@ -375,6 +386,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 				"sip.ruleID":           nc.RuleID,
 				"sip.trunkID":          nc.TrunkID,
 				"lktest.id":            clientID,
+				customAttr:             customVal,
 			},
 		},
 	})
@@ -410,12 +422,16 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	srv := runSIPServer(t, lk)
 
 	const (
-		clientID = "test-cli"
-		roomName = "test-open"
-		meta     = `{"test":true}`
+		clientID   = "test-cli"
+		roomName   = "test-open"
+		meta       = `{"test":true}`
+		customAttr = "my.attr"
+		customVal  = "custom"
 	)
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
-	srv.CreateDirectDispatch(t, "test-priv", "1234", "")
+	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta, map[string]string{
+		customAttr: customVal,
+	})
+	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
 	runClient(t, nc, clientID, clientNumber, true)
 
@@ -436,6 +452,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 				"sip.ruleID":           nc.RuleID,
 				"sip.trunkID":          nc.TrunkID,
 				"lktest.id":            clientID,
+				customAttr:             customVal,
 			},
 		},
 	})
@@ -446,11 +463,15 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 	srv := runSIPServer(t, lk)
 
 	const (
-		clientID = "test-cli"
-		roomName = "test-open"
-		meta     = `{"test":true}`
+		clientID   = "test-cli"
+		roomName   = "test-open"
+		meta       = `{"test":true}`
+		customAttr = "my.attr"
+		customVal  = "custom"
 	)
-	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "", meta)
+	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "", meta, map[string]string{
+		customAttr: customVal,
+	})
 
 	runClient(t, nc, clientID, clientNumber, false)
 
@@ -472,6 +493,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 				"sip.ruleID":           nc.RuleID,
 				"sip.trunkID":          nc.TrunkID,
 				"lktest.id":            clientID,
+				customAttr:             customVal,
 			},
 		},
 	})
@@ -491,10 +513,14 @@ func TestSIPAudio(t *testing.T) {
 					srv := runSIPServer(t, lk)
 
 					const (
-						roomName = "test-open"
-						meta     = `{"test":true}`
+						roomName   = "test-open"
+						meta       = `{"test":true}`
+						customAttr = "my.attr"
+						customVal  = "custom"
 					)
-					nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta)
+					nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta, map[string]string{
+						customAttr: customVal,
+					})
 
 					// Connect clients and wait for them to join.
 					var (
@@ -529,6 +555,7 @@ func TestSIPAudio(t *testing.T) {
 								"sip.ruleID":           nc.RuleID,
 								"sip.trunkID":          nc.TrunkID,
 								"lktest.id":            strconv.Itoa(i + 1),
+								customAttr:             customVal,
 							},
 						})
 					}
@@ -571,7 +598,7 @@ func TestSIPOutbound(t *testing.T) {
 
 	// Configure Trunk for inbound server.
 	trunkIn := srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
-	ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta)
+	ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta, nil)
 
 	// Configure Trunk for outbound server and make a SIP call.
 	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
