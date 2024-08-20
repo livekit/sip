@@ -19,6 +19,7 @@ package media
 import (
 	"bytes"
 	"encoding/binary"
+	"sync"
 
 	"github.com/zaf/resample"
 )
@@ -65,6 +66,7 @@ func newResampleWriter(w WriteCloser[PCM16Sample], sampleRate int) WriteCloser[P
 }
 
 type resampleWriter struct {
+	mu      sync.Mutex
 	w       WriteCloser[PCM16Sample]
 	r       *resample.Resampler
 	inbuf   []byte
@@ -78,11 +80,18 @@ func (w *resampleWriter) SampleRate() int {
 }
 
 func (w *resampleWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	_ = w.r.Close()
 	return w.w.Close()
 }
 
 func (w *resampleWriter) WriteSample(data PCM16Sample) error {
+	if len(data) == 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if sz := len(data) * 2; cap(w.inbuf) < sz {
 		w.inbuf = make([]byte, sz)
 	} else {
