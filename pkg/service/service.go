@@ -29,6 +29,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sip/pkg/stats"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/sip"
@@ -53,13 +54,14 @@ type Service struct {
 	sipServiceStop        sipServiceStopFunc
 	sipServiceActiveCalls sipServiceActiveCallsFunc
 
+	mon      *stats.Monitor
 	shutdown core.Fuse
 	killed   atomic.Bool
 }
 
 func NewService(
 	conf *config.Config, log logger.Logger, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
-	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoClient, bus psrpc.MessageBus,
+	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoClient, bus psrpc.MessageBus, mon *stats.Monitor,
 ) *Service {
 	s := &Service{
 		conf: conf,
@@ -71,6 +73,8 @@ func NewService(
 
 		sipServiceStop:        sipServiceStop,
 		sipServiceActiveCalls: sipServiceActiveCalls,
+
+		mon: mon,
 	}
 	if conf.PrometheusPort > 0 {
 		s.promServer = &http.Server{
@@ -94,6 +98,7 @@ func NewService(
 }
 
 func (s *Service) Stop(kill bool) {
+	s.mon.Shutdown()
 	s.shutdown.Break()
 	s.killed.Store(kill)
 }
@@ -135,7 +140,7 @@ func (s *Service) Run() error {
 
 	s.log.Debugw("service ready")
 
-	for { //nolint: gosimple
+	for { // nolint: gosimple
 		select {
 		case <-s.shutdown.Watch():
 			s.log.Infow("shutting down")
@@ -239,7 +244,7 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 }
 
 func (s *Service) CanAccept() bool {
-	return !s.shutdown.IsBroken()
+	return s.mon.CanAccept()
 }
 
 func (s *Service) RegisterCreateSIPParticipantTopic() error {

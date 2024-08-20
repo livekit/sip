@@ -46,13 +46,14 @@ type Config struct {
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
-	HealthPort     int                 `yaml:"health_port"`
-	PrometheusPort int                 `yaml:"prometheus_port"`
-	PProfPort      int                 `yaml:"pprof_port"`
-	SIPPort        int                 `yaml:"sip_port"`
-	RTPPort        rtcconfig.PortRange `yaml:"rtp_port"`
-	Logging        logger.Config       `yaml:"logging"`
-	ClusterID      string              `yaml:"cluster_id"` // cluster this instance belongs to
+	HealthPort        int                 `yaml:"health_port"`
+	PrometheusPort    int                 `yaml:"prometheus_port"`
+	PProfPort         int                 `yaml:"pprof_port"`
+	SIPPort           int                 `yaml:"sip_port"`
+	RTPPort           rtcconfig.PortRange `yaml:"rtp_port"`
+	Logging           logger.Config       `yaml:"logging"`
+	ClusterID         string              `yaml:"cluster_id"` // cluster this instance belongs to
+	MaxCpuUtilization float64             `yaml:"max_cpu_utilization"`
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
@@ -90,24 +91,27 @@ func NewConfig(confString string) (*Config, error) {
 	return conf, nil
 }
 
-func (conf *Config) Init() error {
-	conf.NodeID = utils.NewGuid("NE_")
+func (c *Config) Init() error {
+	c.NodeID = utils.NewGuid("NE_")
 
-	if conf.SIPPort == 0 {
-		conf.SIPPort = DefaultSIPPort
+	if c.SIPPort == 0 {
+		c.SIPPort = DefaultSIPPort
 	}
-	if conf.RTPPort.Start == 0 {
-		conf.RTPPort.Start = DefaultRTPPortRange.Start
+	if c.RTPPort.Start == 0 {
+		c.RTPPort.Start = DefaultRTPPortRange.Start
 	}
-	if conf.RTPPort.End == 0 {
-		conf.RTPPort.End = DefaultRTPPortRange.End
+	if c.RTPPort.End == 0 {
+		c.RTPPort.End = DefaultRTPPortRange.End
+	}
+	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
+		c.MaxCpuUtilization = 0.9
 	}
 
-	if err := conf.InitLogger(); err != nil {
+	if err := c.InitLogger(); err != nil {
 		return err
 	}
 
-	if conf.UseExternalIP && conf.NAT1To1IP != "" {
+	if c.UseExternalIP && c.NAT1To1IP != "" {
 		return fmt.Errorf("use_external_ip and nat_1_to_1_ip can not both be set")
 	}
 

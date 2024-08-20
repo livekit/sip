@@ -16,10 +16,9 @@ package sip
 
 import (
 	"github.com/emiago/sipgo"
+
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"golang.org/x/exp/maps"
-
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
@@ -34,11 +33,10 @@ type Service struct {
 	srv  *Server
 }
 
-func NewService(conf *config.Config, log logger.Logger) (*Service, error) {
+func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Service {
 	if log == nil {
 		log = logger.GetLogger()
 	}
-	mon := stats.NewMonitor()
 	cli := NewClient(conf, log, mon)
 	s := &Service{
 		conf: conf,
@@ -47,16 +45,16 @@ func NewService(conf *config.Config, log logger.Logger) (*Service, error) {
 		cli:  cli,
 	}
 	s.srv = NewServer(conf, log, mon)
-	return s, nil
+	return s
 }
 
 func (s *Service) ActiveCalls() int {
 	s.cli.cmu.Lock()
-	activeClientCalls := len(maps.Values(s.cli.activeCalls))
+	activeClientCalls := len(s.cli.activeCalls)
 	s.cli.cmu.Unlock()
 
 	s.srv.cmu.Lock()
-	activeServerCalls := len(maps.Values(s.srv.activeCalls))
+	activeServerCalls := len(s.srv.activeCalls)
 	s.srv.cmu.Unlock()
 
 	return activeClientCalls + activeServerCalls
