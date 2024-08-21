@@ -168,79 +168,11 @@ func (s *Service) Run() error {
 }
 
 func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcAddress string) (username, password string, drop bool, err error) {
-	resp, err := s.psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
-		From:       from,
-		To:         to,
-		ToHost:     toHost,
-		SrcAddress: srcAddress,
-	})
-
-	if err != nil {
-		return "", "", false, err
-	}
-
-	return resp.Username, resp.Password, resp.Drop, nil
+	return GetAuthCredentials(ctx, s.psrpcClient, from, to, toHost, srcAddress)
 }
 
 func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {
-	resp, err := s.psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{
-		SipCallId:     info.ID,
-		CallingNumber: info.FromUser,
-		CalledNumber:  info.ToUser,
-		CalledHost:    info.ToHost,
-		SrcAddress:    info.SrcAddress,
-		Pin:           info.Pin,
-		NoPin:         info.NoPin,
-	})
-
-	if err != nil {
-		s.log.Warnw("SIP handle dispatch rule error", err)
-		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
-	}
-	switch resp.Result {
-	default:
-		s.log.Errorw("SIP handle dispatch rule error", fmt.Errorf("unexpected dispatch result: %v", resp.Result))
-		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
-	case rpc.SIPDispatchResult_LEGACY_ACCEPT_OR_PIN:
-		if resp.RequestPin {
-			return sip.CallDispatch{Result: sip.DispatchRequestPin}
-		}
-		// TODO: finally deprecate and drop
-		return sip.CallDispatch{
-			Result:         sip.DispatchAccept,
-			RoomName:       resp.RoomName,
-			Identity:       resp.ParticipantIdentity,
-			Name:           resp.ParticipantName,
-			Metadata:       resp.ParticipantMetadata,
-			Attributes:     resp.ParticipantAttributes,
-			WsUrl:          resp.WsUrl,
-			Token:          resp.Token,
-			TrunkID:        resp.SipTrunkId,
-			DispatchRuleID: resp.SipDispatchRuleId,
-		}
-	case rpc.SIPDispatchResult_ACCEPT:
-		return sip.CallDispatch{
-			Result:         sip.DispatchAccept,
-			RoomName:       resp.RoomName,
-			Identity:       resp.ParticipantIdentity,
-			Name:           resp.ParticipantName,
-			Metadata:       resp.ParticipantMetadata,
-			Attributes:     resp.ParticipantAttributes,
-			WsUrl:          resp.WsUrl,
-			Token:          resp.Token,
-			TrunkID:        resp.SipTrunkId,
-			DispatchRuleID: resp.SipDispatchRuleId,
-		}
-	case rpc.SIPDispatchResult_REQUEST_PIN:
-		return sip.CallDispatch{
-			Result:  sip.DispatchRequestPin,
-			TrunkID: resp.SipTrunkId,
-		}
-	case rpc.SIPDispatchResult_REJECT:
-		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
-	case rpc.SIPDispatchResult_DROP:
-		return sip.CallDispatch{Result: sip.DispatchNoRuleDrop}
-	}
+	return DispatchCall(ctx, s.psrpcClient, s.log, info)
 }
 
 func (s *Service) CanAccept() bool {
