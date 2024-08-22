@@ -134,14 +134,16 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toHost", req.Address,
 		"toUser", req.CallTo,
 	)
-	roomConf := lkRoomConfig{
-		roomName: req.RoomName,
-		identity: req.ParticipantIdentity,
-		name:     req.ParticipantName,
-		meta:     req.ParticipantMetadata,
-		attrs:    req.ParticipantAttributes,
-		wsUrl:    req.WsUrl,
-		token:    req.Token,
+	roomConf := RoomConfig{
+		WsUrl:    req.WsUrl,
+		Token:    req.Token,
+		RoomName: req.RoomName,
+		Participant: ParticipantConfig{
+			Identity:   req.ParticipantIdentity,
+			Name:       req.ParticipantName,
+			Metadata:   req.ParticipantMetadata,
+			Attributes: req.ParticipantAttributes,
+		},
 	}
 	sipConf := sipOutboundConfig{
 		address:   req.Address,
