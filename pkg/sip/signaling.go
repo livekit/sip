@@ -131,7 +131,10 @@ func sdpAnswerMediaDesc(rtpListenerPort int, res *sdpCodecResult) []*sdp.MediaDe
 	attrs = append(attrs, sdp.Attribute{
 		Key: "rtpmap", Value: fmt.Sprintf("%d %s", res.AudioType, res.Audio.Info().SDPName),
 	})
+	formats := make([]string, 0, 2)
+	formats = append(formats, strconv.Itoa(int(res.AudioType)))
 	if res.DTMFType != 0 {
+		formats = append(formats, strconv.Itoa(int(res.DTMFType)))
 		attrs = append(attrs, []sdp.Attribute{
 			{Key: "rtpmap", Value: fmt.Sprintf("%d %s", res.DTMFType, dtmf.SDPName)},
 			{Key: "fmtp", Value: fmt.Sprintf("%d 0-16", res.DTMFType)},
@@ -144,13 +147,10 @@ func sdpAnswerMediaDesc(rtpListenerPort int, res *sdpCodecResult) []*sdp.MediaDe
 	return []*sdp.MediaDescription{
 		{
 			MediaName: sdp.MediaName{
-				Media:  "audio",
-				Port:   sdp.RangedPort{Value: rtpListenerPort},
-				Protos: []string{"RTP", "AVP"},
-				Formats: []string{
-					strconv.Itoa(int(res.AudioType)),
-					strconv.Itoa(int(res.DTMFType)),
-				},
+				Media:   "audio",
+				Port:    sdp.RangedPort{Value: rtpListenerPort},
+				Protos:  []string{"RTP", "AVP"},
+				Formats: formats,
 			},
 			Attributes: attrs,
 		},
