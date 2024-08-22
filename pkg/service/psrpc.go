@@ -6,6 +6,7 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+
 	"github.com/livekit/sip/pkg/sip"
 )
 
@@ -49,27 +50,35 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 		}
 		// TODO: finally deprecate and drop
 		return sip.CallDispatch{
-			Result:         sip.DispatchAccept,
-			RoomName:       resp.RoomName,
-			Identity:       resp.ParticipantIdentity,
-			Name:           resp.ParticipantName,
-			Metadata:       resp.ParticipantMetadata,
-			Attributes:     resp.ParticipantAttributes,
-			WsUrl:          resp.WsUrl,
-			Token:          resp.Token,
+			Result: sip.DispatchAccept,
+			Room: sip.RoomConfig{
+				WsUrl:    resp.WsUrl,
+				Token:    resp.Token,
+				RoomName: resp.RoomName,
+				Participant: sip.ParticipantConfig{
+					Identity:   resp.ParticipantIdentity,
+					Name:       resp.ParticipantName,
+					Metadata:   resp.ParticipantMetadata,
+					Attributes: resp.ParticipantAttributes,
+				},
+			},
 			TrunkID:        resp.SipTrunkId,
 			DispatchRuleID: resp.SipDispatchRuleId,
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
-			Result:         sip.DispatchAccept,
-			RoomName:       resp.RoomName,
-			Identity:       resp.ParticipantIdentity,
-			Name:           resp.ParticipantName,
-			Metadata:       resp.ParticipantMetadata,
-			Attributes:     resp.ParticipantAttributes,
-			WsUrl:          resp.WsUrl,
-			Token:          resp.Token,
+			Result: sip.DispatchAccept,
+			Room: sip.RoomConfig{
+				WsUrl:    resp.WsUrl,
+				Token:    resp.Token,
+				RoomName: resp.RoomName,
+				Participant: sip.ParticipantConfig{
+					Identity:   resp.ParticipantIdentity,
+					Name:       resp.ParticipantName,
+					Metadata:   resp.ParticipantMetadata,
+					Attributes: resp.ParticipantAttributes,
+				},
+			},
 			TrunkID:        resp.SipTrunkId,
 			DispatchRuleID: resp.SipDispatchRuleId,
 		}

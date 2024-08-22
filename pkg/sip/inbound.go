@@ -378,7 +378,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	case DispatchRequestPin:
 		c.pinPrompt(ctx)
 	case DispatchAccept:
-		c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.Attributes, disp.WsUrl, disp.Token)
+		c.joinRoom(ctx, disp.Room)
 	}
 	// Wait for the caller to terminate the call.
 	select {
@@ -517,14 +517,14 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				if disp.DispatchRuleID != "" {
 					c.log = c.log.WithValues("sipRule", disp.DispatchRuleID)
 				}
-				if disp.Result != DispatchAccept || disp.RoomName == "" {
+				if disp.Result != DispatchAccept || disp.Room.RoomName == "" {
 					c.log.Infow("Rejecting call", "pin", pin, "noPin", noPin)
 					c.playAudio(ctx, c.s.res.wrongPin)
 					c.close(false, callDropped, "wrong-pin")
 					return
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
-				c.joinRoom(ctx, disp.RoomName, disp.Identity, disp.Name, disp.Metadata, disp.Attributes, disp.WsUrl, disp.Token)
+				c.joinRoom(ctx, disp.Room)
 				return
 			}
 			// Gather pin numbers
@@ -552,6 +552,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	} else {
 		c.log.Infow("Closing inbound call", "reason", reason)
 	}
+	defer c.log.Infow("Inbound call closed", "reason", reason)
 	c.closeMedia()
 	c.sendBye()
 	if c.callDur != nil {
@@ -601,21 +602,22 @@ func (c *inboundCall) handleAudio(p *rtp.Packet) error {
 	return nil
 }
 
-func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, parIdentity, parName, parMeta string, parAttr map[string]string, wsUrl, token string) error {
-	if parAttr == nil {
-		parAttr = make(map[string]string)
+func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig) error {
+	partConf := &rconf.Participant
+	if partConf.Attributes == nil {
+		partConf.Attributes = make(map[string]string)
 	}
 	for k, v := range c.extraAttrs {
-		parAttr[k] = v
+		partConf.Attributes[k] = v
 	}
-	parAttr[AttrSIPCallStatus] = string(CallActive)
+	partConf.Attributes[AttrSIPCallStatus] = string(CallActive)
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
-	err := c.lkRoom.Connect(c.s.conf, roomName, parIdentity, parName, parMeta, parAttr, wsUrl, token)
+	err := c.lkRoom.Connect(c.s.conf, rconf)
 	if err != nil {
 		return err
 	}
@@ -632,18 +634,18 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, roomName, pa
 	return nil
 }
 
-func (c *inboundCall) joinRoom(ctx context.Context, roomName, identity, name, meta string, attrs map[string]string, wsUrl, token string) {
+func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig) {
 	if c.joinDur != nil {
 		c.joinDur()
 	}
 	c.callDur = c.mon.CallDur()
 	c.log = c.log.WithValues(
-		"room", roomName,
-		"participant", identity,
-		"participantName", name,
+		"room", rconf.RoomName,
+		"participant", rconf.Participant.Identity,
+		"participantName", rconf.Participant.Name,
 	)
 	c.log.Infow("Bridging SIP call")
-	if err := c.createLiveKitParticipant(ctx, roomName, identity, name, meta, attrs, wsUrl, token); err != nil {
+	if err := c.createLiveKitParticipant(ctx, rconf); err != nil {
 		c.log.Errorw("Cannot create LiveKit participant", err)
 		c.close(true, callDropped, "participant-failed")
 	}

@@ -66,6 +66,9 @@ type Config struct {
 	// Doing so hides our SIP endpoint from (a low effort) port scanners.
 	HideInboundPort bool `yaml:"hide_inbound_port"`
 
+	// AudioDTMF forces SIP to generate audio DTMF tones in addition to digital.
+	AudioDTMF bool `yaml:"audio_dtmf"`
+
 	// internal
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten

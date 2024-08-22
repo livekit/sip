@@ -62,13 +62,7 @@ const (
 
 type CallDispatch struct {
 	Result         DispatchResult
-	RoomName       string
-	Identity       string
-	Name           string
-	Metadata       string
-	Attributes     map[string]string
-	WsUrl          string
-	Token          string
+	Room           RoomConfig
 	TrunkID        string
 	DispatchRuleID string
 }

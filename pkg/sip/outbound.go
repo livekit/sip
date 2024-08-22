@@ -73,7 +73,7 @@ type outboundCall struct {
 	sipRunning    bool
 }
 
-func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room lkRoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
+func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	call := &outboundCall{
 		c:       c,
 		log:     log,
@@ -151,7 +151,7 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 	c.c.cmu.Unlock()
 }
 
-func (c *outboundCall) Participant() Participant {
+func (c *outboundCall) Participant() ParticipantInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lkRoom.Participant()
@@ -181,14 +181,15 @@ func (c *outboundCall) startMedia(conf *config.Config) error {
 	return nil
 }
 
-func (c *outboundCall) connectToRoom(lkNew lkRoomConfig) error {
-	attrs := lkNew.attrs
+func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
+	attrs := lkNew.Participant.Attributes
 	if attrs == nil {
 		attrs = make(map[string]string)
 	}
 	attrs[AttrSIPCallStatus] = string(CallDialing)
+	lkNew.Participant.Attributes = attrs
 	r := NewRoom(c.log)
-	if err := r.Connect(c.c.conf, lkNew.roomName, lkNew.identity, lkNew.name, lkNew.meta, attrs, lkNew.wsUrl, lkNew.token); err != nil {
+	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}
 	// We have to create the track early because we might play a ringtone while SIP connects.

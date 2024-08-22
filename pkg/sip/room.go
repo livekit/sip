@@ -36,12 +36,11 @@ import (
 	"github.com/livekit/sip/pkg/mixer"
 )
 
-type Participant struct {
+type ParticipantInfo struct {
 	ID       string
 	RoomName string
 	Identity string
 	Name     string
-	Metadata string
 }
 
 type Room struct {
@@ -50,19 +49,23 @@ type Room struct {
 	mix     *mixer.Mixer
 	out     *media.SwitchWriter[media.PCM16Sample]
 	outDtmf atomic.Pointer[rtp.Stream]
-	p       Participant
+	p       ParticipantInfo
 	ready   atomic.Bool
 	stopped core.Fuse
 }
 
-type lkRoomConfig struct {
-	roomName string
-	identity string
-	name     string
-	meta     string
-	attrs    map[string]string
-	wsUrl    string
-	token    string
+type ParticipantConfig struct {
+	Identity   string
+	Name       string
+	Metadata   string
+	Attributes map[string]string
+}
+
+type RoomConfig struct {
+	WsUrl       string
+	Token       string
+	RoomName    string
+	Participant ParticipantConfig
 }
 
 func NewRoom(log logger.Logger) *Room {
@@ -85,15 +88,15 @@ func (r *Room) Room() *lksdk.Room {
 	return r.room
 }
 
-func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta string, attrs map[string]string, wsUrl, token string) error {
-	if wsUrl == "" {
-		wsUrl = conf.WsUrl
+func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
+	if rconf.WsUrl == "" {
+		rconf.WsUrl = conf.WsUrl
 	}
-	r.p = Participant{
-		RoomName: roomName,
-		Identity: identity,
-		Name:     name,
-		Metadata: meta,
+	partConf := rconf.Participant
+	r.p = ParticipantInfo{
+		RoomName: rconf.RoomName,
+		Identity: partConf.Identity,
+		Name:     partConf.Name,
 	}
 	handleTrackPublished := func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if publication.Kind() == lksdk.TrackKindAudio {
@@ -129,7 +132,7 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 				case *livekit.SipDTMF:
 					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
 					//       DTMF audio tone will be automatically mixed in any case.
-					r.sendDTMF(data)
+					r.sendDTMF(data, conf.AudioDTMF)
 				}
 			},
 		},
@@ -138,10 +141,10 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 		},
 	}
 
-	if token == "" {
+	if rconf.Token == "" {
 		// TODO: Remove this code path, always sign tokens on LiveKit server.
 		//       For now, match Cloud behavior and do not send extra attrs in the token.
-		tokenAttrs := make(map[string]string, len(attrs))
+		tokenAttrs := make(map[string]string, len(partConf.Attributes))
 		for _, k := range []string{
 			livekit.AttrSIPCallID,
 			livekit.AttrSIPTrunkID,
@@ -149,14 +152,14 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 			livekit.AttrSIPTrunkNumber,
 			livekit.AttrSIPPhoneNumber,
 		} {
-			if v, ok := attrs[k]; ok {
+			if v, ok := partConf.Attributes[k]; ok {
 				tokenAttrs[k] = v
 			}
 		}
 		var err error
-		token, err = sip.BuildSIPToken(
-			conf.ApiKey, conf.ApiSecret, roomName,
-			identity, name, meta,
+		rconf.Token, err = sip.BuildSIPToken(
+			conf.ApiKey, conf.ApiSecret, rconf.RoomName,
+			partConf.Identity, partConf.Name, partConf.Metadata,
 			tokenAttrs,
 		)
 		if err != nil {
@@ -165,14 +168,14 @@ func (r *Room) Connect(conf *config.Config, roomName, identity, name, meta strin
 	}
 	room := lksdk.NewRoom(roomCallback)
 	room.SetLogger(r.log)
-	err := room.JoinWithToken(wsUrl, token, lksdk.WithAutoSubscribe(false))
+	err := room.JoinWithToken(rconf.WsUrl, rconf.Token, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return err
 	}
 	r.room = room
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
-	room.LocalParticipant.SetAttributes(attrs)
+	room.LocalParticipant.SetAttributes(partConf.Attributes)
 	r.ready.Store(true)
 
 	// since TrackPublished isn't fired for tracks published *before* the participant is in the room, we'll
@@ -222,8 +225,11 @@ func (r *Room) SetDTMFOutput(out *rtp.Stream) {
 	r.outDtmf.Store(out)
 }
 
-func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
+func (r *Room) sendDTMF(msg *livekit.SipDTMF, audio bool) {
 	outAudio := r.Output()
+	if !audio {
+		outAudio = nil
+	}
 	outDTMF := r.outDtmf.Load()
 	if outAudio == nil && outDTMF == nil {
 		r.log.Infow("ignoring dtmf", "digit", msg.Digit)
@@ -260,9 +266,9 @@ func (r *Room) Close() error {
 	return err
 }
 
-func (r *Room) Participant() Participant {
+func (r *Room) Participant() ParticipantInfo {
 	if r == nil {
-		return Participant{}
+		return ParticipantInfo{}
 	}
 	return r.p
 }
