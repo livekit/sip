@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// You may obtain a copy of the License açt
 //
 // 	http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -15,6 +15,8 @@
 package opus
 
 import (
+	"strings"
+
 	"gopkg.in/hraban/opus.v2"
 
 	"github.com/livekit/sip/pkg/media"
@@ -50,9 +52,10 @@ func Encode(w Writer, channels int) (media.PCM16Writer, error) {
 }
 
 type decoder struct {
-	w   media.PCM16Writer
-	dec *opus.Decoder
-	buf media.PCM16Sample
+	w                    media.PCM16Writer
+	dec                  *opus.Decoder
+	buf                  media.PCM16Sample
+	successiveErrorCount int
 }
 
 func (d *decoder) SampleRate() int {
@@ -62,8 +65,15 @@ func (d *decoder) SampleRate() int {
 func (d *decoder) WriteSample(in Sample) error {
 	n, err := d.dec.Decode(in, d.buf)
 	if err != nil {
-		return err
+		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore single corruption errors
+		if !strings.Contains(err.Error(), "corrupted stream") || d.successiveErrorCount >= 1 {
+			return err
+		}
+		log.Debugw("opus decoder failed decoding a sample")
+		d.successiveErrorCount++
+		return nil
 	}
+	d.successiveErrorCount = 0
 	return d.w.WriteSample(d.buf[:n])
 }
 
