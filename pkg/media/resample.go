@@ -25,7 +25,7 @@ func Resample(dst PCM16Sample, dstSampleRate int, src PCM16Sample, srcSampleRate
 
 // ResampleWriter returns a new writer that expects samples of a given sample rate
 // and resamples then for the destination writer.
-func ResampleWriter(w WriteCloser[PCM16Sample], sampleRate int) WriteCloser[PCM16Sample] {
+func ResampleWriter(w PCM16Writer, sampleRate int) PCM16Writer {
 	srcRate := sampleRate
 	dstRate := w.SampleRate()
 	if dstRate == srcRate {

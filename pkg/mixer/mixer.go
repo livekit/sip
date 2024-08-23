@@ -15,6 +15,7 @@
 package mixer
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -187,6 +188,10 @@ func (m *Mixer) RemoveInput(inp *Input) {
 	}
 }
 
+func (m *Mixer) String() string {
+	return fmt.Sprintf("Mixer(%d) -> %s", len(m.inputs), m.out.String())
+}
+
 func (m *Mixer) SampleRate() int {
 	return m.sampleRate
 }
@@ -206,6 +211,10 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 		i.buffering = true // starving; pause the input and start buffering again
 	}
 	return n, err
+}
+
+func (i *Input) String() string {
+	return fmt.Sprintf("MixInput(%d) -> %s", i.sampleRate, i.m.String())
 }
 
 func (i *Input) SampleRate() int {

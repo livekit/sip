@@ -15,6 +15,7 @@
 package mixer
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ func newTestWriter(buf *media.PCM16Sample, sampleRate int) media.PCM16Writer {
 type testWriter struct {
 	buf        *media.PCM16Sample
 	sampleRate int
+}
+
+func (b *testWriter) String() string {
+	return fmt.Sprintf("testWriter(%d)", b.sampleRate)
 }
 
 func (b *testWriter) SampleRate() int {

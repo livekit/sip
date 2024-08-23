@@ -19,6 +19,7 @@ package media
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"sync"
 
 	"github.com/zaf/resample"
@@ -73,6 +74,10 @@ type resampleWriter struct {
 	srcRate int
 	dstRate int
 	buf     PCM16Sample
+}
+
+func (w *resampleWriter) String() string {
+	return fmt.Sprintf("Resample(%d->%d) -> %s", w.srcRate, w.dstRate, w.w.String())
 }
 
 func (w *resampleWriter) SampleRate() int {

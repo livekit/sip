@@ -25,8 +25,6 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	"github.com/pion/sdp/v2"
-
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -34,7 +32,6 @@ import (
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
-	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 )
@@ -51,20 +48,13 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c          *Client
-	log        logger.Logger
-	rtpConn    *rtp.Conn
-	rtpAudio   *rtp.Stream
-	rtpDTMF    *rtp.Stream
-	audioCodec rtp.AudioCodec
-	audioOut   media.PCM16Writer
-	audioType  byte
-	dtmfType   byte
-	stopped    core.Fuse
+	c       *Client
+	log     logger.Logger
+	media   *MediaPort
+	stopped core.Fuse
 
 	mu            sync.RWMutex
 	mon           *stats.CallMonitor
-	mediaRunning  bool
 	lkRoom        *Room
 	lkRoomIn      media.PCM16Writer // output to room; OPUS at 48k
 	sipConf       sipOutboundConfig
@@ -80,14 +70,13 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room
 		sipConf: sipConf,
 	}
 	call.mon = c.mon.NewCall(stats.Outbound, c.signalingIp, sipConf.address)
-	call.rtpConn = rtp.NewConn(func() {
-		call.close(true, callDropped, "media-timeout")
-	})
-
-	if err := call.startMedia(conf); err != nil {
+	var err error
+	call.media, err = NewMediaPort(call.log, call.mon, c.signalingIp, conf.RTPPort, RoomSampleRate)
+	if err != nil {
 		call.close(true, callDropped, "media-failed")
-		return nil, fmt.Errorf("start media failed: %w", err)
+		return nil, err
 	}
+	call.media.SetDTMFAudio(conf.AudioDTMF)
 	if err := call.connectToRoom(room); err != nil {
 		call.close(true, callDropped, "join-failed")
 		return nil, fmt.Errorf("update room failed: %w", err)
@@ -97,6 +86,25 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room
 	defer c.cmu.Unlock()
 	c.activeCalls[call] = struct{}{}
 	return call, nil
+}
+
+func (c *outboundCall) Start(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
+	c.mon.CallStart()
+	defer c.mon.CallEnd()
+	err := c.ConnectSIP(ctx)
+	if err != nil {
+		c.log.Errorw("SIP call failed", err)
+		c.CloseWithReason(callDropped, "connect error")
+		return
+	}
+	select {
+	case <-c.Disconnected():
+		c.CloseWithReason(callDropped, "removed")
+	case <-c.media.Timeout():
+		c.closeWithTimeout()
+	case <-c.Closed():
+	}
 }
 
 func (c *outboundCall) Closed() <-chan struct{} {
@@ -120,6 +128,12 @@ func (c *outboundCall) CloseWithReason(status CallStatus, reason string) {
 	c.close(false, status, reason)
 }
 
+func (c *outboundCall) closeWithTimeout() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.close(true, callDropped, "media-timeout")
+}
+
 func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 	if c.stopped.IsBroken() {
 		return
@@ -133,13 +147,8 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 	} else {
 		c.log.Infow("Closing outbound call", "reason", reason)
 	}
-	c.rtpConn.OnRTP(nil)
+	c.media.Close()
 	_ = c.lkRoom.CloseOutput()
-
-	if c.mediaRunning {
-		_ = c.rtpConn.Close()
-	}
-	c.mediaRunning = false
 
 	_ = c.lkRoom.Close()
 	c.lkRoomIn = nil
@@ -169,18 +178,6 @@ func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 	return nil
 }
 
-func (c *outboundCall) startMedia(conf *config.Config) error {
-	if c.mediaRunning {
-		return nil
-	}
-	if err := c.rtpConn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
-		return err
-	}
-	c.log.Debugw("begin listening on UDP", "port", c.rtpConn.LocalAddr().Port)
-	c.mediaRunning = true
-	return nil
-}
-
 func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 	attrs := lkNew.Participant.Attributes
 	if attrs == nil {
@@ -201,6 +198,8 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 	}
 	c.lkRoom = r
 	c.lkRoomIn = local
+
+	c.lkRoom.Subscribe() // TODO: postpone
 	return nil
 }
 
@@ -222,7 +221,7 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 	if digits := c.sipConf.dtmf; digits != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
-		if err := dtmf.Write(ctx, nil, c.rtpDTMF, digits); err != nil {
+		if err := c.media.WriteDTMF(ctx, digits); err != nil {
 			return err
 		}
 	}
@@ -233,39 +232,13 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 }
 
 func (c *outboundCall) connectMedia() {
-	if !c.mediaRunning {
-		_ = c.lkRoom.CloseOutput()
-		c.lkRoom.SetDTMFOutput(nil)
-		c.rtpConn.OnRTP(nil)
-		return
-	}
-	// Encoding pipeline (LK -> SIP)
-	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
+	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
 		_ = w.Close()
 	}
-	c.lkRoom.SetDTMFOutput(c.rtpDTMF)
+	c.lkRoom.SetDTMFOutput(c.media)
 
-	// Decoding pipeline (SIP -> LK)
-	audioHandler := c.audioCodec.DecodeRTP(c.lkRoomIn, c.audioType)
-	audioHandler = rtp.HandleJitter(c.audioCodec.Info().RTPClockRate, audioHandler)
-	mux := rtp.NewMux(nil)
-	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	mux.Register(c.audioType, newRTPStatsHandler(c.mon, c.audioCodec.Info().SDPName, audioHandler))
-	if c.dtmfType != 0 {
-		mux.Register(c.dtmfType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
-	}
-	c.rtpConn.OnRTP(mux)
-}
-
-func (c *outboundCall) SendDTMF(ctx context.Context, digits string) error {
-	c.mu.RLock()
-	running := c.mediaRunning
-	c.mu.RUnlock()
-	if !running {
-		return fmt.Errorf("call is not active")
-	}
-	// FIXME: c.media.WriteOffBand()
-	return nil
+	c.media.WriteAudioTo(c.lkRoomIn)
+	c.media.HandleDTMF(c.handleDTMF)
 }
 
 func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
@@ -303,7 +276,7 @@ func (c *outboundCall) setStatus(v CallStatus) {
 }
 
 func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
-	offer, err := sdpGenerateOffer(c.c.signalingIp, c.rtpConn.LocalAddr().Port)
+	offer, err := c.media.NewOffer()
 	if err != nil {
 		return err
 	}
@@ -322,23 +295,12 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	}
 	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
 
-	answer := sdp.SessionDescription{}
-	if err := answer.Unmarshal(c.sipInviteResp.Body()); err != nil {
-		return err
-	}
-	res, err := sdpGetAudioCodec(answer)
-	if err != nil {
-		c.log.Errorw("SIP SDP failed", err)
-		return err
-	}
-	c.log.Infow("selected codecs",
-		"audio-codec", res.Audio.Info().SDPName, "audio-rtp", res.AudioType,
-		"dtmf-rtp", res.DTMFType,
-	)
-
 	err = c.sipAccept(inviteReq, inviteResp)
 	if err != nil {
 		c.log.Errorw("SIP accept failed", err)
+		return err
+	}
+	if err := c.media.SetAnswer(c.sipInviteResp.Body()); err != nil {
 		return err
 	}
 	joinDur()
@@ -359,22 +321,6 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 			}
 		}
 	}
-
-	c.audioCodec = res.Audio
-	c.audioType = res.AudioType
-	c.dtmfType = res.DTMFType
-	if dst := sdpGetAudioDest(answer); dst != nil {
-		c.rtpConn.SetDestAddr(dst)
-	}
-
-	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", c.rtpConn))
-	c.rtpAudio = s.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
-	if c.dtmfType != 0 {
-		c.rtpDTMF = s.NewStream(c.dtmfType, dtmf.SampleRate)
-	}
-
-	// Encoding pipeline (LK -> SIP)
-	c.audioOut = c.audioCodec.EncodeRTP(c.rtpAudio)
 	return nil
 }
 
@@ -553,14 +499,9 @@ func (c *outboundCall) sipBye() error {
 	return nil
 }
 
-func (c *outboundCall) handleDTMF(p *rtp.Packet) error {
-	ev, ok := dtmf.DecodeRTP(p)
-	if !ok {
-		return nil
-	}
+func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	_ = c.lkRoom.SendData(&livekit.SipDTMF{
 		Code:  uint32(ev.Code),
 		Digit: string([]byte{ev.Digit}),
 	}, lksdk.WithDataPublishReliable(true))
-	return nil
 }

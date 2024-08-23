@@ -83,7 +83,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 	cases := []struct {
 		name  string
 		offer sdp.MediaDescription
-		exp   *sdpCodecResult
+		exp   *MediaConf
 	}{
 		{
 			name: "default",
@@ -97,7 +97,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g722.SDPName),
 				AudioType: 9,
 				DTMFType:  101,
@@ -115,7 +115,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g722.SDPName),
 				AudioType: 9,
 				DTMFType:  101,
@@ -132,7 +132,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "9 G722/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g722.SDPName),
 				AudioType: 9,
 			},
@@ -149,7 +149,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "103 telephone-event/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g722.SDPName),
 				AudioType: 9,
 				DTMFType:  103,
@@ -166,7 +166,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g711.ULawSDPName),
 				AudioType: 0,
 				DTMFType:  101,
@@ -183,7 +183,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g722.SDPName),
 				AudioType: 9,
 				DTMFType:  101,
@@ -212,7 +212,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
-			exp: &sdpCodecResult{
+			exp: &MediaConf{
 				Audio:     getCodec(g711.ULawSDPName),
 				AudioType: 0,
 				DTMFType:  101,

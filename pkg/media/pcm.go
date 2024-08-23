@@ -16,6 +16,8 @@ package media
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v3/pkg/media"
@@ -57,6 +59,10 @@ type frameWriterPCM16 struct {
 	sampleRate int
 }
 
+func (b *frameWriterPCM16) String() string {
+	return fmt.Sprintf("Frames(%d)", b.sampleRate)
+}
+
 func (b *frameWriterPCM16) SampleRate() int {
 	return b.sampleRate
 }
@@ -71,6 +77,9 @@ func (b *frameWriterPCM16) WriteSample(data PCM16Sample) error {
 }
 
 func NewPCM16BufferWriter(buf *PCM16Sample, sampleRate int) PCM16Writer {
+	if buf == nil {
+		panic("buffer must be set")
+	}
 	return &bufferWriterPCM16{
 		buf:        buf,
 		sampleRate: sampleRate,
@@ -78,8 +87,13 @@ func NewPCM16BufferWriter(buf *PCM16Sample, sampleRate int) PCM16Writer {
 }
 
 type bufferWriterPCM16 struct {
+	mu         sync.Mutex
 	buf        *PCM16Sample
 	sampleRate int
+}
+
+func (b *bufferWriterPCM16) String() string {
+	return fmt.Sprintf("Buffer(%d)", b.sampleRate)
 }
 
 func (b *bufferWriterPCM16) SampleRate() int {
@@ -87,11 +101,18 @@ func (b *bufferWriterPCM16) SampleRate() int {
 }
 
 func (b *bufferWriterPCM16) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = nil
 	return nil
 }
 
 func (b *bufferWriterPCM16) WriteSample(data PCM16Sample) error {
-	*b.buf = append(*b.buf, data...)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.buf != nil {
+		*b.buf = append(*b.buf, data...)
+	}
 	return nil
 }
 
@@ -143,6 +164,10 @@ type sampleWriter[T ~[]byte] struct {
 	w          MediaSampleWriter
 	sampleRate int
 	sampleDur  time.Duration
+}
+
+func (w *sampleWriter[T]) String() string {
+	return fmt.Sprintf("LKSamples(%d)", w.sampleRate)
 }
 
 func (w *sampleWriter[T]) SampleRate() int {
