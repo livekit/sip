@@ -15,6 +15,8 @@
 package g711
 
 import (
+	"fmt"
+
 	prtp "github.com/pion/rtp"
 
 	"github.com/livekit/sip/pkg/media"
@@ -54,6 +56,10 @@ type ULawDecoder struct {
 	buf media.PCM16Sample
 }
 
+func (d *ULawDecoder) String() string {
+	return fmt.Sprintf("PCMU(decode) -> %s", d.w)
+}
+
 func (d *ULawDecoder) SampleRate() int {
 	return d.w.SampleRate()
 }
@@ -84,6 +90,10 @@ func DecodeULaw(w media.PCM16Writer) ULawWriter {
 type ULawEncoder struct {
 	w   ULawWriter
 	buf ULawSample
+}
+
+func (e *ULawEncoder) String() string {
+	return fmt.Sprintf("PCMU(encode) -> %s", e.w)
 }
 
 func (e *ULawEncoder) SampleRate() int {

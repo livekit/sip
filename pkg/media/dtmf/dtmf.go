@@ -297,3 +297,9 @@ func Write(ctx context.Context, audio media.Writer[media.PCM16Sample], events *r
 		ts += step
 	}
 }
+
+type Writer interface {
+	WriteDTMF(ctx context.Context, ev string) error
+}
+
+type Handler func(ev Event)

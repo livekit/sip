@@ -15,6 +15,7 @@
 package media
 
 import (
+	"fmt"
 	"sync/atomic"
 )
 
@@ -28,6 +29,7 @@ type ReadCloser[T any] interface {
 }
 
 type Writer[T any] interface {
+	String() string
 	SampleRate() int
 	WriteSample(sample T) error
 }
@@ -49,18 +51,21 @@ func NopCloser[T any](w Writer[T]) WriteCloser[T] {
 	return &writeCloser[T]{w}
 }
 
-func NewSwitchWriter[T any](sampleRate int) *SwitchWriter[T] {
-	return &SwitchWriter[T]{
+func NewSwitchWriter(sampleRate int) *SwitchWriter {
+	if sampleRate <= 0 {
+		panic("invalid sample rate")
+	}
+	return &SwitchWriter{
 		sampleRate: sampleRate,
 	}
 }
 
-type SwitchWriter[T any] struct {
+type SwitchWriter struct {
 	sampleRate int
-	ptr        atomic.Pointer[WriteCloser[T]]
+	ptr        atomic.Pointer[PCM16Writer]
 }
 
-func (s *SwitchWriter[T]) Get() WriteCloser[T] {
+func (s *SwitchWriter) Get() PCM16Writer {
 	ptr := s.ptr.Load()
 	if ptr == nil {
 		return nil
@@ -70,11 +75,14 @@ func (s *SwitchWriter[T]) Get() WriteCloser[T] {
 
 // Swap sets an underlying writer and returns the old one.
 // Caller is responsible for closing the old writer.
-func (s *SwitchWriter[T]) Swap(w WriteCloser[T]) WriteCloser[T] {
-	var old *WriteCloser[T]
+func (s *SwitchWriter) Swap(w PCM16Writer) PCM16Writer {
+	var old *PCM16Writer
 	if w == nil {
 		old = s.ptr.Swap(nil)
 	} else {
+		if w.SampleRate() != s.sampleRate {
+			w = ResampleWriter(w, s.sampleRate)
+		}
 		old = s.ptr.Swap(&w)
 	}
 	if old == nil {
@@ -83,11 +91,19 @@ func (s *SwitchWriter[T]) Swap(w WriteCloser[T]) WriteCloser[T] {
 	return *old
 }
 
-func (s *SwitchWriter[T]) SampleRate() int {
+func (s *SwitchWriter) String() string {
+	w := s.Get()
+	return fmt.Sprintf("Switch(%d) -> %v", s.sampleRate, w)
+}
+
+func (s *SwitchWriter) SampleRate() int {
+	if s.sampleRate == 0 {
+		panic("switch writer not initialized")
+	}
 	return s.sampleRate
 }
 
-func (s *SwitchWriter[T]) Close() error {
+func (s *SwitchWriter) Close() error {
 	ptr := s.ptr.Swap(nil)
 	if ptr == nil {
 		return nil
@@ -95,7 +111,7 @@ func (s *SwitchWriter[T]) Close() error {
 	return (*ptr).Close()
 }
 
-func (s *SwitchWriter[T]) WriteSample(sample T) error {
+func (s *SwitchWriter) WriteSample(sample PCM16Sample) error {
 	w := s.Get()
 	if w == nil {
 		return nil

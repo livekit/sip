@@ -16,6 +16,7 @@ package webm
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math/rand"
 	"slices"
@@ -53,6 +54,10 @@ type writerPCM16 struct {
 	dur        time.Duration
 	ts         int64
 	buf        []byte
+}
+
+func (w *writerPCM16) String() string {
+	return fmt.Sprintf("WEBM(%d)", w.sampleRate)
 }
 
 func (w *writerPCM16) SampleRate() int {

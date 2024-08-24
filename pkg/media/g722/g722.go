@@ -15,6 +15,8 @@
 package g722
 
 import (
+	"fmt"
+
 	"github.com/gotranspile/g722"
 	prtp "github.com/pion/rtp"
 
@@ -66,6 +68,10 @@ type Decoder struct {
 	w   media.PCM16Writer
 }
 
+func (d *Decoder) String() string {
+	return fmt.Sprintf("G722(decode) -> %s", d.w)
+}
+
 func (d *Decoder) SampleRate() int {
 	return d.w.SampleRate()
 }
@@ -102,6 +108,10 @@ type Encoder struct {
 	e   *g722.Encoder
 	buf Sample
 	w   Writer
+}
+
+func (e *Encoder) String() string {
+	return fmt.Sprintf("G722(encode) -> %s", e.w)
 }
 
 func (e *Encoder) SampleRate() int {

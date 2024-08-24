@@ -15,6 +15,7 @@
 package rtp
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"sync"
 
@@ -163,6 +164,10 @@ type MediaStreamOut[T ~[]byte] struct {
 	sampleRate int
 }
 
+func (s *MediaStreamOut[T]) String() string {
+	return fmt.Sprintf("RTP(%d)", s.sampleRate)
+}
+
 func (s *MediaStreamOut[T]) SampleRate() int {
 	return s.sampleRate
 }
@@ -176,13 +181,17 @@ func (s *MediaStreamOut[T]) WriteSample(sample T) error {
 }
 
 func NewMediaStreamIn[T ~[]byte](w media.Writer[T]) *MediaStreamIn[T] {
-	return &MediaStreamIn[T]{w: w}
+	return &MediaStreamIn[T]{Writer: w}
 }
 
 type MediaStreamIn[T ~[]byte] struct {
-	w media.Writer[T]
+	Writer media.Writer[T]
+}
+
+func (s *MediaStreamIn[T]) String() string {
+	return fmt.Sprintf("RTP(%d) -> %s", s.Writer.SampleRate(), s.Writer)
 }
 
 func (s *MediaStreamIn[T]) HandleRTP(p *rtp.Packet) error {
-	return s.w.WriteSample(T(p.Payload))
+	return s.Writer.WriteSample(T(p.Payload))
 }
