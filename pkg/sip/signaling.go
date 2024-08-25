@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pion/sdp/v2"
+	"github.com/pion/sdp/v3"
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
@@ -90,16 +90,6 @@ func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
 			Value: styp + " " + codec.Codec.Info().SDPName,
 		})
 	}
-	slices.SortFunc(formats, func(a, b string) int {
-		if len(a) != len(b) {
-			if len(a) < len(b) {
-				return -1
-			} else if len(a) > len(b) {
-				return +1
-			}
-		}
-		return strings.Compare(a, b)
-	})
 	if dtmfType > 0 {
 		attrs = append(attrs, sdp.Attribute{
 			Key: "fmtp", Value: fmt.Sprintf("%d 0-16", dtmfType),

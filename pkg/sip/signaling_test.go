@@ -17,7 +17,7 @@ package sip
 import (
 	"testing"
 
-	"github.com/pion/sdp/v2"
+	"github.com/pion/sdp/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/media"
@@ -36,7 +36,7 @@ func TestSDPMediaOffer(t *testing.T) {
 				Media:   "audio",
 				Port:    sdp.RangedPort{Value: port},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0", "8", "9", "101"},
+				Formats: []string{"9", "0", "8", "101"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "9 G722/8000"},
@@ -89,7 +89,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 			name: "default",
 			offer: sdp.MediaDescription{
 				MediaName: sdp.MediaName{
-					Formats: []string{"0", "8", "9", "101"},
+					Formats: []string{"0", "9", "8", "101"},
 				},
 				Attributes: []sdp.Attribute{
 					{Key: "rtpmap", Value: "0 PCMU/8000"},
@@ -239,7 +239,7 @@ func TestSDPMediaAnswer(t *testing.T) {
 				Media:   "audio",
 				Port:    sdp.RangedPort{Value: port},
 				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0", "8", "9", "101"},
+				Formats: []string{"9", "0", "8", "101"},
 			},
 			Attributes: []sdp.Attribute{
 				{Key: "rtpmap", Value: "9 G722/8000"},
