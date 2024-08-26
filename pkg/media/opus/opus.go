@@ -2,7 +2,7 @@
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
-// You may obtain a copy of the License açt
+// You may obtain a copy of the License at
 //
 // 	http://www.apache.org/licenses/LICENSE-2.0
 //
@@ -15,10 +15,11 @@
 package opus
 
 import (
-	"strings"
+	"errors"
 
 	"gopkg.in/hraban/opus.v2"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 )
@@ -65,11 +66,11 @@ func (d *decoder) SampleRate() int {
 func (d *decoder) WriteSample(in Sample) error {
 	n, err := d.dec.Decode(in, d.buf)
 	if err != nil {
-		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore single corruption errors
-		if !strings.Contains(err.Error(), "corrupted stream") || d.successiveErrorCount >= 1 {
+		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore small amount of corruption errors
+		if !errors.Is(err, opus.ErrInvalidPacket) || d.successiveErrorCount >= 5 {
 			return err
 		}
-		log.Debugw("opus decoder failed decoding a sample")
+		logger.Debugw("opus decoder failed decoding a sample")
 		d.successiveErrorCount++
 		return nil
 	}
