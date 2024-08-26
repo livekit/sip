@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/audiotest"
@@ -139,7 +140,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		inp := p.mix.NewInput()
 		defer inp.Close()
 
-		odec, err := opus.Decode(inp, channels)
+		odec, err := opus.Decode(inp, channels, logger.GetLogger())
 		if err != nil {
 			return
 		}
@@ -190,7 +191,7 @@ func (p *Participant) newAudioTrack() (media.Writer[media.PCM16Sample], error) {
 		return nil, err
 	}
 	ow := media.FromSampleWriter[opus.Sample](track, RoomSampleRate, rtp.DefFrameDur)
-	pw, err := opus.Encode(ow, channels)
+	pw, err := opus.Encode(ow, channels, logger.GetLogger())
 	if err != nil {
 		return nil, err
 	}

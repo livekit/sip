@@ -16,6 +16,8 @@ package sip
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
@@ -120,19 +122,25 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					r.log.Warnw("ignoring track, room not ready", nil, "trackID", pub.SID())
 					return
 				}
-				mTrack := r.NewTrack()
-				defer mTrack.Close()
 
-				odec, err := opus.Decode(mTrack, channels)
-				if err != nil {
-					r.log.Errorw("cannot create opus decoder", err, "trackID", pub.SID())
-					return
-				}
-				defer odec.Close()
+				go func() {
+					mTrack := r.NewTrack()
+					defer mTrack.Close()
 
-				var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
-				h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
-				_ = rtp.HandleLoop(track, h)
+					odec, err := opus.Decode(mTrack, channels, r.log)
+					if err != nil {
+						r.log.Errorw("cannot create opus decoder", err, "trackID", pub.SID())
+						return
+					}
+					defer odec.Close()
+
+					var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
+					h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
+					err = rtp.HandleLoop(track, h)
+					if err != nil && errors.Unwrap(err) != io.EOF {
+						logger.Infow("room track rtp handler returned with failure", "error", err)
+					}
+				}()
 			},
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
@@ -290,7 +298,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (media.WriteCloser[media.PCM1
 		return nil, err
 	}
 	ow := media.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
-	pw, err := opus.Encode(ow, channels)
+	pw, err := opus.Encode(ow, channels, r.log)
 	if err != nil {
 		return nil, err
 	}

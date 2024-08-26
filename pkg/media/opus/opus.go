@@ -15,10 +15,12 @@
 package opus
 
 import (
+	"errors"
 	"fmt"
 
 	"gopkg.in/hraban/opus.v2"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 )
@@ -27,34 +29,39 @@ type Sample []byte
 
 type Writer = media.WriteCloser[Sample]
 
-func Decode(w media.PCM16Writer, channels int) (Writer, error) {
+func Decode(w media.PCM16Writer, channels int, logger logger.Logger) (Writer, error) {
 	dec, err := opus.NewDecoder(w.SampleRate(), channels)
 	if err != nil {
 		return nil, err
 	}
 	return &decoder{
-		w:   w,
-		dec: dec,
-		buf: make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+		w:      w,
+		dec:    dec,
+		buf:    make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+		logger: logger,
 	}, nil
 }
 
-func Encode(w Writer, channels int) (media.PCM16Writer, error) {
+func Encode(w Writer, channels int, logger logger.Logger) (media.PCM16Writer, error) {
 	enc, err := opus.NewEncoder(w.SampleRate(), channels, opus.AppVoIP)
 	if err != nil {
 		return nil, err
 	}
 	return &encoder{
-		w:   w,
-		enc: enc,
-		buf: make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+		w:      w,
+		enc:    enc,
+		buf:    make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+		logger: logger,
 	}, nil
 }
 
 type decoder struct {
-	w   media.PCM16Writer
-	dec *opus.Decoder
-	buf media.PCM16Sample
+	w      media.PCM16Writer
+	dec    *opus.Decoder
+	buf    media.PCM16Sample
+	logger logger.Logger
+
+	successiveErrorCount int
 }
 
 func (d *decoder) String() string {
@@ -68,8 +75,15 @@ func (d *decoder) SampleRate() int {
 func (d *decoder) WriteSample(in Sample) error {
 	n, err := d.dec.Decode(in, d.buf)
 	if err != nil {
-		return err
+		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore small amount of corruption errors
+		if !errors.Is(err, opus.ErrInvalidPacket) || d.successiveErrorCount >= 5 {
+			return err
+		}
+		d.logger.Debugw("opus decoder failed decoding a sample")
+		d.successiveErrorCount++
+		return nil
 	}
+	d.successiveErrorCount = 0
 	return d.w.WriteSample(d.buf[:n])
 }
 
@@ -78,9 +92,10 @@ func (d *decoder) Close() error {
 }
 
 type encoder struct {
-	w   Writer
-	enc *opus.Encoder
-	buf Sample
+	w      Writer
+	enc    *opus.Encoder
+	buf    Sample
+	logger logger.Logger
 }
 
 func (e *encoder) String() string {
