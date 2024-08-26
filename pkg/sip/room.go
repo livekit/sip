@@ -127,7 +127,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					mTrack := r.NewTrack()
 					defer mTrack.Close()
 
-					odec, err := opus.Decode(mTrack, channels)
+					odec, err := opus.Decode(mTrack, channels, r.log)
 					if err != nil {
 						r.log.Errorw("cannot create opus decoder", err, "trackID", pub.SID())
 						return
@@ -298,7 +298,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (media.WriteCloser[media.PCM1
 		return nil, err
 	}
 	ow := media.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
-	pw, err := opus.Encode(ow, channels)
+	pw, err := opus.Encode(ow, channels, r.log)
 	if err != nil {
 		return nil, err
 	}

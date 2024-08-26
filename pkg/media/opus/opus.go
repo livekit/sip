@@ -29,34 +29,38 @@ type Sample []byte
 
 type Writer = media.WriteCloser[Sample]
 
-func Decode(w media.PCM16Writer, channels int) (Writer, error) {
+func Decode(w media.PCM16Writer, channels int, logger logger.Logger) (Writer, error) {
 	dec, err := opus.NewDecoder(w.SampleRate(), channels)
 	if err != nil {
 		return nil, err
 	}
 	return &decoder{
-		w:   w,
-		dec: dec,
-		buf: make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+		w:      w,
+		dec:    dec,
+		buf:    make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+		logger: logger,
 	}, nil
 }
 
-func Encode(w Writer, channels int) (media.PCM16Writer, error) {
+func Encode(w Writer, channels int, logger logger.Logger) (media.PCM16Writer, error) {
 	enc, err := opus.NewEncoder(w.SampleRate(), channels, opus.AppVoIP)
 	if err != nil {
 		return nil, err
 	}
 	return &encoder{
-		w:   w,
-		enc: enc,
-		buf: make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+		w:      w,
+		enc:    enc,
+		buf:    make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+		logger: logger,
 	}, nil
 }
 
 type decoder struct {
-	w                    media.PCM16Writer
-	dec                  *opus.Decoder
-	buf                  media.PCM16Sample
+	w      media.PCM16Writer
+	dec    *opus.Decoder
+	buf    media.PCM16Sample
+	logger logger.Logger
+
 	successiveErrorCount int
 }
 
@@ -75,7 +79,7 @@ func (d *decoder) WriteSample(in Sample) error {
 		if !errors.Is(err, opus.ErrInvalidPacket) || d.successiveErrorCount >= 5 {
 			return err
 		}
-		logger.Debugw("opus decoder failed decoding a sample")
+		d.logger.Debugw("opus decoder failed decoding a sample")
 		d.successiveErrorCount++
 		return nil
 	}
@@ -88,9 +92,10 @@ func (d *decoder) Close() error {
 }
 
 type encoder struct {
-	w   Writer
-	enc *opus.Encoder
-	buf Sample
+	w      Writer
+	enc    *opus.Encoder
+	buf    Sample
+	logger logger.Logger
 }
 
 func (e *encoder) String() string {
