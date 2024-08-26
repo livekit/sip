@@ -154,6 +154,10 @@ type PipeWriter[T ~[]E, E comparable] struct {
 	sampleRate int
 }
 
+func (w *PipeWriter[T, E]) String() string {
+	return "PipeWriter"
+}
+
 // SampleRate implements the Writer interface.
 func (w *PipeWriter[T, E]) SampleRate() int {
 	return w.sampleRate

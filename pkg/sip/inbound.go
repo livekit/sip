@@ -17,13 +17,12 @@ package sip
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"github.com/pion/sdp/v2"
-
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
@@ -224,53 +223,51 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 type inboundCall struct {
-	s             *Server
-	log           logger.Logger
-	mon           *stats.CallMonitor
-	id            string
-	tag           string
-	extraAttrs    map[string]string
-	ctx           context.Context
-	cancel        func()
-	inviteReq     *sip.Request
-	inviteResp    *sip.Response
-	from          *sip.FromHeader
-	to            *sip.ToHeader
-	src           string
-	rtpConn       *rtp.Conn
-	audioCodec    rtp.AudioCodec
-	audioHandler  atomic.Pointer[rtp.Handler]
-	audioReceived atomic.Bool
-	audioRecvChan chan struct{}
-	audioType     byte
-	dtmf          chan dtmf.Event // buffered
-	lkRoom        *Room           // LiveKit room; only active after correct pin is entered
-	callDur       func() time.Duration
-	joinDur       func() time.Duration
-	forwardDTMF   atomic.Bool
-	done          atomic.Bool
+	s           *Server
+	log         logger.Logger
+	mon         *stats.CallMonitor
+	id          string
+	tag         string
+	extraAttrs  map[string]string
+	ctx         context.Context
+	cancel      func()
+	inviteReq   *sip.Request
+	inviteResp  *sip.Response
+	from        *sip.FromHeader
+	to          *sip.ToHeader
+	src         string
+	media       *MediaPort
+	dtmf        chan dtmf.Event // buffered
+	lkRoom      *Room           // LiveKit room; only active after correct pin is entered
+	callDur     func() time.Duration
+	joinDur     func() time.Duration
+	forwardDTMF atomic.Bool
+	done        atomic.Bool
 }
 
 func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, tag string, from *sip.FromHeader, to *sip.ToHeader, src string, extra map[string]string) *inboundCall {
 	c := &inboundCall{
-		s:             s,
-		log:           log,
-		mon:           mon,
-		id:            id,
-		tag:           tag,
-		from:          from,
-		to:            to,
-		src:           src,
-		extraAttrs:    extra,
-		audioRecvChan: make(chan struct{}),
-		dtmf:          make(chan dtmf.Event, 10),
-		lkRoom:        NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
+		s:          s,
+		log:        log,
+		mon:        mon,
+		id:         id,
+		tag:        tag,
+		from:       from,
+		to:         to,
+		src:        src,
+		extraAttrs: extra,
+		dtmf:       make(chan dtmf.Event, 10),
+		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
 	s.activeCalls[tag] = c
 	s.cmu.Unlock()
 	return c
+}
+
+func (c *inboundCall) closeWithTimeout() {
+	c.close(true, callDropped, "media-timeout")
 }
 
 func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip.ServerTransaction, conf *config.Config) {
@@ -365,7 +362,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		delay.Stop()
 		c.close(false, CallHangup, "hangup")
 		return
-	case <-c.audioRecvChan:
+	case <-c.media.Timeout():
+		delay.Stop()
+		c.closeWithTimeout()
+		return
+	case <-c.media.Received():
 		delay.Stop()
 	case <-delay.C:
 	}
@@ -376,16 +377,24 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		c.close(true, callDropped, "unreachable-path")
 		return
 	case DispatchRequestPin:
-		c.pinPrompt(ctx)
+		var ok bool
+		disp, ok = c.pinPrompt(ctx)
+		if !ok {
+			return // already sent response
+		}
+		// ok
 	case DispatchAccept:
-		c.joinRoom(ctx, disp.Room)
+		// ok
 	}
+	c.joinRoom(ctx, disp.Room)
 	// Wait for the caller to terminate the call.
 	select {
 	case <-ctx.Done():
 		c.close(false, CallHangup, "hangup")
 	case <-c.lkRoom.Closed():
 		c.close(false, callDropped, "removed")
+	case <-c.media.Timeout():
+		c.closeWithTimeout()
 	}
 }
 
@@ -427,59 +436,36 @@ func (c *inboundCall) sendBye() {
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
-	offer := sdp.SessionDescription{}
-	if err := offer.Unmarshal(offerData); err != nil {
-		return nil, err
-	}
-	res, err := sdpGetAudioCodec(offer)
+	mp, err := NewMediaPort(c.log, c.mon, c.s.signalingIp, conf.RTPPort, RoomSampleRate)
 	if err != nil {
 		return nil, err
 	}
-	c.log.Infow("Using codecs",
-		"audioCodec", res.Audio.Info().SDPName, "audioRTP", res.AudioType,
-		"dtmfRTP", res.DTMFType,
-	)
+	c.media = mp
+	c.media.SetDTMFAudio(conf.AudioDTMF)
 
-	conn := rtp.NewConn(func() {
-		c.close(true, callDropped, "media-timeout")
-	})
-	mux := rtp.NewMux(nil)
-	mux.SetDefault(newRTPStatsHandler(c.mon, "", nil))
-	var audioHandler rtp.Handler = rtp.HandlerFunc(c.handleAudio)
-	audioHandler = rtp.HandleJitter(res.Audio.Info().RTPClockRate, audioHandler)
-	mux.Register(res.AudioType, newRTPStatsHandler(c.mon, res.Audio.Info().SDPName, audioHandler))
-	if res.DTMFType != 0 {
-		mux.Register(res.DTMFType, newRTPStatsHandler(c.mon, dtmf.SDPName, rtp.HandlerFunc(c.handleDTMF)))
-	}
-	conn.OnRTP(mux)
-	if dst := sdpGetAudioDest(offer); dst != nil {
-		conn.SetDestAddr(dst)
-	}
-	if err := conn.ListenAndServe(conf.RTPPort.Start, conf.RTPPort.End, "0.0.0.0"); err != nil {
+	answerData, mconf, err := mp.SetOffer(offerData)
+	if err != nil {
 		return nil, err
 	}
-	c.log.Debugw("begin listening on UDP", "port", conn.LocalAddr().Port)
-	c.rtpConn = conn
-	c.audioCodec = res.Audio
-	c.audioType = res.AudioType
 
-	// Encoding pipeline (LK -> SIP)
-	// Must be created earlier to send the pin prompts.
-	s := rtp.NewSeqWriter(newRTPStatsWriter(c.mon, "audio", conn))
-	sa := s.NewStream(c.audioType, c.audioCodec.Info().RTPClockRate)
-	audio := c.audioCodec.EncodeRTP(sa)
-	if w := c.lkRoom.SwapOutput(audio); w != nil {
+	if err = c.media.SetConfig(mconf); err != nil {
+		return nil, err
+	}
+	if mconf.DTMFType != 0 {
+		c.media.HandleDTMF(c.handleDTMF)
+	}
+
+	// Must be set earlier to send the pin prompts.
+	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
 		_ = w.Close()
 	}
-	if res.DTMFType != 0 {
-		sd := s.NewStream(res.DTMFType, dtmf.SampleRate)
-		c.lkRoom.SetDTMFOutput(sd)
+	if mconf.DTMFType != 0 {
+		c.lkRoom.SetDTMFOutput(c.media)
 	}
-
-	return sdpGenerateAnswer(offer, c.s.signalingIp, conn.LocalAddr().Port, res)
+	return answerData, nil
 }
 
-func (c *inboundCall) pinPrompt(ctx context.Context) {
+func (c *inboundCall) pinPrompt(ctx context.Context) (disp CallDispatch, _ bool) {
 	c.log.Infow("Requesting Pin for SIP call")
 	const pinLimit = 16
 	c.playAudio(ctx, c.s.res.enterPin)
@@ -488,11 +474,14 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return disp, false
+		case <-c.media.Timeout():
+			c.closeWithTimeout()
+			return disp, false
 		case b, ok := <-c.dtmf:
 			if !ok {
 				c.Close()
-				return
+				return disp, false
 			}
 			if b.Digit == 0 {
 				continue // unrecognized
@@ -502,7 +491,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 				noPin = pin == ""
 
 				c.log.Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
-				disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
 					ID:         c.id,
 					FromUser:   c.from.Address.User,
 					ToUser:     c.to.Address.User,
@@ -521,18 +510,17 @@ func (c *inboundCall) pinPrompt(ctx context.Context) {
 					c.log.Infow("Rejecting call", "pin", pin, "noPin", noPin)
 					c.playAudio(ctx, c.s.res.wrongPin)
 					c.close(false, callDropped, "wrong-pin")
-					return
+					return disp, false
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
-				c.joinRoom(ctx, disp.Room)
-				return
+				return disp, true
 			}
 			// Gather pin numbers
 			pin += string(b.Digit)
 			if len(pin) > pinLimit {
 				c.playAudio(ctx, c.s.res.wrongPin)
 				c.close(false, callDropped, "wrong-pin")
-				return
+				return disp, false
 			}
 		}
 	}
@@ -570,11 +558,9 @@ func (c *inboundCall) Close() error {
 }
 
 func (c *inboundCall) closeMedia() {
-	c.audioHandler.Store(nil)
 	c.lkRoom.Close()
-	if c.rtpConn != nil {
-		c.rtpConn.Close()
-		c.rtpConn = nil
+	if c.media != nil {
+		c.media.Close()
 	}
 }
 
@@ -590,16 +576,6 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	r.LocalParticipant.SetAttributes(map[string]string{
 		AttrSIPCallStatus: string(v),
 	})
-}
-
-func (c *inboundCall) handleAudio(p *rtp.Packet) error {
-	if c.audioReceived.CompareAndSwap(false, true) {
-		close(c.audioRecvChan)
-	}
-	if h := c.audioHandler.Load(); h != nil {
-		return (*h).HandleRTP(p)
-	}
-	return nil
 }
 
 func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig) error {
@@ -621,16 +597,14 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	if err != nil {
 		return err
 	}
-	local, err := c.lkRoom.NewParticipantTrack(c.audioCodec.Info().SampleRate)
+	local, err := c.lkRoom.NewParticipantTrack(RoomSampleRate)
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err
 	}
+	c.media.WriteAudioTo(local)
 
-	// Decoding pipeline (SIP -> LK)
-	var h rtp.Handler = c.audioCodec.DecodeRTP(local, c.audioType)
-	c.audioHandler.Store(&h)
-
+	c.lkRoom.Subscribe() // TODO: postpone
 	return nil
 }
 
@@ -648,31 +622,35 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig) {
 	if err := c.createLiveKitParticipant(ctx, rconf); err != nil {
 		c.log.Errorw("Cannot create LiveKit participant", err)
 		c.close(true, callDropped, "participant-failed")
+		return
 	}
 }
 
 func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample) {
 	t := c.lkRoom.NewTrack()
 	defer t.Close()
-	t.PlayAudio(ctx, embedSampleRate, frames)
+
+	sampleRate := embedSampleRate
+	if t.SampleRate() != sampleRate {
+		frames = slices.Clone(frames)
+		for i := range frames {
+			frames[i] = media.Resample(nil, t.SampleRate(), frames[i], sampleRate)
+		}
+	}
+	_ = media.PlayAudio[media.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
 }
 
-func (c *inboundCall) handleDTMF(p *rtp.Packet) error {
-	tone, ok := dtmf.DecodeRTP(p)
-	if !ok {
-		return nil
-	}
+func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	if c.forwardDTMF.Load() {
 		_ = c.lkRoom.SendData(&livekit.SipDTMF{
 			Code:  uint32(tone.Code),
 			Digit: string([]byte{tone.Digit}),
 		}, lksdk.WithDataPublishReliable(true))
-		return nil
+		return
 	}
 	// We should have enough buffer here.
 	select {
 	case c.dtmf <- tone:
 	default:
 	}
-	return nil
 }

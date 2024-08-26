@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"slices"
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
@@ -46,14 +45,15 @@ type ParticipantInfo struct {
 }
 
 type Room struct {
-	log     logger.Logger
-	room    *lksdk.Room
-	mix     *mixer.Mixer
-	out     *media.SwitchWriter[media.PCM16Sample]
-	outDtmf atomic.Pointer[rtp.Stream]
-	p       ParticipantInfo
-	ready   atomic.Bool
-	stopped core.Fuse
+	log       logger.Logger
+	room      *lksdk.Room
+	mix       *mixer.Mixer
+	out       *media.SwitchWriter
+	outDtmf   atomic.Pointer[dtmf.Writer]
+	p         ParticipantInfo
+	ready     atomic.Bool
+	subscribe atomic.Bool
+	stopped   core.Fuse
 }
 
 type ParticipantConfig struct {
@@ -71,7 +71,7 @@ type RoomConfig struct {
 }
 
 func NewRoom(log logger.Logger) *Room {
-	r := &Room{log: log, out: media.NewSwitchWriter[media.PCM16Sample](RoomSampleRate)}
+	r := &Room{log: log, out: media.NewSwitchWriter(RoomSampleRate)}
 	r.mix = mixer.NewMixer(r.out, rtp.DefFrameDur)
 	return r
 }
@@ -90,6 +90,15 @@ func (r *Room) Room() *lksdk.Room {
 	return r.room
 }
 
+func (r *Room) subscribeTo(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	if publication.Kind() != lksdk.TrackKindAudio {
+		return
+	}
+	if err := publication.SetSubscribed(true); err != nil {
+		r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
+	}
+}
+
 func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	if rconf.WsUrl == "" {
 		rconf.WsUrl = conf.WsUrl
@@ -100,16 +109,14 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 		Identity: partConf.Identity,
 		Name:     partConf.Name,
 	}
-	handleTrackPublished := func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-		if publication.Kind() == lksdk.TrackKindAudio {
-			if err := publication.SetSubscribed(true); err != nil {
-				r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
-			}
-		}
-	}
 	roomCallback := &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackPublished: handleTrackPublished,
+			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				if !r.subscribe.Load() {
+					return // will subscribe later
+				}
+				r.subscribeTo(publication, rp)
+			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 				if !r.ready.Load() {
 					r.log.Warnw("ignoring track, room not ready", nil, "trackID", pub.SID())
@@ -140,7 +147,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 				case *livekit.SipDTMF:
 					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
 					//       DTMF audio tone will be automatically mixed in any case.
-					r.sendDTMF(data, conf.AudioDTMF)
+					r.sendDTMF(data)
 				}
 			},
 		},
@@ -185,17 +192,24 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	r.p.Identity = r.room.LocalParticipant.Identity()
 	room.LocalParticipant.SetAttributes(partConf.Attributes)
 	r.ready.Store(true)
+	r.subscribe.Store(false) // already false, but keep for visibility
 
-	// since TrackPublished isn't fired for tracks published *before* the participant is in the room, we'll
-	// need to handle them manually
-	for _, rp := range room.GetRemoteParticipants() {
+	// Not subscribing to any tracks just yet!
+	return nil
+}
+
+func (r *Room) Subscribe() {
+	if r.room == nil {
+		return
+	}
+	r.subscribe.Store(true)
+	for _, rp := range r.room.GetRemoteParticipants() {
 		for _, pub := range rp.TrackPublications() {
 			if remotePub, ok := pub.(*lksdk.RemoteTrackPublication); ok {
-				handleTrackPublished(remotePub, rp)
+				r.subscribeTo(remotePub, rp)
 			}
 		}
 	}
-	return nil
 }
 
 func (r *Room) Output() media.Writer[media.PCM16Sample] {
@@ -222,38 +236,28 @@ func (r *Room) CloseOutput() error {
 	return w.Close()
 }
 
-func (r *Room) SetDTMFOutput(out *rtp.Stream) {
+func (r *Room) SetDTMFOutput(w dtmf.Writer) {
 	if r == nil {
 		return
 	}
-	if out == nil {
+	if w == nil {
 		r.outDtmf.Store(nil)
 		return
 	}
-	r.outDtmf.Store(out)
+	r.outDtmf.Store(&w)
 }
 
-func (r *Room) sendDTMF(msg *livekit.SipDTMF, audio bool) {
-	outAudio := r.Output()
-	if !audio {
-		outAudio = nil
-	}
+func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
 	outDTMF := r.outDtmf.Load()
-	if outAudio == nil && outDTMF == nil {
+	if outDTMF == nil {
 		r.log.Infow("ignoring dtmf", "digit", msg.Digit)
 		return
-	}
-	if outAudio != nil {
-		// We should still mix other audio too. Need a separate track for DTMF tones.
-		t := r.NewTrack()
-		defer t.Close()
-		outAudio = t
 	}
 	// TODO: Separate goroutine?
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r.log.Infow("forwarding dtmf to sip", "digit", msg.Digit)
-	_ = dtmf.Write(ctx, outAudio, outDTMF, msg.Digit)
+	_ = (*outDTMF).WriteDTMF(ctx, msg.Digit)
 }
 
 func (r *Room) Close() error {
@@ -261,6 +265,7 @@ func (r *Room) Close() error {
 		return nil
 	}
 	r.ready.Store(false)
+	r.subscribe.Store(false)
 	err := r.CloseOutput()
 	r.SetDTMFOutput(nil)
 	if r.room != nil {
@@ -307,32 +312,6 @@ func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) 
 	return r.room.LocalParticipant.PublishDataPacket(data, opts...)
 }
 
-func (r *Room) NewTrack() *Track {
-	return &Track{inp: r.mix.NewInput()}
-}
-
-type Track struct {
-	inp *mixer.Input
-}
-
-func (t *Track) Close() error {
-	return t.inp.Close()
-}
-
-func (t *Track) PlayAudio(ctx context.Context, sampleRate int, frames []media.PCM16Sample) {
-	if t.SampleRate() != sampleRate {
-		frames = slices.Clone(frames)
-		for i := range frames {
-			frames[i] = media.Resample(nil, t.SampleRate(), frames[i], sampleRate)
-		}
-	}
-	_ = media.PlayAudio[media.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
-}
-
-func (t *Track) SampleRate() int {
-	return t.inp.SampleRate()
-}
-
-func (t *Track) WriteSample(pcm media.PCM16Sample) error {
-	return t.inp.WriteSample(pcm)
+func (r *Room) NewTrack() *mixer.Input {
+	return r.mix.NewInput()
 }

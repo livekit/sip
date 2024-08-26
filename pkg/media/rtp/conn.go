@@ -32,21 +32,35 @@ const (
 )
 
 func NewConn(timeoutCallback func()) *Conn {
+	return NewConnWith(nil, timeoutCallback)
+}
+
+func NewConnWith(conn UDPConn, timeoutCallback func()) *Conn {
 	c := &Conn{
-		readBuf: make([]byte, 1500), // MTU
+		readBuf:  make([]byte, 1500), // MTU
+		received: make(chan struct{}),
+		conn:     conn,
 	}
 	if timeoutCallback != nil {
-		c.onTimeout(timeoutCallback)
+		go c.onTimeout(timeoutCallback)
 	}
 	return c
 }
 
+type UDPConn interface {
+	LocalAddr() net.Addr
+	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
+	ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error)
+	Close() error
+}
+
 type Conn struct {
 	wmu         sync.Mutex
-	conn        *net.UDPConn
+	conn        UDPConn
 	closed      core.Fuse
 	readBuf     []byte
 	packetCount atomic.Uint64
+	received    chan struct{}
 
 	dest  atomic.Pointer[net.UDPAddr]
 	onRTP atomic.Pointer[Handler]
@@ -67,6 +81,11 @@ func (c *Conn) SetDestAddr(addr *net.UDPAddr) {
 	c.dest.Store(addr)
 }
 
+// Received chan is closed once Conn receives at least one RTP packet.
+func (c *Conn) Received() <-chan struct{} {
+	return c.received
+}
+
 func (c *Conn) OnRTP(h Handler) {
 	if c == nil {
 		return
@@ -82,6 +101,7 @@ func (c *Conn) Close() error {
 	if c == nil {
 		return nil
 	}
+	c.OnRTP(nil)
 	c.closed.Once(func() {
 		c.conn.Close()
 	})
@@ -89,6 +109,9 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
+	if c.conn != nil {
+		return nil
+	}
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0"
 	}
@@ -124,7 +147,9 @@ func (c *Conn) readLoop() {
 			continue
 		}
 
-		c.packetCount.Add(1)
+		if c.packetCount.Add(1) == 1 { // first packet
+			close(c.received)
+		}
 		if h := c.onRTP.Load(); h != nil {
 			_ = (*h).HandleRTP(&p)
 		}
@@ -142,7 +167,7 @@ func (c *Conn) WriteRTP(p *rtp.Packet) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	_, err = c.conn.WriteTo(data, addr)
+	_, err = c.conn.WriteToUDP(data, addr)
 	return err
 }
 
@@ -160,29 +185,27 @@ func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
 }
 
 func (c *Conn) onTimeout(timeoutCallback func()) {
-	go func() {
-		ticker := time.NewTicker(timeoutCheckInterval)
-		defer ticker.Stop()
+	ticker := time.NewTicker(timeoutCheckInterval)
+	defer ticker.Stop()
 
-		start := time.Now()
+	start := time.Now()
 
-		var lastPacketCount uint64
-		for {
-			select {
-			case <-c.closed.Watch():
-				return
-			case <-ticker.C:
-				currentPacketCount := c.packetCount.Load()
-				if currentPacketCount == lastPacketCount {
-					if lastPacketCount == 0 && time.Since(start) < timeoutMediaInitial {
-						continue
-					}
-					timeoutCallback()
-					return
+	var lastPackets uint64
+	for {
+		select {
+		case <-c.closed.Watch():
+			return
+		case <-ticker.C:
+			curPackets := c.packetCount.Load()
+			if curPackets == lastPackets {
+				if lastPackets == 0 && time.Since(start) < timeoutMediaInitial {
+					continue
 				}
-
-				lastPacketCount = currentPacketCount
+				timeoutCallback()
+				return
 			}
+
+			lastPackets = curPackets
 		}
-	}()
+	}
 }

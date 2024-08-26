@@ -20,7 +20,7 @@ require (
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.29
 	github.com/pion/rtp v1.8.6
-	github.com/pion/sdp/v2 v2.4.0
+	github.com/pion/sdp/v3 v3.0.9
 	github.com/pion/webrtc/v3 v3.2.47
 	github.com/prometheus/client_golang v1.19.1
 	github.com/sirupsen/logrus v1.9.3
@@ -87,7 +87,6 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.14 // indirect
 	github.com/pion/sctp v1.8.16 // indirect
-	github.com/pion/sdp/v3 v3.0.9 // indirect
 	github.com/pion/srtp/v2 v2.0.18 // indirect
 	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/transport/v2 v2.2.5 // indirect
@@ -124,4 +123,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240820220653-befde351a575
+replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240824110704-b2c462453d68

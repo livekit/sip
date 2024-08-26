@@ -160,25 +160,10 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if err != nil {
 		return nil, err
 	}
-	// Start actual SIP call async.
-	go func() {
-		call.mon.CallStart()
-		defer call.mon.CallEnd()
-		ctx := context.WithoutCancel(ctx)
-		err := call.ConnectSIP(ctx)
-		if err != nil {
-			log.Errorw("SIP call failed", err)
-			call.CloseWithReason(callDropped, "connect error")
-			return
-		}
-		select {
-		case <-call.Disconnected():
-			call.CloseWithReason(callDropped, "removed")
-		case <-call.Closed():
-		}
-	}()
-
 	p := call.Participant()
+	// Start actual SIP call async.
+	go call.Start(context.WithoutCancel(ctx))
+
 	return &rpc.InternalCreateSIPParticipantResponse{
 		ParticipantId:       p.ID,
 		ParticipantIdentity: p.Identity,

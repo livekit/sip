@@ -58,7 +58,11 @@ func CodecEnabled(c Codec) bool {
 	if c == nil {
 		return false
 	}
-	name := strings.ToLower(c.Info().SDPName)
+	return CodecEnabledByName(c.Info().SDPName)
+}
+
+func CodecEnabledByName(name string) bool {
+	name = strings.ToLower(name)
 	_, dis := disabled[name]
 	return !dis
 }

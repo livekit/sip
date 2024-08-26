@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pion/sdp/v2"
+	"github.com/pion/sdp/v3"
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
@@ -90,16 +90,6 @@ func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
 			Value: styp + " " + codec.Codec.Info().SDPName,
 		})
 	}
-	slices.SortFunc(formats, func(a, b string) int {
-		if len(a) != len(b) {
-			if len(a) < len(b) {
-				return -1
-			} else if len(a) > len(b) {
-				return +1
-			}
-		}
-		return strings.Compare(a, b)
-	})
 	if dtmfType > 0 {
 		attrs = append(attrs, sdp.Attribute{
 			Key: "fmtp", Value: fmt.Sprintf("%d 0-16", dtmfType),
@@ -123,7 +113,7 @@ func sdpMediaOffer(rtpListenerPort int) []*sdp.MediaDescription {
 	}
 }
 
-func sdpAnswerMediaDesc(rtpListenerPort int, res *sdpCodecResult) []*sdp.MediaDescription {
+func sdpAnswerMediaDesc(rtpListenerPort int, res *MediaConf) []*sdp.MediaDescription {
 	// Static compiler check for frame duration hardcoded below.
 	var _ = [1]struct{}{}[20*time.Millisecond-rtp.DefFrameDur]
 
@@ -192,8 +182,7 @@ func sdpGenerateOffer(publicIp string, rtpListenerPort int) ([]byte, error) {
 	return data, err
 }
 
-func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, rtpListenerPort int, res *sdpCodecResult) ([]byte, error) {
-
+func sdpGenerateAnswer(offer *sdp.SessionDescription, publicIp string, rtpListenerPort int, res *MediaConf) ([]byte, error) {
 	answer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
@@ -224,7 +213,7 @@ func sdpGenerateAnswer(offer sdp.SessionDescription, publicIp string, rtpListene
 	return answer.Marshal()
 }
 
-func sdpGetAudio(offer sdp.SessionDescription) *sdp.MediaDescription {
+func sdpGetAudio(offer *sdp.SessionDescription) *sdp.MediaDescription {
 	for _, m := range offer.MediaDescriptions {
 		if m.MediaName.Media == "audio" {
 			return m
@@ -233,7 +222,10 @@ func sdpGetAudio(offer sdp.SessionDescription) *sdp.MediaDescription {
 	return nil
 }
 
-func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
+func sdpGetAudioDest(offer *sdp.SessionDescription, audio *sdp.MediaDescription) *net.UDPAddr {
+	if audio == nil {
+		return nil
+	}
 	ci := offer.ConnectionInformation
 	if ci.NetworkType != "IN" {
 		return nil
@@ -242,31 +234,34 @@ func sdpGetAudioDest(offer sdp.SessionDescription) *net.UDPAddr {
 	if err != nil {
 		return nil
 	}
-	audio := sdpGetAudio(offer)
-	if audio == nil {
-		return nil
-	}
 	return &net.UDPAddr{
 		IP:   ip.AsSlice(),
 		Port: audio.MediaName.Port.Value,
 	}
 }
 
-type sdpCodecResult struct {
+type MediaConf struct {
+	Dest      *net.UDPAddr
 	Audio     rtp.AudioCodec
 	AudioType byte
 	DTMFType  byte
 }
 
-func sdpGetAudioCodec(offer sdp.SessionDescription) (*sdpCodecResult, error) {
+func sdpGetAudioCodec(offer *sdp.SessionDescription) (*MediaConf, error) {
 	audio := sdpGetAudio(offer)
 	if audio == nil {
 		return nil, errors.New("no audio in sdp")
 	}
-	return sdpGetCodec(audio)
+	dest := sdpGetAudioDest(offer, audio)
+	c, err := sdpGetCodec(audio)
+	if err != nil {
+		return nil, err
+	}
+	c.Dest = dest
+	return c, nil
 }
 
-func sdpGetCodec(d *sdp.MediaDescription) (*sdpCodecResult, error) {
+func sdpGetCodec(d *sdp.MediaDescription) (*MediaConf, error) {
 	var (
 		priority   int
 		audioCodec rtp.AudioCodec
@@ -317,7 +312,7 @@ func sdpGetCodec(d *sdp.MediaDescription) (*sdpCodecResult, error) {
 	if audioCodec == nil {
 		return nil, fmt.Errorf("common audio codec not found")
 	}
-	return &sdpCodecResult{
+	return &MediaConf{
 		Audio:     audioCodec,
 		AudioType: audioType,
 		DTMFType:  dtmfType,

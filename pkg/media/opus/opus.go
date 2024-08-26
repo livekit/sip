@@ -16,6 +16,7 @@ package opus
 
 import (
 	"errors"
+	"fmt"
 
 	"gopkg.in/hraban/opus.v2"
 
@@ -59,6 +60,10 @@ type decoder struct {
 	successiveErrorCount int
 }
 
+func (d *decoder) String() string {
+	return fmt.Sprintf("OPUS(decode) -> %s", d.w)
+}
+
 func (d *decoder) SampleRate() int {
 	return d.w.SampleRate()
 }
@@ -86,6 +91,10 @@ type encoder struct {
 	w   Writer
 	enc *opus.Encoder
 	buf Sample
+}
+
+func (e *encoder) String() string {
+	return fmt.Sprintf("OPUS(encode) -> %s", e.w)
 }
 
 func (e *encoder) SampleRate() int {
