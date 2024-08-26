@@ -14,13 +14,15 @@
 
 package rtp
 
-import "time"
+import (
+	"github.com/livekit/sip/pkg/media"
+)
 
 const (
 	// DefClockRate is a default clock rate at which RTP timestamps increment.
 	DefClockRate = 8000
 	// DefFrameDur is a default duration of an audio frame.
-	DefFrameDur = 20 * time.Millisecond
+	DefFrameDur = media.DefFrameDur
 	// DefFramesPerSec is a default number of audio frames per second.
-	DefFramesPerSec = int(time.Second / DefFrameDur)
+	DefFramesPerSec = media.DefFramesPerSec
 )

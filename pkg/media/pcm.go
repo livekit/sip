@@ -16,7 +16,10 @@ package media
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -72,7 +75,7 @@ func (b *frameWriterPCM16) Close() error {
 }
 
 func (b *frameWriterPCM16) WriteSample(data PCM16Sample) error {
-	*b.buf = append(*b.buf, data)
+	*b.buf = append(*b.buf, slices.Clone(data))
 	return nil
 }
 
@@ -133,7 +136,23 @@ func (b *bufferReaderPCM16) ReadSample(data PCM16Sample) (int, error) {
 	return n, nil
 }
 
+var _ Frame = PCM16Sample{}
+
 type PCM16Sample []int16
+
+func (s PCM16Sample) Size() int {
+	return len(s) * 2
+}
+
+func (s PCM16Sample) CopyTo(dst []byte) (int, error) {
+	if len(dst) < len(s)*2 {
+		return 0, io.ErrShortBuffer
+	}
+	for i, v := range s {
+		binary.LittleEndian.PutUint16(dst[i*2:], uint16(v))
+	}
+	return len(s) * 2, nil
+}
 
 func (s PCM16Sample) Clear() {
 	for i := range s {
