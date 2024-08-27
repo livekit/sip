@@ -49,7 +49,8 @@ type Config struct {
 	HealthPort        int                 `yaml:"health_port"`
 	PrometheusPort    int                 `yaml:"prometheus_port"`
 	PProfPort         int                 `yaml:"pprof_port"`
-	SIPPort           int                 `yaml:"sip_port"`
+	SIPPort           int                 `yaml:"sip_port"`        // announced SIP signaling port
+	SIPPortListen     int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	RTPPort           rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging           logger.Config       `yaml:"logging"`
 	ClusterID         string              `yaml:"cluster_id"` // cluster this instance belongs to
@@ -99,6 +100,9 @@ func (c *Config) Init() error {
 
 	if c.SIPPort == 0 {
 		c.SIPPort = DefaultSIPPort
+	}
+	if c.SIPPortListen == 0 {
+		c.SIPPortListen = c.SIPPort
 	}
 	if c.RTPPort.Start == 0 {
 		c.RTPPort.Start = DefaultRTPPortRange.Start

@@ -43,7 +43,8 @@ type Client struct {
 
 	closing     core.Fuse
 	cmu         sync.Mutex
-	activeCalls map[*outboundCall]struct{}
+	activeCalls map[LocalTag]*outboundCall
+	byRemote    map[RemoteTag]*outboundCall
 }
 
 func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
@@ -54,7 +55,8 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Clie
 		conf:        conf,
 		log:         log,
 		mon:         mon,
-		activeCalls: make(map[*outboundCall]struct{}),
+		activeCalls: make(map[LocalTag]*outboundCall),
+		byRemote:    make(map[RemoteTag]*outboundCall),
 	}
 	return c
 }
@@ -103,8 +105,9 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 func (c *Client) Stop() {
 	c.closing.Break()
 	c.cmu.Lock()
-	calls := maps.Keys(c.activeCalls)
-	c.activeCalls = make(map[*outboundCall]struct{})
+	calls := maps.Values(c.activeCalls)
+	c.activeCalls = make(map[LocalTag]*outboundCall)
+	c.byRemote = make(map[RemoteTag]*outboundCall)
 	c.cmu.Unlock()
 	for _, call := range calls {
 		call.Close()
@@ -156,7 +159,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		ringtone:  req.PlayRingtone,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(c.conf, log, req.SipCallId, roomConf, sipConf)
+	call, err := c.newCall(c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
 	if err != nil {
 		return nil, err
 	}
@@ -171,41 +174,29 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}, nil
 }
 
-func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) {
+func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
 	switch req.Method {
+	default:
+		return false
 	case "BYE":
-		c.onBye(req, tx)
+		return c.onBye(req, tx)
 	}
 }
 
-func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) {
-	tag, _ := getTagValue(req)
+func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
+	tag, _ := getFromTag(req)
 	c.cmu.Lock()
-	defer c.cmu.Unlock()
-
-	found := false
-	for c := range c.activeCalls {
-		toHeader, ok := req.To()
-		if !ok {
-			continue
-		}
-
-		fromHeader, ok := req.From()
-		if !ok {
-			continue
-		}
-
-		if c.sipConf.to == fromHeader.Address.User && c.sipConf.from == toHeader.Address.User {
-			found = true
-			c.log.Infow("BYE")
-			go func(call *outboundCall) {
-				call.CloseWithReason(CallHangup, "bye")
-			}(c)
-		}
-	}
-	if !found {
+	call := c.byRemote[tag]
+	c.cmu.Unlock()
+	if call == nil {
 		c.log.Infow("BYE", "sipTag", tag)
+		return false
 	}
+	call.log.Infow("BYE")
+	go func(call *outboundCall) {
+		call.CloseWithReason(CallHangup, "bye")
+	}(call)
+	return true
 }
 
 func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {

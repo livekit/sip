@@ -12,6 +12,7 @@ import (
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
+
 	"github.com/livekit/sip/pkg/stats"
 
 	"github.com/stretchr/testify/require"
@@ -75,6 +76,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	s := NewService(&config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
+		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}, mon, logger.GetLogger())
 	require.NotNil(t, s)

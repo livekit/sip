@@ -136,7 +136,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	if !s.conf.HideInboundPort {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
-	tag, err := getTagValue(req)
+	tag, err := getFromTag(req)
 	if err != nil {
 		s.sipErrorOrDrop(tx, req)
 		return
@@ -196,13 +196,13 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 			extra[name] = h.Value()
 		}
 	}
-	call := s.newInboundCall(log, cmon, callID, tag, from, to, src, extra)
+	call := s.newInboundCall(log, cmon, LocalTag(callID), tag, from, to, src, extra)
 	call.joinDur = joinDur
 	call.handleInvite(call.ctx, req, tx, s.conf)
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := getTagValue(req)
+	tag, err := getFromTag(req)
 	if err != nil {
 		sipErrorResponse(tx, req)
 		return
@@ -215,11 +215,14 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 		c.log.Infow("BYE")
 		c.Close()
-	} else {
+		return
+	}
+	ok := false
+	if s.sipUnhandled != nil {
+		ok = s.sipUnhandled(req, tx)
+	}
+	if !ok {
 		s.log.Infow("BYE for non-existent call", "sipTag", tag)
-		if s.sipUnhandled != nil {
-			s.sipUnhandled(req, tx)
-		}
 	}
 }
 
@@ -227,8 +230,8 @@ type inboundCall struct {
 	s           *Server
 	log         logger.Logger
 	mon         *stats.CallMonitor
-	id          string
-	tag         string
+	id          LocalTag
+	tag         RemoteTag
 	extraAttrs  map[string]string
 	ctx         context.Context
 	cancel      func()
@@ -246,7 +249,9 @@ type inboundCall struct {
 	done        atomic.Bool
 }
 
-func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id, tag string, from *sip.FromHeader, to *sip.ToHeader, src string, extra map[string]string) *inboundCall {
+func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, id LocalTag, tag RemoteTag, from *sip.FromHeader, to *sip.ToHeader, src string, extra map[string]string) *inboundCall {
+	// Set the SIP tag for following requests from us to remote (e.g. BYE).
+	to.Params["tag"] = string(id)
 	c := &inboundCall{
 		s:          s,
 		log:        log,
@@ -278,7 +283,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
-		ID:         c.id,
+		ID:         string(c.id),
 		FromUser:   c.from.Address.User,
 		ToUser:     c.to.Address.User,
 		ToHost:     c.to.Address.Host,
@@ -493,7 +498,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) (disp CallDispatch, _ bool)
 
 				c.log.Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
 				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
-					ID:         c.id,
+					ID:         string(c.id),
 					FromUser:   c.from.Address.User,
 					ToUser:     c.to.Address.User,
 					ToHost:     c.to.Address.Host,
