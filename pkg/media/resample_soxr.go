@@ -25,11 +25,23 @@ import (
 	"github.com/zaf/resample"
 )
 
-const quality = resample.MediumQ
+const quality = resample.Quick
+
+func resampleSize(dstSampleRate, srcSampleRate int, srcSize int) int {
+	if dstSampleRate < srcSampleRate {
+		div := srcSampleRate / dstSampleRate
+		sz := srcSize / div
+		return sz
+	}
+	mul := dstSampleRate / srcSampleRate
+	sz := srcSize * mul
+	return sz
+}
 
 func resampleBuffer(dst PCM16Sample, dstSampleRate int, src PCM16Sample, srcSampleRate int) PCM16Sample {
 	inbuf := make([]byte, len(src)*2)
 	outbuf := bytes.NewBuffer(nil)
+	outbuf.Grow(resampleSize(dstSampleRate, srcSampleRate, len(src)))
 	r, err := resample.New(outbuf, float64(srcSampleRate), float64(dstSampleRate), 1, resample.I16, quality)
 	if err != nil {
 		panic(err)
@@ -67,13 +79,14 @@ func newResampleWriter(w WriteCloser[PCM16Sample], sampleRate int) WriteCloser[P
 }
 
 type resampleWriter struct {
-	mu      sync.Mutex
-	w       WriteCloser[PCM16Sample]
-	r       *resample.Resampler
-	inbuf   []byte
-	srcRate int
-	dstRate int
-	buf     PCM16Sample
+	mu       sync.Mutex
+	w        WriteCloser[PCM16Sample]
+	r        *resample.Resampler
+	inbuf    []byte
+	srcRate  int
+	dstRate  int
+	dstFrame int
+	buf      PCM16Sample
 }
 
 func (w *resampleWriter) String() string {
@@ -87,8 +100,32 @@ func (w *resampleWriter) SampleRate() int {
 func (w *resampleWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_ = w.r.Close()
+	_ = w.r.Close() // flush resampler's internal buffer
+	_ = w.flush(0)  // flush our own PCM frame buffer
 	return w.w.Close()
+}
+
+func (w *resampleWriter) flush(minSize int) error {
+	if len(w.buf) == 0 {
+		return nil
+	}
+	frame := w.dstFrame
+	if frame == 0 {
+		frame = len(w.buf)
+	}
+	var last error
+	for len(w.buf) > 0 && len(w.buf) >= minSize {
+		sz := frame
+		if sz > len(w.buf) {
+			sz = len(w.buf)
+		}
+		if err := w.w.WriteSample(w.buf[:sz]); err != nil {
+			last = err
+		}
+		n := copy(w.buf, w.buf[sz:])
+		w.buf = w.buf[:n]
+	}
+	return last
 }
 
 func (w *resampleWriter) WriteSample(data PCM16Sample) error {
@@ -105,7 +142,6 @@ func (w *resampleWriter) WriteSample(data PCM16Sample) error {
 	for i, v := range data {
 		binary.LittleEndian.PutUint16(w.inbuf[i*2:], uint16(v))
 	}
-	w.buf = w.buf[:0]
 	left := w.inbuf
 	// Write converted input to the resampler's buffer.
 	// It will call our own Write method which collects data into a frame buffer.
@@ -116,12 +152,16 @@ func (w *resampleWriter) WriteSample(data PCM16Sample) error {
 		}
 		left = left[n:]
 	}
-	// Flush the resampler. Otherwise it returns short buffers.
-	if err := w.r.Reset(w); err != nil {
-		return err
-	}
-	// Now we have the full frame buffer that we can write back.
-	return w.w.WriteSample(w.buf)
+	// Resampler will likely return a short buffer in the first run. In that case, we emit no samples on the first call.
+	// This will cause a one frame delay for each resampler. Flushing the sampler, however will lead to frame
+	// discontinuity, and thus - distortions on the frame boundaries.
+
+	w.dstFrame = resampleSize(w.dstRate, w.srcRate, len(data))
+
+	// The resampler could actually consume multiple full frames and emit just one.
+	// This variable controls how many full frames we intentionally keep. Useful for higher resampler quality.
+	const buffer = 0
+	return w.flush(w.dstFrame * (1 + buffer))
 }
 
 func (w *resampleWriter) Write(data []byte) (int, error) {

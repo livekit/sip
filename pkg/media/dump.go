@@ -1,4 +1,4 @@
-// Copyright 2023 LiveKit, Inc.
+// Copyright 2024 LiveKit, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,21 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sip
+package media
 
 import (
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/res"
+	"fmt"
+	"os"
 )
 
-type mediaRes struct {
-	enterPin []media.PCM16Sample
-	roomJoin []media.PCM16Sample
-	wrongPin []media.PCM16Sample
+func DumpWriterPCM16(name string, w PCM16Writer) PCM16Writer {
+	return DumpWriter[PCM16Sample]("s16le", name, w)
 }
 
-func (s *Server) initMediaRes() {
-	s.res.enterPin = res.ReadOggAudioFile(res.EnterPinOgg)
-	s.res.roomJoin = res.ReadOggAudioFile(res.RoomJoinOgg)
-	s.res.wrongPin = res.ReadOggAudioFile(res.WrongPinOgg)
+func DumpWriter[T Frame](ext string, name string, w WriteCloser[T]) WriteCloser[T] {
+	rate := w.SampleRate()
+	nameOut := fmt.Sprintf("%s_ar%d.%s", name, rate, ext)
+	f, err := os.Create(nameOut)
+	if err != nil {
+		panic(err)
+	}
+	return MultiWriter[T]{
+		w,
+		NewFileWriter[T](f, rate),
+	}
 }

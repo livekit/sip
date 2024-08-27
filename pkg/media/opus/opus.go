@@ -17,15 +17,30 @@ package opus
 import (
 	"errors"
 	"fmt"
+	"io"
+	"time"
 
 	"gopkg.in/hraban/opus.v2"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/webm"
 )
 
 type Sample []byte
+
+func (s Sample) Size() int {
+	return len(s)
+}
+
+func (s Sample) CopyTo(dst []byte) (int, error) {
+	if len(dst) < len(s) {
+		return 0, io.ErrShortBuffer
+	}
+	n := copy(dst, s)
+	return n, nil
+}
 
 type Writer = media.WriteCloser[Sample]
 
@@ -116,4 +131,8 @@ func (e *encoder) WriteSample(in media.PCM16Sample) error {
 
 func (e *encoder) Close() error {
 	return e.w.Close()
+}
+
+func NewWebmWriter(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.WriteCloser[Sample] {
+	return webm.NewWriter[Sample](w, "A_OPUS", 2, sampleRate, sampleDur)
 }

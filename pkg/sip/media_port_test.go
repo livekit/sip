@@ -194,6 +194,7 @@ func TestMediaPort(t *testing.T) {
 						sample2[i] = -5116
 					}
 
+					writes := 1
 					if rate == nativeRate {
 						expChain := fmt.Sprintf("Switch(%d) -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain, w1.String())
@@ -210,13 +211,17 @@ func TestMediaPort(t *testing.T) {
 						expChain = fmt.Sprintf("RTP(%d) -> %s(decode) -> Resample(%d->48000) -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain, PrintAudioInWriter(m1))
 						require.Equal(t, expChain, PrintAudioInWriter(m2))
+
+						writes = 2 // resampler will buffer the first one
 					}
 
-					err = w1.WriteSample(sample1)
-					require.NoError(t, err)
+					for range writes {
+						err = w1.WriteSample(sample1)
+						require.NoError(t, err)
 
-					err = w2.WriteSample(sample2)
-					require.NoError(t, err)
+						err = w2.WriteSample(sample2)
+						require.NoError(t, err)
+					}
 
 					time.Sleep(time.Second / 2)
 

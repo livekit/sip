@@ -15,7 +15,6 @@
 package webm
 
 import (
-	"encoding/binary"
 	"fmt"
 	"io"
 	"math/rand"
@@ -28,56 +27,63 @@ import (
 )
 
 func NewPCM16Writer(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.PCM16Writer {
+	return NewWriter[media.PCM16Sample](w, "A_PCM/INT/LIT", 1, sampleRate, sampleDur)
+}
+
+func NewWriter[T media.Frame](w io.WriteCloser, codec string, channels, sampleRate int, sampleDur time.Duration) media.WriteCloser[T] {
 	ws, err := webm.NewSimpleBlockWriter(w, []webm.TrackEntry{
 		{
 			Name:            "Audio",
 			TrackNumber:     1,
 			TrackUID:        rand.Uint64(),
-			CodecID:         "A_PCM/INT/LIT",
+			CodecID:         codec,
 			TrackType:       2,
 			DefaultDuration: uint64(sampleDur.Nanoseconds()),
 			Audio: &webm.Audio{
 				SamplingFrequency: float64(sampleRate),
-				Channels:          1,
+				Channels:          uint64(channels),
 			},
 		},
 	})
 	if err != nil {
 		panic(err)
 	}
-	return &writerPCM16{ws: ws[0], sampleRate: sampleRate, dur: sampleDur}
+	return &writer[T]{codec: codec, ws: ws[0], channels: channels, sampleRate: sampleRate, dur: sampleDur}
 }
 
-type writerPCM16 struct {
+type writer[T media.Frame] struct {
+	codec      string
 	ws         webm.BlockWriteCloser
+	channels   int
 	sampleRate int
 	dur        time.Duration
 	ts         int64
 	buf        []byte
 }
 
-func (w *writerPCM16) String() string {
-	return fmt.Sprintf("WEBM(%d)", w.sampleRate)
+func (w *writer[T]) String() string {
+	return fmt.Sprintf("WEBM(%s,%d,%d)", w.codec, w.channels, w.sampleRate)
 }
 
-func (w *writerPCM16) SampleRate() int {
+func (w *writer[T]) SampleRate() int {
 	return w.sampleRate
 }
 
-func (w *writerPCM16) WriteSample(sample media.PCM16Sample) error {
-	if sz := len(sample) * 2; cap(w.buf) < sz {
+func (w *writer[T]) WriteSample(sample T) error {
+	if sz := sample.Size(); cap(w.buf) < sz {
 		w.buf = make([]byte, sz)
 	} else {
 		w.buf = w.buf[:sz]
 	}
-	for i, v := range sample {
-		binary.LittleEndian.PutUint16(w.buf[2*i:], uint16(v))
+	n, err := sample.CopyTo(w.buf)
+	if err != nil {
+		return err
 	}
-	_, err := w.ws.Write(true, w.ts, slices.Clone(w.buf))
+	_, err = w.ws.Write(true, w.ts, slices.Clone(w.buf[:n]))
 	w.ts += w.dur.Milliseconds()
 	return err
 }
 
-func (w *writerPCM16) Close() error {
+func (w *writer[T]) Close() error {
 	return w.ws.Close()
 }

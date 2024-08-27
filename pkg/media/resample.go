@@ -14,6 +14,17 @@
 
 package media
 
+import (
+	"fmt"
+	"os"
+	"sync/atomic"
+)
+
+var (
+	resampleID         atomic.Uint32
+	resampleDumpToFile = os.Getenv("LK_DUMP_RESAMPLE") == "true"
+)
+
 // Resample the source sample into the destination sample rate.
 // It appends resulting samples to dst and returns the result.
 func Resample(dst PCM16Sample, dstSampleRate int, src PCM16Sample, srcSampleRate int) PCM16Sample {
@@ -25,11 +36,20 @@ func Resample(dst PCM16Sample, dstSampleRate int, src PCM16Sample, srcSampleRate
 
 // ResampleWriter returns a new writer that expects samples of a given sample rate
 // and resamples then for the destination writer.
-func ResampleWriter(w PCM16Writer, sampleRate int) PCM16Writer {
+func ResampleWriter(w PCM16Writer, sampleRate int) (w2 PCM16Writer) {
 	srcRate := sampleRate
 	dstRate := w.SampleRate()
 	if dstRate == srcRate {
 		return w
+	}
+
+	if resampleDumpToFile {
+		id := resampleID.Add(1)
+		pref := fmt.Sprintf("sip_resample_%d", id)
+		w = DumpWriterPCM16(pref+"_out", w)
+		defer func() {
+			w2 = DumpWriterPCM16(pref+"_in", w2)
+		}()
 	}
 	return newResampleWriter(w, sampleRate)
 }

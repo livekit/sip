@@ -16,6 +16,9 @@ package g722
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"sync/atomic"
 
 	"github.com/gotranspile/g722"
 	prtp "github.com/pion/rtp"
@@ -25,6 +28,11 @@ import (
 )
 
 const SDPName = "G722/8000"
+
+var (
+	g722ID     atomic.Uint32
+	dumpToFile = os.Getenv("LK_DUMP_G722") == "true"
+)
 
 func init() {
 	media.RegisterCodec(rtp.NewAudioCodec(media.CodecInfo{
@@ -38,6 +46,18 @@ func init() {
 }
 
 type Sample []byte
+
+func (s Sample) Size() int {
+	return len(s)
+}
+
+func (s Sample) CopyTo(dst []byte) (int, error) {
+	if len(dst) < len(s) {
+		return 0, io.ErrShortBuffer
+	}
+	n := copy(dst, s)
+	return n, nil
+}
 
 func decodeSize(flags g722.Flags, g722Len int) int {
 	mul := 2
@@ -89,7 +109,7 @@ func (d *Decoder) WriteSample(in Sample) error {
 	return d.w.WriteSample(d.buf[:n])
 }
 
-func Decode(w media.PCM16Writer) Writer {
+func Decode(w media.PCM16Writer) (w2 Writer) {
 	var f g722.Flags
 	switch w.SampleRate() {
 	case 8000:
@@ -99,6 +119,14 @@ func Decode(w media.PCM16Writer) Writer {
 		fallthrough
 	case 16000:
 		// default
+	}
+	if dumpToFile {
+		id := g722ID.Add(1)
+		pref := fmt.Sprintf("sip_g722_dec_%d", id)
+		w = media.DumpWriterPCM16(pref+"_out", w)
+		defer func() {
+			w2 = media.DumpWriter[Sample]("g722", pref+"_in", w2)
+		}()
 	}
 	return &Decoder{w: w, f: f, d: g722.NewDecoder(g722.Rate64000, f)}
 }
@@ -131,7 +159,7 @@ func (e *Encoder) WriteSample(in media.PCM16Sample) error {
 	return e.w.WriteSample(e.buf[:n])
 }
 
-func Encode(w Writer) media.PCM16Writer {
+func Encode(w Writer) (w2 media.PCM16Writer) {
 	var f g722.Flags
 	switch w.SampleRate() {
 	default:
@@ -140,6 +168,14 @@ func Encode(w Writer) media.PCM16Writer {
 		f |= g722.FlagSampleRate8000
 	case 16000:
 		// default
+	}
+	if dumpToFile {
+		id := g722ID.Add(1)
+		pref := fmt.Sprintf("sip_g722_enc_%d", id)
+		w = media.DumpWriter[Sample]("g722", pref+"_out", w)
+		defer func() {
+			w2 = media.DumpWriterPCM16(pref+"_in", w2)
+		}()
 	}
 	return &Encoder{w: w, f: f, e: g722.NewEncoder(g722.Rate64000, f)}
 }

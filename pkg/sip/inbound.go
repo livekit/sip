@@ -33,6 +33,7 @@ import (
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/stats"
+	"github.com/livekit/sip/res"
 )
 
 const (
@@ -630,7 +631,7 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample)
 	t := c.lkRoom.NewTrack()
 	defer t.Close()
 
-	sampleRate := embedSampleRate
+	sampleRate := res.SampleRate
 	if t.SampleRate() != sampleRate {
 		frames = slices.Clone(frames)
 		for i := range frames {
