@@ -78,14 +78,14 @@ type Server struct {
 	sipSrv           *sipgo.Server
 	sipConnUDP       *net.UDPConn
 	sipConnTCP       *net.TCPListener
-	sipUnhandled     sipgo.RequestHandler
+	sipUnhandled     RequestHandler
 	signalingIp      string
 	signalingIpLocal string
 
 	inProgressInvites []*inProgressInvite
 
 	cmu         sync.RWMutex
-	activeCalls map[string]*inboundCall
+	activeCalls map[RemoteTag]*inboundCall
 
 	handler Handler
 	conf    *config.Config
@@ -103,11 +103,10 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:               log,
-		conf:              conf,
-		mon:               mon,
-		activeCalls:       make(map[string]*inboundCall),
-		inProgressInvites: []*inProgressInvite{},
+		log:         log,
+		conf:        conf,
+		mon:         mon,
+		activeCalls: make(map[RemoteTag]*inboundCall),
 	}
 	s.initMediaRes()
 	return s
@@ -117,20 +116,6 @@ func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
-func getTagValue(req *sip.Request) (string, error) {
-	from, ok := req.From()
-	if !ok {
-		return "", fmt.Errorf("No From on Request")
-	}
-
-	tag, ok := from.Params["tag"]
-	if !ok {
-		return "", fmt.Errorf("No tag on From")
-	}
-
-	return tag, nil
-}
-
 func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
@@ -138,13 +123,17 @@ func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
 func (s *Server) startUDP() error {
 	lis, err := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.IPv4(0, 0, 0, 0),
-		Port: s.conf.SIPPort,
+		Port: s.conf.SIPPortListen,
 	})
 	if err != nil {
-		return fmt.Errorf("cannot listen on the UDP signaling port %d: %w", s.conf.SIPPort, err)
+		return fmt.Errorf("cannot listen on the UDP signaling port %d: %w", s.conf.SIPPortListen, err)
 	}
 	s.sipConnUDP = lis
-	s.log.Infow("sip signaling listening on", "local", s.signalingIpLocal, "external", s.signalingIp, "port", s.conf.SIPPort, "proto", "udp")
+	s.log.Infow("sip signaling listening on",
+		"local", s.signalingIpLocal, "external", s.signalingIp,
+		"port", s.conf.SIPPortListen, "announce-port", s.conf.SIPPort,
+		"proto", "udp",
+	)
 
 	go func() {
 		if err := s.sipSrv.ServeUDP(lis); err != nil {
@@ -157,13 +146,17 @@ func (s *Server) startUDP() error {
 func (s *Server) startTCP() error {
 	lis, err := net.ListenTCP("tcp", &net.TCPAddr{
 		IP:   net.IPv4(0, 0, 0, 0),
-		Port: s.conf.SIPPort,
+		Port: s.conf.SIPPortListen,
 	})
 	if err != nil {
-		return fmt.Errorf("cannot listen on the TCP signaling port %d: %w", s.conf.SIPPort, err)
+		return fmt.Errorf("cannot listen on the TCP signaling port %d: %w", s.conf.SIPPortListen, err)
 	}
 	s.sipConnTCP = lis
-	s.log.Infow("sip signaling listening on", "local", s.signalingIpLocal, "external", s.signalingIp, "port", s.conf.SIPPort, "proto", "tcp")
+	s.log.Infow("sip signaling listening on",
+		"local", s.signalingIpLocal, "external", s.signalingIp,
+		"port", s.conf.SIPPortListen, "announce-port", s.conf.SIPPort,
+		"proto", "tcp",
+	)
 
 	go func() {
 		if err := s.sipSrv.ServeTCP(lis); err != nil && !errors.Is(err, net.ErrClosed) {
@@ -173,7 +166,9 @@ func (s *Server) startTCP() error {
 	return nil
 }
 
-func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) error {
+type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
+
+func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 	var err error
 	if s.conf.UseExternalIP {
 		if s.signalingIp, err = getPublicIP(); err != nil {
@@ -230,7 +225,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled sipgo.RequestHandler) e
 func (s *Server) Stop() {
 	s.cmu.Lock()
 	calls := maps.Values(s.activeCalls)
-	s.activeCalls = make(map[string]*inboundCall)
+	s.activeCalls = make(map[RemoteTag]*inboundCall)
 	s.cmu.Unlock()
 	for _, c := range calls {
 		c.Close()

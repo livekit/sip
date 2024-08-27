@@ -18,6 +18,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+
 	"github.com/livekit/sip/pkg/stats"
 
 	"github.com/stretchr/testify/require"
@@ -59,6 +60,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		WsUrl:             lk.WsUrl,
 		Redis:             lk.Redis,
 		SIPPort:           sipPort,
+		SIPPortListen:     sipPort,
 		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
 		UseExternalIP:     false,
 		MaxCpuUtilization: 0.9,

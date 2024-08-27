@@ -49,6 +49,7 @@ type sipOutboundConfig struct {
 
 type outboundCall struct {
 	c       *Client
+	id      LocalTag
 	log     logger.Logger
 	media   *MediaPort
 	stopped core.Fuse
@@ -58,14 +59,16 @@ type outboundCall struct {
 	lkRoom        *Room
 	lkRoomIn      media.PCM16Writer // output to room; OPUS at 48k
 	sipConf       sipOutboundConfig
+	tag           RemoteTag // empty until we receive a response
 	sipInviteReq  *sip.Request
 	sipInviteResp *sip.Response
 	sipRunning    bool
 }
 
-func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
+func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	call := &outboundCall{
 		c:       c,
+		id:      id,
 		log:     log,
 		sipConf: sipConf,
 	}
@@ -84,7 +87,7 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id string, room
 
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
-	c.activeCalls[call] = struct{}{}
+	c.activeCalls[id] = call
 	return call, nil
 }
 
@@ -135,29 +138,30 @@ func (c *outboundCall) closeWithTimeout() {
 }
 
 func (c *outboundCall) close(error bool, status CallStatus, reason string) {
-	if c.stopped.IsBroken() {
-		return
-	}
-	if status != "" {
-		c.setStatus(status)
-	}
-	c.stopped.Break()
-	if error {
-		c.log.Warnw("Closing outbound call with error", nil, "reason", reason)
-	} else {
-		c.log.Infow("Closing outbound call", "reason", reason)
-	}
-	c.media.Close()
-	_ = c.lkRoom.CloseOutput()
+	c.stopped.Once(func() {
+		if status != "" {
+			c.setStatus(status)
+		}
+		if error {
+			c.log.Warnw("Closing outbound call with error", nil, "reason", reason)
+		} else {
+			c.log.Infow("Closing outbound call", "reason", reason)
+		}
+		c.media.Close()
+		_ = c.lkRoom.CloseOutput()
 
-	_ = c.lkRoom.Close()
-	c.lkRoomIn = nil
+		_ = c.lkRoom.Close()
+		c.lkRoomIn = nil
 
-	c.stopSIP(reason)
+		c.stopSIP(reason)
 
-	c.c.cmu.Lock()
-	delete(c.c.activeCalls, c)
-	c.c.cmu.Unlock()
+		c.c.cmu.Lock()
+		delete(c.c.activeCalls, c.id)
+		if c.tag != "" {
+			delete(c.c.byRemote, c.tag)
+		}
+		c.c.cmu.Unlock()
+	})
 }
 
 func (c *outboundCall) Participant() ParticipantInfo {
@@ -343,9 +347,12 @@ func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, au
 		}
 	}
 	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp}
+	if c.c.conf.SIPPort != 5060 {
+		from.Port = c.c.conf.SIPPort
+	}
 
 	fromHeader := &sip.FromHeader{Address: *from, DisplayName: conf.from, Params: sip.NewParams()}
-	fromHeader.Params.Add("tag", sip.GenerateTagN(16))
+	fromHeader.Params.Add("tag", string(c.id))
 
 	req := sip.NewRequest(sip.INVITE, to)
 	req.SetDestination(dest)
@@ -461,6 +468,15 @@ func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Req
 }
 
 func (c *outboundCall) sipAccept(inviteReq *sip.Request, inviteResp *sip.Response) error {
+	tag, err := getToTag(inviteResp)
+	if err != nil {
+		return err
+	}
+	c.tag = tag
+	c.c.cmu.Lock()
+	c.c.byRemote[tag] = c
+	c.c.cmu.Unlock()
+
 	if cont, ok := inviteResp.Contact(); ok {
 		inviteReq.Recipient = &cont.Address
 		if inviteReq.Recipient.Port == 0 {
