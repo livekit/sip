@@ -155,6 +155,20 @@ func (s *Stream) Delay(dur uint32) {
 	s.ev.Timestamp += dur
 }
 
+func (s *Stream) ResetTimestamp(ts uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ev.Timestamp = ts
+}
+
+func (s *Stream) GetCurrentTimestamp() uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.ev.Timestamp
+}
+
 func NewMediaStreamOut[T ~[]byte](s *Stream, sampleRate int) *MediaStreamOut[T] {
 	return &MediaStreamOut[T]{s: s, sampleRate: sampleRate}
 }
