@@ -341,7 +341,7 @@ func (c *Client) sendBye() {
 
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
-	return dtmf.Write(context.Background(), c.audioOut, c.mediaDTMF, digits)
+	return dtmf.Write(context.Background(), c.audioOut, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
 }
 
 func (c *Client) createOffer() ([]byte, error) {
