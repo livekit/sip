@@ -69,6 +69,7 @@ type MediaPort struct {
 	dtmfOutRTP   *rtp.Stream
 	dtmfOutAudio media.PCM16Writer
 
+	audioOutRTP    *rtp.Stream
 	audioOut       *media.SwitchWriter
 	audioIn        *media.SwitchWriter
 	audioInHandler rtp.Handler // for debug only
@@ -87,6 +88,7 @@ func (p *MediaPort) Close() {
 	if w := p.audioIn.Swap(nil); w != nil {
 		_ = w.Close()
 	}
+	p.audioOutRTP = nil
 	p.audioInHandler = nil
 	p.dtmfOutRTP = nil
 	if p.dtmfOutAudio != nil {
@@ -185,12 +187,13 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 	return nil
 }
 
+// Must be called holding the lock
 func (p *MediaPort) setupOutput() {
 	// TODO: this says "audio", but actually includes DTMF too
 	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", p.conn))
-	audioOutRTP := s.NewStream(p.conf.AudioType, p.conf.Audio.Info().RTPClockRate)
+	p.audioOutRTP = s.NewStream(p.conf.AudioType, p.conf.Audio.Info().RTPClockRate)
 	// Encoding pipeline (LK -> SIP)
-	audioOut := p.conf.Audio.EncodeRTP(audioOutRTP)
+	audioOut := p.conf.Audio.EncodeRTP(p.audioOutRTP)
 
 	if p.conf.DTMFType != 0 {
 		p.dtmfOutRTP = s.NewStream(p.conf.DTMFType, dtmf.SampleRate)
@@ -252,6 +255,7 @@ func (p *MediaPort) WriteDTMF(ctx context.Context, digits string) error {
 	p.mu.Lock()
 	dtmfOut := p.dtmfOutRTP
 	audioOut := p.dtmfOutAudio
+	audioOutRTP := p.audioOutRTP
 	p.mu.Unlock()
 	if !p.dtmfAudioEnabled {
 		audioOut = nil
@@ -259,5 +263,11 @@ func (p *MediaPort) WriteDTMF(ctx context.Context, digits string) error {
 	if dtmfOut == nil && audioOut == nil {
 		return nil
 	}
-	return dtmf.Write(ctx, audioOut, dtmfOut, digits)
+
+	var rtpTs uint32
+	if audioOutRTP != nil {
+		rtpTs = audioOutRTP.GetCurrentTimestamp()
+	}
+
+	return dtmf.Write(ctx, audioOut, dtmfOut, rtpTs, digits)
 }

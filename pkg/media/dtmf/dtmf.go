@@ -191,7 +191,7 @@ func Encode(out []byte, ev Event) (int, error) {
 // Write in-band (analog) and off-band (digital) DTMF tones to audio and RTP streams respectively.
 //
 // Digits may contain a special character 'w' which adds a 0.5 sec delay.
-func Write(ctx context.Context, audio media.Writer[media.PCM16Sample], events *rtp.Stream, digits string) error {
+func Write(ctx context.Context, audio media.Writer[media.PCM16Sample], events *rtp.Stream, startTs uint32, digits string) error {
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
 	var (
 		buf    [4]byte
@@ -222,6 +222,9 @@ func Write(ctx context.Context, audio media.Writer[media.PCM16Sample], events *r
 			events.Delay(uint32(dt / (time.Second / SampleRate)))
 		}
 	}
+
+	events.ResetTimestamp(startTs)
+
 	for {
 		select {
 		case <-ctx.Done():
