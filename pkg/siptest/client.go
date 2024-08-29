@@ -54,6 +54,7 @@ type ClientConfig struct {
 	Log            *slog.Logger
 	OnBye          func()
 	OnMediaTimeout func()
+	OnDTMF         func(ev dtmf.Event)
 	Codec          string
 }
 
@@ -189,6 +190,16 @@ func (c *Client) Close() {
 
 func (c *Client) setupRTPReceiver() {
 	c.mux = rtp.NewMux(nil)
+	c.mux.Register(101, rtp.HandlerFunc(func(pck *rtp.Packet) error {
+		if c.conf.OnDTMF == nil {
+			return nil
+		}
+		if ev, ok := dtmf.DecodeRTP(pck); ok {
+			c.conf.OnDTMF(ev)
+		}
+		return nil
+	}))
+
 	c.mediaConn.OnRTP(c.mux)
 }
 
