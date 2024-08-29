@@ -101,7 +101,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
 	cli.audioOut = cli.audioCodec.EncodeRTP(cli.mediaAudio)
 
-	err := cli.mediaConn.Listen(0, 0, "0.0.0.0")
+	cli.setupRTPReceiver()
+
+	err := cli.mediaConn.ListenAndServe(0, 0, "0.0.0.0")
 	if err != nil {
 		cli.Close()
 		return nil, err
@@ -153,6 +155,7 @@ type Client struct {
 	audioCodec rtp.AudioCodec
 	audioType  byte
 	mediaConn  *rtp.Conn
+	mux        *rtp.Mux
 	media      *rtp.SeqWriter
 	mediaAudio *rtp.Stream
 	mediaDTMF  *rtp.Stream
@@ -184,31 +187,15 @@ func (c *Client) Close() {
 	}
 }
 
-func (c *Client) record(w io.WriteCloser) error {
-	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
-	h := c.audioCodec.DecodeRTP(ws, c.audioType)
-	for {
-		p, _, err := c.mediaConn.ReadRTP()
-		if err != nil {
-			c.log.Error("cannot read rtp packet", "err", err)
-			return err
-		}
-		if err = h.HandleRTP(p); err != nil {
-			return err
-		}
-	}
+func (c *Client) setupRTPReceiver() {
+	c.mux = rtp.NewMux(nil)
+	c.mediaConn.OnRTP(c.mux)
 }
 
 func (c *Client) Record(w io.WriteCloser) {
-	go func() {
-		if err := c.record(w); err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-
-			panic(err)
-		}
-	}()
+	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
+	h := c.audioCodec.DecodeRTP(ws, c.audioType)
+	c.mux.SetDefault(h)
 }
 
 func (c *Client) Dial(ip string, uri string, number string) error {
