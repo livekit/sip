@@ -223,11 +223,11 @@ func sdpGetAudio(offer *sdp.SessionDescription) *sdp.MediaDescription {
 }
 
 func sdpGetAudioDest(offer *sdp.SessionDescription, audio *sdp.MediaDescription) *net.UDPAddr {
-	if audio == nil {
+	if audio == nil || offer == nil {
 		return nil
 	}
 	ci := offer.ConnectionInformation
-	if ci.NetworkType != "IN" {
+	if ci == nil || ci.NetworkType != "IN" {
 		return nil
 	}
 	ip, err := netip.ParseAddr(ci.Address.Address)
