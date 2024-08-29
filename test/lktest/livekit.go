@@ -117,6 +117,38 @@ func (lk *LiveKit) Connect(t TB, room, identity string, cb *lksdk.RoomCallback) 
 	return r
 }
 
+func (lk *LiveKit) ConnectWithAudio(t TB, room, identity string, cb *lksdk.RoomCallback) *lksdk.Room {
+	r := lk.Connect(t, room, identity, cb)
+	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := r.LocalParticipant
+	if _, err = p.PublishTrack(track, &lksdk.TrackPublicationOptions{
+		Name: p.Identity(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	t.Cleanup(func() {
+		close(stop)
+	})
+	// We don't care about real audio, just let SIP subscribe to something.
+	go func() {
+		ticker := time.NewTicker(media.DefFrameDur)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+			_ = track.GeneratePadding(1)
+		}
+	}()
+	return r
+}
+
 func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.RoomCallback) *Participant {
 	if cb == nil {
 		cb = new(lksdk.RoomCallback)
@@ -450,14 +482,18 @@ func (lk *LiveKit) ExpectRoomWithParticipants(t TB, ctx context.Context, room st
 	lk.ExpectParticipants(t, ctx, room, participants)
 }
 
-func (lk *LiveKit) ExpectRoomPrefWithParticipants(t TB, ctx context.Context, pref, number string, participants []ParticipantInfo) {
+func (lk *LiveKit) ExpectRoomPref(t TB, ctx context.Context, pref, number string, none bool) *livekit.Room {
 	filter := func(r *livekit.Room) bool {
 		return r.Name != pref && strings.HasPrefix(r.Name, pref+"_"+number+"_")
 	}
-	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter)
+	rooms := lk.waitRooms(t, ctx, none, filter)
 	require.Len(t, rooms, 1)
 	require.True(t, filter(rooms[0]))
 	t.Log("Room:", rooms[0].Name)
+	return rooms[0]
+}
 
-	lk.ExpectParticipants(t, ctx, rooms[0].Name, participants)
+func (lk *LiveKit) ExpectRoomPrefWithParticipants(t TB, ctx context.Context, pref, number string, participants []ParticipantInfo) {
+	room := lk.ExpectRoomPref(t, ctx, pref, number, len(participants) != 0)
+	lk.ExpectParticipants(t, ctx, room.Name, participants)
 }

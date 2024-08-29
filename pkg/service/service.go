@@ -29,6 +29,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+
 	"github.com/livekit/sip/pkg/stats"
 
 	"github.com/livekit/sip/pkg/config"
@@ -167,7 +168,7 @@ func (s *Service) Run() error {
 	}
 }
 
-func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcAddress string) (username, password string, drop bool, err error) {
+func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcAddress string) (sip.AuthInfo, error) {
 	return GetAuthCredentials(ctx, s.psrpcClient, from, to, toHost, srcAddress)
 }
 

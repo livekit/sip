@@ -76,6 +76,10 @@ type MediaPort struct {
 	dtmfIn         atomic.Pointer[func(ev dtmf.Event)]
 }
 
+func (p *MediaPort) EnableTimeout(enabled bool) {
+	p.conn.EnableTimeout(enabled)
+}
+
 func (p *MediaPort) Close() {
 	if !p.closed.CompareAndSwap(false, true) {
 		return

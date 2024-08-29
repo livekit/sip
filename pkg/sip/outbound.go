@@ -16,10 +16,10 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
-	"net"
-	"strconv"
+	"net/netip"
 	"sync"
 
 	"github.com/emiago/sipgo/sip"
@@ -49,27 +49,28 @@ type sipOutboundConfig struct {
 
 type outboundCall struct {
 	c       *Client
-	id      LocalTag
 	log     logger.Logger
+	cc      *sipOutbound
 	media   *MediaPort
 	stopped core.Fuse
 
-	mu            sync.RWMutex
-	mon           *stats.CallMonitor
-	lkRoom        *Room
-	lkRoomIn      media.PCM16Writer // output to room; OPUS at 48k
-	sipConf       sipOutboundConfig
-	tag           RemoteTag // empty until we receive a response
-	sipInviteReq  *sip.Request
-	sipInviteResp *sip.Response
-	sipRunning    bool
+	mu         sync.RWMutex
+	mon        *stats.CallMonitor
+	lkRoom     *Room
+	lkRoomIn   media.PCM16Writer // output to room; OPUS at 48k
+	sipConf    sipOutboundConfig
+	sipRunning bool
 }
 
 func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	call := &outboundCall{
-		c:       c,
-		id:      id,
-		log:     log,
+		c:   c,
+		log: log,
+		cc: c.newOutbound(id, URI{
+			User: sipConf.from,
+			Host: c.signalingIp,
+			Addr: netip.AddrPortFrom(netip.Addr{}, uint16(conf.SIPPort)),
+		}),
 		sipConf: sipConf,
 	}
 	call.mon = c.mon.NewCall(stats.Outbound, c.signalingIp, sipConf.address)
@@ -156,9 +157,9 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		c.stopSIP(reason)
 
 		c.c.cmu.Lock()
-		delete(c.c.activeCalls, c.id)
-		if c.tag != "" {
-			delete(c.c.byRemote, c.tag)
+		delete(c.c.activeCalls, c.cc.ID())
+		if tag := c.cc.Tag(); tag != "" {
+			delete(c.c.byRemote, tag)
 		}
 		c.c.cmu.Unlock()
 	})
@@ -178,6 +179,7 @@ func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.connectMedia()
+	c.lkRoom.Subscribe()
 	c.log.Infow("Outbound SIP call established")
 	return nil
 }
@@ -202,8 +204,6 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 	}
 	c.lkRoom = r
 	c.lkRoomIn = local
-
-	c.lkRoom.Subscribe() // TODO: postpone
 	return nil
 }
 
@@ -216,7 +216,7 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		// Play a ringtone to the room while participant connects
 		go tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
 	}
-	err := c.sipSignal(c.sipConf)
+	err := c.sipSignal()
 	if err != nil {
 		// TODO: busy, no-response
 		return err
@@ -246,26 +246,26 @@ func (c *outboundCall) connectMedia() {
 }
 
 func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
-	select {
-	case <-tx.Done():
-		return nil, fmt.Errorf("transaction failed to complete")
-	case res := <-tx.Responses():
-		if res.StatusCode == 100 || res.StatusCode == 180 || res.StatusCode == 183 {
-			return sipResponse(tx)
+	cnt := 0
+	for {
+		select {
+		case <-tx.Done():
+			return nil, fmt.Errorf("transaction failed to complete (%d intermediate responses)", cnt)
+		case res := <-tx.Responses():
+			switch res.StatusCode {
+			default:
+				return res, nil
+			case 100, 180, 183:
+				// continue
+				cnt++
+			}
 		}
-		return res, nil
 	}
 }
 
 func (c *outboundCall) stopSIP(reason string) {
-	if c.sipInviteReq != nil {
-		if err := c.sipBye(); err != nil {
-			c.log.Infow("SIP bye failed", "error", err)
-		}
-		c.mon.CallTerminate(reason)
-	}
-	c.sipInviteReq = nil
-	c.sipInviteResp = nil
+	c.mon.CallTerminate(reason)
+	c.cc.Close()
 	c.sipRunning = false
 }
 
@@ -279,43 +279,50 @@ func (c *outboundCall) setStatus(v CallStatus) {
 	})
 }
 
-func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
-	offer, err := c.media.NewOffer()
+func (c *outboundCall) sipSignal() error {
+	sdpOffer, err := c.media.NewOffer()
 	if err != nil {
 		return err
 	}
 	joinDur := c.mon.JoinDur()
-	inviteReq, inviteResp, err := c.sipInvite(offer, conf)
-	if inviteResp != nil {
-		for hdr, name := range headerToLog {
-			if h := inviteResp.GetHeader(hdr); h != nil {
-				c.log = c.log.WithValues(name, h.Value())
-			}
-		}
-	}
-	if err != nil {
-		c.log.Infow("SIP invite failed", "error", err)
-		return err // TODO: should we retry? maybe new offer will work
-	}
-	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
 
-	err = c.sipAccept(inviteReq, inviteResp)
+	c.mon.InviteReq()
+	sdpResp, err := c.cc.Invite(c.sipConf.transport, URI{
+		User: c.sipConf.to,
+		Host: c.sipConf.address,
+	}, c.sipConf.user, c.sipConf.pass, sdpOffer)
+	if err != nil {
+		// TODO: should we retry? maybe new offer will work
+		var e *ErrorStatus
+		if errors.As(err, &e) {
+			c.mon.InviteError(fmt.Sprintf("status-%d", e.StatusCode))
+		} else {
+			c.mon.InviteError("other")
+		}
+		c.cc.Close()
+		c.log.Infow("SIP invite failed", "error", err)
+		return err
+	}
+
+	c.log = LoggerWithHeaders(c.log, c.cc)
+
+	if err := c.media.SetAnswer(sdpResp); err != nil {
+		return err
+	}
+	c.c.cmu.Lock()
+	c.c.byRemote[c.cc.Tag()] = c
+	c.c.cmu.Unlock()
+
+	c.mon.InviteAccept()
+	err = c.cc.AckInvite()
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
 		return err
 	}
-	if err := c.media.SetAnswer(c.sipInviteResp.Body()); err != nil {
-		return err
-	}
 	joinDur()
 
-	if inviteResp != nil {
-		extra := make(map[string]string)
-		for hdr, name := range headerToAttr {
-			if h := inviteResp.GetHeader(hdr); h != nil {
-				extra[name] = h.Value()
-			}
-		}
+	if len(c.cc.RemoteHeaders()) != 0 {
+		extra := HeadersToAttrs(nil, c.cc)
 		if c.lkRoom != nil && len(extra) != 0 {
 			room := c.lkRoom.Room()
 			if room != nil {
@@ -328,66 +335,180 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 	return nil
 }
 
-func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, authHeader string) (*sip.Request, *sip.Response, error) {
-	c.mon.InviteReq()
+func (c *outboundCall) handleDTMF(ev dtmf.Event) {
+	_ = c.lkRoom.SendData(&livekit.SipDTMF{
+		Code:  uint32(ev.Code),
+		Digit: string([]byte{ev.Digit}),
+	}, lksdk.WithDataPublishReliable(true))
+}
 
-	dest := conf.address + ":5060"
-	to := &sip.Uri{User: conf.to, Host: conf.address, Port: 5060, UriParams: make(sip.HeaderParams)}
-	switch conf.transport {
-	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
-		to.UriParams.Add("transport", "udp")
-	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
-		to.UriParams.Add("transport", "tcp")
+func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
+	from = from.Normalize()
+	fromHeader := &sip.FromHeader{
+		DisplayName: from.User,
+		Address:     *from.GetURI(),
+		Params:      sip.NewParams(),
 	}
-	if addr, sport, err := net.SplitHostPort(conf.address); err == nil {
-		if port, err := strconv.Atoi(sport); err == nil {
-			to.Host = addr
-			to.Port = port
-			dest = conf.address
+	fromHeader.Params.Add("tag", string(id))
+	return &sipOutbound{
+		c:    c,
+		id:   id,
+		from: fromHeader,
+	}
+}
+
+type sipOutbound struct {
+	c    *Client
+	id   LocalTag
+	from *sip.FromHeader
+
+	mu       sync.RWMutex
+	tag      RemoteTag
+	invite   *sip.Request
+	inviteOk *sip.Response
+	to       *sip.ToHeader
+}
+
+func (c *sipOutbound) From() sip.Uri {
+	return c.from.Address
+}
+
+func (c *sipOutbound) To() sip.Uri {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.to == nil {
+		return sip.Uri{}
+	}
+	return c.to.Address
+}
+
+func (c *sipOutbound) ID() LocalTag {
+	return c.id
+}
+
+func (c *sipOutbound) Tag() RemoteTag {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tag
+}
+
+func (c *sipOutbound) RemoteHeaders() Headers {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.inviteOk == nil {
+		return nil
+	}
+	return c.inviteOk.Headers()
+}
+
+func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass string, sdpOffer []byte) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	to = to.Normalize()
+	toHeader := &sip.ToHeader{Address: *to.GetURI()}
+	toHeader.Address.UriParams = make(sip.HeaderParams)
+	switch transport {
+	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
+		toHeader.Address.UriParams.Add("transport", "udp")
+	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
+		toHeader.Address.UriParams.Add("transport", "tcp")
+	}
+
+	dest := to.GetDest()
+
+	var (
+		authHeader = ""
+		req        *sip.Request
+		resp       *sip.Response
+		err        error
+	)
+authLoop:
+	for {
+		req, resp, err = c.attemptInvite(dest, toHeader, sdpOffer, authHeader)
+		if err != nil {
+			return nil, err
+		}
+		switch resp.StatusCode {
+		case 200:
+			break authLoop
+		default:
+			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &ErrorStatus{StatusCode: int(resp.StatusCode)})
+		case 400:
+			err := &ErrorStatus{StatusCode: int(resp.StatusCode)}
+			if body := resp.Body(); len(body) != 0 {
+				err.Message = string(body)
+			} else if s := resp.GetHeader("X-Twillio-Error"); s != nil {
+				err.Message = s.Value()
+			}
+			return nil, fmt.Errorf("INVITE failed: %w", err)
+		case 407:
+			// auth required
+		}
+		if user == "" || pass == "" {
+			return nil, errors.New("server required auth, but no username or password was provided")
+		}
+		headerVal := resp.GetHeader("Proxy-Authenticate")
+		challenge, err := digest.ParseChallenge(headerVal.Value())
+		if err != nil {
+			return nil, err
+		}
+		toHeader, ok := resp.To()
+		if !ok {
+			return nil, errors.New("no 'To' header on Response")
+		}
+
+		cred, err := digest.Digest(challenge, digest.Options{
+			Method:   req.Method.String(),
+			URI:      toHeader.Address.String(),
+			Username: user,
+			Password: pass,
+		})
+		if err != nil {
+			return nil, err
+		}
+		authHeader = cred.String()
+		// Try again with a computed digest
+	}
+
+	c.invite, c.inviteOk = req, resp
+	var ok bool
+	toHeader, ok = resp.To()
+	if !ok {
+		return nil, errors.New("no To header in INVITE response")
+	}
+	c.tag, ok = getTagFrom(toHeader.Params)
+	if !ok {
+		return nil, errors.New("no tag in To header in INVITE response")
+	}
+
+	if cont, ok := resp.Contact(); ok {
+		req.Recipient = &cont.Address
+		if req.Recipient.Port == 0 {
+			req.Recipient.Port = 5060
 		}
 	}
-	from := &sip.Uri{User: conf.from, Host: c.c.signalingIp}
-	if c.c.conf.SIPPort != 5060 {
-		from.Port = c.c.conf.SIPPort
+
+	if recordRouteHeader, ok := resp.RecordRoute(); ok {
+		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
-	fromHeader := &sip.FromHeader{Address: *from, DisplayName: conf.from, Params: sip.NewParams()}
-	fromHeader.Params.Add("tag", string(c.id))
+	return c.inviteOk.Body(), nil
+}
 
-	req := sip.NewRequest(sip.INVITE, to)
+func (c *sipOutbound) AckInvite() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
+}
+
+func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte, authHeader string) (*sip.Request, *sip.Response, error) {
+	req := sip.NewRequest(sip.INVITE, &to.Address)
 	req.SetDestination(dest)
 	req.SetBody(offer)
-	req.AppendHeader(&sip.ToHeader{Address: *to})
-	req.AppendHeader(fromHeader)
-	req.AppendHeader(&sip.ContactHeader{Address: *from})
-	// TODO: This issue came out when we tried creating separate UA for the server and the client.
-	//       So we might need to set Via explicitly. Anyway, UA must be shared for other reasons,
-	//       and the calls work without explicit Via. So keep it simple, and let SIPGO set Via for now.
-	//       Code will remain here for the future reference/refactoring.
-	if false {
-		if c.c.signalingIp != c.c.signalingIpLocal {
-			// SIPGO will use Via/From headers to figure out which interface to listen on, which will obviously fail
-			// in case we specify our external IP in there. So we must explicitly add a Via with our local IP.
-			params := sip.NewParams()
-			params["branch"] = sip.GenerateBranch()
-			req.AppendHeader(&sip.ViaHeader{
-				ProtocolName:    "SIP",
-				ProtocolVersion: "2.0",
-				Transport:       req.Transport(),
-				Host:            c.c.signalingIpLocal,
-				Params:          params,
-			})
-		}
-		params := sip.NewParams()
-		params["branch"] = sip.GenerateBranch()
-		req.AppendHeader(&sip.ViaHeader{
-			ProtocolName:    "SIP",
-			ProtocolVersion: "2.0",
-			Transport:       req.Transport(),
-			Host:            c.c.signalingIp,
-			Params:          params,
-		})
-	}
+	req.AppendHeader(to)
+	req.AppendHeader(c.from)
+	req.AppendHeader(&sip.ContactHeader{Address: c.from.Address})
+
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
@@ -397,127 +518,55 @@ func (c *outboundCall) sipAttemptInvite(offer []byte, conf sipOutboundConfig, au
 
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
-		c.mon.InviteError("tx-failed")
 		return nil, nil, err
 	}
 	defer tx.Terminate()
 
 	resp, err := sipResponse(tx)
-	if err != nil {
-		c.mon.InviteError("tx-failed")
-	}
 	return req, resp, err
 }
 
-func (c *outboundCall) sipInvite(offer []byte, conf sipOutboundConfig) (*sip.Request, *sip.Response, error) {
-	authHeader := ""
-	for {
-		req, resp, err := c.sipAttemptInvite(offer, conf, authHeader)
-		if err != nil {
-			return nil, nil, err
-		}
-		switch resp.StatusCode {
-		default:
-			c.mon.InviteError(fmt.Sprintf("status-%d", resp.StatusCode))
-			return nil, resp, fmt.Errorf("Unexpected StatusCode from INVITE response %d", resp.StatusCode)
-		case 400:
-			c.mon.InviteError("status-400")
-			var reason string
-			if body := resp.Body(); len(body) != 0 {
-				reason = string(body)
-			} else if s := resp.GetHeader("X-Twillio-Error"); s != nil {
-				reason = s.Value()
-			}
-			if reason != "" {
-				return nil, resp, fmt.Errorf("INVITE failed: %s", reason)
-			}
-			return nil, resp, fmt.Errorf("INVITE failed with status %d", resp.StatusCode)
-		case 200:
-			c.mon.InviteAccept()
-			return req, resp, nil
-		case 407:
-			// auth required
-			c.mon.InviteError("auth-required")
-		}
-		if conf.user == "" || conf.pass == "" {
-			return nil, resp, fmt.Errorf("Server responded with 407, but no username or password was provided")
-		}
-		headerVal := resp.GetHeader("Proxy-Authenticate")
-		challenge, err := digest.ParseChallenge(headerVal.Value())
-		if err != nil {
-			return nil, resp, err
-		}
-
-		toHeader, ok := resp.To()
-		if !ok {
-			return nil, resp, fmt.Errorf("No To Header on Request")
-		}
-
-		cred, err := digest.Digest(challenge, digest.Options{
-			Method:   req.Method.String(),
-			URI:      toHeader.Address.String(),
-			Username: conf.user,
-			Password: conf.pass,
-		})
-		if err != nil {
-			return nil, resp, err
-		}
-		authHeader = cred.String()
-		// Try again with a computed digest
-	}
+func (c *sipOutbound) WriteRequest(req *sip.Request) error {
+	return c.c.sipCli.WriteRequest(req)
 }
 
-func (c *outboundCall) sipAccept(inviteReq *sip.Request, inviteResp *sip.Response) error {
-	tag, err := getToTag(inviteResp)
-	if err != nil {
-		return err
-	}
-	c.tag = tag
-	c.c.cmu.Lock()
-	c.c.byRemote[tag] = c
-	c.c.cmu.Unlock()
-
-	if cont, ok := inviteResp.Contact(); ok {
-		inviteReq.Recipient = &cont.Address
-		if inviteReq.Recipient.Port == 0 {
-			inviteReq.Recipient.Port = 5060
-		}
-	}
-
-	if recordRouteHeader, ok := inviteResp.RecordRoute(); ok {
-		inviteReq.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
-	}
-
-	return c.c.sipCli.WriteRequest(sip.NewAckRequest(inviteReq, inviteResp, nil))
+func (c *sipOutbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
+	return c.c.sipCli.TransactionRequest(req)
 }
 
-func (c *outboundCall) sipBye() error {
-	req := sip.NewByeRequest(c.sipInviteReq, c.sipInviteResp, nil)
-	c.sipInviteReq.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
-
+func (c *sipOutbound) sendBye() {
+	if c.invite == nil || c.inviteOk == nil {
+		return // call wasn't established
+	}
+	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
+	bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 	if c.c.closing.IsBroken() {
 		// do not wait for a response
-		_ = c.c.sipCli.TransportLayer().WriteMsg(req)
-		return nil
+		_ = c.WriteRequest(bye)
+		return
 	}
-	tx, err := c.c.sipCli.TransactionRequest(req)
-	if err != nil {
-		return err
-	}
-	defer tx.Terminate()
-	r, err := sipResponse(tx)
-	if err != nil {
-		return err
-	}
-	if r.StatusCode == 200 {
-		_ = c.c.sipCli.WriteRequest(sip.NewAckRequest(req, r, nil))
-	}
-	return nil
+	c.drop()
+	sendBye(c, bye)
 }
 
-func (c *outboundCall) handleDTMF(ev dtmf.Event) {
-	_ = c.lkRoom.SendData(&livekit.SipDTMF{
-		Code:  uint32(ev.Code),
-		Digit: string([]byte{ev.Digit}),
-	}, lksdk.WithDataPublishReliable(true))
+func (c *sipOutbound) drop() {
+	// TODO: cancel the call?
+	c.invite = nil
+	c.inviteOk = nil
+}
+
+func (c *sipOutbound) Drop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.drop()
+}
+
+func (c *sipOutbound) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inviteOk != nil {
+		c.sendBye()
+	} else {
+		c.drop()
+	}
 }

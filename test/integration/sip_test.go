@@ -222,7 +222,7 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		Codec:    codec,
 		Log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		OnMediaTimeout: func() {
-			t.Fatal("media timeout")
+			t.Fatal("media timeout from server to test client")
 		},
 		OnDTMF: onDTMF,
 	}
@@ -269,7 +269,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr = "my.attr"
 		customVal  = "custom"
 	)
-	r := lk.Connect(t, roomName, "test", &lksdk.RoomCallback{
+	r := lk.ConnectWithAudio(t, roomName, "test", &lksdk.RoomCallback{
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
@@ -292,6 +292,11 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
 	})
+
+	// Send audio, so that we don't trigger media timeout.
+	mctx, mcancel := context.WithCancel(context.Background())
+	defer mcancel()
+	go cli.SendSilence(mctx)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
@@ -382,14 +387,16 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	cli := runClient(t, nc, clientID, clientNumber, false, nil)
 
+	// Send audio, so that we don't trigger media timeout.
+	mctx, mcancel := context.WithCancel(context.Background())
+	defer mcancel()
+	go cli.SendSilence(mctx)
+
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
 	defer cancel()
-
-	// Send audio of silence in the background so that the media channel won't timeout.
-	go cli.SendSilence(ctx)
 
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
 		{Identity: "test"},
@@ -453,7 +460,12 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	runClient(t, nc, clientID, clientNumber, true, nil)
+	cli := runClient(t, nc, clientID, clientNumber, true, nil)
+
+	// Send audio, so that we don't trigger media timeout.
+	mctx, mcancel := context.WithCancel(context.Background())
+	defer mcancel()
+	go cli.SendSilence(mctx)
 
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
@@ -484,39 +496,66 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 
 	const (
 		clientID   = "test-cli"
-		roomName   = "test-open"
+		roomPref   = "test-pref"
 		meta       = `{"test":true}`
 		customAttr = "my.attr"
 		customVal  = "custom"
 	)
-	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomName, "", meta, map[string]string{
+
+	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomPref, "", meta, map[string]string{
 		customAttr: customVal,
 	})
 
-	runClient(t, nc, clientID, clientNumber, false, nil)
-
-	// Room should be created automatically with exact name.
-	// SIP participant should be visible and have a proper kind.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
 	defer cancel()
-	lk.ExpectRoomPrefWithParticipants(t, ctx, roomName, clientNumber, []lktest.ParticipantInfo{
-		{
-			Identity: "sip_" + clientNumber,
-			Name:     "Phone " + clientNumber,
-			Kind:     livekit.ParticipantInfo_SIP,
-			Metadata: meta,
-			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
-				"sip.callStatus":       "active",
-				"sip.trunkPhoneNumber": serverNumber,
-				"sip.phoneNumber":      clientNumber,
-				"sip.ruleID":           nc.RuleID,
-				"sip.trunkID":          nc.TrunkID,
-				"lktest.id":            clientID,
-				customAttr:             customVal,
+
+	// runClient waits for SIP to completely dial, but this won't happen until we connect
+	// another participant to that room.
+	// So we have to monitor rooms separately and connect participant as soon as there's a room with our prefix.
+	rch := make(chan *livekit.Room, 1)
+	go func() {
+		defer close(rch)
+		room := lk.ExpectRoomPref(t, ctx, roomPref, clientNumber, false)
+		lk.ConnectWithAudio(t, room.Name, "test", nil)
+		rch <- room
+	}()
+
+	cli := runClient(t, nc, clientID, clientNumber, false, nil)
+
+	// Send audio, so that we don't trigger media timeout.
+	mctx, mcancel := context.WithCancel(context.Background())
+	defer mcancel()
+	go cli.SendSilence(mctx)
+
+	// Room should be created automatically with exact prefix containing phone number.
+	// SIP participant should be visible and have a proper kind.
+	select {
+	case <-ctx.Done():
+		t.Fatal("cannot find the room")
+	case room := <-rch:
+		lk.ExpectParticipants(t, ctx, room.Name, []lktest.ParticipantInfo{
+			{
+				Identity: "test",
+				Kind:     livekit.ParticipantInfo_STANDARD,
 			},
-		},
-	})
+			{
+				Identity: "sip_" + clientNumber,
+				Name:     "Phone " + clientNumber,
+				Kind:     livekit.ParticipantInfo_SIP,
+				Metadata: meta,
+				Attributes: map[string]string{
+					"sip.callID":           "<test>", // special case
+					"sip.callStatus":       "active",
+					"sip.trunkPhoneNumber": serverNumber,
+					"sip.phoneNumber":      clientNumber,
+					"sip.ruleID":           nc.RuleID,
+					"sip.trunkID":          nc.TrunkID,
+					"lktest.id":            clientID,
+					customAttr:             customVal,
+				},
+			},
+		})
+	}
 }
 
 func TestSIPAudio(t *testing.T) {
@@ -544,8 +583,10 @@ func TestSIPAudio(t *testing.T) {
 
 					// Connect clients and wait for them to join.
 					var (
-						clients []*siptest.Client
-						audios  []lktest.AudioParticipant
+						wg      sync.WaitGroup
+						mu      sync.Mutex
+						clients = make([]*siptest.Client, N)
+						audios  = make([]lktest.AudioParticipant, N)
 					)
 					for i := 0; i < N; i++ {
 						codec := codec
@@ -554,10 +595,18 @@ func TestSIPAudio(t *testing.T) {
 							// This way we can see how different codecs interact.
 							codec = g711.ULawSDPName
 						}
-						cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil)
-						clients = append(clients, cli)
-						audios = append(audios, cli)
+						wg.Add(1)
+						go func() {
+							defer wg.Done()
+							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil)
+							mu.Lock()
+							clients[i] = cli
+							audios[i] = cli
+							mu.Unlock()
+						}()
 					}
+					wg.Wait()
+					t.Log("Participants dialed")
 					ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout*time.Duration(N))
 					defer cancel()
 					var exp []lktest.ParticipantInfo
@@ -580,16 +629,24 @@ func TestSIPAudio(t *testing.T) {
 						})
 					}
 					lk.ExpectRoomWithParticipants(t, ctx, roomName, exp)
+					t.Log("Participants join confirmed, testing audio")
 
 					ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
 					lktest.CheckAudioForParticipants(t, ctx, audios...)
 					cancel()
 
+					t.Log("Success, cleaning up")
+
 					// Stop everything and ensure the room is empty afterward.
 					for _, cli := range clients {
-						cli.Close()
+						wg.Add(1)
+						go func() {
+							defer wg.Done()
+							cli.Close()
+						}()
 					}
+					wg.Wait()
 
 					ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
 					defer cancel()

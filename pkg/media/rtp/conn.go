@@ -42,6 +42,7 @@ func NewConnWith(conn UDPConn, timeoutCallback func()) *Conn {
 		conn:     conn,
 	}
 	if timeoutCallback != nil {
+		c.EnableTimeout(true)
 		go c.onTimeout(timeoutCallback)
 	}
 	return c
@@ -55,12 +56,13 @@ type UDPConn interface {
 }
 
 type Conn struct {
-	wmu         sync.Mutex
-	conn        UDPConn
-	closed      core.Fuse
-	readBuf     []byte
-	packetCount atomic.Uint64
-	received    chan struct{}
+	wmu          sync.Mutex
+	conn         UDPConn
+	closed       core.Fuse
+	readBuf      []byte
+	packetCount  atomic.Uint64
+	received     chan struct{}
+	timeoutStart atomic.Pointer[time.Time]
 
 	dest  atomic.Pointer[net.UDPAddr]
 	onRTP atomic.Pointer[Handler]
@@ -184,11 +186,18 @@ func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
 	return &p, addr, nil
 }
 
+func (c *Conn) EnableTimeout(enabled bool) {
+	if !enabled {
+		c.timeoutStart.Store(nil)
+		return
+	}
+	now := time.Now()
+	c.timeoutStart.Store(&now)
+}
+
 func (c *Conn) onTimeout(timeoutCallback func()) {
 	ticker := time.NewTicker(timeoutCheckInterval)
 	defer ticker.Stop()
-
-	start := time.Now()
 
 	var lastPackets uint64
 	for {
@@ -197,15 +206,19 @@ func (c *Conn) onTimeout(timeoutCallback func()) {
 			return
 		case <-ticker.C:
 			curPackets := c.packetCount.Load()
-			if curPackets == lastPackets {
-				if lastPackets == 0 && time.Since(start) < timeoutMediaInitial {
-					continue
-				}
-				timeoutCallback()
-				return
+			if curPackets != lastPackets {
+				lastPackets = curPackets
+				continue
 			}
-
-			lastPackets = curPackets
+			start := c.timeoutStart.Load()
+			if start == nil {
+				continue // temporary disabled
+			}
+			if lastPackets == 0 && time.Since(*start) < timeoutMediaInitial {
+				continue
+			}
+			timeoutCallback()
+			return
 		}
 	}
 }

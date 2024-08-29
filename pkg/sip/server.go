@@ -51,6 +51,21 @@ type CallInfo struct {
 	NoPin      bool
 }
 
+type AuthResult int
+
+const (
+	AuthNotFound = AuthResult(iota)
+	AuthDrop
+	AuthPassword
+	AuthAccept
+)
+
+type AuthInfo struct {
+	Result   AuthResult
+	Username string
+	Password string
+}
+
 type DispatchResult int
 
 const (
@@ -68,7 +83,7 @@ type CallDispatch struct {
 }
 
 type Handler interface {
-	GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error)
+	GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
 }
 
@@ -114,10 +129,6 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 
 func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
-}
-
-func sipErrorResponse(tx sip.ServerTransaction, req *sip.Request) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
 }
 
 func (s *Server) startUDP() error {
