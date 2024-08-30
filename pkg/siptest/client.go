@@ -524,12 +524,23 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	decoded := make(media.PCM16Sample, sampleRate/framesPerSec)
 	dec := c.audioCodec.DecodeRTP(media.NewPCM16BufferWriter(&decoded, sampleRate), c.audioType)
 	lastLog := time.Now()
-	for {
-		p, _, err := c.mediaConn.ReadRTP()
-		if err != nil {
-			c.log.Error("cannot read rtp packet", "err", err)
-			return err
+
+	pkts := make(chan *rtp.Packet, 1)
+
+	h := rtp.Handler(rtp.HandlerFunc(func(pkt *rtp.Packet) error {
+		select {
+		case <-ctx.Done():
+			close(pkts)
+			return ctx.Err()
+		case pkts <- pkt:
 		}
+
+		pkts <- pkt
+		return nil
+	}))
+	c.recordHandler.Store(&h)
+
+	for p := range pkts {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -541,11 +552,11 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			continue
 		}
 		decoded = decoded[:0]
-		if err = dec.HandleRTP(p); err != nil {
+		if err := dec.HandleRTP(p); err != nil {
 			return err
 		}
 		if ws != nil {
-			if err = ws.WriteSample(decoded); err != nil {
+			if err := ws.WriteSample(decoded); err != nil {
 				return err
 			}
 		}
@@ -582,6 +593,8 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			c.log.Debug("skipping signal", "len", len(decoded), "signals", out)
 		}
 	}
+
+	return nil
 }
 
 func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {
