@@ -528,6 +528,13 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	pkts := make(chan *rtp.Packet, 1)
 
 	h := rtp.Handler(rtp.HandlerFunc(func(pkt *rtp.Packet) error {
+		// Make sure er do not send on a closed channel
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
 			close(pkts)
