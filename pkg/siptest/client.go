@@ -27,6 +27,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/at-wat/ebml-go"
@@ -149,22 +150,23 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 }
 
 type Client struct {
-	id         string
-	conf       ClientConfig
-	log        *slog.Logger
-	ack        chan struct{}
-	audioCodec rtp.AudioCodec
-	audioType  byte
-	mediaConn  *rtp.Conn
-	mux        *rtp.Mux
-	media      *rtp.SeqWriter
-	mediaAudio *rtp.Stream
-	mediaDTMF  *rtp.Stream
-	audioOut   media.PCM16Writer
-	sipClient  *sipgo.Client
-	sipServer  *sipgo.Server
-	inviteReq  *sip.Request
-	inviteResp *sip.Response
+	id            string
+	conf          ClientConfig
+	log           *slog.Logger
+	ack           chan struct{}
+	audioCodec    rtp.AudioCodec
+	audioType     byte
+	mediaConn     *rtp.Conn
+	mux           *rtp.Mux
+	media         *rtp.SeqWriter
+	mediaAudio    *rtp.Stream
+	mediaDTMF     *rtp.Stream
+	audioOut      media.PCM16Writer
+	sipClient     *sipgo.Client
+	sipServer     *sipgo.Server
+	inviteReq     *sip.Request
+	inviteResp    *sip.Response
+	recordHandler atomic.Pointer[rtp.Handler]
 }
 
 func (c *Client) LocalIP() string {
@@ -189,8 +191,29 @@ func (c *Client) Close() {
 }
 
 func (c *Client) setupRTPReceiver() {
-	c.mux = rtp.NewMux(nil)
+	var lastTs atomic.Uint32
+
+	c.mux = rtp.NewMux(rtp.HandlerFunc(func(pck *rtp.Packet) error {
+		lastTs.Store(pck.Timestamp)
+
+		h := c.recordHandler.Load()
+		if h != nil {
+			return (*h).HandleRTP(pck)
+		}
+		return nil
+	}))
 	c.mux.Register(101, rtp.HandlerFunc(func(pck *rtp.Packet) error {
+		ts := lastTs.Load()
+		var diff int64
+		if ts > 0 {
+			diff = int64(pck.Timestamp) - int64(ts)
+		}
+
+		if diff > int64(c.audioCodec.Info().RTPClockRate) || diff < -int64(c.audioCodec.Info().RTPClockRate) {
+			c.log.Info("reveived out of sync DTMF message", "dtmfTs", pck.Timestamp, "lastTs", ts)
+			return nil
+		}
+
 		if c.conf.OnDTMF == nil {
 			return nil
 		}
@@ -206,7 +229,7 @@ func (c *Client) setupRTPReceiver() {
 func (c *Client) Record(w io.WriteCloser) {
 	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
 	h := c.audioCodec.DecodeRTP(ws, c.audioType)
-	c.mux.SetDefault(h)
+	c.recordHandler.Store(&h)
 }
 
 func (c *Client) Dial(ip string, uri string, number string) error {
