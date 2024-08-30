@@ -74,8 +74,6 @@ func TestDTMF(t *testing.T) {
 }
 
 func TestDTMFDelay(t *testing.T) {
-	const startTime = 1242
-
 	var buf rtp.Buffer
 	w := rtp.NewSeqWriter(&buf).NewStream(101, SampleRate)
 	err := Write(context.Background(), nil, w, startTime, "1w23")
@@ -94,6 +92,7 @@ func TestDTMFDelay(t *testing.T) {
 	)
 	const (
 		packetDur = uint32(SampleRate / int(time.Second/rtp.DefFrameDur))
+		startTime = 1242
 	)
 
 	ts = startTime
