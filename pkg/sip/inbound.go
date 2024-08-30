@@ -172,11 +172,12 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	if err != nil {
 		cmon.InviteErrorShort("no-rule")
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", err)
-		sipErrorResponse(tx, req)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 404, "Does not match any SIP trunks", nil))
 		return
 	} else if drop {
 		cmon.InviteErrorShort("flood")
 		log.Debugw("Dropping inbound flood")
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 403, "Dropping inbound flood", nil))
 		tx.Terminate()
 		return
 	}
@@ -300,7 +301,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	switch disp.Result {
 	default:
 		c.log.Errorw("Rejecting inbound call", fmt.Errorf("unexpected dispatch result: %v", disp.Result))
-		sipErrorResponse(tx, req)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 500, "Unexpected dispatch result", nil))
 		c.close(true, callDropped, "unexpected-result")
 		return
 	case DispatchNoRuleDrop:
@@ -310,7 +311,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		return
 	case DispatchNoRuleReject:
 		c.log.Infow("Rejecting inbound call, doesn't match any Dispatch Rules")
-		sipErrorResponse(tx, req)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 404, "Does not match any dispatch rules", nil))
 		c.close(false, callDropped, "no-dispatch")
 		return
 	case DispatchAccept, DispatchRequestPin:
@@ -321,7 +322,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	answerData, err := c.runMediaConn(req.Body(), conf)
 	if err != nil {
 		c.log.Errorw("Cannot start media", err)
-		sipErrorResponse(tx, req)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 488, "Not acceptable here", nil))
 		c.close(true, callDropped, "media-failed")
 		return
 	}
