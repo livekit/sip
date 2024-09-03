@@ -224,9 +224,7 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		OnMediaTimeout: func() {
 			t.Fatal("media timeout")
 		},
-	}
-	if onDTMF != nil {
-		cconf.OnDTMF = onDTMF
+		OnDTMF: onDTMF,
 	}
 
 	cli, err := siptest.NewClient(id, cconf)

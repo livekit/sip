@@ -544,7 +544,6 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 		case pkts <- pkt:
 		}
 
-		pkts <- pkt
 		return nil
 	}))
 	c.recordHandler.Store(&h)
