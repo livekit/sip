@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/g711"
 	"github.com/livekit/sip/pkg/media/g722"
 	"github.com/livekit/sip/pkg/service"
@@ -208,12 +209,12 @@ func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, met
 	return dr.SipDispatchRuleId
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin)
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, onDTMF func(ev dtmf.Event)) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin, onDTMF)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool) *siptest.Client {
-	cli, err := siptest.NewClient(id, siptest.ClientConfig{
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, onDTMF func(ev dtmf.Event)) *siptest.Client {
+	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
 		AuthUser: conf.AuthUser,
@@ -223,7 +224,10 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		OnMediaTimeout: func() {
 			t.Fatal("media timeout")
 		},
-	})
+		OnDTMF: onDTMF,
+	}
+
+	cli, err := siptest.NewClient(id, cconf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,8 +258,9 @@ const (
 func TestSIPJoinOpenRoom(t *testing.T) {
 	lk := runLiveKit(t)
 	var (
-		dmu  sync.Mutex
-		dtmf string
+		dmu     sync.Mutex
+		dtmfOut string
+		dtmfIn  string
 	)
 	const (
 		clientID   = "test-cli"
@@ -270,7 +275,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 				switch data := data.(type) {
 				case *livekit.SipDTMF:
 					dmu.Lock()
-					dtmf += data.Digit
+					dtmfOut += data.Digit
 					dmu.Unlock()
 				}
 			},
@@ -282,7 +287,11 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
-	cli := runClient(t, nc, clientID, clientNumber, false)
+	cli := runClient(t, nc, clientID, clientNumber, false, func(ev dtmf.Event) {
+		dmu.Lock()
+		defer dmu.Unlock()
+		dtmfIn += string(ev.Digit)
+	})
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
@@ -319,7 +328,16 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	require.Eventually(t, func() bool {
 		dmu.Lock()
 		defer dmu.Unlock()
-		return dtmf == dtmfDigits
+		return dtmfOut == dtmfDigits
+	}, 5*time.Second, time.Second/2)
+
+	err = r.LocalParticipant.PublishDataPacket(&livekit.SipDTMF{Digit: "4567"}, lksdk.WithDataPublishReliable(true))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+		return dtmfIn == "4567"
 	}, 5*time.Second, time.Second/2)
 
 	cli.Close()
@@ -362,7 +380,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
-	cli := runClient(t, nc, clientID, clientNumber, false)
+	cli := runClient(t, nc, clientID, clientNumber, false, nil)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
@@ -435,7 +453,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	runClient(t, nc, clientID, clientNumber, true)
+	runClient(t, nc, clientID, clientNumber, true, nil)
 
 	// This needs additional time for the "enter pin" message to end.
 	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinWithPinTimeout)
@@ -475,7 +493,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		customAttr: customVal,
 	})
 
-	runClient(t, nc, clientID, clientNumber, false)
+	runClient(t, nc, clientID, clientNumber, false, nil)
 
 	// Room should be created automatically with exact name.
 	// SIP participant should be visible and have a proper kind.
@@ -536,7 +554,7 @@ func TestSIPAudio(t *testing.T) {
 							// This way we can see how different codecs interact.
 							codec = g711.ULawSDPName
 						}
-						cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false)
+						cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil)
 						clients = append(clients, cli)
 						audios = append(audios, cli)
 					}

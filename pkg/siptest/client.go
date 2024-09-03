@@ -27,6 +27,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/at-wat/ebml-go"
@@ -54,6 +55,7 @@ type ClientConfig struct {
 	Log            *slog.Logger
 	OnBye          func()
 	OnMediaTimeout func()
+	OnDTMF         func(ev dtmf.Event)
 	Codec          string
 }
 
@@ -101,7 +103,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
 	cli.audioOut = cli.audioCodec.EncodeRTP(cli.mediaAudio)
 
-	err := cli.mediaConn.Listen(0, 0, "0.0.0.0")
+	cli.setupRTPReceiver()
+
+	err := cli.mediaConn.ListenAndServe(0, 0, "0.0.0.0")
 	if err != nil {
 		cli.Close()
 		return nil, err
@@ -146,21 +150,23 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 }
 
 type Client struct {
-	id         string
-	conf       ClientConfig
-	log        *slog.Logger
-	ack        chan struct{}
-	audioCodec rtp.AudioCodec
-	audioType  byte
-	mediaConn  *rtp.Conn
-	media      *rtp.SeqWriter
-	mediaAudio *rtp.Stream
-	mediaDTMF  *rtp.Stream
-	audioOut   media.PCM16Writer
-	sipClient  *sipgo.Client
-	sipServer  *sipgo.Server
-	inviteReq  *sip.Request
-	inviteResp *sip.Response
+	id            string
+	conf          ClientConfig
+	log           *slog.Logger
+	ack           chan struct{}
+	audioCodec    rtp.AudioCodec
+	audioType     byte
+	mediaConn     *rtp.Conn
+	mux           *rtp.Mux
+	media         *rtp.SeqWriter
+	mediaAudio    *rtp.Stream
+	mediaDTMF     *rtp.Stream
+	audioOut      media.PCM16Writer
+	sipClient     *sipgo.Client
+	sipServer     *sipgo.Server
+	inviteReq     *sip.Request
+	inviteResp    *sip.Response
+	recordHandler atomic.Pointer[rtp.Handler]
 }
 
 func (c *Client) LocalIP() string {
@@ -184,31 +190,46 @@ func (c *Client) Close() {
 	}
 }
 
-func (c *Client) record(w io.WriteCloser) error {
-	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
-	h := c.audioCodec.DecodeRTP(ws, c.audioType)
-	for {
-		p, _, err := c.mediaConn.ReadRTP()
-		if err != nil {
-			c.log.Error("cannot read rtp packet", "err", err)
-			return err
+func (c *Client) setupRTPReceiver() {
+	var lastTs atomic.Uint32
+
+	c.mux = rtp.NewMux(rtp.HandlerFunc(func(pck *rtp.Packet) error {
+		lastTs.Store(pck.Timestamp)
+
+		h := c.recordHandler.Load()
+		if h != nil {
+			return (*h).HandleRTP(pck)
 		}
-		if err = h.HandleRTP(p); err != nil {
-			return err
+		return nil
+	}))
+	c.mux.Register(101, rtp.HandlerFunc(func(pck *rtp.Packet) error {
+		ts := lastTs.Load()
+		var diff int64
+		if ts > 0 {
+			diff = int64(pck.Timestamp) - int64(ts)
 		}
-	}
+
+		if diff > int64(c.audioCodec.Info().RTPClockRate) || diff < -int64(c.audioCodec.Info().RTPClockRate) {
+			c.log.Info("reveived out of sync DTMF message", "dtmfTs", pck.Timestamp, "lastTs", ts)
+			return nil
+		}
+
+		if c.conf.OnDTMF == nil {
+			return nil
+		}
+		if ev, ok := dtmf.DecodeRTP(pck); ok {
+			c.conf.OnDTMF(ev)
+		}
+		return nil
+	}))
+
+	c.mediaConn.OnRTP(c.mux)
 }
 
 func (c *Client) Record(w io.WriteCloser) {
-	go func() {
-		if err := c.record(w); err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-
-			panic(err)
-		}
-	}()
+	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
+	h := c.audioCodec.DecodeRTP(ws, c.audioType)
+	c.recordHandler.Store(&h)
 }
 
 func (c *Client) Dial(ip string, uri string, number string) error {
@@ -503,12 +524,31 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	decoded := make(media.PCM16Sample, sampleRate/framesPerSec)
 	dec := c.audioCodec.DecodeRTP(media.NewPCM16BufferWriter(&decoded, sampleRate), c.audioType)
 	lastLog := time.Now()
-	for {
-		p, _, err := c.mediaConn.ReadRTP()
-		if err != nil {
-			c.log.Error("cannot read rtp packet", "err", err)
-			return err
+
+	pkts := make(chan *rtp.Packet, 1)
+	done := make(chan struct{})
+
+	h := rtp.Handler(rtp.HandlerFunc(func(pkt *rtp.Packet) error {
+		// Make sure er do not send on a closed channel
+		select {
+		case <-done:
+			return ctx.Err()
+		default:
 		}
+
+		select {
+		case <-ctx.Done():
+			close(pkts)
+			close(done)
+			return ctx.Err()
+		case pkts <- pkt:
+		}
+
+		return nil
+	}))
+	c.recordHandler.Store(&h)
+
+	for p := range pkts {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -520,11 +560,11 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			continue
 		}
 		decoded = decoded[:0]
-		if err = dec.HandleRTP(p); err != nil {
+		if err := dec.HandleRTP(p); err != nil {
 			return err
 		}
 		if ws != nil {
-			if err = ws.WriteSample(decoded); err != nil {
+			if err := ws.WriteSample(decoded); err != nil {
 				return err
 			}
 		}
@@ -561,6 +601,8 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			c.log.Debug("skipping signal", "len", len(decoded), "signals", out)
 		}
 	}
+
+	return nil
 }
 
 func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {

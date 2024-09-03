@@ -74,12 +74,13 @@ func TestDTMF(t *testing.T) {
 }
 
 func TestDTMFDelay(t *testing.T) {
+	const startTime = 1242
+
 	var buf rtp.Buffer
 	w := rtp.NewSeqWriter(&buf).NewStream(101, SampleRate)
-	err := Write(context.Background(), nil, w, 0, "1w23")
+	err := Write(context.Background(), nil, w, startTime, "1w23")
 	require.NoError(t, err)
 
-	const packetDur = uint32(SampleRate / int(time.Second/rtp.DefFrameDur))
 	type packet struct {
 		SequenceNumber uint16
 		Timestamp      uint32
@@ -91,6 +92,12 @@ func TestDTMFDelay(t *testing.T) {
 		seq uint16
 		ts  uint32
 	)
+	const (
+		packetDur = uint32(SampleRate / int(time.Second/rtp.DefFrameDur))
+	)
+
+	ts = startTime
+
 	expectDigit := func(code byte, digit byte) {
 		start := ts
 		const n = 13

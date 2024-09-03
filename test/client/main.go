@@ -18,10 +18,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
 
+	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/g711"
 	"github.com/livekit/sip/pkg/siptest"
 )
@@ -52,6 +54,9 @@ func main() {
 		Codec:    *codec,
 		OnBye: func() {
 			cancel()
+		},
+		OnDTMF: func(ev dtmf.Event) {
+			fmt.Println("DTMF C:", ev.Code, " D:", string(ev.Digit))
 		},
 	})
 	if err != nil {
