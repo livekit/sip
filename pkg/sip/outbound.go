@@ -260,7 +260,7 @@ func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
 func (c *outboundCall) stopSIP(reason string) {
 	if c.sipInviteReq != nil {
 		if err := c.sipBye(); err != nil {
-			c.log.Infow("SIP bye failed", err)
+			c.log.Infow("SIP bye failed", "error", err)
 		}
 		c.mon.CallTerminate(reason)
 	}
@@ -294,14 +294,14 @@ func (c *outboundCall) sipSignal(conf sipOutboundConfig) error {
 		}
 	}
 	if err != nil {
-		c.log.Infow("SIP invite failed", err)
+		c.log.Infow("SIP invite failed", "error", err)
 		return err // TODO: should we retry? maybe new offer will work
 	}
 	c.sipInviteReq, c.sipInviteResp = inviteReq, inviteResp
 
 	err = c.sipAccept(inviteReq, inviteResp)
 	if err != nil {
-		c.log.Infow("SIP accept failed", err)
+		c.log.Infow("SIP accept failed", "error", err)
 		return err
 	}
 	if err := c.media.SetAnswer(c.sipInviteResp.Body()); err != nil {
