@@ -27,7 +27,7 @@ import (
 var _ Writer = (*Conn)(nil)
 
 const (
-	timeoutCheckInterval = 5 * time.Second
+	timeoutCheckInterval = 20 * time.Second
 	timeoutMediaInitial  = 30 * time.Second
 )
 
