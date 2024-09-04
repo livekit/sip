@@ -346,7 +346,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 
 	res.AppendHeader(&contentTypeHeaderSDP)
 	if err = tx.Respond(res); err != nil {
-		c.log.Errorw("Cannot respond to INVITE", err)
+		c.log.Infow("Cannot respond to INVITE", "error", err)
 		return
 	}
 	c.inviteReq = req
