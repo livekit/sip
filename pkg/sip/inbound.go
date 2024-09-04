@@ -447,7 +447,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 		return nil, err
 	}
 	c.media = mp
-	c.media.SetDTMFAudio(conf.AudioDTMF)
+	c.media.SetDTMFAudio(false)
 
 	answerData, mconf, err := mp.SetOffer(offerData)
 	if err != nil {

@@ -201,7 +201,7 @@ func Write(ctx context.Context, audio media.Writer[media.PCM16Sample], events *r
 		pcmBuf = make(media.PCM16Sample, audio.SampleRate()/framesPerSec)
 	}
 
-	const step = rtp.DefFrameDur
+	const step = 50 * time.Millisecond
 	ticker := time.NewTicker(step)
 	defer ticker.Stop()
 

@@ -79,7 +79,7 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, ro
 		call.close(true, callDropped, "media-failed")
 		return nil, err
 	}
-	call.media.SetDTMFAudio(conf.AudioDTMF)
+	call.media.SetDTMFAudio(false)
 	if err := call.connectToRoom(room); err != nil {
 		call.close(true, callDropped, "join-failed")
 		return nil, fmt.Errorf("update room failed: %w", err)
