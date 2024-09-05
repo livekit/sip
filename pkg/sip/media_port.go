@@ -141,7 +141,7 @@ func (p *MediaPort) decodeSDP(data []byte) (*sdp.SessionDescription, *MediaConf,
 	}
 	c, err := sdpGetAudioCodec(desc)
 	if err != nil {
-		p.log.Errorw("SIP SDP failed", err)
+		p.log.Infow("SIP SDP failed", "error", err)
 		return nil, nil, err
 	}
 	return desc, c, nil
