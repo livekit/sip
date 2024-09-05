@@ -18,6 +18,7 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
@@ -30,24 +31,35 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
-func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, ip string, ports rtcconfig.PortRange, sampleRate int) (*MediaPort, error) {
-	return NewMediaPortWith(log, mon, nil, ip, ports, sampleRate)
+type MediaConfig struct {
+	IP                  string
+	Ports               rtcconfig.PortRange
+	MediaTimeoutInitial time.Duration
+	MediaTimeout        time.Duration
 }
 
-func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPConn, ip string, ports rtcconfig.PortRange, sampleRate int) (*MediaPort, error) {
+func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
+	return NewMediaPortWith(log, mon, nil, conf, sampleRate)
+}
+
+func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPConn, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
 	mediaTimeout := make(chan struct{})
 	p := &MediaPort{
 		log:          log,
 		mon:          mon,
-		externalIP:   ip,
+		externalIP:   conf.IP,
 		mediaTimeout: mediaTimeout,
-		conn: rtp.NewConnWith(conn, func() {
-			close(mediaTimeout)
+		conn: rtp.NewConnWith(conn, &rtp.ConnConfig{
+			MediaTimeoutInitial: conf.MediaTimeoutInitial,
+			MediaTimeout:        conf.MediaTimeout,
+			TimeoutCallback: func() {
+				close(mediaTimeout)
+			},
 		}),
 		audioOut: media.NewSwitchWriter(sampleRate),
 		audioIn:  media.NewSwitchWriter(sampleRate),
 	}
-	if err := p.conn.ListenAndServe(ports.Start, ports.End, "0.0.0.0"); err != nil {
+	if err := p.conn.ListenAndServe(conf.Ports.Start, conf.Ports.End, "0.0.0.0"); err != nil {
 		return nil, err
 	}
 	p.log.Debugw("listening for media on UDP", "port", p.Port())

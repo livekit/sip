@@ -363,7 +363,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
-	mp, err := NewMediaPort(c.log, c.mon, c.s.signalingIp, conf.RTPPort, RoomSampleRate)
+	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
+		IP:                  c.s.signalingIp,
+		Ports:               conf.RTPPort,
+		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
+		MediaTimeout:        c.s.conf.MediaTimeout,
+	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
 	}

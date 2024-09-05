@@ -26,24 +26,36 @@ import (
 
 var _ Writer = (*Conn)(nil)
 
-const (
-	timeoutCheckInterval = 5 * time.Second
-	timeoutMediaInitial  = 30 * time.Second
-)
-
-func NewConn(timeoutCallback func()) *Conn {
-	return NewConnWith(nil, timeoutCallback)
+type ConnConfig struct {
+	MediaTimeoutInitial time.Duration
+	MediaTimeout        time.Duration
+	TimeoutCallback     func()
 }
 
-func NewConnWith(conn UDPConn, timeoutCallback func()) *Conn {
-	c := &Conn{
-		readBuf:  make([]byte, 1500), // MTU
-		received: make(chan struct{}),
-		conn:     conn,
+func NewConn(conf *ConnConfig) *Conn {
+	return NewConnWith(nil, conf)
+}
+
+func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
+	if conf == nil {
+		conf = &ConnConfig{}
 	}
-	if timeoutCallback != nil {
+	if conf.MediaTimeoutInitial <= 0 {
+		conf.MediaTimeoutInitial = 30 * time.Second
+	}
+	if conf.MediaTimeout <= 0 {
+		conf.MediaTimeout = 15 * time.Second
+	}
+	c := &Conn{
+		readBuf:        make([]byte, 1500), // MTU
+		received:       make(chan struct{}),
+		conn:           conn,
+		timeout:        conf.MediaTimeout,
+		timeoutInitial: conf.MediaTimeoutInitial,
+	}
+	if conf.TimeoutCallback != nil {
 		c.EnableTimeout(true)
-		go c.onTimeout(timeoutCallback)
+		go c.onTimeout(conf.TimeoutCallback)
 	}
 	return c
 }
@@ -56,13 +68,15 @@ type UDPConn interface {
 }
 
 type Conn struct {
-	wmu          sync.Mutex
-	conn         UDPConn
-	closed       core.Fuse
-	readBuf      []byte
-	packetCount  atomic.Uint64
-	received     chan struct{}
-	timeoutStart atomic.Pointer[time.Time]
+	wmu            sync.Mutex
+	conn           UDPConn
+	closed         core.Fuse
+	readBuf        []byte
+	packetCount    atomic.Uint64
+	received       chan struct{}
+	timeoutStart   atomic.Pointer[time.Time]
+	timeoutInitial time.Duration
+	timeout        time.Duration
 
 	dest  atomic.Pointer[net.UDPAddr]
 	onRTP atomic.Pointer[Handler]
@@ -196,7 +210,7 @@ func (c *Conn) EnableTimeout(enabled bool) {
 }
 
 func (c *Conn) onTimeout(timeoutCallback func()) {
-	ticker := time.NewTicker(timeoutCheckInterval)
+	ticker := time.NewTicker(c.timeout)
 	defer ticker.Stop()
 
 	var lastPackets uint64
@@ -214,7 +228,7 @@ func (c *Conn) onTimeout(timeoutCallback func()) {
 			if start == nil {
 				continue // temporary disabled
 			}
-			if lastPackets == 0 && time.Since(*start) < timeoutMediaInitial {
+			if lastPackets == 0 && time.Since(*start) < c.timeoutInitial {
 				continue
 			}
 			timeoutCallback()
