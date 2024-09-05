@@ -75,7 +75,12 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, ro
 	}
 	call.mon = c.mon.NewCall(stats.Outbound, c.signalingIp, sipConf.address)
 	var err error
-	call.media, err = NewMediaPort(call.log, call.mon, c.signalingIp, conf.RTPPort, RoomSampleRate)
+	call.media, err = NewMediaPort(call.log, call.mon, &MediaConfig{
+		IP:                  c.signalingIp,
+		Ports:               conf.RTPPort,
+		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
+		MediaTimeout:        c.conf.MediaTimeout,
+	}, RoomSampleRate)
 	if err != nil {
 		call.close(true, callDropped, "media-failed")
 		return nil, err

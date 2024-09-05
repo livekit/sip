@@ -150,11 +150,17 @@ func TestMediaPort(t *testing.T) {
 
 					log := logger.GetLogger()
 
-					m1, err := NewMediaPortWith(log.WithName("one"), nil, c1, "1.1.1.1", rtcconfig.PortRange{Start: 10000}, rate)
+					m1, err := NewMediaPortWith(log.WithName("one"), nil, c1, &MediaConfig{
+						IP:    "1.1.1.1",
+						Ports: rtcconfig.PortRange{Start: 10000},
+					}, rate)
 					require.NoError(t, err)
 					defer m1.Close()
 
-					m2, err := NewMediaPortWith(log.WithName("two"), nil, c2, "2.2.2.2", rtcconfig.PortRange{Start: 20000}, rate)
+					m2, err := NewMediaPortWith(log.WithName("two"), nil, c2, &MediaConfig{
+						IP:    "2.2.2.2",
+						Ports: rtcconfig.PortRange{Start: 20000},
+					}, rate)
 					require.NoError(t, err)
 					defer m2.Close()
 

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -60,7 +61,9 @@ type Config struct {
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 
-	Codecs map[string]bool `yaml:"codecs"`
+	MediaTimeout        time.Duration   `yaml:"media_timeout"`
+	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
+	Codecs              map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
