@@ -10,7 +10,7 @@ import (
 	"github.com/livekit/sip/pkg/sip"
 )
 
-func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, from, to, toHost, srcAddress string) (username, password string, drop bool, err error) {
+func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, from, to, toHost, srcAddress string) (sip.AuthInfo, error) {
 	resp, err := psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
 		From:       from,
 		To:         to,
@@ -19,10 +19,15 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, from,
 	})
 
 	if err != nil {
-		return "", "", false, err
+		return sip.AuthInfo{}, err
 	}
-
-	return resp.Username, resp.Password, resp.Drop, nil
+	if resp.Drop {
+		return sip.AuthInfo{Result: sip.AuthDrop}, nil
+	}
+	if resp.Username != "" && resp.Password != "" {
+		return sip.AuthInfo{Result: sip.AuthPassword, Username: resp.Username, Password: resp.Password}, nil
+	}
+	return sip.AuthInfo{Result: sip.AuthAccept}, nil
 }
 
 func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.Logger, info *sip.CallInfo) sip.CallDispatch {

@@ -189,7 +189,6 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	call := c.byRemote[tag]
 	c.cmu.Unlock()
 	if call == nil {
-		c.log.Infow("BYE", "sipTag", tag)
 		return false
 	}
 	call.log.Infow("BYE")

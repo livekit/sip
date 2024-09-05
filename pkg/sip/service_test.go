@@ -51,16 +51,16 @@ func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 }
 
 type TestHandler struct {
-	GetAuthCredentialsFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error)
+	GetAuthCredentialsFunc func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
 }
 
-func (h TestHandler) GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error) {
+func (h TestHandler) GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error) {
 	return h.GetAuthCredentialsFunc(ctx, fromUser, toUser, toHost, srcAddress)
 }
 
 func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispatch {
-	return h.DispatchCall(ctx, info)
+	return h.DispatchCallFunc(ctx, info)
 }
 
 func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction)) {
@@ -114,10 +114,10 @@ func TestService_AuthFailure(t *testing.T) {
 		expectedToUser   = "bar"
 	)
 	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error) {
+		GetAuthCredentialsFunc: func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error) {
 			require.Equal(t, expectedFromUser, fromUser)
 			require.Equal(t, expectedToUser, toUser)
-			return "", "", false, fmt.Errorf("Auth Failure")
+			return AuthInfo{}, fmt.Errorf("Auth Failure")
 		},
 	}
 	testInvite(t, h, false, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
@@ -125,7 +125,7 @@ func TestService_AuthFailure(t *testing.T) {
 		require.Equal(t, sip.StatusCode(100), res.StatusCode)
 
 		res = getResponseOrFail(t, tx)
-		require.Equal(t, sip.StatusCode(400), res.StatusCode)
+		require.Equal(t, sip.StatusCode(503), res.StatusCode)
 	})
 }
 
@@ -135,10 +135,10 @@ func TestService_AuthDrop(t *testing.T) {
 		expectedToUser   = "bar"
 	)
 	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (username, password string, drop bool, err error) {
+		GetAuthCredentialsFunc: func(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error) {
 			require.Equal(t, expectedFromUser, fromUser)
 			require.Equal(t, expectedToUser, toUser)
-			return "", "", true, nil
+			return AuthInfo{Result: AuthDrop}, nil
 		},
 	}
 	testInvite(t, h, true, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {

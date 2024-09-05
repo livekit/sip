@@ -45,15 +45,16 @@ type ParticipantInfo struct {
 }
 
 type Room struct {
-	log       logger.Logger
-	room      *lksdk.Room
-	mix       *mixer.Mixer
-	out       *media.SwitchWriter
-	outDtmf   atomic.Pointer[dtmf.Writer]
-	p         ParticipantInfo
-	ready     atomic.Bool
-	subscribe atomic.Bool
-	stopped   core.Fuse
+	log        logger.Logger
+	room       *lksdk.Room
+	mix        *mixer.Mixer
+	out        *media.SwitchWriter
+	outDtmf    atomic.Pointer[dtmf.Writer]
+	p          ParticipantInfo
+	ready      atomic.Bool
+	subscribe  atomic.Bool
+	subscribed core.Fuse
+	stopped    core.Fuse
 }
 
 type ParticipantConfig struct {
@@ -83,11 +84,28 @@ func (r *Room) Closed() <-chan struct{} {
 	return r.stopped.Watch()
 }
 
+func (r *Room) Subscribed() <-chan struct{} {
+	if r == nil {
+		return nil
+	}
+	return r.subscribed.Watch()
+}
+
 func (r *Room) Room() *lksdk.Room {
 	if r == nil {
 		return nil
 	}
 	return r.room
+}
+
+func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
+	switch rp.Kind() {
+	case lksdk.ParticipantSIP:
+		// Avoid a deadlock where two SIP participant join a room and won't publish their track.
+		// Each waits for the other's track to subscribe before publishing its own track.
+		// So we just assume SIP participants will eventually start speaking.
+		r.subscribed.Break()
+	}
 }
 
 func (r *Room) subscribeTo(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
@@ -96,7 +114,9 @@ func (r *Room) subscribeTo(publication *lksdk.RemoteTrackPublication, rp *lksdk.
 	}
 	if err := publication.SetSubscribed(true); err != nil {
 		r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
+		return
 	}
+	r.subscribed.Break()
 }
 
 func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
@@ -110,6 +130,12 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 		Name:     partConf.Name,
 	}
 	roomCallback := &lksdk.RoomCallback{
+		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
+			if !r.subscribe.Load() {
+				return // will subscribe later
+			}
+			r.participantJoin(rp)
+		},
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 				if !r.subscribe.Load() {
@@ -137,7 +163,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
 					h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
 					err = rtp.HandleLoop(track, h)
-					if err != nil && errors.Unwrap(err) != io.EOF {
+					if err != nil && !errors.Is(err, io.EOF) {
 						logger.Infow("room track rtp handler returned with failure", "error", err)
 					}
 				}()
@@ -204,6 +230,7 @@ func (r *Room) Subscribe() {
 	}
 	r.subscribe.Store(true)
 	for _, rp := range r.room.GetRemoteParticipants() {
+		r.participantJoin(rp)
 		for _, pub := range rp.TrackPublications() {
 			if remotePub, ok := pub.(*lksdk.RemoteTrackPublication); ok {
 				r.subscribeTo(remotePub, rp)

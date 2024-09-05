@@ -98,6 +98,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		cli.audioType = 102
 	}
 	cli.mediaConn = rtp.NewConn(conf.OnMediaTimeout)
+	cli.mediaConn.EnableTimeout(false) // enabled later
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
@@ -167,6 +168,7 @@ type Client struct {
 	inviteReq     *sip.Request
 	inviteResp    *sip.Response
 	recordHandler atomic.Pointer[rtp.Handler]
+	closed        atomic.Bool
 }
 
 func (c *Client) LocalIP() string {
@@ -174,6 +176,12 @@ func (c *Client) LocalIP() string {
 }
 
 func (c *Client) Close() {
+	if !c.closed.CompareAndSwap(false, true) {
+		return
+	}
+	if c.mediaConn != nil {
+		c.mediaConn.Close()
+	}
 	if c.inviteResp != nil {
 		c.sendBye()
 		c.inviteReq = nil
@@ -184,9 +192,6 @@ func (c *Client) Close() {
 	}
 	if c.sipServer != nil {
 		c.sipServer.Close()
-	}
-	if c.media != nil {
-		c.mediaConn.Close()
 	}
 }
 
@@ -296,6 +301,7 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
+	c.mediaConn.EnableTimeout(true)
 	if err = c.sipClient.WriteRequest(sip.NewAckRequest(req, resp, nil)); err != nil {
 		return err
 	}
@@ -606,14 +612,20 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 }
 
 func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {
-	select {
-	case <-tx.Done():
-		return nil, errors.New("transaction failed to complete")
-	case res := <-tx.Responses():
-		if res.StatusCode == 100 || res.StatusCode == 180 || res.StatusCode == 183 {
-			return getResponse(tx)
+	cnt := 0
+	for {
+		select {
+		case <-tx.Done():
+			return nil, fmt.Errorf("transaction failed to complete (%d intermediate responses)", cnt)
+		case res := <-tx.Responses():
+			switch res.StatusCode {
+			default:
+				return res, nil
+			case 100, 180, 183:
+				// continue
+				cnt++
+			}
 		}
-		return res, nil
 	}
 }
 
