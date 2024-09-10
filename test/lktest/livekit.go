@@ -160,7 +160,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		pr.Close()
 	})
 	p.AudioIn = pr
-	p.mix = mixer.NewMixer(pw, rtp.DefFrameDur)
+	p.mixIn = mixer.NewMixer(pw, rtp.DefFrameDur)
 	cb.ParticipantCallback.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if pub.Kind() == lksdk.TrackKindAudio {
 			if err := pub.SetSubscribed(true); err != nil {
@@ -169,7 +169,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		}
 	}
 	cb.ParticipantCallback.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-		inp := p.mix.NewInput()
+		inp := p.mixIn.NewInput()
 		defer inp.Close()
 
 		odec, err := opus.Decode(inp, channels, logger.GetLogger())
@@ -198,13 +198,16 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.AudioOut = track
+	// This allows us to send silence when there's no audio generated from the test.
+	p.mixOut = mixer.NewMixer(track, rtp.DefFrameDur)
+	p.AudioOut = p.mixOut.NewInput()
 	return p
 }
 
 type Participant struct {
-	t   TB
-	mix *mixer.Mixer
+	t      TB
+	mixIn  *mixer.Mixer
+	mixOut *mixer.Mixer
 
 	Room     *lksdk.Room
 	AudioOut media.Writer[media.PCM16Sample]

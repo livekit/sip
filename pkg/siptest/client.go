@@ -175,6 +175,13 @@ func (c *Client) LocalIP() string {
 	return c.conf.IP
 }
 
+func (c *Client) RemoteHeaders() []sip.Header {
+	if c.inviteResp == nil {
+		return nil
+	}
+	return c.inviteResp.Headers()
+}
+
 func (c *Client) Close() {
 	if !c.closed.CompareAndSwap(false, true) {
 		return
@@ -237,7 +244,7 @@ func (c *Client) Record(w io.WriteCloser) {
 	c.recordHandler.Store(&h)
 }
 
-func (c *Client) Dial(ip string, uri string, number string) error {
+func (c *Client) Dial(ip string, uri string, number string, headers map[string]string) error {
 	c.log.Debug("dialing SIP server", "ip", ip, "uri", uri, "number", number)
 	offer, err := c.createOffer()
 	if err != nil {
@@ -251,7 +258,7 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 	)
 
 	for {
-		req, resp, err = c.attemptInvite(ip, uri, number, offer, authHeaderVal)
+		req, resp, err = c.attemptInvite(ip, uri, number, offer, authHeaderVal, headers)
 		if err != nil {
 			return err
 		}
@@ -320,7 +327,7 @@ func (c *Client) Dial(ip string, uri string, number string) error {
 	return nil
 }
 
-func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader string) (*sip.Request, *sip.Response, error) {
+func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader string, headers map[string]string) (*sip.Request, *sip.Response, error) {
 	req := sip.NewRequest(sip.INVITE, &sip.Uri{User: number, Host: uri})
 	req.SetDestination(ip)
 	req.SetBody(offer)
@@ -333,6 +340,9 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 
 	if authHeader != "" {
 		req.AppendHeader(sip.NewHeader("Proxy-Authorization", authHeader))
+	}
+	for k, v := range headers {
+		req.AppendHeader(sip.NewHeader(k, v))
 	}
 
 	tx, err := c.sipClient.TransactionRequest(req)

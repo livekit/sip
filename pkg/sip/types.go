@@ -158,12 +158,17 @@ func LoggerWithHeaders(log logger.Logger, c Signaling) logger.Logger {
 	return log
 }
 
-func HeadersToAttrs(attrs map[string]string, c Signaling) map[string]string {
+func HeadersToAttrs(attrs, hdrToAttr map[string]string, c Signaling) map[string]string {
 	if attrs == nil {
 		attrs = make(map[string]string)
 	}
 	headers := c.RemoteHeaders()
 	for hdr, name := range headerToAttr {
+		if h := headers.GetHeader(hdr); h != nil {
+			attrs[name] = h.Value()
+		}
+	}
+	for hdr, name := range hdrToAttr {
 		if h := headers.GetHeader(hdr); h != nil {
 			attrs[name] = h.Value()
 		}

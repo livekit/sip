@@ -128,11 +128,19 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	} else if req.RoomName == "" {
 		return nil, fmt.Errorf("room name must be set")
 	}
-	log := c.log.WithValues(
+	log := c.log
+	if req.ProjectId != "" {
+		log = log.WithValues("projectID", req.ProjectId)
+	}
+	if req.SipTrunkId != "" {
+		c.log = c.log.WithValues("sipTrunk", req.SipTrunkId)
+	}
+	log = log.WithValues(
 		"callID", req.SipCallId,
 		"room", req.RoomName,
 		"participant", req.ParticipantIdentity,
 		"participantName", req.ParticipantName,
+		"fromHost", req.Hostname,
 		"fromUser", req.Number,
 		"toHost", req.Address,
 		"toUser", req.CallTo,
@@ -149,14 +157,17 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		},
 	}
 	sipConf := sipOutboundConfig{
-		address:   req.Address,
-		transport: req.Transport,
-		from:      req.Number,
-		to:        req.CallTo,
-		user:      req.Username,
-		pass:      req.Password,
-		dtmf:      req.Dtmf,
-		ringtone:  req.PlayRingtone,
+		address:        req.Address,
+		transport:      req.Transport,
+		host:           req.Hostname,
+		from:           req.Number,
+		to:             req.CallTo,
+		user:           req.Username,
+		pass:           req.Password,
+		dtmf:           req.Dtmf,
+		ringtone:       req.PlayRingtone,
+		headers:        req.Headers,
+		headersToAttrs: req.HeadersToAttributes,
 	}
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)

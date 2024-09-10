@@ -77,7 +77,7 @@ func main() {
 		cli.Record(f)
 	}
 
-	if err = cli.Dial(*sipServer, *sipUri, *to); err != nil {
+	if err = cli.Dial(*sipServer, *sipUri, *to, nil); err != nil {
 		panic(err)
 	}
 
