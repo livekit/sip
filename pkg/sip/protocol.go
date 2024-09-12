@@ -59,3 +59,73 @@ func sendBye(c Signaling, bye *sip.Request) {
 		_ = c.WriteRequest(sip.NewAckRequest(bye, r, nil))
 	}
 }
+
+func sendRefer(c Signaling, inviteRequest *sip.Request, inviteResponse *sip.Response, referToUrl string) (*sip.Request, *sip.Response, error) {
+	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
+
+	req.SipVersion = inviteRequest.SipVersion
+	sip.CopyHeaders("Via", inviteRequest, req)
+	// if inviteResponse.IsSuccess() {
+	// update branch, 2xx ACK is separate Tx
+	viaHop, _ := req.Via()
+	viaHop.Params.Add("branch", sip.GenerateBranch())
+	// }
+
+	if len(inviteRequest.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", inviteRequest, req)
+	} else {
+		hdrs := inviteResponse.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	maxForwardsHeader := sip.MaxForwardsHeader(70)
+	req.AppendHeader(&maxForwardsHeader)
+
+	if h, _ := inviteRequest.From(); h != nil {
+		sip.CopyHeaders("From", inviteRequest, req)
+	}
+
+	if h, _ := inviteResponse.To(); h != nil {
+		sip.CopyHeaders("To", inviteResponse, req)
+	}
+
+	if h, _ := inviteRequest.CallID(); h != nil {
+		sip.CopyHeaders("Call-ID", inviteRequest, req)
+	}
+
+	if h, _ := inviteRequest.CSeq(); h != nil {
+		sip.CopyHeaders("CSeq", inviteRequest, req)
+		// Increase the invite request cseq so that we use the proper cseq in the bye request eventually
+		h.SeqNo = h.SeqNo + 1
+	}
+
+	cseq, _ := req.CSeq()
+	cseq.SeqNo = cseq.SeqNo + 1
+	cseq.MethodName = sip.REFER
+
+	// Set Refer-To header
+	referTo := sip.NewHeader("Refer-To", referToUrl)
+	req.AppendHeader(referTo)
+
+	req.SetTransport(inviteRequest.Transport())
+	req.SetSource(inviteRequest.Source())
+	req.SetDestination(inviteRequest.Destination())
+
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Terminate()
+
+	resp, err := sipResponse(tx)
+	return req, resp, err
+
+}
