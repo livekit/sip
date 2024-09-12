@@ -102,6 +102,7 @@ func (u URI) GetURI() *sip.Uri {
 
 type LocalTag string
 type RemoteTag string
+type CallID string
 
 func getFromTag(r *sip.Request) (RemoteTag, error) {
 	from, ok := r.From()

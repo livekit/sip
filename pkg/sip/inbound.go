@@ -519,6 +519,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.s.cmu.Lock()
 	delete(c.s.activeCalls, c.cc.Tag())
+	// TODO delete from
 	c.s.cmu.Unlock()
 	c.cancel()
 }
@@ -564,6 +565,9 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 		return ctx.Err()
 	default:
 	}
+
+	// TODO part/sipid here
+
 	err := c.lkRoom.Connect(c.s.conf, rconf)
 	if err != nil {
 		return err

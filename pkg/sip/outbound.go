@@ -166,6 +166,7 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		if tag := c.cc.Tag(); tag != "" {
 			delete(c.c.byRemote, tag)
 		}
+		// TODO delete from callid list
 		c.c.cmu.Unlock()
 	})
 }
@@ -194,6 +195,9 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 	if attrs == nil {
 		attrs = make(map[string]string)
 	}
+
+	// FIXME register RPC here
+
 	attrs[AttrSIPCallStatus] = string(CallDialing)
 	lkNew.Participant.Attributes = attrs
 	r := NewRoom(c.log)
