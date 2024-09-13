@@ -22,6 +22,7 @@ import (
 	"github.com/frostbyte73/core"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/utils/hwstats"
 	"github.com/livekit/sip/pkg/config"
 )
@@ -53,6 +54,8 @@ const (
 )
 
 type Monitor struct {
+	nodeID string
+
 	inviteReqRaw    prometheus.Counter
 	inviteReq       *prometheus.CounterVec
 	inviteAccept    *prometheus.CounterVec
@@ -75,9 +78,11 @@ type Monitor struct {
 
 func NewMonitor(conf *config.Config) (*Monitor, error) {
 	m := &Monitor{
+		nodeID:         conf.NodeID,
 		maxUtilization: conf.MaxCpuUtilization,
 	}
 	cpu, err := hwstats.NewCPUStats(func(idle float64) {
+		logger.Debugw("cpu load", "idle", idle, "nodeID", conf.NodeID)
 		m.cpuLoad.Set(1 - idle)
 	})
 	if err != nil {
@@ -212,6 +217,7 @@ func (m *Monitor) CanAccept() bool {
 	if !m.started.IsBroken() ||
 		m.shutdown.IsBroken() ||
 		m.cpu.GetCPUIdle() < m.cpu.NumCPU()*(1-m.maxUtilization) {
+		logger.Debugw("can not accept", "idle", m.cpu.GetCPUIdle(), "nodeID", m.nodeID)
 		return false
 	}
 
