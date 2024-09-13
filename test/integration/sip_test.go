@@ -16,6 +16,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/utils"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
@@ -56,6 +57,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	}
 	sipPort := 5060 + rand.Intn(100)
 	conf := &config.Config{
+		NodeID:            utils.NewGuid("NS_"),
 		ApiKey:            lk.ApiKey,
 		ApiSecret:         lk.ApiSecret,
 		WsUrl:             lk.WsUrl,
@@ -92,6 +94,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 			t.Fatal(err)
 		}
 	}()
+	time.Sleep(time.Second * 2)
 
 	// TODO: Our local IP selection picks Docker bridge IP be default.
 	//       If we try to dial localhost here, the first packet will go to 127.0.0.1, while the server will

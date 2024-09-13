@@ -53,6 +53,8 @@ const (
 )
 
 type Monitor struct {
+	nodeID string
+
 	inviteReqRaw    prometheus.Counter
 	inviteReq       *prometheus.CounterVec
 	inviteAccept    *prometheus.CounterVec
@@ -75,6 +77,7 @@ type Monitor struct {
 
 func NewMonitor(conf *config.Config) (*Monitor, error) {
 	m := &Monitor{
+		nodeID:         conf.NodeID,
 		maxUtilization: conf.MaxCpuUtilization,
 	}
 	cpu, err := hwstats.NewCPUStats(func(idle float64) {
