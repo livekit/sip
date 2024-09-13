@@ -44,7 +44,7 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Ser
 		mon:  mon,
 		cli:  cli,
 	}
-	s.srv = NewServer(conf, log, mon)
+	s.srv = NewServer(conf, cli, log, mon)
 	return s
 }
 

@@ -28,6 +28,7 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -50,7 +51,7 @@ type Client struct {
 	cmu             sync.Mutex
 	activeCalls     map[LocalTag]*outboundCall
 	byRemote        map[RemoteTag]*outboundCall
-	callIdToHandler map[CallId]rpcCallHandler
+	callIdToHandler map[CallID]rpcCallHandler
 }
 
 func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
@@ -212,11 +213,11 @@ func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Inte
 func (c *Client) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	var h rpcCallHandler
 	c.cmu.Lock()
-	h = c.callIdToHandler[req.SipCallId]
+	h = c.callIdToHandler[CallID(req.SipCallId)]
 	c.cmu.Unlock()
 
 	if h == nil {
-		return nil, psrpc.Errorf(psrpc.NotFound, "unknown call id")
+		return nil, psrpc.NewErrorf(psrpc.NotFound, "unknown call id")
 	}
 
 	// FIXME Should this be async?
@@ -225,5 +226,5 @@ func (c *Client) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTr
 		return nil, err
 	}
 
-	return nil, &emptypb.Empty{}
+	return &emptypb.Empty{}, nil
 }

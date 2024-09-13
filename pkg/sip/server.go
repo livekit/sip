@@ -90,6 +90,7 @@ type Handler interface {
 type Server struct {
 	log              logger.Logger
 	mon              *stats.Monitor
+	c                *Client
 	sipSrv           *sipgo.Server
 	sipConnUDP       *net.UDPConn
 	sipConnTCP       *net.TCPListener
@@ -113,13 +114,14 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Server {
+func NewServer(conf *config.Config, c *Client, log logger.Logger, mon *stats.Monitor) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	s := &Server{
 		log:         log,
 		conf:        conf,
+		c:           c,
 		mon:         mon,
 		activeCalls: make(map[RemoteTag]*inboundCall),
 	}

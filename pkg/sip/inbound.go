@@ -28,6 +28,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
+	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -519,8 +520,15 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.s.cmu.Lock()
 	delete(c.s.activeCalls, c.cc.Tag())
-	// TODO delete from
 	c.s.cmu.Unlock()
+
+	c.s.c.cmu.Lock()
+	sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
+	if sipCallID != "" {
+		delete(c.s.c.callIdToHandler, CallID(sipCallID))
+	}
+	c.s.c.cmu.Unlock()
+
 	c.cancel()
 }
 
@@ -566,7 +574,12 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	default:
 	}
 
-	// TODO part/sipid here
+	sipCallID := partConf.Attributes[livekit.AttrSIPCallID]
+	if sipCallID != "" {
+		c.s.c.cmu.Lock()
+		c.s.c.callIdToHandler[CallID(sipCallID)] = c.cc
+		c.s.c.cmu.Unlock()
+	}
 
 	err := c.lkRoom.Connect(c.s.conf, rconf)
 	if err != nil {
@@ -858,6 +871,19 @@ func (c *sipInbound) WriteRequest(req *sip.Request) error {
 
 func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
 	return c.s.sipSrv.TransactionLayer().Request(req)
+}
+
+func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
+	}
+
+	_, _, err := sendRefer(c, c.invite, c.inviteOk, transferTo)
+
+	return err
 }
 
 // Close the inbound call cleanly. Depending on the call state it will either send BYE or just terminate INVITE.

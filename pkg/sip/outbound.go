@@ -27,6 +27,7 @@ import (
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -166,7 +167,11 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		if tag := c.cc.Tag(); tag != "" {
 			delete(c.c.byRemote, tag)
 		}
-		// TODO delete from callid list
+		sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
+		if sipCallID != "" {
+			delete(c.c.callIdToHandler, CallID(sipCallID))
+		}
+
 		c.c.cmu.Unlock()
 	})
 }
@@ -196,7 +201,12 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 		attrs = make(map[string]string)
 	}
 
-	// FIXME register RPC here
+	sipCallID := attrs[livekit.AttrSIPCallID]
+	if sipCallID != "" {
+		c.c.cmu.Lock()
+		c.c.callIdToHandler[CallID(sipCallID)] = c.cc
+		c.c.cmu.Unlock()
+	}
 
 	attrs[AttrSIPCallStatus] = string(CallDialing)
 	lkNew.Participant.Attributes = attrs
@@ -568,6 +578,23 @@ func (c *sipOutbound) Drop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.drop()
+}
+
+func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
+	}
+
+	if c.c.closing.IsBroken() {
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
+	}
+
+	_, _, err := sendRefer(c, c.invite, c.inviteOk, transferTo)
+
+	return err
 }
 
 func (c *sipOutbound) Close() {

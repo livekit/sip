@@ -38,10 +38,11 @@ import (
 )
 
 type ParticipantInfo struct {
-	ID       string
-	RoomName string
-	Identity string
-	Name     string
+	ID         string
+	RoomName   string
+	Identity   string
+	Name       string
+	Attributes map[string]string
 }
 
 type Room struct {
@@ -125,9 +126,10 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	partConf := rconf.Participant
 	r.p = ParticipantInfo{
-		RoomName: rconf.RoomName,
-		Identity: partConf.Identity,
-		Name:     partConf.Name,
+		RoomName:   rconf.RoomName,
+		Identity:   partConf.Identity,
+		Name:       partConf.Name,
+		Attributes: partConf.Attributes,
 	}
 	roomCallback := &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
