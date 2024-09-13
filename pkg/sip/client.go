@@ -27,9 +27,9 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/sip/pkg/errors"
-
+	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -120,10 +120,15 @@ func (c *Client) Stop() {
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	ctx, span := tracer.Start(ctx, "Client.CreateSIPParticipant")
+	defer span.End()
+	return c.createSIPParticipant(ctx, req)
+}
+
+func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	if !c.mon.CanAccept() {
 		return nil, errors.ErrUnavailable
 	}
-
 	if req.CallTo == "" {
 		return nil, fmt.Errorf("call-to number must be set")
 	} else if req.Address == "" {
@@ -175,7 +180,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		headersToAttrs: req.HeadersToAttributes,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
 	if err != nil {
 		return nil, err
 	}

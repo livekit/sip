@@ -28,6 +28,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
+	"github.com/livekit/protocol/tracer"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -134,6 +135,8 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		return
 	}
+	ctx, span := tracer.Start(ctx, "Server.onInvite")
+	defer span.End()
 
 	from, to := cc.From(), cc.To()
 
@@ -318,7 +321,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 	acceptCall := func() bool {
 		c.log.Infow("Accepting the call", "headers", disp.Headers)
-		if err = c.cc.Accept(c.s.signalingIp, c.s.conf.SIPPort, answerData, disp.Headers); err != nil {
+		if err = c.cc.Accept(ctx, c.s.signalingIp, c.s.conf.SIPPort, answerData, disp.Headers); err != nil {
 			c.log.Errorw("Cannot respond to INVITE", err)
 			return false
 		}
@@ -446,6 +449,8 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 }
 
 func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
+	ctx, span := tracer.Start(ctx, "inboundCall.waitSubscribe")
+	defer span.End()
 	select {
 	case <-ctx.Done():
 		c.close(false, CallHangup, "hangup")
@@ -459,6 +464,8 @@ func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
 }
 
 func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallDispatch, _ bool) {
+	ctx, span := tracer.Start(ctx, "inboundCall.pinPrompt")
+	defer span.End()
 	c.log.Infow("Requesting Pin for SIP call")
 	const pinLimit = 16
 	c.playAudio(ctx, c.s.res.enterPin)
@@ -576,6 +583,8 @@ func (c *inboundCall) setStatus(v CallStatus) {
 }
 
 func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig) error {
+	ctx, span := tracer.Start(ctx, "inboundCall.createLiveKitParticipant")
+	defer span.End()
 	partConf := &rconf.Participant
 	if partConf.Attributes == nil {
 		partConf.Attributes = make(map[string]string)
@@ -805,7 +814,9 @@ func (c *sipInbound) stopRinging() {
 	}
 }
 
-func (c *sipInbound) Accept(contactHost string, contactPort int, sdpData []byte, headers map[string]string) error {
+func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort int, sdpData []byte, headers map[string]string) error {
+	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
+	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteTx == nil {
@@ -856,6 +867,8 @@ func (c *sipInbound) sendBye() {
 	if c.invite == nil {
 		return // rejected or closed
 	}
+	_, span := tracer.Start(context.Background(), "sipInbound.sendBye")
+	defer span.End()
 	// This function is for clients, so we need to swap src and dest
 	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
 	if contact, ok := c.invite.Contact(); ok {
