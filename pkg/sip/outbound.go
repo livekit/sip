@@ -435,10 +435,11 @@ func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass 
 
 	var (
 		sipHeaders Headers
-		authHeader = ""
-		req        *sip.Request
-		resp       *sip.Response
-		err        error
+		authHeader         = ""
+		authHeaderRespName string
+		req                *sip.Request
+		resp               *sip.Response
+		err                error
 	)
 	if keys := maps.Keys(headers); len(keys) != 0 {
 		sort.Strings(keys)
@@ -448,10 +449,11 @@ func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass 
 	}
 authLoop:
 	for {
-		req, resp, err = c.attemptInvite(dest, toHeader, sdpOffer, authHeader, sipHeaders)
+		req, resp, err = c.attemptInvite(dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders)
 		if err != nil {
 			return nil, err
 		}
+		var authHeaderName string
 		switch resp.StatusCode {
 		case 200:
 			break authLoop
@@ -465,13 +467,18 @@ authLoop:
 				err.Message = s.Value()
 			}
 			return nil, fmt.Errorf("INVITE failed: %w", err)
+		case 401:
+			authHeaderName = "WWW-Authenticate"
+			authHeaderRespName = "Authorization"
 		case 407:
-			// auth required
+			authHeaderName = "Proxy-Authenticate"
+			authHeaderRespName = "Proxy-Authorization"
 		}
+		// auth required
 		if user == "" || pass == "" {
 			return nil, errors.New("server required auth, but no username or password was provided")
 		}
-		headerVal := resp.GetHeader("Proxy-Authenticate")
+		headerVal := resp.GetHeader(authHeaderName)
 		challenge, err := digest.ParseChallenge(headerVal.Value())
 		if err != nil {
 			return nil, err
@@ -525,7 +532,7 @@ func (c *sipOutbound) AckInvite() error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
 	req := sip.NewRequest(sip.INVITE, &to.Address)
 	req.SetDestination(dest)
 	req.SetBody(offer)
@@ -537,7 +544,7 @@ func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte,
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	if authHeader != "" {
-		req.AppendHeader(sip.NewHeader("Proxy-Authorization", authHeader))
+		req.AppendHeader(sip.NewHeader(authHeaderName, authHeader))
 	}
 	for _, h := range headers {
 		req.AppendHeader(h)
