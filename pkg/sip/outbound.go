@@ -18,17 +18,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/exp/maps"
 	"math"
 	"net/netip"
 	"sort"
 	"sync"
+
+	"golang.org/x/exp/maps"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/tracer"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -68,7 +70,7 @@ type outboundCall struct {
 	sipRunning bool
 }
 
-func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
+func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	if sipConf.host == "" {
 		sipConf.host = c.signalingIp
 	}
@@ -95,7 +97,7 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, ro
 		return nil, err
 	}
 	call.media.SetDTMFAudio(conf.AudioDTMF)
-	if err := call.connectToRoom(room); err != nil {
+	if err := call.connectToRoom(ctx, room); err != nil {
 		call.close(true, callDropped, "join-failed")
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
@@ -187,6 +189,8 @@ func (c *outboundCall) Participant() ParticipantInfo {
 }
 
 func (c *outboundCall) ConnectSIP(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "outboundCall.ConnectSIP")
+	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.dialSIP(ctx); err != nil {
@@ -199,7 +203,9 @@ func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 	return nil
 }
 
-func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
+func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) error {
+	ctx, span := tracer.Start(ctx, "outboundCall.connectToRoom")
+	defer span.End()
 	attrs := lkNew.Participant.Attributes
 	if attrs == nil {
 		attrs = make(map[string]string)
@@ -229,9 +235,13 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		defer rcancel()
 
 		// Play a ringtone to the room while participant connects
-		go tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
+		go func() {
+			rctx, span := tracer.Start(rctx, "tones.Play")
+			defer span.End()
+			tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
+		}()
 	}
-	err := c.sipSignal()
+	err := c.sipSignal(ctx)
 	if err != nil {
 		// TODO: busy, no-response
 		return err
@@ -296,7 +306,10 @@ func (c *outboundCall) setStatus(v CallStatus) {
 	})
 }
 
-func (c *outboundCall) sipSignal() error {
+func (c *outboundCall) sipSignal(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "outboundCall.sipSignal")
+	defer span.End()
+
 	sdpOffer, err := c.media.NewOffer()
 	if err != nil {
 		return err
@@ -304,7 +317,7 @@ func (c *outboundCall) sipSignal() error {
 	joinDur := c.mon.JoinDur()
 
 	c.mon.InviteReq()
-	sdpResp, err := c.cc.Invite(c.sipConf.transport, URI{
+	sdpResp, err := c.cc.Invite(ctx, c.sipConf.transport, URI{
 		User: c.sipConf.to,
 		Host: c.sipConf.address,
 	}, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
@@ -331,7 +344,7 @@ func (c *outboundCall) sipSignal() error {
 	c.c.cmu.Unlock()
 
 	c.mon.InviteAccept()
-	err = c.cc.AckInvite()
+	err = c.cc.AckInvite(ctx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
 		return err
@@ -418,7 +431,9 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, transport livekit.SIPTransport, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
+	ctx, span := tracer.Start(ctx, "sipOutbound.Invite")
+	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	to = to.Normalize()
@@ -449,7 +464,7 @@ func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass 
 	}
 authLoop:
 	for {
-		req, resp, err = c.attemptInvite(dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders)
+		req, resp, err = c.attemptInvite(ctx, dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders)
 		if err != nil {
 			return nil, err
 		}
@@ -526,13 +541,17 @@ authLoop:
 	return c.inviteOk.Body(), nil
 }
 
-func (c *sipOutbound) AckInvite() error {
+func (c *sipOutbound) AckInvite(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "sipOutbound.AckInvite")
+	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
+	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
+	defer span.End()
 	req := sip.NewRequest(sip.INVITE, &to.Address)
 	req.SetDestination(dest)
 	req.SetBody(offer)
@@ -572,6 +591,8 @@ func (c *sipOutbound) sendBye() {
 	if c.invite == nil || c.inviteOk == nil {
 		return // call wasn't established
 	}
+	_, span := tracer.Start(context.Background(), "sipOutbound.sendBye")
+	defer span.End()
 	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
 	bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 	if c.c.closing.IsBroken() {
