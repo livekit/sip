@@ -25,6 +25,11 @@ import (
 	"github.com/livekit/sip/pkg/media"
 )
 
+type BytesFrame interface {
+	~[]byte
+	media.Frame
+}
+
 type Writer interface {
 	WriteRTP(p *rtp.Packet) error
 }
@@ -169,11 +174,11 @@ func (s *Stream) GetCurrentTimestamp() uint32 {
 	return s.ev.Timestamp
 }
 
-func NewMediaStreamOut[T ~[]byte](s *Stream, sampleRate int) *MediaStreamOut[T] {
+func NewMediaStreamOut[T BytesFrame](s *Stream, sampleRate int) *MediaStreamOut[T] {
 	return &MediaStreamOut[T]{s: s, sampleRate: sampleRate}
 }
 
-type MediaStreamOut[T ~[]byte] struct {
+type MediaStreamOut[T BytesFrame] struct {
 	s          *Stream
 	sampleRate int
 }
@@ -194,11 +199,11 @@ func (s *MediaStreamOut[T]) WriteSample(sample T) error {
 	return s.s.WritePayload([]byte(sample), false)
 }
 
-func NewMediaStreamIn[T ~[]byte](w media.Writer[T]) *MediaStreamIn[T] {
+func NewMediaStreamIn[T BytesFrame](w media.Writer[T]) *MediaStreamIn[T] {
 	return &MediaStreamIn[T]{Writer: w}
 }
 
-type MediaStreamIn[T ~[]byte] struct {
+type MediaStreamIn[T BytesFrame] struct {
 	Writer media.Writer[T]
 }
 
