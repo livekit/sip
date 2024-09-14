@@ -56,6 +56,8 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		t.Fatal(err)
 	}
 	sipPort := 5060 + rand.Intn(100)
+	local, err := config.GetLocalIP()
+	require.NoError(t, err)
 	conf := &config.Config{
 		NodeID:            utils.NewGuid("NS_"),
 		ApiKey:            lk.ApiKey,
@@ -64,6 +66,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		Redis:             lk.Redis,
 		SIPPort:           sipPort,
 		SIPPortListen:     sipPort,
+		ListenIP:          local,
 		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
 		UseExternalIP:     false,
 		MaxCpuUtilization: 0.9,
@@ -96,11 +99,10 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	}()
 	time.Sleep(time.Second * 2)
 
-	// TODO: Our local IP selection picks Docker bridge IP be default.
-	//       If we try to dial localhost here, the first packet will go to 127.0.0.1, while the server will
-	//       respond from Docker bridge IP. This breaks the SIP client because it uses net.DialUDP,
+	// TODO: If we try to dial localhost here, the first packet will go to 127.0.0.1, while the server will
+	//       respond from an IP that was selected above. This breaks the SIP client because it uses net.DialUDP,
 	//       which in turn only accepts UDP from the address used in DialUDP.
-	addr := dockerBridgeIP
+	addr := local
 	return &SIPServer{
 		LiveKit: lk,
 		Client:  lksdk.NewSIPClient(lk.WsUrl, lk.ApiKey, lk.ApiSecret),
@@ -119,15 +121,10 @@ type NumberConfig struct {
 	AuthPass string
 }
 
-func (s *SIPServer) CreateTrunkOut(t testing.TB, number, addr, user, pass string) string {
+func (s *SIPServer) CreateTrunkOut(t testing.TB, trunk *livekit.SIPOutboundTrunkInfo) string {
 	ctx := context.Background()
 	tr, err := s.Client.CreateSIPOutboundTrunk(ctx, &livekit.CreateSIPOutboundTrunkRequest{
-		Trunk: &livekit.SIPOutboundTrunkInfo{
-			Address:      addr,
-			Numbers:      []string{number},
-			AuthUsername: user,
-			AuthPassword: pass,
-		},
+		Trunk: trunk,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,14 +133,10 @@ func (s *SIPServer) CreateTrunkOut(t testing.TB, number, addr, user, pass string
 	return tr.SipTrunkId
 }
 
-func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) string {
+func (s *SIPServer) CreateTrunkIn(t testing.TB, trunk *livekit.SIPInboundTrunkInfo) string {
 	ctx := context.Background()
 	tr, err := s.Client.CreateSIPInboundTrunk(ctx, &livekit.CreateSIPInboundTrunkRequest{
-		Trunk: &livekit.SIPInboundTrunkInfo{
-			Numbers:      []string{number},
-			AuthUsername: user,
-			AuthPassword: pass,
-		},
+		Trunk: trunk,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -152,23 +145,33 @@ func (s *SIPServer) CreateTrunkIn(t testing.TB, number, user, pass string) strin
 	return tr.SipTrunkId
 }
 
-func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, number, room, pin string, meta string, attrs map[string]string) *NumberConfig {
-	trunkID := s.CreateTrunkIn(t, number, "", "")
+func (s *SIPServer) DeleteTrunk(t testing.TB, id string) {
+	ctx := context.Background()
+	_, err := s.Client.DeleteSIPTrunk(ctx, &livekit.DeleteSIPTrunkRequest{
+		SipTrunkId: id,
+	})
+	if err != nil {
+		t.Fatal(id, err)
+	}
+}
+
+func (s *SIPServer) CreateTrunkAndDirect(t testing.TB, trunk *livekit.SIPInboundTrunkInfo, room, pin string, meta string, attrs map[string]string) *NumberConfig {
+	trunkID := s.CreateTrunkIn(t, trunk)
 	ruleID := s.CreateDirectDispatch(t, room, pin, meta, attrs)
 	return &NumberConfig{
 		SIP:     s,
 		TrunkID: trunkID, RuleID: ruleID,
-		Number: number, Pin: pin,
+		Number: trunk.Numbers[0], Pin: pin,
 	}
 }
 
-func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, number, room, pin string, meta string, attrs map[string]string) *NumberConfig {
-	trunkID := s.CreateTrunkIn(t, number, "", "")
+func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, trunk *livekit.SIPInboundTrunkInfo, room, pin string, meta string, attrs map[string]string) *NumberConfig {
+	trunkID := s.CreateTrunkIn(t, trunk)
 	ruleID := s.CreateIndividualDispatch(t, room, pin, meta, attrs)
 	return &NumberConfig{
 		SIP:     s,
 		TrunkID: trunkID, RuleID: ruleID,
-		Number: number, Pin: pin,
+		Number: trunk.Numbers[0], Pin: pin,
 	}
 }
 
@@ -212,11 +215,21 @@ func (s *SIPServer) CreateIndividualDispatch(t testing.TB, pref, pin string, met
 	return dr.SipDispatchRuleId
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, onDTMF func(ev dtmf.Event)) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin, onDTMF)
+func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
+	ctx := context.Background()
+	_, err := s.Client.DeleteSIPDispatchRule(ctx, &livekit.DeleteSIPDispatchRuleRequest{
+		SipDispatchRuleId: id,
+	})
+	if err != nil {
+		t.Fatal(id, err)
+	}
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, onDTMF func(ev dtmf.Event)) *siptest.Client {
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event)) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF)
+}
+
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
@@ -236,7 +249,7 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 	}
 	t.Cleanup(cli.Close)
 
-	err = cli.Dial(conf.SIP.Address, conf.SIP.URI, conf.Number)
+	err = cli.Dial(conf.SIP.Address, conf.SIP.URI, conf.Number, headers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,15 +299,29 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	})
 	srv := runSIPServer(t, lk)
 
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta, map[string]string{
+	nc := srv.CreateTrunkAndDirect(t, &livekit.SIPInboundTrunkInfo{
+		Numbers: []string{serverNumber},
+		Headers: map[string]string{
+			"X-LK-Accepted": "1",
+		},
+		HeadersToAttributes: map[string]string{
+			"X-LK-Inbound": "test.lk.inbound",
+		},
+	}, roomName, "", meta, map[string]string{
 		customAttr: customVal,
 	})
 
-	cli := runClient(t, nc, clientID, clientNumber, false, func(ev dtmf.Event) {
+	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
+		"X-LK-Inbound": "1",
+	}, func(ev dtmf.Event) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
 	})
+
+	h := sip.Headers(cli.RemoteHeaders()).GetHeader("X-LK-Accepted")
+	require.NotNil(t, h)
+	require.Equal(t, "1", h.Value())
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -320,6 +347,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 				"sip.ruleID":           nc.RuleID,
 				"sip.trunkID":          nc.TrunkID,
 				"lktest.id":            clientID,
+				"test.lk.inbound":      "1", // from SIP headers
 				customAttr:             customVal,
 			},
 		},
@@ -384,11 +412,26 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	})
 	srv := runSIPServer(t, lk)
 
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "1234", meta, map[string]string{
+	nc := srv.CreateTrunkAndDirect(t, &livekit.SIPInboundTrunkInfo{
+		Numbers: []string{serverNumber},
+		Headers: map[string]string{
+			"X-LK-Accepted": "1",
+		},
+		HeadersToAttributes: map[string]string{
+			"X-LK-Inbound": "test.lk.inbound",
+		},
+	}, roomName, "1234", meta, map[string]string{
 		customAttr: customVal,
 	})
 
-	cli := runClient(t, nc, clientID, clientNumber, false, nil)
+	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
+		"X-LK-Inbound": "1",
+	}, nil)
+
+	// Even though we set this header in the dispatch rule, PIN forces us to send response earlier.
+	// Because of this, we can no longer attach attributes from a selected dispatch rule later.
+	h := sip.Headers(cli.RemoteHeaders()).GetHeader("X-LK-Accepted")
+	require.Nil(t, h)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -416,6 +459,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 				"sip.ruleID":           nc.RuleID,
 				"sip.trunkID":          nc.TrunkID,
 				"lktest.id":            clientID,
+				"test.lk.inbound":      "1", // from SIP headers
 				customAttr:             customVal,
 			},
 		},
@@ -458,12 +502,14 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 		customAttr = "my.attr"
 		customVal  = "custom"
 	)
-	nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta, map[string]string{
+	nc := srv.CreateTrunkAndDirect(t, &livekit.SIPInboundTrunkInfo{
+		Numbers: []string{serverNumber},
+	}, roomName, "", meta, map[string]string{
 		customAttr: customVal,
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	cli := runClient(t, nc, clientID, clientNumber, true, nil)
+	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -505,7 +551,9 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		customVal  = "custom"
 	)
 
-	nc := srv.CreateTrunkAndIndividual(t, serverNumber, roomPref, "", meta, map[string]string{
+	nc := srv.CreateTrunkAndIndividual(t, &livekit.SIPInboundTrunkInfo{
+		Numbers: []string{serverNumber},
+	}, roomPref, "", meta, map[string]string{
 		customAttr: customVal,
 	})
 
@@ -523,7 +571,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		rch <- room
 	}()
 
-	cli := runClient(t, nc, clientID, clientNumber, false, nil)
+	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -580,7 +628,9 @@ func TestSIPAudio(t *testing.T) {
 						customAttr = "my.attr"
 						customVal  = "custom"
 					)
-					nc := srv.CreateTrunkAndDirect(t, serverNumber, roomName, "", meta, map[string]string{
+					nc := srv.CreateTrunkAndDirect(t, &livekit.SIPInboundTrunkInfo{
+						Numbers: []string{serverNumber},
+					}, roomName, "", meta, map[string]string{
 						customAttr: customVal,
 					})
 
@@ -601,7 +651,7 @@ func TestSIPAudio(t *testing.T) {
 						wg.Add(1)
 						go func() {
 							defer wg.Done()
-							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil)
+							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil)
 							mu.Lock()
 							clients[i] = cli
 							audios[i] = cli
@@ -676,32 +726,89 @@ func TestSIPOutbound(t *testing.T) {
 		meta     = `{"test":true}`
 	)
 
-	// Configure Trunk for inbound server.
-	trunkIn := srvIn.CreateTrunkIn(t, serverNumber, userName, userPass)
-	ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta, nil)
-
-	// Configure Trunk for outbound server and make a SIP call.
-	trunkOut := srvOut.CreateTrunkOut(t, clientNumber, srvIn.Address, userName, userPass)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-
-	// Run the test twice to make sure participants with the same identities can be re-created.
-	for i := 0; i < 2; i++ {
-		// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
-		t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
-			lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
-				TrunkOut:  trunkOut,
-				NumberOut: clientNumber,
-				RoomOut:   "outbound",
-				TrunkIn:   trunkIn,
-				RuleIn:    ruleIn,
-				NumberIn:  serverNumber,
-				RoomIn:    roomIn,
-				RoomPin:   dtmfPin,
-				MetaIn:    meta,
-				TestDMTF:  true,
+	for _, withPin := range []bool{true, false} {
+		name := "pin"
+		if !withPin {
+			name = "open"
+		}
+		t.Run(name, func(t *testing.T) {
+			headersIn := map[string]string{
+				"X-LK-From-1": "inbound",
+			}
+			roomPin, dtmfPin := roomPin, dtmfPin
+			if withPin {
+				// We cannot set headers because of the PIN. See TestSIPJoinPinRoom for details.
+				delete(headersIn, "X-LK-From-1")
+			} else {
+				roomPin, dtmfPin = "", ""
+			}
+			// Configure Trunk for inbound server.
+			trunkIn := srvIn.CreateTrunkIn(t, &livekit.SIPInboundTrunkInfo{
+				Numbers:      []string{serverNumber},
+				AuthUsername: userName,
+				AuthPassword: userPass,
+				Headers:      headersIn,
+				HeadersToAttributes: map[string]string{
+					"X-LK-From-2": "test.lk.from",
+				},
 			})
+			t.Cleanup(func() {
+				srvIn.DeleteTrunk(t, trunkIn)
+			})
+			ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta, nil)
+			t.Cleanup(func() {
+				srvIn.DeleteDispatch(t, ruleIn)
+			})
+
+			// Configure Trunk for outbound server and make a SIP call.
+			trunkOut := srvOut.CreateTrunkOut(t, &livekit.SIPOutboundTrunkInfo{
+				Numbers:      []string{clientNumber},
+				Address:      srvIn.Address,
+				AuthUsername: userName,
+				AuthPassword: userPass,
+				Headers: map[string]string{
+					"X-LK-From-2": "outbound",
+				},
+				HeadersToAttributes: map[string]string{
+					"X-LK-From-1": "test.lk.from",
+				},
+			})
+			t.Cleanup(func() {
+				srvIn.DeleteTrunk(t, trunkOut)
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+
+			expAttrsIn := map[string]string{
+				"test.lk.from": "outbound",
+			}
+			expAttrsOut := map[string]string{
+				"test.lk.from": "inbound",
+			}
+			if withPin {
+				delete(expAttrsOut, "test.lk.from")
+			}
+			// Run the test twice to make sure participants with the same identities can be re-created.
+			for i := 0; i < 2; i++ {
+				// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
+				t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
+					lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
+						TrunkOut:  trunkOut,
+						NumberOut: clientNumber,
+						RoomOut:   "outbound",
+						TrunkIn:   trunkIn,
+						RuleIn:    ruleIn,
+						NumberIn:  serverNumber,
+						RoomIn:    roomIn,
+						RoomPin:   dtmfPin,
+						MetaIn:    meta,
+						AttrsIn:   expAttrsIn,
+						AttrsOut:  expAttrsOut,
+						TestDMTF:  true,
+					})
+				})
+			}
 		})
 	}
 }

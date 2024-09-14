@@ -46,13 +46,15 @@ type SIPOutboundTestParams struct {
 	NumberOut   string // number to call fom
 	RoomOut     string // room for outbound call
 	IdentityOut string
-	TrunkIn     string // trunk ID for inbound call
-	RuleIn      string // rule ID for inbound call
-	NumberIn    string // number to call to
-	RoomIn      string // room for inbound call
-	RoomPin     string // room pin for inbound call
-	MetaIn      string // expected metadata for inbound participants
-	TestDMTF    bool   // run DTMF test
+	AttrsOut    map[string]string // expected attributes for outbound participants
+	TrunkIn     string            // trunk ID for inbound call
+	RuleIn      string            // rule ID for inbound call
+	NumberIn    string            // number to call to
+	RoomIn      string            // room for inbound call
+	RoomPin     string            // room pin for inbound call
+	MetaIn      string            // expected metadata for inbound participants
+	AttrsIn     map[string]string // expected attributes for inbound participants
+	TestDMTF    bool              // run DTMF test
 }
 
 func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundTestParams) {
@@ -117,38 +119,46 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	})
 
 	t.Log("checking rooms (outbound)")
+	expAttrsOut := map[string]string{
+		"sip.callID":           "<test>", // special case
+		"sip.callStatus":       "active",
+		"sip.trunkPhoneNumber": params.NumberOut,
+		"sip.phoneNumber":      params.NumberIn,
+		"sip.trunkID":          params.TrunkOut,
+	}
+	for k, v := range params.AttrsOut {
+		expAttrsOut[k] = v
+	}
 	lkOut.ExpectRoomWithParticipants(t, ctx, params.RoomOut, []ParticipantInfo{
 		{Identity: nameOut, Kind: livekit.ParticipantInfo_STANDARD},
 		{
-			Identity: outIdentity,
-			Name:     outName,
-			Kind:     livekit.ParticipantInfo_SIP,
-			Metadata: outMeta,
-			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
-				"sip.callStatus":       "active",
-				"sip.trunkPhoneNumber": params.NumberOut,
-				"sip.phoneNumber":      params.NumberIn,
-				"sip.trunkID":          params.TrunkOut,
-			},
+			Identity:   outIdentity,
+			Name:       outName,
+			Kind:       livekit.ParticipantInfo_SIP,
+			Metadata:   outMeta,
+			Attributes: expAttrsOut,
 		},
 	})
 	t.Log("checking rooms (inbound)")
+	expAttrsIn := map[string]string{
+		"sip.callID":           "<test>", // special case
+		"sip.callStatus":       "active",
+		"sip.trunkPhoneNumber": params.NumberIn,
+		"sip.phoneNumber":      params.NumberOut,
+		"sip.trunkID":          params.TrunkIn,
+		"sip.ruleID":           params.RuleIn,
+	}
+	for k, v := range params.AttrsIn {
+		expAttrsIn[k] = v
+	}
 	lkIn.ExpectRoomWithParticipants(t, ctx, params.RoomIn, []ParticipantInfo{
 		{Identity: nameIn, Kind: livekit.ParticipantInfo_STANDARD},
 		{
-			Identity: inIdentity,
-			Name:     inName,
-			Kind:     livekit.ParticipantInfo_SIP,
-			Metadata: params.MetaIn,
-			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
-				"sip.callStatus":       "active",
-				"sip.trunkPhoneNumber": params.NumberIn,
-				"sip.phoneNumber":      params.NumberOut,
-				"sip.trunkID":          params.TrunkIn,
-				"sip.ruleID":           params.RuleIn,
-			},
+			Identity:   inIdentity,
+			Name:       inName,
+			Kind:       livekit.ParticipantInfo_SIP,
+			Metadata:   params.MetaIn,
+			Attributes: expAttrsIn,
 		},
 	})
 

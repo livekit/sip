@@ -18,8 +18,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/exp/maps"
 	"math"
 	"net/netip"
+	"sort"
 	"sync"
 
 	"github.com/emiago/sipgo/sip"
@@ -37,14 +39,17 @@ import (
 )
 
 type sipOutboundConfig struct {
-	address   string
-	transport livekit.SIPTransport
-	from      string
-	to        string
-	user      string
-	pass      string
-	dtmf      string
-	ringtone  bool
+	address        string
+	transport      livekit.SIPTransport
+	host           string
+	from           string
+	to             string
+	user           string
+	pass           string
+	dtmf           string
+	ringtone       bool
+	headers        map[string]string
+	headersToAttrs map[string]string
 }
 
 type outboundCall struct {
@@ -53,6 +58,7 @@ type outboundCall struct {
 	cc      *sipOutbound
 	media   *MediaPort
 	stopped core.Fuse
+	closing core.Fuse
 
 	mu         sync.RWMutex
 	mon        *stats.CallMonitor
@@ -63,17 +69,20 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
+	if sipConf.host == "" {
+		sipConf.host = c.signalingIp
+	}
 	call := &outboundCall{
 		c:   c,
 		log: log,
 		cc: c.newOutbound(id, URI{
 			User: sipConf.from,
-			Host: c.signalingIp,
+			Host: sipConf.host,
 			Addr: netip.AddrPortFrom(netip.Addr{}, uint16(conf.SIPPort)),
 		}),
 		sipConf: sipConf,
 	}
-	call.mon = c.mon.NewCall(stats.Outbound, c.signalingIp, sipConf.address)
+	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
 	call.media, err = NewMediaPort(call.log, call.mon, &MediaConfig{
 		IP:                  c.signalingIp,
@@ -125,6 +134,7 @@ func (c *outboundCall) Disconnected() <-chan struct{} {
 }
 
 func (c *outboundCall) Close() error {
+	c.closing.Break()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.close(false, callDropped, "shutdown")
@@ -250,10 +260,12 @@ func (c *outboundCall) connectMedia() {
 	c.media.HandleDTMF(c.handleDTMF)
 }
 
-func sipResponse(tx sip.ClientTransaction) (*sip.Response, error) {
+func sipResponse(tx sip.ClientTransaction, stop <-chan struct{}) (*sip.Response, error) {
 	cnt := 0
 	for {
 		select {
+		case <-stop:
+			return nil, errors.New("cancelled")
 		case <-tx.Done():
 			return nil, fmt.Errorf("transaction failed to complete (%d intermediate responses)", cnt)
 		case res := <-tx.Responses():
@@ -295,7 +307,7 @@ func (c *outboundCall) sipSignal() error {
 	sdpResp, err := c.cc.Invite(c.sipConf.transport, URI{
 		User: c.sipConf.to,
 		Host: c.sipConf.address,
-	}, c.sipConf.user, c.sipConf.pass, sdpOffer)
+	}, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
 		var e *ErrorStatus
@@ -327,7 +339,7 @@ func (c *outboundCall) sipSignal() error {
 	joinDur()
 
 	if len(c.cc.RemoteHeaders()) != 0 {
-		extra := HeadersToAttrs(nil, c.cc)
+		extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.cc)
 		if c.lkRoom != nil && len(extra) != 0 {
 			room := c.lkRoom.Room()
 			if room != nil {
@@ -406,7 +418,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass string, sdpOffer []byte) ([]byte, error) {
+func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	to = to.Normalize()
@@ -422,14 +434,21 @@ func (c *sipOutbound) Invite(transport livekit.SIPTransport, to URI, user, pass 
 	dest := to.GetDest()
 
 	var (
+		sipHeaders Headers
 		authHeader = ""
 		req        *sip.Request
 		resp       *sip.Response
 		err        error
 	)
+	if keys := maps.Keys(headers); len(keys) != 0 {
+		sort.Strings(keys)
+		for _, key := range keys {
+			sipHeaders = append(sipHeaders, sip.NewHeader(key, headers[key]))
+		}
+	}
 authLoop:
 	for {
-		req, resp, err = c.attemptInvite(dest, toHeader, sdpOffer, authHeader)
+		req, resp, err = c.attemptInvite(dest, toHeader, sdpOffer, authHeader, sipHeaders)
 		if err != nil {
 			return nil, err
 		}
@@ -506,7 +525,7 @@ func (c *sipOutbound) AckInvite() error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte, authHeader string) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
 	req := sip.NewRequest(sip.INVITE, &to.Address)
 	req.SetDestination(dest)
 	req.SetBody(offer)
@@ -520,6 +539,9 @@ func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte,
 	if authHeader != "" {
 		req.AppendHeader(sip.NewHeader("Proxy-Authorization", authHeader))
 	}
+	for _, h := range headers {
+		req.AppendHeader(h)
+	}
 
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
@@ -527,7 +549,7 @@ func (c *sipOutbound) attemptInvite(dest string, to *sip.ToHeader, offer []byte,
 	}
 	defer tx.Terminate()
 
-	resp, err := sipResponse(tx)
+	resp, err := sipResponse(tx, c.c.closing.Watch())
 	return req, resp, err
 }
 

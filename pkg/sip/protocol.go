@@ -51,7 +51,7 @@ func sendBye(c Signaling, bye *sip.Request) {
 		return
 	}
 	defer tx.Terminate()
-	r, err := sipResponse(tx)
+	r, err := sipResponse(tx, nil)
 	if err != nil {
 		return
 	}
