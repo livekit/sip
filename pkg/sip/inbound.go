@@ -43,6 +43,10 @@ const (
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
+
+	// callSubscribeTimeout is a maximal duration which SIP participant will wait for other participant tracks.
+	// If no participant tracks are published by this time, the call will disconnect.
+	callSubscribeTimeout = 3 * time.Minute
 )
 
 func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
@@ -256,10 +260,6 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *s
 	return c
 }
 
-func (c *inboundCall) closeWithTimeout() {
-	c.close(true, callDropped, "media-timeout")
-}
-
 func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkID string, conf *config.Config) {
 	c.mon.InviteAccept()
 	c.mon.CallStart()
@@ -379,7 +379,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	// Wait for the caller to terminate the call.
 	select {
 	case <-ctx.Done():
-		c.close(false, CallHangup, "hangup")
+		c.closeWithHangup()
 	case <-c.lkRoom.Closed():
 		c.close(false, callDropped, "removed")
 	case <-c.media.Timeout():
@@ -436,8 +436,11 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 	delay := time.NewTimer(audioBridgeMaxDelay)
 	defer delay.Stop()
 	select {
+	case <-c.cc.Cancelled():
+		c.closeWithCancelled()
+		return false
 	case <-ctx.Done():
-		c.close(false, CallHangup, "hangup")
+		c.closeWithHangup()
 		return false
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
@@ -451,12 +454,20 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
 	ctx, span := tracer.Start(ctx, "inboundCall.waitSubscribe")
 	defer span.End()
+	timeout := time.NewTimer(callSubscribeTimeout)
+	defer timeout.Stop()
 	select {
+	case <-c.cc.Cancelled():
+		c.closeWithCancelled()
+		return false
 	case <-ctx.Done():
-		c.close(false, CallHangup, "hangup")
+		c.closeWithHangup()
 		return false
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
+		return false
+	case <-timeout.C:
+		c.close(false, callDropped, "cannot-subscribe")
 		return false
 	case <-c.lkRoom.Subscribed():
 		return true
@@ -473,7 +484,11 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 	noPin := false
 	for {
 		select {
+		case <-c.cc.Cancelled():
+			c.closeWithCancelled()
+			return disp, false
 		case <-ctx.Done():
+			c.closeWithHangup()
 			return disp, false
 		case <-c.media.Timeout():
 			c.closeWithTimeout()
@@ -554,6 +569,18 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	delete(c.s.activeCalls, c.cc.Tag())
 	c.s.cmu.Unlock()
 	c.cancel()
+}
+
+func (c *inboundCall) closeWithTimeout() {
+	c.close(true, callDropped, "media-timeout")
+}
+
+func (c *inboundCall) closeWithCancelled() {
+	c.close(false, CallHangup, "cancelled")
+}
+
+func (c *inboundCall) closeWithHangup() {
+	c.close(false, CallHangup, "hangup")
 }
 
 func (c *inboundCall) Close() error {
@@ -666,10 +693,11 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 
 func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
 	c := &sipInbound{
-		s:        s,
-		id:       id,
-		invite:   invite,
-		inviteTx: inviteTx,
+		s:         s,
+		id:        id,
+		invite:    invite,
+		inviteTx:  inviteTx,
+		cancelled: make(chan struct{}),
 	}
 	c.from, _ = invite.From()
 	if c.from != nil {
@@ -680,13 +708,14 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 }
 
 type sipInbound struct {
-	s        *Server
-	id       LocalTag
-	tag      RemoteTag
-	invite   *sip.Request
-	inviteTx sip.ServerTransaction
-	from     *sip.FromHeader
-	to       *sip.ToHeader
+	s         *Server
+	id        LocalTag
+	tag       RemoteTag
+	invite    *sip.Request
+	inviteTx  sip.ServerTransaction
+	cancelled chan struct{}
+	from      *sip.FromHeader
+	to        *sip.ToHeader
 
 	mu       sync.RWMutex
 	inviteOk *sip.Response
@@ -790,6 +819,8 @@ func (c *sipInbound) StartRinging() {
 	c.sendRinging()
 	stop := make(chan struct{})
 	c.ringing = stop
+	tx := c.inviteTx
+	cancels := tx.Cancels()
 	go func() {
 		// TODO: check spec for the exact interval
 		ticker := time.NewTicker(time.Second)
@@ -797,6 +828,13 @@ func (c *sipInbound) StartRinging() {
 		for {
 			select {
 			case <-stop:
+				return
+			case r := <-cancels:
+				close(c.cancelled)
+				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
+				c.mu.Lock()
+				c.drop()
+				c.mu.Unlock()
 				return
 			case <-ticker.C:
 			}
@@ -812,6 +850,10 @@ func (c *sipInbound) stopRinging() {
 		close(c.ringing)
 		c.ringing = nil
 	}
+}
+
+func (c *sipInbound) Cancelled() <-chan struct{} {
+	return c.cancelled
 }
 
 func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort int, sdpData []byte, headers map[string]string) error {
@@ -870,24 +912,24 @@ func (c *sipInbound) sendBye() {
 	_, span := tracer.Start(context.Background(), "sipInbound.sendBye")
 	defer span.End()
 	// This function is for clients, so we need to swap src and dest
-	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
+	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
 	if contact, ok := c.invite.Contact(); ok {
-		bye.Recipient = &contact.Address
+		r.Recipient = &contact.Address
 	} else {
-		bye.Recipient = &c.from.Address
+		r.Recipient = &c.from.Address
 	}
-	bye.SetSource(c.inviteOk.Source())
-	bye.SetDestination(c.inviteOk.Destination())
-	bye.RemoveHeader("From")
-	bye.AppendHeader((*sip.FromHeader)(c.to))
-	bye.RemoveHeader("To")
-	bye.AppendHeader((*sip.ToHeader)(c.from))
-	if route, ok := bye.RecordRoute(); ok {
-		bye.RemoveHeader("Record-Route")
-		bye.AppendHeader(&sip.RouteHeader{Address: route.Address})
+	r.SetSource(c.inviteOk.Source())
+	r.SetDestination(c.inviteOk.Destination())
+	r.RemoveHeader("From")
+	r.AppendHeader((*sip.FromHeader)(c.to))
+	r.RemoveHeader("To")
+	r.AppendHeader((*sip.ToHeader)(c.from))
+	if route, ok := r.RecordRoute(); ok {
+		r.RemoveHeader("Record-Route")
+		r.AppendHeader(&sip.RouteHeader{Address: route.Address})
 	}
 	c.drop()
-	sendBye(c, bye)
+	sendAndACK(c, r)
 }
 
 func (c *sipInbound) WriteRequest(req *sip.Request) error {

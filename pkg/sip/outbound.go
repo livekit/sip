@@ -23,8 +23,6 @@ import (
 	"sort"
 	"sync"
 
-	"golang.org/x/exp/maps"
-
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
@@ -32,6 +30,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/tracer"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -449,7 +448,7 @@ func (c *sipOutbound) Invite(ctx context.Context, transport livekit.SIPTransport
 	dest := to.GetDest()
 
 	var (
-		sipHeaders Headers
+		sipHeaders         Headers
 		authHeader         = ""
 		authHeaderRespName string
 		req                *sip.Request
@@ -601,7 +600,7 @@ func (c *sipOutbound) sendBye() {
 		return
 	}
 	c.drop()
-	sendBye(c, bye)
+	sendAndACK(c, bye)
 }
 
 func (c *sipOutbound) drop() {
