@@ -60,11 +60,12 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Clie
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:        conf,
-		log:         log,
-		mon:         mon,
-		activeCalls: make(map[LocalTag]*outboundCall),
-		byRemote:    make(map[RemoteTag]*outboundCall),
+		conf:            conf,
+		log:             log,
+		mon:             mon,
+		activeCalls:     make(map[LocalTag]*outboundCall),
+		byRemote:        make(map[RemoteTag]*outboundCall),
+		callIdToHandler: make(map[CallID]rpcCallHandler),
 	}
 	return c
 }
