@@ -34,10 +34,9 @@ import (
 )
 
 type Client struct {
-	conf         *config.Config
-	log          logger.Logger
-	mon          *stats.Monitor
-	rpcSIPServer rpc.SIPInternalServer
+	conf *config.Config
+	log  logger.Logger
+	mon  *stats.Monitor
 
 	sipCli           *sipgo.Client
 	signalingIp      string
@@ -48,9 +47,11 @@ type Client struct {
 	activeCalls      map[LocalTag]*outboundCall
 	byRemote         map[RemoteTag]*outboundCall
 	callIdToOutbound map[CallID]*outboundCall
+
+	handler Handler
 }
 
-func NewClient(conf *config.Config, log logger.Logger, rpcSIPServer rpc.SIPInternalServer) *Client {
+func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -61,7 +62,6 @@ func NewClient(conf *config.Config, log logger.Logger, rpcSIPServer rpc.SIPInter
 		activeCalls:      make(map[LocalTag]*outboundCall),
 		byRemote:         make(map[RemoteTag]*outboundCall),
 		callIdToOutbound: make(map[CallID]*outboundCall),
-		rpcSIPServer:     rpcSIPServer,
 	}
 	return c
 }
@@ -121,6 +121,10 @@ func (c *Client) Stop() {
 		c.sipCli.Close()
 		c.sipCli = nil
 	}
+}
+
+func (s *Server) SetHandler(handler Handler) {
+	s.handler = handler
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
@@ -213,7 +217,7 @@ func (c *Client) RegisterTransferSIPParticipant(sipCallID CallID, o *outboundCal
 	c.callIdToOutbound[sipCallID] = o
 	c.cmu.Unlock()
 
-	return c.rpcSIPServer.RegisterTransferSIPParticipantTopic(string(sipCallID))
+	return c.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
 func (c *Client) DegisterTransferSIPParticipant(sipCallID CallID) {
@@ -221,5 +225,5 @@ func (c *Client) DegisterTransferSIPParticipant(sipCallID CallID) {
 	delete(c.callIdToOutbound, sipCallID)
 	c.cmu.Unlock()
 
-	c.rpcSIPServer.DeregisterTransferSIPParticipantTopic(string(sipCallID))
+	c.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

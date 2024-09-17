@@ -203,9 +203,7 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 
 	sipCallID := attrs[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		c.c.cmu.Lock()
-		c.c.callIdToOutbound[CallID(sipCallID)] = c.cc
-		c.c.cmu.Unlock()
+		c.c.RegisterTransferSIPParticipant(CallID(sipCallID), c)
 	}
 
 	attrs[AttrSIPCallStatus] = string(CallDialing)

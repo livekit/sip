@@ -41,14 +41,13 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Ser
 	if log == nil {
 		log = logger.GetLogger()
 	}
-	cli := NewClient(conf, log, mon)
 	s := &Service{
 		conf: conf,
 		log:  log,
 		mon:  mon,
-		cli:  cli,
+		cli:  NewClient(conf, log, mon),
+		srv:  NewServer(conf, log, mon),
 	}
-	s.srv = NewServer(conf, cli, log, mon)
 	return s
 }
 
@@ -72,10 +71,7 @@ func (s *Service) Stop() {
 
 func (s *Service) SetHandler(handler Handler) {
 	s.srv.SetHandler(handler)
-}
-
-func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {
-	return s.cli
+	s.cli.SetHandler(handler)
 }
 
 func (s *Service) Start() error {
@@ -125,11 +121,9 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
-	var h rpcCallHandler
-
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
-	in := s.cli.callIdToHandler[CallID(req.SipCallId)]
+	in := s.cli.callIdToOutbound[CallID(req.SipCallId)]
 	s.cli.cmu.Unlock()
 
 	if in != nil {

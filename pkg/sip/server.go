@@ -26,7 +26,6 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
@@ -86,12 +85,14 @@ type CallDispatch struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
+
+	RegisterTransferSIPParticipantTopic(sipCallId string) error
+	DeregisterTransferSIPParticipantTopic(sipCallId string)
 }
 
 type Server struct {
 	log              logger.Logger
 	mon              *stats.Monitor
-	rpcSIPServer     rpc.SIPInternalServer
 	sipSrv           *sipgo.Server
 	sipConnUDP       *net.UDPConn
 	sipConnTCP       *net.TCPListener
@@ -116,22 +117,21 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(conf *config.Config, rpcSIPServer rpc.SIPInternalServer, log logger.Logger, mon *stats.Monitor) *Server {
+func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:          log,
-		conf:         conf,
-		rpcSIPServer: rpcSIPServer,
-		mon:          mon,
-		activeCalls:  make(map[RemoteTag]*inboundCall),
+		log:         log,
+		conf:        conf,
+		mon:         mon,
+		activeCalls: make(map[RemoteTag]*inboundCall),
 	}
 	s.initMediaRes()
 	return s
 }
 
-func (s *Server) SetHandler(handler Handler) {
+func (s *Client) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
@@ -258,16 +258,16 @@ func (s *Server) Stop() {
 
 func (s *Server) RegisterTransferSIPParticipant(sipCallID CallID, i *inboundCall) error {
 	s.cmu.Lock()
-	s.callIdToHandler[sipCallID] = i
+	s.callIdToInbound[sipCallID] = i
 	s.cmu.Unlock()
 
-	return s.rpcSIPServer.RegisterTransferSIPParticipantTopic(string(sipCallID))
+	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
-func (s *Server) DegisterTransferSIPParticipant(sipCallID CallID) error {
+func (s *Server) DegisterTransferSIPParticipant(sipCallID CallID) {
 	s.cmu.Lock()
-	delete(s.callIdToHandler, sipCallID)
+	delete(s.callIdToInbound, sipCallID)
 	s.cmu.Unlock()
 
-	return s.rpcSIPServer.DeregisterTransferSIPParticipantTopic(string(sipCallID))
+	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }
