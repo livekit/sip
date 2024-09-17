@@ -597,8 +597,13 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 
 	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
 	_, err := sendRefer(c, req)
+	if err != nil {
+		return err
+	}
 
-	return err
+	c.sendBye()
+
+	return nil
 }
 
 func (c *sipOutbound) Close() {

@@ -892,8 +892,12 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
 	c.swapSrcDst(req)
 	_, err := sendRefer(c, req)
+	if err != nil {
+		return err
+	}
+	c.sendBye()
 
-	return err
+	return nil
 }
 
 // Close the inbound call cleanly. Depending on the call state it will either send BYE or just terminate INVITE.

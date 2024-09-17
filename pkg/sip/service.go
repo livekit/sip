@@ -123,8 +123,25 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
-	in := s.cli.callIdToOutbound[CallID(req.SipCallId)]
+	out := s.cli.callIdToOutbound[CallID(req.SipCallId)]
 	s.cli.cmu.Unlock()
+
+	if out != nil {
+		err := out.cc.transferCall(ctx, req.TransferTo)
+
+		if err != nil {
+			return nil, err
+		}
+
+		// This seems needed to actually terminate the session before a media timeout
+		out.CloseWithReason(CallHangup, "call transferred")
+
+		return &emptypb.Empty{}, nil
+	}
+
+	s.srv.cmu.Lock()
+	in := s.srv.callIdToInbound[CallID(req.SipCallId)]
+	s.srv.cmu.Unlock()
 
 	if in != nil {
 		err := in.cc.transferCall(ctx, req.TransferTo)
@@ -133,19 +150,8 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			return nil, err
 		}
 
-		return &emptypb.Empty{}, nil
-	}
-
-	s.srv.cmu.Lock()
-	out := s.srv.callIdToInbound[CallID(req.SipCallId)]
-	s.srv.cmu.Unlock()
-
-	if out != nil {
-		err := out.cc.transferCall(ctx, req.TransferTo)
-
-		if err != nil {
-			return nil, err
-		}
+		// This seems needed to actually terminate the session before a media timeout
+		in.Close()
 
 		return &emptypb.Empty{}, nil
 	}
