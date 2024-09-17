@@ -122,10 +122,11 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:         log,
-		conf:        conf,
-		mon:         mon,
-		activeCalls: make(map[RemoteTag]*inboundCall),
+		log:             log,
+		conf:            conf,
+		mon:             mon,
+		activeCalls:     make(map[RemoteTag]*inboundCall),
+		callIdToInbound: make(map[CallID]*inboundCall),
 	}
 	s.initMediaRes()
 	return s
