@@ -169,7 +169,7 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		}
 		sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
 		if sipCallID != "" {
-			delete(c.c.callIdToHandler, CallID(sipCallID))
+			delete(c.c.callIdToOutbound, CallID(sipCallID))
 		}
 
 		c.c.cmu.Unlock()
@@ -204,7 +204,7 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 	sipCallID := attrs[livekit.AttrSIPCallID]
 	if sipCallID != "" {
 		c.c.cmu.Lock()
-		c.c.callIdToHandler[CallID(sipCallID)] = c.cc
+		c.c.callIdToOutbound[CallID(sipCallID)] = c.cc
 		c.c.cmu.Unlock()
 	}
 

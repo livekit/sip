@@ -26,6 +26,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
@@ -90,7 +91,7 @@ type Handler interface {
 type Server struct {
 	log              logger.Logger
 	mon              *stats.Monitor
-	c                *Client
+	rpcSIPServer     rpc.SIPInternalServer
 	sipSrv           *sipgo.Server
 	sipConnUDP       *net.UDPConn
 	sipConnTCP       *net.TCPListener
@@ -100,8 +101,9 @@ type Server struct {
 
 	inProgressInvites []*inProgressInvite
 
-	cmu         sync.RWMutex
-	activeCalls map[RemoteTag]*inboundCall
+	cmu             sync.RWMutex
+	activeCalls     map[RemoteTag]*inboundCall
+	callIdToInbound map[CallID]*inboundCall
 
 	handler Handler
 	conf    *config.Config
@@ -114,16 +116,16 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(conf *config.Config, c *Client, log logger.Logger, mon *stats.Monitor) *Server {
+func NewServer(conf *config.Config, rpcSIPServer rpc.SIPInternalServer, log logger.Logger, mon *stats.Monitor) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:         log,
-		conf:        conf,
-		c:           c,
-		mon:         mon,
-		activeCalls: make(map[RemoteTag]*inboundCall),
+		log:          log,
+		conf:         conf,
+		rpcSIPServer: rpcSIPServer,
+		mon:          mon,
+		activeCalls:  make(map[RemoteTag]*inboundCall),
 	}
 	s.initMediaRes()
 	return s
@@ -252,4 +254,20 @@ func (s *Server) Stop() {
 	if s.sipConnTCP != nil {
 		s.sipConnTCP.Close()
 	}
+}
+
+func (s *Server) RegisterTransferSIPParticipant(sipCallID CallID, i *inboundCall) error {
+	s.cmu.Lock()
+	s.callIdToHandler[sipCallID] = i
+	s.cmu.Unlock()
+
+	return s.rpcSIPServer.RegisterTransferSIPParticipantTopic(string(sipCallID))
+}
+
+func (s *Server) DegisterTransferSIPParticipant(sipCallID CallID) error {
+	s.cmu.Lock()
+	delete(s.callIdToHandler, sipCallID)
+	s.cmu.Unlock()
+
+	return s.rpcSIPServer.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

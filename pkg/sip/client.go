@@ -24,48 +24,44 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
 )
 
-type rpcCallHandler interface {
-	transferCall(ctx context.Context, transferTo string) error
-}
-
 type Client struct {
-	conf *config.Config
-	log  logger.Logger
-	mon  *stats.Monitor
+	conf         *config.Config
+	log          logger.Logger
+	mon          *stats.Monitor
+	rpcSIPServer rpc.SIPInternalServer
 
 	sipCli           *sipgo.Client
 	signalingIp      string
 	signalingIpLocal string
 
-	closing         core.Fuse
-	cmu             sync.Mutex
-	activeCalls     map[LocalTag]*outboundCall
-	byRemote        map[RemoteTag]*outboundCall
-	callIdToHandler map[CallID]rpcCallHandler
+	closing          core.Fuse
+	cmu              sync.Mutex
+	activeCalls      map[LocalTag]*outboundCall
+	byRemote         map[RemoteTag]*outboundCall
+	callIdToOutbound map[CallID]*outboundCall
 }
 
-func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
+func NewClient(conf *config.Config, log logger.Logger, rpcSIPServer rpc.SIPInternalServer) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:            conf,
-		log:             log,
-		mon:             mon,
-		activeCalls:     make(map[LocalTag]*outboundCall),
-		byRemote:        make(map[RemoteTag]*outboundCall),
-		callIdToHandler: make(map[CallID]rpcCallHandler),
+		conf:             conf,
+		log:              log,
+		mon:              mon,
+		activeCalls:      make(map[LocalTag]*outboundCall),
+		byRemote:         make(map[RemoteTag]*outboundCall),
+		callIdToOutbound: make(map[CallID]*outboundCall),
+		rpcSIPServer:     rpcSIPServer,
 	}
 	return c
 }
@@ -185,6 +181,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		ParticipantIdentity: p.Identity,
 		SipCallId:           req.SipCallId,
 	}, nil
+
 }
 
 func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
@@ -211,26 +208,18 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
-	// TODO: scale affinity based on a number or active calls?
-	return 0.5
-}
-
-func (c *Client) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
-	var h rpcCallHandler
+func (c *Client) RegisterTransferSIPParticipant(sipCallID CallID, o *outboundCall) error {
 	c.cmu.Lock()
-	h = c.callIdToHandler[CallID(req.SipCallId)]
+	c.callIdToOutbound[sipCallID] = o
 	c.cmu.Unlock()
 
-	if h == nil {
-		return nil, psrpc.NewErrorf(psrpc.NotFound, "unknown call id")
-	}
+	return c.rpcSIPServer.RegisterTransferSIPParticipantTopic(string(sipCallID))
+}
 
-	// FIXME Should this be async?
-	err := h.transferCall(ctx, req.TransferTo)
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) DegisterTransferSIPParticipant(sipCallID CallID) {
+	c.cmu.Lock()
+	delete(c.callIdToOutbound, sipCallID)
+	c.cmu.Unlock()
 
-	return &emptypb.Empty{}, nil
+	c.rpcSIPServer.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

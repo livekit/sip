@@ -15,10 +15,14 @@
 package sip
 
 import (
+	"context"
+
 	"github.com/emiago/sipgo"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
@@ -109,4 +113,48 @@ func (s *Service) Start() error {
 	}
 	s.log.Debugw("sip service ready")
 	return nil
+}
+
+func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	return s.cli.CreateSIPParticipant(ctx, req)
+}
+
+func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
+	// TODO: scale affinity based on a number or active calls?
+	return 0.5
+}
+
+func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
+	var h rpcCallHandler
+
+	// Look for call both in client (outbound) and server (inbound)
+	s.cli.cmu.Lock()
+	in := s.cli.callIdToHandler[CallID(req.SipCallId)]
+	s.cli.cmu.Unlock()
+
+	if in != nil {
+		err := in.cc.transferCall(ctx, req.TransferTo)
+
+		if err != nil {
+			return nil, err
+		}
+
+		return &emptypb.Empty{}, nil
+	}
+
+	s.srv.cmu.Lock()
+	out := s.srv.callIdToInbound[CallID(req.SipCallId)]
+	s.srv.cmu.Unlock()
+
+	if out != nil {
+		err := out.cc.transferCall(ctx, req.TransferTo)
+
+		if err != nil {
+			return nil, err
+		}
+
+		return &emptypb.Empty{}, nil
+	}
+
+	return nil, psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 }

@@ -522,12 +522,10 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	delete(c.s.activeCalls, c.cc.Tag())
 	c.s.cmu.Unlock()
 
-	c.s.c.cmu.Lock()
 	sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		delete(c.s.c.callIdToHandler, CallID(sipCallID))
+		c.s.DegisterTransferSIPParticipant(CallID(sipCallID))
 	}
-	c.s.c.cmu.Unlock()
 
 	c.cancel()
 }
@@ -576,9 +574,10 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 
 	sipCallID := partConf.Attributes[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		c.s.c.cmu.Lock()
-		c.s.c.callIdToHandler[CallID(sipCallID)] = c.cc
-		c.s.c.cmu.Unlock()
+		err := c.s.RegisterTransferSIPParticipant(CallID(sipCallID), c)
+		if err != nil {
+			return err
+		}
 	}
 
 	err := c.lkRoom.Connect(c.s.conf, rconf)
