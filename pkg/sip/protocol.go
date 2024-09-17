@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/livekit/psrpc"
 )
 
 type ErrorStatus struct {
@@ -129,5 +130,17 @@ func sendRefer(c Signaling, req *sip.Request) (*sip.Response, error) {
 	}
 	defer tx.Terminate()
 
-	return sipResponse(tx)
+	resp, err := sipResponse(tx)
+	if err != nil {
+		return nil, err
+	}
+
+	switch resp.StatusCode {
+	case 200:
+		return resp, nil
+	case 403:
+		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
+	default:
+		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code", resp.StatusCode)
+	}
 }
