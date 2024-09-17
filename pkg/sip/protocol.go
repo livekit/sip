@@ -60,7 +60,7 @@ func sendBye(c Signaling, bye *sip.Request) {
 	}
 }
 
-func sendRefer(c Signaling, inviteRequest *sip.Request, inviteResponse *sip.Response, referToUrl string) (*sip.Request, *sip.Response, error) {
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, referToUrl string) *sip.Request {
 	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
@@ -119,13 +119,15 @@ func sendRefer(c Signaling, inviteRequest *sip.Request, inviteResponse *sip.Resp
 	req.SetSource(inviteRequest.Source())
 	req.SetDestination(inviteRequest.Destination())
 
+	return req
+}
+
+func sendRefer(c Signaling, req *sip.Request) (*sip.Response, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer tx.Terminate()
 
-	resp, err := sipResponse(tx)
-	return req, resp, err
-
+	return sipResponse(tx)
 }

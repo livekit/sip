@@ -590,7 +590,13 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
 	}
 
-	_, _, err := sendRefer(c, c.invite, c.inviteOk, transferTo)
+	to, _ := c.invite.To()
+	if to == nil {
+		return psrpc.NewErrorf(psrpc.InvalidArgument, "no To URI in invite")
+	}
+
+	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	_, err := sendRefer(c, req)
 
 	return err
 }

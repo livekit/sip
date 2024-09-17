@@ -836,6 +836,24 @@ func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
 	c.drop() // mark as closed
 }
 
+func (c *sipInbound) swapSrcDst(req *sip.Request) {
+	if contact, ok := c.invite.Contact(); ok {
+		req.Recipient = &contact.Address
+	} else {
+		req.Recipient = &c.from.Address
+	}
+	req.SetSource(c.inviteOk.Source())
+	req.SetDestination(c.inviteOk.Destination())
+	req.RemoveHeader("From")
+	req.AppendHeader((*sip.FromHeader)(c.to))
+	req.RemoveHeader("To")
+	req.AppendHeader((*sip.ToHeader)(c.from))
+	if route, ok := req.RecordRoute(); ok {
+		req.RemoveHeader("Record-Route")
+		req.AppendHeader(&sip.RouteHeader{Address: route.Address})
+	}
+}
+
 func (c *sipInbound) sendBye() {
 	if c.inviteOk == nil {
 		return // call wasn't established
@@ -845,21 +863,7 @@ func (c *sipInbound) sendBye() {
 	}
 	// This function is for clients, so we need to swap src and dest
 	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
-	if contact, ok := c.invite.Contact(); ok {
-		bye.Recipient = &contact.Address
-	} else {
-		bye.Recipient = &c.from.Address
-	}
-	bye.SetSource(c.inviteOk.Source())
-	bye.SetDestination(c.inviteOk.Destination())
-	bye.RemoveHeader("From")
-	bye.AppendHeader((*sip.FromHeader)(c.to))
-	bye.RemoveHeader("To")
-	bye.AppendHeader((*sip.ToHeader)(c.from))
-	if route, ok := bye.RecordRoute(); ok {
-		bye.RemoveHeader("Record-Route")
-		bye.AppendHeader(&sip.RouteHeader{Address: route.Address})
-	}
+	c.swapSrcDst(bye)
 	c.drop()
 	sendBye(c, bye)
 }
@@ -880,7 +884,14 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
-	_, _, err := sendRefer(c, c.invite, c.inviteOk, transferTo)
+	from, _ := c.invite.From()
+	if from == nil {
+		return psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
+	}
+
+	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	c.swapSrcDst(req)
+	_, err := sendRefer(c, req)
 
 	return err
 }
