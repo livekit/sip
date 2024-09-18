@@ -388,6 +388,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
+	c.mon.SDPSize(len(offerData), true)
+	c.log.Debugw("SDP offer", "sdp", string(offerData))
+
 	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
 		IP:                  c.s.signalingIp,
 		Ports:               conf.RTPPort,
@@ -405,6 +408,8 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err != nil {
 		return nil, err
 	}
+	c.mon.SDPSize(len(answerData), false)
+	c.log.Debugw("SDP answer", "sdp", string(answerData))
 
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
