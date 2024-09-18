@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -27,9 +28,10 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/errors"
+	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -42,11 +44,10 @@ type Client struct {
 	signalingIp      string
 	signalingIpLocal string
 
-	closing          core.Fuse
-	cmu              sync.Mutex
-	activeCalls      map[LocalTag]*outboundCall
-	byRemote         map[RemoteTag]*outboundCall
-	callIdToOutbound map[CallID]*outboundCall
+	closing     core.Fuse
+	cmu         sync.Mutex
+	activeCalls map[LocalTag]*outboundCall
+	byRemote    map[RemoteTag]*outboundCall
 
 	handler Handler
 }
@@ -56,12 +57,11 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Clie
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:             conf,
-		log:              log,
-		mon:              mon,
-		activeCalls:      make(map[LocalTag]*outboundCall),
-		byRemote:         make(map[RemoteTag]*outboundCall),
-		callIdToOutbound: make(map[CallID]*outboundCall),
+		conf:        conf,
+		log:         log,
+		mon:         mon,
+		activeCalls: make(map[LocalTag]*outboundCall),
+		byRemote:    make(map[RemoteTag]*outboundCall),
 	}
 	return c
 }
@@ -123,13 +123,13 @@ func (c *Client) Stop() {
 	}
 }
 
-func (s *Server) SetHandler(handler Handler) {
-	s.handler = handler
+func (c *Client) SetHandler(handler Handler) {
+	c.handler = handler
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	if !c.mon.CanAccept() {
-		return nil, errors.ErrUnavailable
+		return nil, siperrors.ErrUnavailable
 	}
 
 	if req.CallTo == "" {
@@ -194,6 +194,8 @@ func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
 		return false
 	case "BYE":
 		return c.onBye(req, tx)
+	case "NOTIFY":
+		return c.onNotify(req, tx)
 	}
 }
 
@@ -212,18 +214,33 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) RegisterTransferSIPParticipant(sipCallID CallID, o *outboundCall) error {
+func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
+	tag, _ := getFromTag(req)
 	c.cmu.Lock()
-	c.callIdToOutbound[sipCallID] = o
+	call := c.byRemote[tag]
 	c.cmu.Unlock()
+	if call == nil {
+		return false
+	}
+	call.log.Infow("NOTIFY")
+	go func(call *outboundCall) {
+		err := call.handleNotifiy(req, tx)
 
+		var code sip.StatusCode = 500
+		var psrpcErr psrpc.Error
+		if errors.As(err, &psrpcErr) {
+			code = sip.StatusCode(psrpcErr.ToHttp())
+		}
+
+		tx.Respond(sip.NewResponseFromRequest(req, code, err.Error(), nil))
+	}(call)
+	return true
+}
+
+func (c *Client) RegisterTransferSIPParticipant(sipCallID CallID, o *outboundCall) error {
 	return c.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
 func (c *Client) DegisterTransferSIPParticipant(sipCallID CallID) {
-	c.cmu.Lock()
-	delete(c.callIdToOutbound, sipCallID)
-	c.cmu.Unlock()
-
 	c.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

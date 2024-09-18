@@ -20,7 +20,10 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
@@ -61,6 +64,7 @@ type outboundCall struct {
 	lkRoomIn   media.PCM16Writer // output to room; OPUS at 48k
 	sipConf    sipOutboundConfig
 	sipRunning bool
+	referDone  chan error
 }
 
 func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
@@ -72,7 +76,8 @@ func (c *Client) newCall(conf *config.Config, log logger.Logger, id LocalTag, ro
 			Host: c.signalingIp,
 			Addr: netip.AddrPortFrom(netip.Addr{}, uint16(conf.SIPPort)),
 		}),
-		sipConf: sipConf,
+		sipConf:   sipConf,
+		referDone: make(chan error, 1),
 	}
 	call.mon = c.mon.NewCall(stats.Outbound, c.signalingIp, sipConf.address)
 	var err error
@@ -167,11 +172,6 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		if tag := c.cc.Tag(); tag != "" {
 			delete(c.c.byRemote, tag)
 		}
-		sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
-		if sipCallID != "" {
-			delete(c.c.callIdToOutbound, CallID(sipCallID))
-		}
-
 		c.c.cmu.Unlock()
 	})
 }
@@ -359,6 +359,79 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string) error {
+	err := c.cc.transferCall(ctx, transferTo)
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-time.After(30 * time.Second):
+		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
+	case <-ctx.Done():
+		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+	case err := <-c.referDone:
+		if err != nil {
+			return err
+		}
+	}
+
+	c.cc.sendBye()
+
+	// This is needed to actually terminate the session before a media timeout
+	c.CloseWithReason(CallHangup, "call transferred")
+
+	return nil
+}
+
+func (c *outboundCall) handleNotifiy(req *sip.Request, tx sip.ServerTransaction) error {
+	event := req.GetHeader("Event")
+
+	switch {
+	case strings.HasPrefix(strings.ToLower(event.Value()), "refer"):
+		// REFER Notify
+		// Get the CSeq of the request this relates to if given
+		v := strings.Split(event.Value(), ";")
+		if len(v) >= 2 {
+			reqCseq, _ := strconv.ParseUint(v[1], 10, 32)
+			c.cc.mu.RLock()
+			defer c.cc.mu.RUnlock()
+
+			if reqCseq != 0 && reqCseq != uint64(c.cc.referCseq) {
+				// NOTIFY for a different REFER
+				return nil
+			}
+		}
+		code, err := parseNotifyBody(string(req.Body()))
+		if err != nil {
+			return err
+		}
+
+		c.log.Debugw("call transfer status update", "statusCode", code)
+
+		switch {
+		case code >= 100 && code < 200:
+			// still trying
+		case code == 200:
+			// Success
+			select {
+			case c.referDone <- nil:
+			default:
+			}
+		default:
+			// Failure
+			select {
+			// TODO be more specific in the reported error
+			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
+			default:
+			}
+		}
+		return nil
+	}
+
+	return psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
+}
+
 func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
 	from = from.Normalize()
 	fromHeader := &sip.FromHeader{
@@ -384,6 +457,8 @@ type sipOutbound struct {
 	invite   *sip.Request
 	inviteOk *sip.Response
 	to       *sip.ToHeader
+
+	referCseq uint32
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -601,7 +676,11 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 		return err
 	}
 
-	c.sendBye()
+	cseq, _ := req.CSeq()
+	if cseq == nil {
+		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
+	}
+	c.referCseq = cseq.SeqNo
 
 	return nil
 }

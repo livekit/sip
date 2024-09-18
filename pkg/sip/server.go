@@ -132,7 +132,7 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 	return s
 }
 
-func (s *Client) SetHandler(handler Handler) {
+func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
@@ -223,6 +223,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 
 	s.sipSrv.OnInvite(s.onInvite)
 	s.sipSrv.OnBye(s.onBye)
+	s.sipSrv.OnNotify(s.onNotify)
 	s.sipUnhandled = unhandled
 
 	// Ignore ACKs

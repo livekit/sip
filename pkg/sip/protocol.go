@@ -16,9 +16,12 @@ package sip
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/psrpc"
+	"github.com/pkg/errors"
 )
 
 type ErrorStatus struct {
@@ -144,4 +147,23 @@ func sendRefer(c Signaling, req *sip.Request) (*sip.Response, error) {
 	default:
 		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code", resp.StatusCode)
 	}
+}
+
+func parseNotifyBody(body string) (int, error) {
+	v := strings.Split(body, " ")
+
+	if len(v) < 2 {
+		return 0, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: not enough tokens")
+	}
+
+	if strings.ToUpper(v[0]) != "SIP/2.0" {
+		return 0, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: wrong prefix or SIP version")
+	}
+
+	c, err := strconv.Atoi(v[1])
+	if err != nil {
+		return 0, errors.Wrap(err, "invalid notify body: unable to parse status code")
+	}
+
+	return c, nil
 }

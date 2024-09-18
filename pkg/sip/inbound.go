@@ -211,6 +211,17 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
+func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
+	ok := false
+	if s.sipUnhandled != nil {
+		ok = s.sipUnhandled(req, tx)
+	}
+	if !ok {
+		s.log.Infow("NOTIFY for non-existent call")
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
+	}
+}
+
 type inboundCall struct {
 	s           *Server
 	log         logger.Logger
