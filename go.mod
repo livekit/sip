@@ -130,4 +130,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240824110704-b2c462453d68
+replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240918094238-8391cb0fa997

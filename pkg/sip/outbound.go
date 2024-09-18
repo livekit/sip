@@ -313,6 +313,8 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.mon.SDPSize(len(sdpOffer), true)
+	c.log.Debugw("SDP offer", "sdp", string(sdpOffer))
 	joinDur := c.mon.JoinDur()
 
 	c.mon.InviteReq()
@@ -332,6 +334,8 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		c.log.Infow("SIP invite failed", "error", err)
 		return err
 	}
+	c.mon.SDPSize(len(sdpResp), false)
+	c.log.Debugw("SDP answer", "sdp", string(sdpResp))
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
