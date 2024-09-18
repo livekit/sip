@@ -707,7 +707,11 @@ func (c *sipInbound) respond(status sip.StatusCode, reason string) {
 	if c.inviteTx == nil {
 		return
 	}
-	_ = c.inviteTx.Respond(sip.NewResponseFromRequest(c.invite, status, reason, nil))
+
+	resp := sip.NewResponseFromRequest(c.invite, status, reason, nil)
+	resp.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	_ = c.inviteTx.Respond(resp)
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -895,6 +899,11 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 	if err != nil {
 		return err
 	}
+
+	//	c.mu.Unlock()
+	//	time.Sleep(10 * time.Second)
+	//	c.mu.Lock()
+
 	c.sendBye()
 
 	return nil

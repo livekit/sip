@@ -115,6 +115,7 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, r
 	// Set Refer-To header
 	referTo := sip.NewHeader("Refer-To", referToUrl)
 	req.AppendHeader(referTo)
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
 	req.SetTransport(inviteRequest.Transport())
 	req.SetSource(inviteRequest.Source())
@@ -136,7 +137,7 @@ func sendRefer(c Signaling, req *sip.Request) (*sip.Response, error) {
 	}
 
 	switch resp.StatusCode {
-	case 200:
+	case 200, 202:
 		return resp, nil
 	case 403:
 		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
