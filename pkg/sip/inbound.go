@@ -299,6 +299,7 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *s
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
 	s.activeCalls[cc.Tag()] = c
+	s.byLocal[cc.ID()] = c
 	s.cmu.Unlock()
 	return c
 }
@@ -615,6 +616,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.s.cmu.Lock()
 	delete(c.s.activeCalls, c.cc.Tag())
+	delete(c.s.byLocal, c.cc.ID())
 	c.s.cmu.Unlock()
 
 	sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]

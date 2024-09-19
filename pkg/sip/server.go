@@ -277,17 +277,9 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
-	s.cmu.Lock()
-	s.byLocal[sipCallID] = i
-	s.cmu.Unlock()
-
 	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
 func (s *Server) DegisterTransferSIPParticipant(sipCallID LocalTag) {
-	s.cmu.Lock()
-	delete(s.byLocal, sipCallID)
-	s.cmu.Unlock()
-
 	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }
