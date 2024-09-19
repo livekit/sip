@@ -226,13 +226,19 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	go func(call *outboundCall) {
 		err := call.handleNotifiy(req, tx)
 
-		var code sip.StatusCode = 500
+		var code sip.StatusCode = 200
 		var psrpcErr psrpc.Error
 		if errors.As(err, &psrpcErr) {
 			code = sip.StatusCode(psrpcErr.ToHttp())
+		} else if err != nil {
+			code = 500
 		}
 
-		tx.Respond(sip.NewResponseFromRequest(req, code, err.Error(), nil))
+		msg := "success"
+		if err != nil {
+			msg = err.Error()
+		}
+		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
 	}(call)
 	return true
 }
