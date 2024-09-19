@@ -212,6 +212,20 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
+	tag, err := getFromTag(req)
+	if err != nil {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+		return
+	}
+
+	s.cmu.RLock()
+	c := s.activeCalls[tag]
+	s.cmu.RUnlock()
+	if c != nil {
+		c.log.Infow("NOTIFY")
+		c.handleNotify(req, tx)
+		return
+	}
 	ok := false
 	if s.sipUnhandled != nil {
 		ok = s.sipUnhandled(req, tx)
@@ -238,6 +252,7 @@ type inboundCall struct {
 	joinDur     func() time.Duration
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
+	referDone   chan error
 }
 
 func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *sipInbound, src string, extra map[string]string) *inboundCall {
@@ -250,6 +265,7 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *s
 		src:        src,
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
+		referDone:  make(chan error, 1),
 		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -535,7 +551,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		c.s.DegisterTransferSIPParticipant(CallID(sipCallID))
+		c.s.DegisterTransferSIPParticipant(LocalTag(sipCallID))
 	}
 
 	c.cancel()
@@ -585,7 +601,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 
 	sipCallID := partConf.Attributes[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		err := c.s.RegisterTransferSIPParticipant(CallID(sipCallID), c)
+		err := c.s.RegisterTransferSIPParticipant(LocalTag(sipCallID), c)
 		if err != nil {
 			return err
 		}
@@ -656,6 +672,71 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error {
+	err := c.cc.transferCall(ctx, transferTo)
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-time.After(30 * time.Second):
+		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
+	case <-ctx.Done():
+		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+	case err := <-c.referDone:
+		if err != nil {
+			return err
+		}
+	}
+
+	c.cc.sendBye()
+
+	// This is needed to actually terminate the session before a media timeout
+	c.Close()
+
+	return nil
+
+}
+
+func (c *inboundCall) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	method, cseq, status, err := handleNotify(req)
+	if err != nil {
+		return err
+	}
+
+	switch method {
+	case sip.REFER:
+		c.cc.mu.RLock()
+		defer c.cc.mu.RUnlock()
+
+		if cseq != 0 && cseq != uint32(c.cc.referCseq) {
+			// NOTIFY for a different REFER, skip
+			return nil
+		}
+
+		c.log.Debugw("call transfer status update", "statusCode", status)
+
+		switch {
+		case status >= 100 && status < 200:
+			// still trying
+		case status == 200:
+			// Success
+			select {
+			case c.referDone <- nil:
+			default:
+			}
+		default:
+			// Failure
+			select {
+			// TODO be more specific in the reported error
+			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
+			default:
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
 	c := &sipInbound{
 		s:        s,
@@ -672,13 +753,14 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 }
 
 type sipInbound struct {
-	s        *Server
-	id       LocalTag
-	tag      RemoteTag
-	invite   *sip.Request
-	inviteTx sip.ServerTransaction
-	from     *sip.FromHeader
-	to       *sip.ToHeader
+	s         *Server
+	id        LocalTag
+	tag       RemoteTag
+	invite    *sip.Request
+	inviteTx  sip.ServerTransaction
+	from      *sip.FromHeader
+	to        *sip.ToHeader
+	referCseq uint32
 
 	mu       sync.RWMutex
 	inviteOk *sip.Response
@@ -911,11 +993,11 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 		return err
 	}
 
-	//	c.mu.Unlock()
-	//	time.Sleep(10 * time.Second)
-	//	c.mu.Lock()
-
-	c.sendBye()
+	cseq, _ := req.CSeq()
+	if cseq == nil {
+		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
+	}
+	c.referCseq = cseq.SeqNo
 
 	return nil
 }

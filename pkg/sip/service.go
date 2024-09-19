@@ -138,18 +138,14 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	}
 
 	s.srv.cmu.Lock()
-	in := s.srv.callIdToInbound[CallID(req.SipCallId)]
+	in := s.srv.byLocal[LocalTag(req.SipCallId)]
 	s.srv.cmu.Unlock()
 
 	if in != nil {
-		err := in.cc.transferCall(ctx, req.TransferTo)
-
+		err := in.transferCall(ctx, req.TransferTo)
 		if err != nil {
 			return nil, err
 		}
-
-		// This seems needed to actually terminate the session before a media timeout
-		in.Close()
 
 		return &emptypb.Empty{}, nil
 	}

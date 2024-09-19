@@ -167,3 +167,28 @@ func parseNotifyBody(body string) (int, error) {
 
 	return c, nil
 }
+
+func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, status int, err error) {
+	event := req.GetHeader("Event")
+	var cseq64 uint64
+
+	switch {
+	case strings.HasPrefix(strings.ToLower(event.Value()), "refer"):
+		// REFER Notify
+		method = sip.REFER
+
+		// Get the CSeq of the request this relates to if given
+		v := strings.Split(event.Value(), ";")
+		if len(v) >= 2 {
+			cseq64, _ = strconv.ParseUint(v[1], 10, 32)
+		}
+
+		status, err = parseNotifyBody(string(req.Body()))
+		if err != nil {
+			return "", 0, 0, err
+		}
+
+		return method, uint32(cseq64), status, nil
+	}
+	return "", 0, 0, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
+}

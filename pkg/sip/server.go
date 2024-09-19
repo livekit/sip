@@ -102,9 +102,9 @@ type Server struct {
 
 	inProgressInvites []*inProgressInvite
 
-	cmu             sync.RWMutex
-	activeCalls     map[RemoteTag]*inboundCall
-	callIdToInbound map[CallID]*inboundCall
+	cmu         sync.RWMutex
+	activeCalls map[RemoteTag]*inboundCall
+	byLocal     map[LocalTag]*inboundCall
 
 	handler Handler
 	conf    *config.Config
@@ -122,11 +122,11 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:             log,
-		conf:            conf,
-		mon:             mon,
-		activeCalls:     make(map[RemoteTag]*inboundCall),
-		callIdToInbound: make(map[CallID]*inboundCall),
+		log:         log,
+		conf:        conf,
+		mon:         mon,
+		activeCalls: make(map[RemoteTag]*inboundCall),
+		byLocal:     make(map[LocalTag]*inboundCall),
 	}
 	s.initMediaRes()
 	return s
@@ -258,17 +258,17 @@ func (s *Server) Stop() {
 	}
 }
 
-func (s *Server) RegisterTransferSIPParticipant(sipCallID CallID, i *inboundCall) error {
+func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
 	s.cmu.Lock()
-	s.callIdToInbound[sipCallID] = i
+	s.byLocal[sipCallID] = i
 	s.cmu.Unlock()
 
 	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
-func (s *Server) DegisterTransferSIPParticipant(sipCallID CallID) {
+func (s *Server) DegisterTransferSIPParticipant(sipCallID LocalTag) {
 	s.cmu.Lock()
-	delete(s.callIdToInbound, sipCallID)
+	delete(s.byLocal, sipCallID)
 	s.cmu.Unlock()
 
 	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))

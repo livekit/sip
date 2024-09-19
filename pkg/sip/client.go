@@ -224,7 +224,7 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	}
 	call.log.Infow("NOTIFY")
 	go func(call *outboundCall) {
-		err := call.handleNotifiy(req, tx)
+		err := call.handleNotify(req, tx)
 
 		var code sip.StatusCode = 200
 		var psrpcErr psrpc.Error
@@ -243,10 +243,10 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) RegisterTransferSIPParticipant(sipCallID CallID, o *outboundCall) error {
-	return c.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
+func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCall) error {
+	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
 }
 
-func (c *Client) DegisterTransferSIPParticipant(sipCallID CallID) {
-	c.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
+func (c *Client) DegisterTransferSIPParticipant(sipCallID string) {
+	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }

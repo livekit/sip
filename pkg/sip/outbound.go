@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -203,7 +201,7 @@ func (c *outboundCall) connectToRoom(lkNew RoomConfig) error {
 
 	sipCallID := attrs[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		c.c.RegisterTransferSIPParticipant(CallID(sipCallID), c)
+		c.c.RegisterTransferSIPParticipant(sipCallID, c)
 	}
 
 	attrs[AttrSIPCallStatus] = string(CallDialing)
@@ -384,35 +382,28 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string) erro
 	return nil
 }
 
-func (c *outboundCall) handleNotifiy(req *sip.Request, tx sip.ServerTransaction) error {
-	event := req.GetHeader("Event")
+func (c *outboundCall) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	method, cseq, status, err := handleNotify(req)
+	if err != nil {
+		return err
+	}
 
-	switch {
-	case strings.HasPrefix(strings.ToLower(event.Value()), "refer"):
-		// REFER Notify
-		// Get the CSeq of the request this relates to if given
-		v := strings.Split(event.Value(), ";")
-		if len(v) >= 2 {
-			reqCseq, _ := strconv.ParseUint(v[1], 10, 32)
-			c.cc.mu.RLock()
-			defer c.cc.mu.RUnlock()
+	switch method {
+	case sip.REFER:
+		c.cc.mu.RLock()
+		defer c.cc.mu.RUnlock()
 
-			if reqCseq != 0 && reqCseq != uint64(c.cc.referCseq) {
-				// NOTIFY for a different REFER
-				return nil
-			}
-		}
-		code, err := parseNotifyBody(string(req.Body()))
-		if err != nil {
-			return err
+		if cseq != 0 && cseq != c.cc.referCseq {
+			// NOTIFY for a different REFER, skip
+			return nil
 		}
 
-		c.log.Debugw("call transfer status update", "statusCode", code)
+		c.log.Debugw("call transfer status update", "statusCode", status)
 
 		switch {
-		case code >= 100 && code < 200:
+		case status >= 100 && status < 200:
 			// still trying
-		case code == 200:
+		case status == 200:
 			// Success
 			select {
 			case c.referDone <- nil:
@@ -426,10 +417,8 @@ func (c *outboundCall) handleNotifiy(req *sip.Request, tx sip.ServerTransaction)
 			default:
 			}
 		}
-		return nil
 	}
-
-	return psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
+	return nil
 }
 
 func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
