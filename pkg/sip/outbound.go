@@ -182,6 +182,8 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 			delete(c.c.byRemote, tag)
 		}
 		c.c.cmu.Unlock()
+
+		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
 	})
 }
 

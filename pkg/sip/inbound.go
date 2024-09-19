@@ -619,10 +619,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	delete(c.s.byLocal, c.cc.ID())
 	c.s.cmu.Unlock()
 
-	sipCallID := c.lkRoom.Participant().Attributes[livekit.AttrSIPCallID]
-	if sipCallID != "" {
-		c.s.DegisterTransferSIPParticipant(LocalTag(sipCallID))
-	}
+	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
 
 	c.cancel()
 }

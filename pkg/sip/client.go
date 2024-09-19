@@ -263,6 +263,6 @@ func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCal
 	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
 }
 
-func (c *Client) DegisterTransferSIPParticipant(sipCallID string) {
+func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
 	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }

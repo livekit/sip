@@ -280,6 +280,6 @@ func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCa
 	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
-func (s *Server) DegisterTransferSIPParticipant(sipCallID LocalTag) {
+func (s *Server) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
 	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }
