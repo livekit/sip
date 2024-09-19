@@ -15,7 +15,16 @@
 package rtp
 
 import (
+	"fmt"
+	"os"
+	"sync/atomic"
+
 	"github.com/livekit/sip/pkg/media"
+)
+
+var (
+	mediaID         atomic.Uint32
+	mediaDumpToFile = os.Getenv("LK_DUMP_MEDIA") == "true"
 )
 
 var (
@@ -41,15 +50,13 @@ type AudioCodec interface {
 	DecodeRTP(w media.Writer[media.PCM16Sample], typ byte) Handler
 }
 
-var _ AudioEncoder[[]byte] = (*audioCodec[[]byte])(nil)
-
-type AudioEncoder[S ~[]byte] interface {
+type AudioEncoder[S BytesFrame] interface {
 	AudioCodec
 	Decode(writer media.PCM16Writer) media.WriteCloser[S]
 	Encode(writer media.WriteCloser[S]) media.PCM16Writer
 }
 
-func NewAudioCodec[S ~[]byte](
+func NewAudioCodec[S BytesFrame](
 	info media.CodecInfo,
 	decode func(writer media.PCM16Writer) media.WriteCloser[S],
 	encode func(writer media.WriteCloser[S]) media.PCM16Writer,
@@ -67,7 +74,7 @@ func NewAudioCodec[S ~[]byte](
 	}
 }
 
-type audioCodec[S ~[]byte] struct {
+type audioCodec[S BytesFrame] struct {
 	info   media.CodecInfo
 	decode func(writer media.PCM16Writer) media.WriteCloser[S]
 	encode func(writer media.WriteCloser[S]) media.PCM16Writer
@@ -86,9 +93,29 @@ func (c *audioCodec[S]) Encode(w media.WriteCloser[S]) media.PCM16Writer {
 }
 
 func (c *audioCodec[S]) EncodeRTP(w *Stream) media.PCM16Writer {
-	return c.encode(NewMediaStreamOut[S](w, c.info.SampleRate))
+	var s media.WriteCloser[S] = NewMediaStreamOut[S](w, c.info.SampleRate)
+	if mediaDumpToFile {
+		id := mediaID.Add(1)
+		name := fmt.Sprintf("sip_rtp_out_%d", id)
+		ext := c.info.FileExt
+		if ext == "" {
+			ext = "raw"
+		}
+		s = media.DumpWriter[S](ext, name, media.NopCloser(s))
+	}
+	return c.encode(s)
 }
 
 func (c *audioCodec[S]) DecodeRTP(w media.Writer[media.PCM16Sample], typ byte) Handler {
-	return NewMediaStreamIn(c.decode(media.NopCloser(w)))
+	s := c.decode(media.NopCloser(w))
+	if mediaDumpToFile {
+		id := mediaID.Add(1)
+		name := fmt.Sprintf("sip_rtp_in_%d", id)
+		ext := c.info.FileExt
+		if ext == "" {
+			ext = "raw"
+		}
+		s = media.DumpWriter[S](ext, name, media.NopCloser(s))
+	}
+	return NewMediaStreamIn(s)
 }

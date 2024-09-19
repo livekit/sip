@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -28,13 +29,16 @@ import (
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/webm"
 	"github.com/livekit/sip/res"
+	"github.com/livekit/sip/res/testdata"
 )
 
 type paceWriter struct {
-	w      media.PCM16Writer
-	mu     sync.Mutex
-	cur    int
-	frames []int
+	w       media.PCM16Writer
+	mu      sync.Mutex
+	cur     int
+	frameT  []int
+	frameSz []int
+	samples int
 }
 
 func (p *paceWriter) Set(i int) {
@@ -54,7 +58,9 @@ func (p *paceWriter) SampleRate() int {
 func (p *paceWriter) WriteSample(sample media.PCM16Sample) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.frames = append(p.frames, p.cur)
+	p.frameT = append(p.frameT, p.cur)
+	p.frameSz = append(p.frameSz, len(sample))
+	p.samples += len(sample)
 	return p.w.WriteSample(sample)
 }
 
@@ -65,39 +71,80 @@ func (p *paceWriter) Close() error {
 func TestResample(t *testing.T) {
 	const (
 		srcFile     = "resample.src.s16le"
-		resFile     = "resample.out.s16le"
 		srcFileWebm = "resample.src.mka"
-		resFileWebm = "resample.out.mka"
 		srcRate     = res.SampleRate
-		dstRate     = 16000
 	)
-	srcFrames := res.ReadOggAudioFile(res.RoomJoinOgg)
+	srcFrames := res.ReadOggAudioFile(testdata.TestAudioOgg)
 	gotSrc := writePCM16s(t, srcFile, srcFrames)
 	writePCM16sWebm(t, srcFileWebm, srcRate, srcFrames)
-	require.Equal(t, "014f18c1", gotSrc)
+	require.Equal(t, "c774af95", gotSrc)
 
-	var dstFrames []media.PCM16Sample
-	dst := media.NewPCM16FrameWriter(&dstFrames, dstRate)
-	pw := &paceWriter{w: dst}
-	r := media.ResampleWriter(pw, srcRate)
-	defer r.Close()
-	for i, src := range srcFrames {
-		pw.Set(i)
-		err := r.WriteSample(src)
-		require.NoError(t, err)
+	for _, c := range []struct {
+		Rate   int
+		Skip   int
+		Buffer int
+		Bumps  []int
+	}{
+		{
+			Rate: 16000, Skip: 0},
+		{
+			Rate: 8000, Skip: 2,
+			Buffer: 3,
+			// TODO: figure out why resampler delays that specific frame; silence?
+			Bumps: []int{211},
+		},
+	} {
+		t.Run(strconv.Itoa(c.Rate), func(t *testing.T) {
+			resPref := fmt.Sprintf("resample.out.%d", c.Rate)
+			resFile := resPref + ".s16le"
+			resFileWebm := resPref + ".mka"
+
+			var dstFrames []media.PCM16Sample
+			dst := media.NewPCM16FrameWriter(&dstFrames, c.Rate)
+			pw := &paceWriter{w: dst}
+			r := media.ResampleWriter(pw, srcRate)
+			defer r.Close()
+			totalSamples := 0
+			for i, src := range srcFrames {
+				pw.Set(i)
+				err := r.WriteSample(src)
+				require.NoError(t, err)
+				totalSamples += len(src)
+			}
+			r.Close()
+			gotDst := writePCM16s(t, resFile, dstFrames)
+			// only change if you validated the quality!
+			// require.Equal(t, "???", gotDst) // TODO: resampler is numerically unstable
+			_ = gotDst
+
+			writePCM16sWebm(t, resFileWebm, c.Rate, dstFrames)
+
+			expSamples := totalSamples / (srcRate / c.Rate)
+			require.Equal(t, expSamples, pw.samples)
+			require.Equal(t, len(srcFrames), len(pw.frameT))
+			skipped := pw.frameT[0]
+			require.Equal(t, c.Skip, skipped)
+			corr := 0
+			for i, num := range pw.frameT {
+				if i >= len(pw.frameT)-c.Buffer {
+					break
+				}
+				exp := skipped + i + corr
+				for _, b := range c.Bumps {
+					if b == exp {
+						corr++
+						exp++
+						break
+					}
+				}
+				if exp != num {
+					corr = num - (skipped + i)
+					t.Errorf("skipped frame: exp %d, got %d", exp, num)
+				}
+			}
+		})
 	}
-	gotDst := writePCM16s(t, resFile, dstFrames)
-	// only change if you validated the quality!
-	// require.Equal(t, "???", gotDst) // TODO: resampler is numerically unstable
-	_ = gotDst
 
-	writePCM16sWebm(t, resFileWebm, dstRate, dstFrames)
-
-	skipped := pw.frames[0]
-	require.Equal(t, 0, skipped)
-	for i, num := range pw.frames {
-		require.Equal(t, skipped+i, num)
-	}
 }
 
 func writePCM16s(t testing.TB, path string, buf []media.PCM16Sample) string {

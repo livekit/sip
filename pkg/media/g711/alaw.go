@@ -16,6 +16,7 @@ package g711
 
 import (
 	"fmt"
+	"io"
 
 	prtp "github.com/pion/rtp"
 
@@ -32,10 +33,23 @@ func init() {
 		RTPDefType:  prtp.PayloadTypePCMA,
 		RTPIsStatic: true,
 		Priority:    -20,
+		FileExt:     "g711a",
 	}, DecodeALaw, EncodeALaw))
 }
 
 type ALawSample []byte
+
+func (s ALawSample) Size() int {
+	return len(s)
+}
+
+func (s ALawSample) CopyTo(dst []byte) (int, error) {
+	if len(dst) < len(s) {
+		return 0, io.ErrShortBuffer
+	}
+	n := copy(dst, s)
+	return n, nil
+}
 
 func (s ALawSample) Decode() media.PCM16Sample {
 	out := make(media.PCM16Sample, len(s))
