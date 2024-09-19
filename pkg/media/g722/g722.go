@@ -42,6 +42,7 @@ func init() {
 		RTPDefType:   prtp.PayloadTypeG722,
 		RTPIsStatic:  true,
 		Priority:     -5,
+		FileExt:      "g722",
 	}, Decode, Encode))
 }
 

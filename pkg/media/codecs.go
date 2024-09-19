@@ -27,6 +27,7 @@ type CodecInfo struct {
 	RTPIsStatic  bool
 	Priority     int
 	Disabled     bool
+	FileExt      string
 }
 
 type Codec interface {

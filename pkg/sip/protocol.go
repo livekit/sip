@@ -49,18 +49,18 @@ type Signaling interface {
 	Drop()
 }
 
-func sendBye(c Signaling, bye *sip.Request) {
-	tx, err := c.Transaction(bye)
+func sendAndACK(c Signaling, req *sip.Request) {
+	tx, err := c.Transaction(req)
 	if err != nil {
 		return
 	}
 	defer tx.Terminate()
-	r, err := sipResponse(tx)
+	r, err := sipResponse(tx, nil)
 	if err != nil {
 		return
 	}
 	if r.StatusCode == 200 {
-		_ = c.WriteRequest(sip.NewAckRequest(bye, r, nil))
+		_ = c.WriteRequest(sip.NewAckRequest(req, r, nil))
 	}
 }
 

@@ -218,7 +218,10 @@ func TestMediaPort(t *testing.T) {
 						require.Equal(t, expChain, PrintAudioInWriter(m1))
 						require.Equal(t, expChain, PrintAudioInWriter(m2))
 
-						writes = 2 // resampler will buffer the first one
+						writes = 2 // resampler will buffer a few frames
+						if nativeRate == 8000 {
+							writes += 2 // a few more because of higher resample quality required
+						}
 					}
 
 					for range writes {
@@ -229,7 +232,7 @@ func TestMediaPort(t *testing.T) {
 						require.NoError(t, err)
 					}
 
-					time.Sleep(time.Second / 2)
+					time.Sleep(time.Second)
 
 					m1.Close()
 					m2.Close()

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 
 	"github.com/emiago/sipgo"
@@ -42,6 +43,7 @@ var (
 )
 
 type CallInfo struct {
+	TrunkID    string
 	ID         string
 	FromUser   string
 	ToUser     string
@@ -61,9 +63,11 @@ const (
 )
 
 type AuthInfo struct {
-	Result   AuthResult
-	Username string
-	Password string
+	Result    AuthResult
+	ProjectID string
+	TrunkID   string
+	Username  string
+	Password  string
 }
 
 type DispatchResult int
@@ -76,14 +80,17 @@ const (
 )
 
 type CallDispatch struct {
-	Result         DispatchResult
-	Room           RoomConfig
-	TrunkID        string
-	DispatchRuleID string
+	Result              DispatchResult
+	Room                RoomConfig
+	ProjectID           string
+	TrunkID             string
+	DispatchRuleID      string
+	Headers             map[string]string
+	HeadersToAttributes map[string]string
 }
 
 type Handler interface {
-	GetAuthCredentials(ctx context.Context, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
+	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
@@ -136,10 +143,10 @@ func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
-func (s *Server) startUDP() error {
+func (s *Server) startUDP(addr netip.AddrPort) error {
 	lis, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.IPv4(0, 0, 0, 0),
-		Port: s.conf.SIPPortListen,
+		IP:   addr.Addr().AsSlice(),
+		Port: int(addr.Port()),
 	})
 	if err != nil {
 		return fmt.Errorf("cannot listen on the UDP signaling port %d: %w", s.conf.SIPPortListen, err)
@@ -159,10 +166,10 @@ func (s *Server) startUDP() error {
 	return nil
 }
 
-func (s *Server) startTCP() error {
+func (s *Server) startTCP(addr netip.AddrPort) error {
 	lis, err := net.ListenTCP("tcp", &net.TCPAddr{
-		IP:   net.IPv4(0, 0, 0, 0),
-		Port: s.conf.SIPPortListen,
+		IP:   addr.Addr().AsSlice(),
+		Port: int(addr.Port()),
 	})
 	if err != nil {
 		return fmt.Errorf("cannot listen on the TCP signaling port %d: %w", s.conf.SIPPortListen, err)
@@ -228,11 +235,19 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 
 	// Ignore ACKs
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
-
-	if err := s.startUDP(); err != nil {
+	listenIP := s.conf.ListenIP
+	if listenIP == "" {
+		listenIP = "0.0.0.0"
+	}
+	ip, err := netip.ParseAddr(listenIP)
+	if err != nil {
 		return err
 	}
-	if err := s.startTCP(); err != nil {
+	addr := netip.AddrPortFrom(ip, uint16(s.conf.SIPPortListen))
+	if err := s.startUDP(addr); err != nil {
+		return err
+	}
+	if err := s.startTCP(addr); err != nil {
 		return err
 	}
 

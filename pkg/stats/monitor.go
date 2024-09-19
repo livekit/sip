@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/livekit/protocol/utils/hwstats"
+
 	"github.com/livekit/sip/pkg/config"
 )
 
@@ -35,6 +36,9 @@ var (
 	// durBucketsLong lists histogram buckets for long operations like call/session durations.
 	durBucketsLong = []float64{
 		1, 10, 60, 10 * 60, 30 * 60, 3600, 6 * 3600, 12 * 3600, 24 * 3600,
+	}
+	sizeBuckets = []float64{
+		100, 250, 500, 750, 1000, 1250, 1500,
 	}
 )
 
@@ -66,6 +70,7 @@ type Monitor struct {
 	durCall         *prometheus.HistogramVec
 	durJoin         *prometheus.HistogramVec
 	cpuLoad         prometheus.Gauge
+	sdpSize         *prometheus.HistogramVec
 
 	cpu            *hwstats.CPUStats
 	maxUtilization float64
@@ -81,7 +86,7 @@ func NewMonitor(conf *config.Config) (*Monitor, error) {
 		maxUtilization: conf.MaxCpuUtilization,
 	}
 	cpu, err := hwstats.NewCPUStats(func(idle float64) {
-		m.cpuLoad.Set(1 - idle)
+		m.cpuLoad.Set(1 - idle/m.cpu.NumCPU())
 	})
 	if err != nil {
 		return nil, err
@@ -187,6 +192,15 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
+
+	m.sdpSize = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "sdp_size_bytes",
+		Help:        "SDP size in bytes",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+		Buckets:     sizeBuckets,
+	}, []string{"type"}))
 
 	m.cpuLoad = mustRegister(m, prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -318,4 +332,12 @@ func (c *CallMonitor) CallDur() func() time.Duration {
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
 	return prometheus.NewTimer(c.m.durJoin.With(c.labelsShort(nil))).ObserveDuration
+}
+
+func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
+	typ := "answer"
+	if isOffer {
+		typ = "offer"
+	}
+	c.m.sdpSize.WithLabelValues(typ).Observe(float64(sz))
 }

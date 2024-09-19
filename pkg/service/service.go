@@ -168,8 +168,8 @@ func (s *Service) Run() error {
 	}
 }
 
-func (s *Service) GetAuthCredentials(ctx context.Context, from, to, toHost, srcAddress string) (sip.AuthInfo, error) {
-	return GetAuthCredentials(ctx, s.psrpcClient, from, to, toHost, srcAddress)
+func (s *Service) GetAuthCredentials(ctx context.Context, callID, from, to, toHost, srcAddress string) (sip.AuthInfo, error) {
+	return GetAuthCredentials(ctx, s.psrpcClient, callID, from, to, toHost, srcAddress)
 }
 
 func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {

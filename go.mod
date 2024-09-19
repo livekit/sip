@@ -15,7 +15,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240625074155-301bb4a816b7
-	github.com/livekit/protocol v1.19.0
+	github.com/livekit/protocol v1.21.1-0.20240913074525-1f5de7d620c4
 	github.com/livekit/psrpc v0.5.3-0.20240616012458-ac39c8549a0a
 	github.com/livekit/server-sdk-go/v2 v2.2.1-0.20240726160203-3f7f396734c3
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -24,6 +24,7 @@ require (
 	github.com/pion/rtp v1.8.6
 	github.com/pion/sdp/v3 v3.0.9
 	github.com/pion/webrtc/v3 v3.2.47
+	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.19.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
@@ -99,7 +100,6 @@ require (
 	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/transport/v2 v2.2.5 // indirect
 	github.com/pion/turn/v2 v2.1.6 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
 	github.com/prometheus/common v0.48.0 // indirect
@@ -132,4 +132,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240824110704-b2c462453d68
+replace github.com/emiago/sipgo => github.com/livekit/sipgo v0.13.2-0.20240820220653-befde351a575

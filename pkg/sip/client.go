@@ -28,8 +28,8 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
-
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
@@ -128,10 +128,15 @@ func (c *Client) SetHandler(handler Handler) {
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	ctx, span := tracer.Start(ctx, "Client.CreateSIPParticipant")
+	defer span.End()
+	return c.createSIPParticipant(ctx, req)
+}
+
+func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	if !c.mon.CanAccept() {
 		return nil, siperrors.ErrUnavailable
 	}
-
 	if req.CallTo == "" {
 		return nil, fmt.Errorf("call-to number must be set")
 	} else if req.Address == "" {
@@ -141,11 +146,19 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	} else if req.RoomName == "" {
 		return nil, fmt.Errorf("room name must be set")
 	}
-	log := c.log.WithValues(
+	log := c.log
+	if req.ProjectId != "" {
+		log = log.WithValues("projectID", req.ProjectId)
+	}
+	if req.SipTrunkId != "" {
+		c.log = c.log.WithValues("sipTrunk", req.SipTrunkId)
+	}
+	log = log.WithValues(
 		"callID", req.SipCallId,
 		"room", req.RoomName,
 		"participant", req.ParticipantIdentity,
 		"participantName", req.ParticipantName,
+		"fromHost", req.Hostname,
 		"fromUser", req.Number,
 		"toHost", req.Address,
 		"toUser", req.CallTo,
@@ -162,17 +175,20 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		},
 	}
 	sipConf := sipOutboundConfig{
-		address:   req.Address,
-		transport: req.Transport,
-		from:      req.Number,
-		to:        req.CallTo,
-		user:      req.Username,
-		pass:      req.Password,
-		dtmf:      req.Dtmf,
-		ringtone:  req.PlayRingtone,
+		address:        req.Address,
+		transport:      req.Transport,
+		host:           req.Hostname,
+		from:           req.Number,
+		to:             req.CallTo,
+		user:           req.Username,
+		pass:           req.Password,
+		dtmf:           req.Dtmf,
+		ringtone:       req.PlayRingtone,
+		headers:        req.Headers,
+		headersToAttrs: req.HeadersToAttributes,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
 	if err != nil {
 		return nil, err
 	}

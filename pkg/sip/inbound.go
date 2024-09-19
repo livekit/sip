@@ -28,6 +28,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
+	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
@@ -43,6 +44,10 @@ const (
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
+
+	// callSubscribeTimeout is a maximal duration which SIP participant will wait for other participant tracks.
+	// If no participant tracks are published by this time, the call will disconnect.
+	callSubscribeTimeout = 3 * time.Minute
 )
 
 func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
@@ -135,6 +140,8 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		return
 	}
+	ctx, span := tracer.Start(ctx, "Server.onInvite")
+	defer span.End()
 
 	from, to := cc.From(), cc.To()
 
@@ -147,12 +154,18 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		cc.Processing()
 	}
 
-	r, err := s.handler.GetAuthCredentials(ctx, from.User, to.User, to.Host, src)
+	r, err := s.handler.GetAuthCredentials(ctx, callID, from.User, to.User, to.Host, src)
 	if err != nil {
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
 		return
+	}
+	if r.ProjectID != "" {
+		log = log.WithValues("projectID", r.ProjectID)
+	}
+	if r.TrunkID != "" {
+		log = log.WithValues("sipTrunk", r.TrunkID)
 	}
 	switch r.Result {
 	case AuthDrop:
@@ -182,7 +195,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 	call := s.newInboundCall(log, cmon, cc, src, nil)
 	call.joinDur = joinDur
-	call.handleInvite(call.ctx, req, tx, s.conf)
+	call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
@@ -271,7 +284,7 @@ type inboundCall struct {
 }
 
 func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *sipInbound, src string, extra map[string]string) *inboundCall {
-	extra = HeadersToAttrs(extra, cc)
+	extra = HeadersToAttrs(extra, nil, cc)
 	c := &inboundCall{
 		s:          s,
 		log:        log,
@@ -290,11 +303,7 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *s
 	return c
 }
 
-func (c *inboundCall) closeWithTimeout() {
-	c.close(true, callDropped, "media-timeout")
-}
-
-func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip.ServerTransaction, conf *config.Config) {
+func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkID string, conf *config.Config) {
 	c.mon.InviteAccept()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
@@ -304,6 +313,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+		TrunkID:    trunkID,
 		ID:         string(c.cc.ID()),
 		FromUser:   c.cc.From().User,
 		ToUser:     c.cc.To().User,
@@ -312,6 +322,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		Pin:        "",
 		NoPin:      false,
 	})
+	if disp.ProjectID != "" {
+		c.log = c.log.WithValues("projectID", disp.ProjectID)
+	}
 	if disp.TrunkID != "" {
 		c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
 	}
@@ -350,8 +363,8 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 		return
 	}
 	acceptCall := func() bool {
-		c.log.Infow("Accepting the call")
-		if err = c.cc.Accept(c.s.signalingIp, c.s.conf.SIPPort, answerData); err != nil {
+		c.log.Infow("Accepting the call", "headers", disp.Headers)
+		if err = c.cc.Accept(ctx, c.s.signalingIp, c.s.conf.SIPPort, answerData, disp.Headers); err != nil {
 			c.log.Errorw("Cannot respond to INVITE", err)
 			return false
 		}
@@ -368,9 +381,21 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 			return // already sent a response
 		}
 		var ok bool
-		disp, ok = c.pinPrompt(ctx)
+		disp, ok = c.pinPrompt(ctx, trunkID)
 		if !ok {
 			return // already sent a response
+		}
+	}
+	if len(disp.HeadersToAttributes) != 0 {
+		p := &disp.Room.Participant
+		if p.Attributes == nil {
+			p.Attributes = make(map[string]string)
+		}
+		headers := c.cc.RemoteHeaders()
+		for hdr, attr := range disp.HeadersToAttributes {
+			if h := headers.GetHeader(hdr); h != nil {
+				p.Attributes[attr] = h.Value()
+			}
 		}
 	}
 	if !c.joinRoom(ctx, disp.Room) {
@@ -397,7 +422,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 	// Wait for the caller to terminate the call.
 	select {
 	case <-ctx.Done():
-		c.close(false, CallHangup, "hangup")
+		c.closeWithHangup()
 	case <-c.lkRoom.Closed():
 		c.close(false, callDropped, "removed")
 	case <-c.media.Timeout():
@@ -406,6 +431,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, tx sip
 }
 
 func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
+	c.mon.SDPSize(len(offerData), true)
+	c.log.Debugw("SDP offer", "sdp", string(offerData))
+
 	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
 		IP:                  c.s.signalingIp,
 		Ports:               conf.RTPPort,
@@ -423,6 +451,8 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	if err != nil {
 		return nil, err
 	}
+	c.mon.SDPSize(len(answerData), false)
+	c.log.Debugw("SDP answer", "sdp", string(answerData))
 
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
@@ -454,8 +484,11 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 	delay := time.NewTimer(audioBridgeMaxDelay)
 	defer delay.Stop()
 	select {
+	case <-c.cc.Cancelled():
+		c.closeWithCancelled()
+		return false
 	case <-ctx.Done():
-		c.close(false, CallHangup, "hangup")
+		c.closeWithHangup()
 		return false
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
@@ -467,19 +500,31 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 }
 
 func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
+	ctx, span := tracer.Start(ctx, "inboundCall.waitSubscribe")
+	defer span.End()
+	timeout := time.NewTimer(callSubscribeTimeout)
+	defer timeout.Stop()
 	select {
+	case <-c.cc.Cancelled():
+		c.closeWithCancelled()
+		return false
 	case <-ctx.Done():
-		c.close(false, CallHangup, "hangup")
+		c.closeWithHangup()
 		return false
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
+		return false
+	case <-timeout.C:
+		c.close(false, callDropped, "cannot-subscribe")
 		return false
 	case <-c.lkRoom.Subscribed():
 		return true
 	}
 }
 
-func (c *inboundCall) pinPrompt(ctx context.Context) (disp CallDispatch, _ bool) {
+func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallDispatch, _ bool) {
+	ctx, span := tracer.Start(ctx, "inboundCall.pinPrompt")
+	defer span.End()
 	c.log.Infow("Requesting Pin for SIP call")
 	const pinLimit = 16
 	c.playAudio(ctx, c.s.res.enterPin)
@@ -487,7 +532,11 @@ func (c *inboundCall) pinPrompt(ctx context.Context) (disp CallDispatch, _ bool)
 	noPin := false
 	for {
 		select {
+		case <-c.cc.Cancelled():
+			c.closeWithCancelled()
+			return disp, false
 		case <-ctx.Done():
+			c.closeWithHangup()
 			return disp, false
 		case <-c.media.Timeout():
 			c.closeWithTimeout()
@@ -506,6 +555,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context) (disp CallDispatch, _ bool)
 
 				c.log.Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
 				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
+					TrunkID:    trunkID,
 					ID:         string(c.cc.ID()),
 					FromUser:   c.cc.From().User,
 					ToUser:     c.cc.To().User,
@@ -514,6 +564,9 @@ func (c *inboundCall) pinPrompt(ctx context.Context) (disp CallDispatch, _ bool)
 					Pin:        pin,
 					NoPin:      noPin,
 				})
+				if disp.ProjectID != "" {
+					c.log = c.log.WithValues("projectID", disp.ProjectID)
+				}
 				if disp.TrunkID != "" {
 					c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
 				}
@@ -572,6 +625,18 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	c.cancel()
 }
 
+func (c *inboundCall) closeWithTimeout() {
+	c.close(true, callDropped, "media-timeout")
+}
+
+func (c *inboundCall) closeWithCancelled() {
+	c.close(false, CallHangup, "cancelled")
+}
+
+func (c *inboundCall) closeWithHangup() {
+	c.close(false, CallHangup, "hangup")
+}
+
 func (c *inboundCall) Close() error {
 	c.cancel()
 	return nil
@@ -599,6 +664,8 @@ func (c *inboundCall) setStatus(v CallStatus) {
 }
 
 func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig) error {
+	ctx, span := tracer.Start(ctx, "inboundCall.createLiveKitParticipant")
+	defer span.End()
 	partConf := &rconf.Participant
 	if partConf.Attributes == nil {
 		partConf.Attributes = make(map[string]string)
@@ -754,10 +821,11 @@ func (c *inboundCall) handleNotify(req *sip.Request, tx sip.ServerTransaction) e
 
 func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
 	c := &sipInbound{
-		s:        s,
-		id:       id,
-		invite:   invite,
-		inviteTx: inviteTx,
+		s:         s,
+		id:        id,
+		invite:    invite,
+		inviteTx:  inviteTx,
+		cancelled: make(chan struct{}),
 	}
 	c.from, _ = invite.From()
 	if c.from != nil {
@@ -773,6 +841,7 @@ type sipInbound struct {
 	tag       RemoteTag
 	invite    *sip.Request
 	inviteTx  sip.ServerTransaction
+	cancelled chan struct{}
 	from      *sip.FromHeader
 	to        *sip.ToHeader
 	referCseq uint32
@@ -883,6 +952,8 @@ func (c *sipInbound) StartRinging() {
 	c.sendRinging()
 	stop := make(chan struct{})
 	c.ringing = stop
+	tx := c.inviteTx
+	cancels := tx.Cancels()
 	go func() {
 		// TODO: check spec for the exact interval
 		ticker := time.NewTicker(time.Second)
@@ -890,6 +961,13 @@ func (c *sipInbound) StartRinging() {
 		for {
 			select {
 			case <-stop:
+				return
+			case r := <-cancels:
+				close(c.cancelled)
+				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
+				c.mu.Lock()
+				c.drop()
+				c.mu.Unlock()
 				return
 			case <-ticker.C:
 			}
@@ -907,7 +985,13 @@ func (c *sipInbound) stopRinging() {
 	}
 }
 
-func (c *sipInbound) Accept(contactHost string, contactPort int, sdpData []byte) error {
+func (c *sipInbound) Cancelled() <-chan struct{} {
+	return c.cancelled
+}
+
+func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort int, sdpData []byte, headers map[string]string) error {
+	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
+	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteTx == nil {
@@ -932,6 +1016,9 @@ func (c *sipInbound) Accept(contactHost string, contactPort int, sdpData []byte)
 	}
 
 	r.AppendHeader(&contentTypeHeaderSDP)
+	for k, v := range headers {
+		r.AppendHeader(sip.NewHeader(k, v))
+	}
 	c.stopRinging()
 	if err := c.inviteTx.Respond(r); err != nil {
 		return err
@@ -973,11 +1060,13 @@ func (c *sipInbound) sendBye() {
 	if c.invite == nil {
 		return // rejected or closed
 	}
+	_, span := tracer.Start(context.Background(), "sipInbound.sendBye")
+	defer span.End()
 	// This function is for clients, so we need to swap src and dest
-	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
-	c.swapSrcDst(bye)
+	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
+	c.swapSrcDst(r)
 	c.drop()
-	sendBye(c, bye)
+	sendAndACK(c, r)
 }
 
 func (c *sipInbound) WriteRequest(req *sip.Request) error {

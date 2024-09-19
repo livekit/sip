@@ -25,8 +25,6 @@ import (
 	"github.com/zaf/resample"
 )
 
-const quality = resample.Quick
-
 func resampleSize(dstSampleRate, srcSampleRate int, srcSize int) int {
 	if dstSampleRate < srcSampleRate {
 		div := srcSampleRate / dstSampleRate
@@ -42,7 +40,7 @@ func resampleBuffer(dst PCM16Sample, dstSampleRate int, src PCM16Sample, srcSamp
 	inbuf := make([]byte, len(src)*2)
 	outbuf := bytes.NewBuffer(nil)
 	outbuf.Grow(resampleSize(dstSampleRate, srcSampleRate, len(src)))
-	r, err := resample.New(outbuf, float64(srcSampleRate), float64(dstSampleRate), 1, resample.I16, quality)
+	r, err := resample.New(outbuf, float64(srcSampleRate), float64(dstSampleRate), 1, resample.I16, resample.Quick)
 	if err != nil {
 		panic(err)
 	}
@@ -69,6 +67,13 @@ func newResampleWriter(w WriteCloser[PCM16Sample], sampleRate int) WriteCloser[P
 		w:       w,
 		srcRate: srcRate,
 		dstRate: dstRate,
+		buffer:  0, // set larger buffer for better resampler quality
+	}
+	quality := resample.Quick
+	if srcRate > dstRate {
+		if float64(srcRate)/float64(dstRate) > 3 {
+			quality = resample.LowQ
+		}
 	}
 	var err error
 	r.r, err = resample.New(r, float64(srcRate), float64(dstRate), 1, resample.I16, quality)
@@ -86,7 +91,11 @@ type resampleWriter struct {
 	srcRate  int
 	dstRate  int
 	dstFrame int
-	buf      PCM16Sample
+
+	// The resampler could actually consume multiple full frames and emit just one.
+	// This variable controls how many full frames we intentionally keep. Useful for higher resampler quality.
+	buffer int
+	buf    PCM16Sample
 }
 
 func (w *resampleWriter) String() string {
@@ -156,12 +165,9 @@ func (w *resampleWriter) WriteSample(data PCM16Sample) error {
 	// This will cause a one frame delay for each resampler. Flushing the sampler, however will lead to frame
 	// discontinuity, and thus - distortions on the frame boundaries.
 
-	w.dstFrame = resampleSize(w.dstRate, w.srcRate, len(data))
-
-	// The resampler could actually consume multiple full frames and emit just one.
-	// This variable controls how many full frames we intentionally keep. Useful for higher resampler quality.
-	const buffer = 0
-	return w.flush(w.dstFrame * (1 + buffer))
+	dstFrame := resampleSize(w.dstRate, w.srcRate, len(data))
+	w.dstFrame = max(w.dstFrame, dstFrame)
+	return w.flush(w.dstFrame * (1 + w.buffer))
 }
 
 func (w *resampleWriter) Write(data []byte) (int, error) {
