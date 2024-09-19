@@ -127,14 +127,14 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, r
 	return req
 }
 
-func sendRefer(c Signaling, req *sip.Request) (*sip.Response, error) {
+func sendRefer(c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Terminate()
 
-	resp, err := sipResponse(tx)
+	resp, err := sipResponse(tx, stop)
 	if err != nil {
 		return nil, err
 	}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
@@ -109,6 +110,7 @@ type Server struct {
 
 	inProgressInvites []*inProgressInvite
 
+	closing     core.Fuse
 	cmu         sync.RWMutex
 	activeCalls map[RemoteTag]*inboundCall
 	byLocal     map[LocalTag]*inboundCall
@@ -255,6 +257,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 }
 
 func (s *Server) Stop() {
+	s.closing.Break()
 	s.cmu.Lock()
 	calls := maps.Values(s.activeCalls)
 	s.activeCalls = make(map[RemoteTag]*inboundCall)

@@ -1095,7 +1095,7 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 
 	req.AppendHeader(&sip.ContactHeader{Address: c.to.Address})
 
-	_, err := sendRefer(c, req)
+	_, err := sendRefer(c, req, c.s.closing.Watch())
 	if err != nil {
 		return err
 	}

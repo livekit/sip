@@ -713,7 +713,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 	}
 
 	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
-	_, err := sendRefer(c, req)
+	_, err := sendRefer(c, req, c.c.closing.Watch())
 	if err != nil {
 		return err
 	}
