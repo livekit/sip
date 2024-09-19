@@ -223,7 +223,22 @@ func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
 	s.cmu.RUnlock()
 	if c != nil {
 		c.log.Infow("NOTIFY")
-		c.handleNotify(req, tx)
+		err := c.handleNotify(req, tx)
+
+		var code sip.StatusCode = 200
+		var psrpcErr psrpc.Error
+		if errors.As(err, &psrpcErr) {
+			code = sip.StatusCode(psrpcErr.ToHttp())
+		} else if err != nil {
+			code = 500
+		}
+
+		msg := "success"
+		if err != nil {
+			msg = err.Error()
+		}
+		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
+
 		return
 	}
 	ok := false
@@ -988,6 +1003,9 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 
 	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
 	c.swapSrcDst(req)
+
+	req.AppendHeader(&sip.ContactHeader{Address: c.to.Address})
+
 	_, err := sendRefer(c, req)
 	if err != nil {
 		return err
