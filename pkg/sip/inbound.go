@@ -238,18 +238,8 @@ func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
 		c.log.Infow("NOTIFY")
 		err := c.handleNotify(req, tx)
 
-		var code sip.StatusCode = 200
-		var psrpcErr psrpc.Error
-		if errors.As(err, &psrpcErr) {
-			code = sip.StatusCode(psrpcErr.ToHttp())
-		} else if err != nil {
-			code = 500
-		}
+		code, msg := sipCodeAndMessageFromError(err)
 
-		msg := "success"
-		if err != nil {
-			msg = err.Error()
-		}
 		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
 
 		return

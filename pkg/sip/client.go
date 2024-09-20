@@ -16,7 +16,6 @@ package sip
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -29,7 +28,6 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
-	"github.com/livekit/psrpc"
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
@@ -239,23 +237,13 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 		return false
 	}
 	call.log.Infow("NOTIFY")
-	go func(call *outboundCall) {
+	go func() {
 		err := call.handleNotify(req, tx)
 
-		var code sip.StatusCode = 200
-		var psrpcErr psrpc.Error
-		if errors.As(err, &psrpcErr) {
-			code = sip.StatusCode(psrpcErr.ToHttp())
-		} else if err != nil {
-			code = 500
-		}
+		code, msg := sipCodeAndMessageFromError(err)
 
-		msg := "success"
-		if err != nil {
-			msg = err.Error()
-		}
 		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
-	}(call)
+	}()
 	return true
 }
 

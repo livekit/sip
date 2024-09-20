@@ -192,3 +192,55 @@ func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, stat
 	}
 	return "", 0, 0, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
 }
+
+func sipStatusForErrorCode(code psrpc.ErrorCode) sip.StatusCode {
+	switch code {
+	case psrpc.OK:
+		return sip.StatusOK
+	case psrpc.Canceled, psrpc.DeadlineExceeded:
+		return sip.StatusRequestTimeout
+	case psrpc.Unknown, psrpc.MalformedResponse, psrpc.Internal, psrpc.DataLoss:
+		return sip.StatusInternalServerError
+	case psrpc.InvalidArgument, psrpc.MalformedRequest:
+		return sip.StatusBadRequest
+	case psrpc.NotFound:
+		return sip.StatusNotFound
+	case psrpc.NotAcceptable:
+		return sip.StatusNotAcceptable
+	case psrpc.AlreadyExists, psrpc.Aborted:
+		return sip.StatusConflict
+	case psrpc.PermissionDenied:
+		return sip.StatusForbidden
+	case psrpc.ResourceExhausted:
+		return sip.StatusTemporarilyUnavailable
+	case psrpc.FailedPrecondition:
+		return sip.StatusCallTransactionDoesNotExists
+	case psrpc.OutOfRange:
+		return sip.StatusRequestedRangeNotSatisfiable
+	case psrpc.Unimplemented:
+		return sip.StatusNotImplemented
+	case psrpc.Unavailable:
+		return sip.StatusServiceUnavailable
+	case psrpc.Unauthenticated:
+		return sip.StatusUnauthorized
+	default:
+		return sip.StatusInternalServerError
+	}
+}
+
+func sipCodeAndMessageFromError(err error) (code sip.StatusCode, msg string) {
+	code = 200
+	var psrpcErr psrpc.Error
+	if errors.As(err, &psrpcErr) {
+		code = sipStatusForErrorCode(psrpcErr.Code())
+	} else if err != nil {
+		code = 500
+	}
+
+	msg = "success"
+	if err != nil {
+		msg = err.Error()
+	}
+
+	return code, msg
+}
