@@ -4,8 +4,6 @@ go 1.22
 
 toolchain go1.22.2
 
-replace github.com/livekit/protocol => ../protocol
-
 require (
 	github.com/at-wat/ebml-go v0.17.1
 	github.com/emiago/sipgo v0.13.1
@@ -15,7 +13,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20240625074155-301bb4a816b7
-	github.com/livekit/protocol v1.21.1-0.20240913074525-1f5de7d620c4
+	github.com/livekit/protocol v1.22.1-0.20240920184753-71b9c184e5c8
 	github.com/livekit/psrpc v0.5.3-0.20240616012458-ac39c8549a0a
 	github.com/livekit/server-sdk-go/v2 v2.2.1-0.20240726160203-3f7f396734c3
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
