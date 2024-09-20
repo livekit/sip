@@ -22,7 +22,6 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
@@ -69,7 +68,6 @@ type outboundCall struct {
 	lkRoomIn   media.PCM16Writer // output to room; OPUS at 48k
 	sipConf    sipOutboundConfig
 	sipRunning bool
-	referDone  chan error
 }
 
 func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
@@ -84,8 +82,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 			Host: sipConf.host,
 			Addr: netip.AddrPortFrom(netip.Addr{}, uint16(conf.SIPPort)),
 		}),
-		sipConf:   sipConf,
-		referDone: make(chan error, 1),
+		sipConf: sipConf,
 	}
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -393,61 +390,9 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string) erro
 		return err
 	}
 
-	select {
-	case <-time.After(30 * time.Second):
-		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
-	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
-	}
-
-	c.cc.sendBye()
-
 	// This is needed to actually terminate the session before a media timeout
 	c.CloseWithReason(CallHangup, "call transferred")
 
-	return nil
-}
-
-func (c *outboundCall) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
-	method, cseq, status, err := handleNotify(req)
-	if err != nil {
-		return err
-	}
-
-	switch method {
-	case sip.REFER:
-		c.cc.mu.RLock()
-		defer c.cc.mu.RUnlock()
-
-		if cseq != 0 && cseq != c.cc.referCseq {
-			// NOTIFY for a different REFER, skip
-			return nil
-		}
-
-		c.log.Debugw("call transfer status update", "statusCode", status)
-
-		switch {
-		case status >= 100 && status < 200:
-			// still trying
-		case status == 200:
-			// Success
-			select {
-			case c.referDone <- nil:
-			default:
-			}
-		default:
-			// Failure
-			select {
-			// TODO be more specific in the reported error
-			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			default:
-			}
-		}
-	}
 	return nil
 }
 
@@ -460,9 +405,10 @@ func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
 	}
 	fromHeader.Params.Add("tag", string(id))
 	return &sipOutbound{
-		c:    c,
-		id:   id,
-		from: fromHeader,
+		c:         c,
+		id:        id,
+		from:      fromHeader,
+		referDone: make(chan error, 1),
 	}
 }
 
@@ -478,6 +424,7 @@ type sipOutbound struct {
 	to       *sip.ToHeader
 
 	referCseq uint32
+	referDone chan error
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -726,6 +673,52 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 	}
 	c.referCseq = cseq.SeqNo
 
+	select {
+	case <-ctx.Done():
+		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+	case err := <-c.referDone:
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	method, cseq, status, err := handleNotify(req)
+	if err != nil {
+		return err
+	}
+
+	switch method {
+	case sip.REFER:
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+
+		if cseq != 0 && cseq != c.referCseq {
+			// NOTIFY for a different REFER, skip
+			return nil
+		}
+
+		switch {
+		case status >= 100 && status < 200:
+			// still trying
+		case status == 200:
+			// Success
+			select {
+			case c.referDone <- nil:
+			default:
+			}
+		default:
+			// Failure
+			select {
+			// TODO be more specific in the reported error
+			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
+			default:
+			}
+		}
+	}
 	return nil
 }
 

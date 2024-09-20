@@ -236,7 +236,7 @@ func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
 	s.cmu.RUnlock()
 	if c != nil {
 		c.log.Infow("NOTIFY")
-		err := c.handleNotify(req, tx)
+		err := c.cc.handleNotify(req, tx)
 
 		code, msg := sipCodeAndMessageFromError(err)
 
@@ -270,7 +270,6 @@ type inboundCall struct {
 	joinDur     func() time.Duration
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
-	referDone   chan error
 }
 
 func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *sipInbound, src string, extra map[string]string) *inboundCall {
@@ -283,7 +282,6 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *s
 		src:        src,
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
-		referDone:  make(chan error, 1),
 		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
 	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
@@ -670,15 +668,12 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	default:
 	}
 
-	sipCallID := partConf.Attributes[livekit.AttrSIPCallID]
-	if sipCallID != "" {
-		err := c.s.RegisterTransferSIPParticipant(LocalTag(sipCallID), c)
-		if err != nil {
-			return err
-		}
+	err := c.s.RegisterTransferSIPParticipant(LocalTag(c.cc.ID()), c)
+	if err != nil {
+		return err
 	}
 
-	err := c.lkRoom.Connect(c.s.conf, rconf)
+	err = c.lkRoom.Connect(c.s.conf, rconf)
 	if err != nil {
 		return err
 	}
@@ -749,63 +744,11 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error
 		return err
 	}
 
-	select {
-	case <-time.After(30 * time.Second):
-		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
-	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
-	}
-
-	c.cc.sendBye()
-
 	// This is needed to actually terminate the session before a media timeout
 	c.Close()
 
 	return nil
 
-}
-
-func (c *inboundCall) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
-	method, cseq, status, err := handleNotify(req)
-	if err != nil {
-		return err
-	}
-
-	switch method {
-	case sip.REFER:
-		c.cc.mu.RLock()
-		defer c.cc.mu.RUnlock()
-
-		if cseq != 0 && cseq != uint32(c.cc.referCseq) {
-			// NOTIFY for a different REFER, skip
-			return nil
-		}
-
-		c.log.Debugw("call transfer status update", "statusCode", status)
-
-		switch {
-		case status >= 100 && status < 200:
-			// still trying
-		case status == 200:
-			// Success
-			select {
-			case c.referDone <- nil:
-			default:
-			}
-		default:
-			// Failure
-			select {
-			// TODO be more specific in the reported error
-			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			default:
-			}
-		}
-	}
-	return nil
 }
 
 func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
@@ -815,6 +758,7 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 		invite:    invite,
 		inviteTx:  inviteTx,
 		cancelled: make(chan struct{}),
+		referDone: make(chan error, 1),
 	}
 	c.from, _ = invite.From()
 	if c.from != nil {
@@ -834,6 +778,7 @@ type sipInbound struct {
 	from      *sip.FromHeader
 	to        *sip.ToHeader
 	referCseq uint32
+	referDone chan error
 
 	mu       sync.RWMutex
 	inviteOk *sip.Response
@@ -1095,6 +1040,52 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 	}
 	c.referCseq = cseq.SeqNo
 
+	select {
+	case <-ctx.Done():
+		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+	case err := <-c.referDone:
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	method, cseq, status, err := handleNotify(req)
+	if err != nil {
+		return err
+	}
+
+	switch method {
+	case sip.REFER:
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+
+		if cseq != 0 && cseq != uint32(c.referCseq) {
+			// NOTIFY for a different REFER, skip
+			return nil
+		}
+
+		switch {
+		case status >= 100 && status < 200:
+			// still trying
+		case status == 200:
+			// Success
+			select {
+			case c.referDone <- nil:
+			default:
+			}
+		default:
+			// Failure
+			select {
+			// TODO be more specific in the reported error
+			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
+			default:
+			}
+		}
+	}
 	return nil
 }
 

@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -122,6 +123,9 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	s.log.Infow("transfering SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
+
+	ctx, done := context.WithTimeout(ctx, 30*time.Second)
+	defer done()
 
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()

@@ -140,9 +140,9 @@ func sendRefer(c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Respon
 	}
 
 	switch resp.StatusCode {
-	case 200, 202:
+	case sip.StatusOK, 202: // 202 is Accepted
 		return resp, nil
-	case 403:
+	case sip.StatusForbidden:
 		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
 	default:
 		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code", resp.StatusCode)
@@ -162,7 +162,7 @@ func parseNotifyBody(body string) (int, error) {
 
 	c, err := strconv.Atoi(v[1])
 	if err != nil {
-		return 0, errors.Wrap(err, "invalid notify body: unable to parse status code")
+		return 0, psrpc.NewError(psrpc.InvalidArgument, err)
 	}
 
 	return c, nil

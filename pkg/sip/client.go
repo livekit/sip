@@ -238,7 +238,7 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	}
 	call.log.Infow("NOTIFY")
 	go func() {
-		err := call.handleNotify(req, tx)
+		err := call.cc.handleNotify(req, tx)
 
 		code, msg := sipCodeAndMessageFromError(err)
 
