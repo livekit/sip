@@ -26,11 +26,12 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"golang.org/x/exp/maps"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/tracer"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"golang.org/x/exp/maps"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -497,6 +498,9 @@ authLoop:
 			return nil, errors.New("server required auth, but no username or password was provided")
 		}
 		headerVal := resp.GetHeader(authHeaderName)
+		if headerVal == nil {
+			return nil, errors.New("no auth header in response")
+		}
 		challenge, err := digest.ParseChallenge(headerVal.Value())
 		if err != nil {
 			return nil, err
