@@ -145,7 +145,7 @@ func sendRefer(c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Respon
 	case sip.StatusForbidden:
 		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
 	default:
-		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code", resp.StatusCode)
+		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code %d", resp.StatusCode)
 	}
 }
 
