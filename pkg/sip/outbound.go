@@ -283,9 +283,9 @@ func sipResponse(tx sip.ClientTransaction, stop <-chan struct{}) (*sip.Response,
 	for {
 		select {
 		case <-stop:
-			return nil, errors.New("cancelled")
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
 		case <-tx.Done():
-			return nil, fmt.Errorf("transaction failed to complete (%d intermediate responses)", cnt)
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
 		case res := <-tx.Responses():
 			switch res.StatusCode {
 			default:
@@ -417,11 +417,12 @@ type sipOutbound struct {
 	id   LocalTag
 	from *sip.FromHeader
 
-	mu       sync.RWMutex
-	tag      RemoteTag
-	invite   *sip.Request
-	inviteOk *sip.Response
-	to       *sip.ToHeader
+	mu              sync.RWMutex
+	tag             RemoteTag
+	invite          *sip.Request
+	inviteOk        *sip.Response
+	to              *sip.ToHeader
+	nextRequestCSeq uint32
 
 	referCseq uint32
 	referDone chan error
@@ -554,6 +555,10 @@ authLoop:
 	if !ok {
 		return nil, errors.New("no tag in To header in INVITE response")
 	}
+	h, _ := c.invite.CSeq()
+	if h != nil {
+		c.nextRequestCSeq = h.SeqNo + 1
+	}
 
 	if cont, ok := resp.Contact(); ok {
 		req.Recipient = &cont.Address
@@ -615,6 +620,12 @@ func (c *sipOutbound) Transaction(req *sip.Request) (sip.ClientTransaction, erro
 	return c.c.sipCli.TransactionRequest(req)
 }
 
+func (c *sipOutbound) setCSeq(req *sip.Request) {
+	setCSeq(req, c.nextRequestCSeq)
+
+	c.nextRequestCSeq++
+}
+
 func (c *sipOutbound) sendBye() {
 	if c.invite == nil || c.inviteOk == nil {
 		return // call wasn't established
@@ -628,6 +639,7 @@ func (c *sipOutbound) sendBye() {
 		_ = c.WriteRequest(bye)
 		return
 	}
+	c.setCSeq(bye)
 	c.drop()
 	sendAndACK(c, bye)
 }
@@ -636,6 +648,7 @@ func (c *sipOutbound) drop() {
 	// TODO: cancel the call?
 	c.invite = nil
 	c.inviteOk = nil
+	c.nextRequestCSeq = 0
 }
 
 func (c *sipOutbound) Drop() {
@@ -646,32 +659,32 @@ func (c *sipOutbound) Drop() {
 
 func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
 	if c.c.closing.IsBroken() {
+		c.mu.Unlock()
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
 	}
 
-	to, _ := c.invite.To()
-	if to == nil {
-		return psrpc.NewErrorf(psrpc.InvalidArgument, "no To URI in invite")
-	}
-
 	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	c.setCSeq(req)
+	cseq, _ := req.CSeq()
+
+	if cseq == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
+	}
+	c.referCseq = cseq.SeqNo
+	c.mu.Unlock()
+
 	_, err := sendRefer(c, req, c.c.closing.Watch())
 	if err != nil {
 		return err
 	}
-
-	cseq, _ := req.CSeq()
-	if cseq == nil {
-		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
-	}
-	c.referCseq = cseq.SeqNo
 
 	select {
 	case <-ctx.Done():

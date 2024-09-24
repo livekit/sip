@@ -25,7 +25,7 @@ func TestHandleNotify(t *testing.T) {
 		Host: "foo.bar",
 	})
 
-	req.AppendHeader(sip.NewHeader("Event", "refer;1234"))
+	req.AppendHeader(sip.NewHeader("Event", "refer;id=1234"))
 	req.SetBody([]byte("SIP/2.0 200"))
 
 	m, c, s, err = handleNotify(req)
@@ -38,7 +38,7 @@ func TestHandleNotify(t *testing.T) {
 		Host: "foo.bar",
 	})
 
-	req.AppendHeader(sip.NewHeader("Event", "refer;1234"))
+	req.AppendHeader(sip.NewHeader("Event", "refer;id=1234"))
 	req.SetBody([]byte("SIP/2.0 404"))
 
 	m, c, s, err = handleNotify(req)
@@ -51,7 +51,7 @@ func TestHandleNotify(t *testing.T) {
 		Host: "foo.bar",
 	})
 
-	req.AppendHeader(sip.NewHeader("Event", "refer;1234"))
+	req.AppendHeader(sip.NewHeader("Event", "refer;id=1234"))
 	req.SetBody([]byte("SIP/3.0 200"))
 
 	m, c, s, err = handleNotify(req)
@@ -61,7 +61,7 @@ func TestHandleNotify(t *testing.T) {
 		Host: "foo.bar",
 	})
 
-	req.AppendHeader(sip.NewHeader("Event", "invite;1234"))
+	req.AppendHeader(sip.NewHeader("Event", "invite;id=1234"))
 	req.SetBody([]byte("SIP/2.0 200"))
 
 	m, c, s, err = handleNotify(req)

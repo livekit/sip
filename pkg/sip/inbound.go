@@ -765,6 +765,11 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 		c.tag, _ = getTagFrom(c.from.Params)
 	}
 	c.to, _ = invite.To()
+	h, _ := invite.CSeq()
+	if h != nil {
+		c.nextRequestCSeq = h.SeqNo + 1
+	}
+
 	return c
 }
 
@@ -777,12 +782,13 @@ type sipInbound struct {
 	cancelled chan struct{}
 	from      *sip.FromHeader
 	to        *sip.ToHeader
-	referCseq uint32
 	referDone chan error
 
-	mu       sync.RWMutex
-	inviteOk *sip.Response
-	ringing  chan struct{}
+	mu              sync.RWMutex
+	inviteOk        *sip.Response
+	nextRequestCSeq uint32
+	referCseq       uint32
+	ringing         chan struct{}
 }
 
 func (c *sipInbound) ValidateInvite() error {
@@ -812,6 +818,7 @@ func (c *sipInbound) drop() {
 	c.inviteTx = nil
 	c.invite = nil
 	c.inviteOk = nil
+	c.nextRequestCSeq = 0
 }
 
 func (c *sipInbound) respond(status sip.StatusCode, reason string) {
@@ -987,6 +994,12 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	}
 }
 
+func (c *sipInbound) setCSeq(req *sip.Request) {
+	setCSeq(req, c.nextRequestCSeq)
+
+	c.nextRequestCSeq++
+}
+
 func (c *sipInbound) sendBye() {
 	if c.inviteOk == nil {
 		return // call wasn't established
@@ -998,6 +1011,8 @@ func (c *sipInbound) sendBye() {
 	defer span.End()
 	// This function is for clients, so we need to swap src and dest
 	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
+
+	c.setCSeq(r)
 	c.swapSrcDst(r)
 	c.drop()
 	sendAndACK(c, r)
@@ -1013,32 +1028,36 @@ func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error
 
 func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
 	from, _ := c.invite.From()
 	if from == nil {
+		c.mu.Unlock()
 		return psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
 	}
 
 	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	c.setCSeq(req)
 	c.swapSrcDst(req)
 
 	req.AppendHeader(&sip.ContactHeader{Address: c.to.Address})
+
+	cseq, _ := req.CSeq()
+	if cseq == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
+	}
+	c.referCseq = cseq.SeqNo
+	c.mu.Unlock()
 
 	_, err := sendRefer(c, req, c.s.closing.Watch())
 	if err != nil {
 		return err
 	}
-
-	cseq, _ := req.CSeq()
-	if cseq == nil {
-		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
-	}
-	c.referCseq = cseq.SeqNo
 
 	select {
 	case <-ctx.Done():

@@ -16,6 +16,7 @@ package sip
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,8 @@ import (
 	"github.com/livekit/psrpc"
 	"github.com/pkg/errors"
 )
+
+var referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 
 type ErrorStatus struct {
 	StatusCode int
@@ -107,8 +110,6 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, r
 
 	if h, _ := inviteRequest.CSeq(); h != nil {
 		sip.CopyHeaders("CSeq", inviteRequest, req)
-		// Increase the invite request cseq so that we use the proper cseq in the bye request eventually
-		h.SeqNo = h.SeqNo + 1
 	}
 
 	cseq, _ := req.CSeq()
@@ -172,15 +173,12 @@ func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, stat
 	event := req.GetHeader("Event")
 	var cseq64 uint64
 
-	switch {
-	case strings.HasPrefix(strings.ToLower(event.Value()), "refer"):
+	if m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value())); len(m) > 0 {
 		// REFER Notify
 		method = sip.REFER
 
-		// Get the CSeq of the request this relates to if given
-		v := strings.Split(event.Value(), ";")
-		if len(v) >= 2 {
-			cseq64, _ = strconv.ParseUint(v[1], 10, 32)
+		if len(m) >= 3 {
+			cseq64, _ = strconv.ParseUint(m[2], 10, 32)
 		}
 
 		status, err = parseNotifyBody(string(req.Body()))
@@ -243,4 +241,14 @@ func sipCodeAndMessageFromError(err error) (code sip.StatusCode, msg string) {
 	}
 
 	return code, msg
+}
+
+func setCSeq(req *sip.Request, cseq uint32) {
+	h := &sip.CSeqHeader{
+		MethodName: req.Method,
+		SeqNo:      cseq,
+	}
+
+	req.RemoveHeader(h.Name())
+	req.AppendHeader(h)
 }
