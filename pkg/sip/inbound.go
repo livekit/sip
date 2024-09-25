@@ -29,6 +29,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
@@ -223,6 +224,36 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
+func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
+	tag, err := getFromTag(req)
+	if err != nil {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+		return
+	}
+
+	s.cmu.RLock()
+	c := s.activeCalls[tag]
+	s.cmu.RUnlock()
+	if c != nil {
+		c.log.Infow("NOTIFY")
+		err := c.cc.handleNotify(req, tx)
+
+		code, msg := sipCodeAndMessageFromError(err)
+
+		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
+
+		return
+	}
+	ok := false
+	if s.sipUnhandled != nil {
+		ok = s.sipUnhandled(req, tx)
+	}
+	if !ok {
+		s.log.Infow("NOTIFY for non-existent call")
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
+	}
+}
+
 type inboundCall struct {
 	s           *Server
 	log         logger.Logger
@@ -256,6 +287,7 @@ func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *s
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
 	s.activeCalls[cc.Tag()] = c
+	s.byLocal[cc.ID()] = c
 	s.cmu.Unlock()
 	return c
 }
@@ -572,7 +604,11 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.s.cmu.Lock()
 	delete(c.s.activeCalls, c.cc.Tag())
+	delete(c.s.byLocal, c.cc.ID())
 	c.s.cmu.Unlock()
+
+	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
+
 	c.cancel()
 }
 
@@ -631,7 +667,13 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 		return ctx.Err()
 	default:
 	}
-	err := c.lkRoom.Connect(c.s.conf, rconf)
+
+	err := c.s.RegisterTransferSIPParticipant(LocalTag(c.cc.ID()), c)
+	if err != nil {
+		return err
+	}
+
+	err = c.lkRoom.Connect(c.s.conf, rconf)
 	if err != nil {
 		return err
 	}
@@ -696,6 +738,19 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error {
+	err := c.cc.transferCall(ctx, transferTo)
+	if err != nil {
+		return err
+	}
+
+	// This is needed to actually terminate the session before a media timeout
+	c.Close()
+
+	return nil
+
+}
+
 func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
 	c := &sipInbound{
 		s:         s,
@@ -703,12 +758,18 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 		invite:    invite,
 		inviteTx:  inviteTx,
 		cancelled: make(chan struct{}),
+		referDone: make(chan error, 1),
 	}
 	c.from, _ = invite.From()
 	if c.from != nil {
 		c.tag, _ = getTagFrom(c.from.Params)
 	}
 	c.to, _ = invite.To()
+	h, _ := invite.CSeq()
+	if h != nil {
+		c.nextRequestCSeq = h.SeqNo + 1
+	}
+
 	return c
 }
 
@@ -721,10 +782,13 @@ type sipInbound struct {
 	cancelled chan struct{}
 	from      *sip.FromHeader
 	to        *sip.ToHeader
+	referDone chan error
 
-	mu       sync.RWMutex
-	inviteOk *sip.Response
-	ringing  chan struct{}
+	mu              sync.RWMutex
+	inviteOk        *sip.Response
+	nextRequestCSeq uint32
+	referCseq       uint32
+	ringing         chan struct{}
 }
 
 func (c *sipInbound) ValidateInvite() error {
@@ -754,13 +818,18 @@ func (c *sipInbound) drop() {
 	c.inviteTx = nil
 	c.invite = nil
 	c.inviteOk = nil
+	c.nextRequestCSeq = 0
 }
 
 func (c *sipInbound) respond(status sip.StatusCode, reason string) {
 	if c.inviteTx == nil {
 		return
 	}
-	_ = c.inviteTx.Respond(sip.NewResponseFromRequest(c.invite, status, reason, nil))
+
+	resp := sip.NewResponseFromRequest(c.invite, status, reason, nil)
+	resp.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	_ = c.inviteTx.Respond(resp)
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -907,6 +976,30 @@ func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
 	c.drop() // mark as closed
 }
 
+func (c *sipInbound) swapSrcDst(req *sip.Request) {
+	if contact, ok := c.invite.Contact(); ok {
+		req.Recipient = &contact.Address
+	} else {
+		req.Recipient = &c.from.Address
+	}
+	req.SetSource(c.inviteOk.Source())
+	req.SetDestination(c.inviteOk.Destination())
+	req.RemoveHeader("From")
+	req.AppendHeader((*sip.FromHeader)(c.to))
+	req.RemoveHeader("To")
+	req.AppendHeader((*sip.ToHeader)(c.from))
+	if route, ok := req.RecordRoute(); ok {
+		req.RemoveHeader("Record-Route")
+		req.AppendHeader(&sip.RouteHeader{Address: route.Address})
+	}
+}
+
+func (c *sipInbound) setCSeq(req *sip.Request) {
+	setCSeq(req, c.nextRequestCSeq)
+
+	c.nextRequestCSeq++
+}
+
 func (c *sipInbound) sendBye() {
 	if c.inviteOk == nil {
 		return // call wasn't established
@@ -918,21 +1011,9 @@ func (c *sipInbound) sendBye() {
 	defer span.End()
 	// This function is for clients, so we need to swap src and dest
 	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
-	if contact, ok := c.invite.Contact(); ok {
-		r.Recipient = &contact.Address
-	} else {
-		r.Recipient = &c.from.Address
-	}
-	r.SetSource(c.inviteOk.Source())
-	r.SetDestination(c.inviteOk.Destination())
-	r.RemoveHeader("From")
-	r.AppendHeader((*sip.FromHeader)(c.to))
-	r.RemoveHeader("To")
-	r.AppendHeader((*sip.ToHeader)(c.from))
-	if route, ok := r.RecordRoute(); ok {
-		r.RemoveHeader("Record-Route")
-		r.AppendHeader(&sip.RouteHeader{Address: route.Address})
-	}
+
+	c.setCSeq(r)
+	c.swapSrcDst(r)
 	c.drop()
 	sendAndACK(c, r)
 }
@@ -943,6 +1024,88 @@ func (c *sipInbound) WriteRequest(req *sip.Request) error {
 
 func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
 	return c.s.sipSrv.TransactionLayer().Request(req)
+}
+
+func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error {
+	c.mu.Lock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
+	}
+
+	from, _ := c.invite.From()
+	if from == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
+	}
+
+	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	c.setCSeq(req)
+	c.swapSrcDst(req)
+
+	req.AppendHeader(&sip.ContactHeader{Address: c.to.Address})
+
+	cseq, _ := req.CSeq()
+	if cseq == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
+	}
+	c.referCseq = cseq.SeqNo
+	c.mu.Unlock()
+
+	_, err := sendRefer(c, req, c.s.closing.Watch())
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-ctx.Done():
+		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+	case err := <-c.referDone:
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	method, cseq, status, err := handleNotify(req)
+	if err != nil {
+		return err
+	}
+
+	switch method {
+	case sip.REFER:
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+
+		if cseq != 0 && cseq != uint32(c.referCseq) {
+			// NOTIFY for a different REFER, skip
+			return nil
+		}
+
+		switch {
+		case status >= 100 && status < 200:
+			// still trying
+		case status == 200:
+			// Success
+			select {
+			case c.referDone <- nil:
+			default:
+			}
+		default:
+			// Failure
+			select {
+			// TODO be more specific in the reported error
+			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
+			default:
+			}
+		}
+	}
+	return nil
 }
 
 // Close the inbound call cleanly. Depending on the call state it will either send BYE or just terminate INVITE.

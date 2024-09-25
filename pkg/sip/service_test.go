@@ -63,6 +63,15 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 	return h.DispatchCallFunc(ctx, info)
 }
 
+func (h TestHandler) RegisterTransferSIPParticipantTopic(sipCallId string) error {
+	// no-op
+	return nil
+}
+
+func (h TestHandler) DeregisterTransferSIPParticipantTopic(sipCallId string) {
+	// no-op
+}
+
 func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction)) {
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
 	localIP, err := config.GetLocalIP()

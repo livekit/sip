@@ -29,7 +29,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/errors"
+	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -46,6 +46,8 @@ type Client struct {
 	cmu         sync.Mutex
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
+
+	handler Handler
 }
 
 func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
@@ -119,6 +121,10 @@ func (c *Client) Stop() {
 	}
 }
 
+func (c *Client) SetHandler(handler Handler) {
+	c.handler = handler
+}
+
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	ctx, span := tracer.Start(ctx, "Client.CreateSIPParticipant")
 	defer span.End()
@@ -127,7 +133,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	if !c.mon.CanAccept() {
-		return nil, errors.ErrUnavailable
+		return nil, siperrors.ErrUnavailable
 	}
 	if req.CallTo == "" {
 		return nil, fmt.Errorf("call-to number must be set")
@@ -193,6 +199,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		ParticipantIdentity: p.Identity,
 		SipCallId:           req.SipCallId,
 	}, nil
+
 }
 
 func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
@@ -201,6 +208,8 @@ func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
 		return false
 	case "BYE":
 		return c.onBye(req, tx)
+	case "NOTIFY":
+		return c.onNotify(req, tx)
 	}
 }
 
@@ -219,7 +228,29 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
-	// TODO: scale affinity based on a number or active calls?
-	return 0.5
+func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
+	tag, _ := getFromTag(req)
+	c.cmu.Lock()
+	call := c.byRemote[tag]
+	c.cmu.Unlock()
+	if call == nil {
+		return false
+	}
+	call.log.Infow("NOTIFY")
+	go func() {
+		err := call.cc.handleNotify(req, tx)
+
+		code, msg := sipCodeAndMessageFromError(err)
+
+		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
+	}()
+	return true
+}
+
+func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCall) error {
+	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
+}
+
+func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
+	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }

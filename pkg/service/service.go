@@ -193,3 +193,17 @@ func (s *Service) DeregisterCreateSIPParticipantTopic() {
 		s.rpcSIPServer.DeregisterCreateSIPParticipantTopic(s.conf.ClusterID)
 	}
 }
+
+func (s *Service) RegisterTransferSIPParticipantTopic(sipCallId string) error {
+	if s.rpcSIPServer != nil {
+		return s.rpcSIPServer.RegisterTransferSIPParticipantTopic(sipCallId)
+	}
+
+	return psrpc.NewErrorf(psrpc.Internal, "RPC server not started")
+}
+
+func (s *Service) DeregisterTransferSIPParticipantTopic(sipCallId string) {
+	if s.rpcSIPServer != nil {
+		s.rpcSIPServer.DeregisterTransferSIPParticipantTopic(sipCallId)
+	}
+}

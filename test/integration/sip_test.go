@@ -81,7 +81,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	}
 	sipsrv := sip.NewService(conf, mon, log)
 
-	svc := service.NewService(conf, log, sipsrv.InternalServerImpl(), sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus, mon)
+	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus, mon)
 	sipsrv.SetHandler(svc)
 	t.Cleanup(func() {
 		svc.Stop(true)

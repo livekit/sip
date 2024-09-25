@@ -25,6 +25,7 @@ import (
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
@@ -92,6 +93,9 @@ type CallDispatch struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
+
+	RegisterTransferSIPParticipantTopic(sipCallId string) error
+	DeregisterTransferSIPParticipantTopic(sipCallId string)
 }
 
 type Server struct {
@@ -106,8 +110,10 @@ type Server struct {
 
 	inProgressInvites []*inProgressInvite
 
+	closing     core.Fuse
 	cmu         sync.RWMutex
 	activeCalls map[RemoteTag]*inboundCall
+	byLocal     map[LocalTag]*inboundCall
 
 	handler Handler
 	conf    *config.Config
@@ -129,6 +135,7 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 		conf:        conf,
 		mon:         mon,
 		activeCalls: make(map[RemoteTag]*inboundCall),
+		byLocal:     make(map[LocalTag]*inboundCall),
 	}
 	s.initMediaRes()
 	return s
@@ -225,6 +232,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 
 	s.sipSrv.OnInvite(s.onInvite)
 	s.sipSrv.OnBye(s.onBye)
+	s.sipSrv.OnNotify(s.onNotify)
 	s.sipUnhandled = unhandled
 
 	// Ignore ACKs
@@ -249,6 +257,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 }
 
 func (s *Server) Stop() {
+	s.closing.Break()
 	s.cmu.Lock()
 	calls := maps.Values(s.activeCalls)
 	s.activeCalls = make(map[RemoteTag]*inboundCall)
@@ -265,4 +274,12 @@ func (s *Server) Stop() {
 	if s.sipConnTCP != nil {
 		s.sipConnTCP.Close()
 	}
+}
+
+func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
+	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
+}
+
+func (s *Server) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
+	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

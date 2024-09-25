@@ -15,10 +15,15 @@
 package sip
 
 import (
+	"context"
+	"time"
+
 	"github.com/emiago/sipgo"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
@@ -37,14 +42,13 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Ser
 	if log == nil {
 		log = logger.GetLogger()
 	}
-	cli := NewClient(conf, log, mon)
 	s := &Service{
 		conf: conf,
 		log:  log,
 		mon:  mon,
-		cli:  cli,
+		cli:  NewClient(conf, log, mon),
+		srv:  NewServer(conf, log, mon),
 	}
-	s.srv = NewServer(conf, log, mon)
 	return s
 }
 
@@ -68,10 +72,7 @@ func (s *Service) Stop() {
 
 func (s *Service) SetHandler(handler Handler) {
 	s.srv.SetHandler(handler)
-}
-
-func (s *Service) InternalServerImpl() rpc.SIPInternalServerImpl {
-	return s.cli
+	s.cli.SetHandler(handler)
 }
 
 func (s *Service) Start() error {
@@ -109,4 +110,49 @@ func (s *Service) Start() error {
 	}
 	s.log.Debugw("sip service ready")
 	return nil
+}
+
+func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	return s.cli.CreateSIPParticipant(ctx, req)
+}
+
+func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
+	// TODO: scale affinity based on a number or active calls?
+	return 0.5
+}
+
+func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
+	s.log.Infow("transfering SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
+
+	ctx, done := context.WithTimeout(ctx, 30*time.Second)
+	defer done()
+
+	// Look for call both in client (outbound) and server (inbound)
+	s.cli.cmu.Lock()
+	out := s.cli.activeCalls[LocalTag(req.SipCallId)]
+	s.cli.cmu.Unlock()
+
+	if out != nil {
+		err := out.transferCall(ctx, req.TransferTo)
+		if err != nil {
+			return nil, err
+		}
+
+		return &emptypb.Empty{}, nil
+	}
+
+	s.srv.cmu.Lock()
+	in := s.srv.byLocal[LocalTag(req.SipCallId)]
+	s.srv.cmu.Unlock()
+
+	if in != nil {
+		err := in.transferCall(ctx, req.TransferTo)
+		if err != nil {
+			return nil, err
+		}
+
+		return &emptypb.Empty{}, nil
+	}
+
+	return nil, psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 }

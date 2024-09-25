@@ -16,9 +16,16 @@ package sip
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/livekit/psrpc"
+	"github.com/pkg/errors"
 )
+
+var referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 
 type ErrorStatus struct {
 	StatusCode int
@@ -58,4 +65,190 @@ func sendAndACK(c Signaling, req *sip.Request) {
 	if r.StatusCode == 200 {
 		_ = c.WriteRequest(sip.NewAckRequest(req, r, nil))
 	}
+}
+
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, referToUrl string) *sip.Request {
+	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
+
+	req.SipVersion = inviteRequest.SipVersion
+	sip.CopyHeaders("Via", inviteRequest, req)
+	// if inviteResponse.IsSuccess() {
+	// update branch, 2xx ACK is separate Tx
+	viaHop, _ := req.Via()
+	viaHop.Params.Add("branch", sip.GenerateBranch())
+	// }
+
+	if len(inviteRequest.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", inviteRequest, req)
+	} else {
+		hdrs := inviteResponse.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	maxForwardsHeader := sip.MaxForwardsHeader(70)
+	req.AppendHeader(&maxForwardsHeader)
+
+	if h, _ := inviteRequest.From(); h != nil {
+		sip.CopyHeaders("From", inviteRequest, req)
+	}
+
+	if h, _ := inviteResponse.To(); h != nil {
+		sip.CopyHeaders("To", inviteResponse, req)
+	}
+
+	if h, _ := inviteRequest.CallID(); h != nil {
+		sip.CopyHeaders("Call-ID", inviteRequest, req)
+	}
+
+	if h, _ := inviteRequest.CSeq(); h != nil {
+		sip.CopyHeaders("CSeq", inviteRequest, req)
+	}
+
+	cseq, _ := req.CSeq()
+	cseq.SeqNo = cseq.SeqNo + 1
+	cseq.MethodName = sip.REFER
+
+	// Set Refer-To header
+	referTo := sip.NewHeader("Refer-To", referToUrl)
+	req.AppendHeader(referTo)
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	req.SetTransport(inviteRequest.Transport())
+	req.SetSource(inviteRequest.Source())
+	req.SetDestination(inviteRequest.Destination())
+
+	return req
+}
+
+func sendRefer(c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Terminate()
+
+	resp, err := sipResponse(tx, stop)
+	if err != nil {
+		return nil, err
+	}
+
+	switch resp.StatusCode {
+	case sip.StatusOK, 202: // 202 is Accepted
+		return resp, nil
+	case sip.StatusForbidden:
+		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
+	default:
+		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code %d", resp.StatusCode)
+	}
+}
+
+func parseNotifyBody(body string) (int, error) {
+	v := strings.Split(body, " ")
+
+	if len(v) < 2 {
+		return 0, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: not enough tokens")
+	}
+
+	if strings.ToUpper(v[0]) != "SIP/2.0" {
+		return 0, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: wrong prefix or SIP version")
+	}
+
+	c, err := strconv.Atoi(v[1])
+	if err != nil {
+		return 0, psrpc.NewError(psrpc.InvalidArgument, err)
+	}
+
+	return c, nil
+}
+
+func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, status int, err error) {
+	event := req.GetHeader("Event")
+	var cseq64 uint64
+
+	if m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value())); len(m) > 0 {
+		// REFER Notify
+		method = sip.REFER
+
+		if len(m) >= 3 {
+			cseq64, _ = strconv.ParseUint(m[2], 10, 32)
+		}
+
+		status, err = parseNotifyBody(string(req.Body()))
+		if err != nil {
+			return "", 0, 0, err
+		}
+
+		return method, uint32(cseq64), status, nil
+	}
+	return "", 0, 0, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
+}
+
+func sipStatusForErrorCode(code psrpc.ErrorCode) sip.StatusCode {
+	switch code {
+	case psrpc.OK:
+		return sip.StatusOK
+	case psrpc.Canceled, psrpc.DeadlineExceeded:
+		return sip.StatusRequestTimeout
+	case psrpc.Unknown, psrpc.MalformedResponse, psrpc.Internal, psrpc.DataLoss:
+		return sip.StatusInternalServerError
+	case psrpc.InvalidArgument, psrpc.MalformedRequest:
+		return sip.StatusBadRequest
+	case psrpc.NotFound:
+		return sip.StatusNotFound
+	case psrpc.NotAcceptable:
+		return sip.StatusNotAcceptable
+	case psrpc.AlreadyExists, psrpc.Aborted:
+		return sip.StatusConflict
+	case psrpc.PermissionDenied:
+		return sip.StatusForbidden
+	case psrpc.ResourceExhausted:
+		return sip.StatusTemporarilyUnavailable
+	case psrpc.FailedPrecondition:
+		return sip.StatusCallTransactionDoesNotExists
+	case psrpc.OutOfRange:
+		return sip.StatusRequestedRangeNotSatisfiable
+	case psrpc.Unimplemented:
+		return sip.StatusNotImplemented
+	case psrpc.Unavailable:
+		return sip.StatusServiceUnavailable
+	case psrpc.Unauthenticated:
+		return sip.StatusUnauthorized
+	default:
+		return sip.StatusInternalServerError
+	}
+}
+
+func sipCodeAndMessageFromError(err error) (code sip.StatusCode, msg string) {
+	code = 200
+	var psrpcErr psrpc.Error
+	if errors.As(err, &psrpcErr) {
+		code = sipStatusForErrorCode(psrpcErr.Code())
+	} else if err != nil {
+		code = 500
+	}
+
+	msg = "success"
+	if err != nil {
+		msg = err.Error()
+	}
+
+	return code, msg
+}
+
+func setCSeq(req *sip.Request, cseq uint32) {
+	h := &sip.CSeqHeader{
+		MethodName: req.Method,
+		SeqNo:      cseq,
+	}
+
+	req.RemoveHeader(h.Name())
+	req.AppendHeader(h)
 }
