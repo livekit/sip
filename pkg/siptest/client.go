@@ -464,6 +464,12 @@ func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
 	req.SetSource(eventReq.Destination())
 	req.SetDestination(eventReq.Source())
 
+	if eventCSeq, ok := eventReq.CSeq(); ok {
+		req.AppendHeader(sip.NewHeader("Event", fmt.Sprintf("refer;id=%d", eventCSeq.SeqNo)))
+	} else {
+		return errors.New("missing CSeq header in REFER request")
+	}
+
 	req.SetBody([]byte(notifyStatus))
 
 	tx, err := c.sipClient.TransactionRequest(req)

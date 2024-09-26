@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	sipgo "github.com/emiago/sipgo/sip"
+	"github.com/stretchr/testify/require"
+
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -20,10 +23,6 @@ import (
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
-	"github.com/livekit/sip/pkg/stats"
-
-	"github.com/stretchr/testify/require"
-
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/g711"
@@ -31,6 +30,7 @@ import (
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
+	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/test/lktest"
 )
 
@@ -225,11 +225,11 @@ func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
 	}
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sip.Request)) *siptest.Client {
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sipgo.Request)) *siptest.Client {
 	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onRefer)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sip.Request)) *siptest.Client {
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sipgo.Request)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
@@ -280,7 +280,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		dmu          sync.Mutex
 		dtmfOut      string
 		dtmfIn       string
-		referRequest *sip.Request
+		referRequest *sipgo.Request
 	)
 	const (
 		clientID   = "test-cli"
@@ -315,15 +315,13 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
-	notifyRequests := make(chan *sip.Request)
-
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
 	}, func(ev dtmf.Event) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
-	}, func(req *sip.Request) {
+	}, func(req *sipgo.Request) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		referRequest = req
@@ -372,7 +370,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		dmu.Lock(22222222)
+		dmu.Lock()
 		defer dmu.Unlock()
 		return dtmfOut == dtmfDigits
 	}, 5*time.Second, time.Second/2)
@@ -386,7 +384,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		return dtmfIn == "4567"
 	}, 5*time.Second, time.Second/2)
 
-	_.err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
+	_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
 		RoomName:            "test-open",
 		ParticipantIdentity: "sip_" + clientNumber,
 		TransferTo:          "tel:" + transferNumber,
@@ -400,14 +398,16 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 	}, 5*time.Second, time.Second/2)
 
-	require.Equal(t, referRequest.cancel)
+	require.Equal(t, sipgo.REFER, referRequest.Method)
+	transferTo := referRequest.GetHeader("Refer-To")
+	require.Equal(t, "tel:"+transferNumber, transferTo)
 
 	time.Sleep(notifyIntervalDelay)
-	err = cli.SendNotify("100 Trying")
-	require.NoError(err)
+	err = cli.SendNotify(referRequest, "100 Trying")
+	require.NoError(t, err)
 
 	time.Sleep(notifyIntervalDelay)
-	err = cli.SendNotify("200 OK")
+	err = cli.SendNotify(referRequest, "200 OK")
 
 	// SIP participant should have left
 	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
@@ -685,7 +685,7 @@ func TestSIPAudio(t *testing.T) {
 						wg.Add(1)
 						go func() {
 							defer wg.Done()
-							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil)
+							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil, nil)
 							mu.Lock()
 							clients[i] = cli
 							audios[i] = cli
