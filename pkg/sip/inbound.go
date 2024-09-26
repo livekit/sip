@@ -744,6 +744,8 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error
 		return err
 	}
 
+	c.log.Infow("inbound call tranferred", "transferTo", transferTo)
+
 	// This is needed to actually terminate the session before a media timeout
 	c.Close()
 

@@ -391,6 +391,8 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string) erro
 		return err
 	}
 
+	c.log.Infow("outbound l tranferred", "transferTo", transferTo)
+
 	// This is needed to actually terminate the session before a media timeout
 	c.CloseWithReason(CallHangup, "call transferred")
 
