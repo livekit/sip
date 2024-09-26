@@ -403,11 +403,11 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
 
 	time.Sleep(notifyIntervalDelay)
-	err = cli.SendNotify(referRequest, "100 Trying")
+	err = cli.SendNotify(referRequest, "SIP/2.0 100 Trying")
 	require.NoError(t, err)
 
 	time.Sleep(notifyIntervalDelay)
-	err = cli.SendNotify(referRequest, "200 OK")
+	err = cli.SendNotify(referRequest, "SIP/2.0 200 OK")
 
 	// SIP participant should have left
 	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
