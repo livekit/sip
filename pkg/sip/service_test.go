@@ -12,6 +12,7 @@ import (
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/stats"
 
@@ -61,6 +62,10 @@ func (h TestHandler) GetAuthCredentials(ctx context.Context, callID, fromUser, t
 
 func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispatch {
 	return h.DispatchCallFunc(ctx, info)
+}
+
+func (h TestHandler) GetInboundProcessor(cd CallDispatch) media.PCM16Processor {
+	return nil
 }
 
 func (h TestHandler) RegisterTransferSIPParticipantTopic(sipCallId string) error {
