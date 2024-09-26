@@ -225,11 +225,11 @@ func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
 	}
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event)) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF)
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(to string)) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onRefer, notifyRequests)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event)) *siptest.Client {
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(to string)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
@@ -240,7 +240,9 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		OnMediaTimeout: func() {
 			t.Fatal("media timeout from server to test client")
 		},
-		OnDTMF: onDTMF,
+		OnDTMF:         onDTMF,
+		OnRefer:        onRefer,
+		NotifyRequests: notifyRequests,
 	}
 
 	cli, err := siptest.NewClient(id, cconf)
@@ -265,18 +267,21 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 const (
 	serverNumber                   = "+000000000"
 	clientNumber                   = "+111111111"
+	transferNumber                 = "+222222222"
 	participantsJoinTimeout        = 5 * time.Second
 	participantsJoinWithPinTimeout = participantsJoinTimeout + 5*time.Second
 	participantsLeaveTimeout       = 3 * time.Second
 	webrtcSetupDelay               = 5 * time.Second
+	notifyIntervalDelay            = 100 * time.Millisecond
 )
 
 func TestSIPJoinOpenRoom(t *testing.T) {
 	lk := runLiveKit(t)
 	var (
-		dmu     sync.Mutex
-		dtmfOut string
-		dtmfIn  string
+		dmu        sync.Mutex
+		dtmfOut    string
+		dtmfIn     string
+		transferTo string
 	)
 	const (
 		clientID   = "test-cli"
@@ -311,12 +316,16 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
+	notifyRequests := make(chan *sip.Request)
+
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
 	}, func(ev dtmf.Event) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
+	}, func(to string) {
+		transferTo = to
 	})
 
 	h := sip.Headers(cli.RemoteHeaders()).GetHeader("X-LK-Accepted")
@@ -362,7 +371,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		dmu.Lock()
+		dmu.Lock(22222222)
 		defer dmu.Unlock()
 		return dtmfOut == dtmfDigits
 	}, 5*time.Second, time.Second/2)
@@ -375,6 +384,18 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		defer dmu.Unlock()
 		return dtmfIn == "4567"
 	}, 5*time.Second, time.Second/2)
+
+	_.err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
+		RoomName:            "test-open",
+		ParticipantIdentity: "sip_" + clientNumber,
+		TransferTo:          "tel:" + transferNumber,
+	})
+
+	time.Sleep(notifyIntervalDelay)
+	notifyRequests <- newNotifyRequest(100, "Trying")
+
+	time.Sleep(notifyIntervalDelay)
+	notifyRequests <- newNotifyRequest(200, "OK")
 
 	cli.Close()
 	r.Disconnect()

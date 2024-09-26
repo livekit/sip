@@ -34,6 +34,7 @@ import (
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
 
@@ -56,6 +57,8 @@ type ClientConfig struct {
 	OnBye          func()
 	OnMediaTimeout func()
 	OnDTMF         func(ev dtmf.Event)
+	OnRefer        func(to string)
+	NotifyRequests chan<- *sip.Request
 	Codec          string
 }
 
@@ -146,6 +149,17 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		default:
 		}
 	})
+	cli.sipServer.OnRefer(func(req *sip.Request, tx sip.ServerTransaction) {
+		if c.conf.OnRefer != nil {
+			h := req.GetHeader("TransferTo")
+			if h != nil {
+				c.conf.OnRefer(h.Value)
+			}
+		}
+
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 202, "ACCEPTED", nil))
+		tx.Terminate()
+	})
 
 	return cli, nil
 }
@@ -168,7 +182,7 @@ type Client struct {
 	inviteReq     *sip.Request
 	inviteResp    *sip.Response
 	recordHandler atomic.Pointer[rtp.Handler]
-	closed        atomic.Bool
+	closed        core.Fuse
 }
 
 func (c *Client) LocalIP() string {
@@ -183,23 +197,22 @@ func (c *Client) RemoteHeaders() []sip.Header {
 }
 
 func (c *Client) Close() {
-	if !c.closed.CompareAndSwap(false, true) {
-		return
-	}
-	if c.mediaConn != nil {
-		c.mediaConn.Close()
-	}
-	if c.inviteResp != nil {
-		c.sendBye()
-		c.inviteReq = nil
-		c.inviteResp = nil
-	}
-	if c.sipClient != nil {
-		c.sipClient.Close()
-	}
-	if c.sipServer != nil {
-		c.sipServer.Close()
-	}
+	c.closed.Once(func() {
+		if c.mediaConn != nil {
+			c.mediaConn.Close()
+		}
+		if c.inviteResp != nil {
+			c.sendBye()
+			c.inviteReq = nil
+			c.inviteResp = nil
+		}
+		if c.sipClient != nil {
+			c.sipClient.Close()
+		}
+		if c.sipServer != nil {
+			c.sipServer.Close()
+		}
+	})
 }
 
 func (c *Client) setupRTPReceiver() {
@@ -297,6 +310,8 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 		break
 	}
 
+	go c.notifyLoop()
+
 	if contactHeader, ok := resp.Contact(); ok {
 		req.Recipient = &contactHeader.Address
 		if req.Recipient.Port == 0 {
@@ -354,6 +369,33 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	resp, err := getResponse(tx)
 
 	return req, resp, err
+}
+
+func (c *Client) notifyLoop() {
+	for {
+		select {
+		case req, ok := <-c.conf.NotifyRequests:
+			if !ok {
+				return
+			}
+			tx, err := c.sipClient.TransactionRequest(req)
+			if err != nil {
+				panic(err)
+			}
+			defer tx.Terminate()
+
+			resp, err := getResponse(tx)
+			if err != nil {
+				panic(err)
+			}
+			if resp.StatusCode != sip.StatusOK {
+				panic("NOTIFY response was not 200/OK")
+			}
+
+		case <-c.closed.Watch():
+			return
+		}
+	}
 }
 
 func (c *Client) sendBye() {
