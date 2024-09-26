@@ -57,8 +57,7 @@ type ClientConfig struct {
 	OnBye          func()
 	OnMediaTimeout func()
 	OnDTMF         func(ev dtmf.Event)
-	OnRefer        func(to string)
-	NotifyRequests chan<- *sip.Request
+	OnRefer        func(req *sip.Request)
 	Codec          string
 }
 
@@ -150,11 +149,8 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		}
 	})
 	cli.sipServer.OnRefer(func(req *sip.Request, tx sip.ServerTransaction) {
-		if c.conf.OnRefer != nil {
-			h := req.GetHeader("TransferTo")
-			if h != nil {
-				c.conf.OnRefer(h.Value)
-			}
+		if conf.OnRefer != nil {
+			conf.OnRefer(req)
 		}
 
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 202, "ACCEPTED", nil))
@@ -182,6 +178,7 @@ type Client struct {
 	inviteReq     *sip.Request
 	inviteResp    *sip.Response
 	recordHandler atomic.Pointer[rtp.Handler]
+	lastCSeq      atomic.Uint32
 	closed        core.Fuse
 }
 
@@ -310,8 +307,6 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 		break
 	}
 
-	go c.notifyLoop()
-
 	if contactHeader, ok := resp.Contact(); ok {
 		req.Recipient = &contactHeader.Address
 		if req.Recipient.Port == 0 {
@@ -337,6 +332,11 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 	}
 	c.inviteReq = req
 	c.inviteResp = resp
+
+	if h, ok := req.CSeq(); ok {
+		c.lastCSeq.Store(h.SeqNo)
+	}
+
 	c.mediaConn.SetDestAddr(dstAddr)
 	c.log.Debug("client connected", "media-dst", dstAddr)
 	return nil
@@ -371,37 +371,14 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	return req, resp, err
 }
 
-func (c *Client) notifyLoop() {
-	for {
-		select {
-		case req, ok := <-c.conf.NotifyRequests:
-			if !ok {
-				return
-			}
-			tx, err := c.sipClient.TransactionRequest(req)
-			if err != nil {
-				panic(err)
-			}
-			defer tx.Terminate()
-
-			resp, err := getResponse(tx)
-			if err != nil {
-				panic(err)
-			}
-			if resp.StatusCode != sip.StatusOK {
-				panic("NOTIFY response was not 200/OK")
-			}
-
-		case <-c.closed.Watch():
-			return
-		}
-	}
-}
-
 func (c *Client) sendBye() {
 	c.log.Debug("sending bye")
 	req := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
 	req.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+
+	cseq := c.lastCSeq.Add(1)
+	cseqH, _ := req.CSeq()
+	cseqH.SeqNo = cseq
 
 	tx, err := c.sipClient.TransactionRequest(req)
 	if err != nil {
@@ -421,6 +398,90 @@ func (c *Client) sendBye() {
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
 	return dtmf.Write(context.Background(), c.audioOut, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
+}
+
+func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
+	var recipient *sip.Uri
+
+	if contact, ok := eventReq.Contact(); ok {
+		recipient = &contact.Address
+	} else if from, ok := eventReq.From(); ok {
+		recipient = &from.Address
+	} else {
+		errors.New("missing destination address")
+	}
+
+	req := sip.NewRequest(sip.NOTIFY, recipient)
+
+	req.SipVersion = eventReq.SipVersion
+	sip.CopyHeaders("Via", eventReq, req)
+
+	if len(eventReq.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", eventReq, req)
+	} else {
+		hdrs := c.inviteResp.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	maxForwardsHeader := sip.MaxForwardsHeader(70)
+	req.AppendHeader(&maxForwardsHeader)
+
+	if to, ok := eventReq.To(); ok {
+		req.AppendHeader((*sip.FromHeader)(to))
+	} else {
+		return errors.New("missing To header in NOTIFY request")
+	}
+
+	if from, ok := eventReq.From(); ok {
+		req.AppendHeader((*sip.ToHeader)(from))
+	} else {
+		return errors.New("missing From header in NOTIFY request")
+	}
+
+	if callId, ok := eventReq.CallID(); ok {
+		req.AppendHeader(callId)
+	}
+
+	ct := sip.ContentTypeHeader("message/sipfrag")
+	req.AppendHeader(&ct)
+
+	cseq := c.lastCSeq.Add(1)
+	cseqH := &sip.CSeqHeader{
+		SeqNo:      cseq,
+		MethodName: sip.NOTIFY,
+	}
+	req.AppendHeader(cseqH)
+
+	req.SetTransport(eventReq.Transport())
+	req.SetSource(eventReq.Destination())
+	req.SetDestination(eventReq.Source())
+
+	req.SetBody([]byte(notifyStatus))
+
+	tx, err := c.sipClient.TransactionRequest(req)
+	if err != nil {
+		return err
+	}
+	defer tx.Terminate()
+
+	resp, err := getResponse(tx)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return fmt.Errorf("NOTIFY failed with status %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 func (c *Client) createOffer() ([]byte, error) {

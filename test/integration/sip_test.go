@@ -225,11 +225,11 @@ func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
 	}
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(to string)) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onRefer, notifyRequests)
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sip.Request)) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onRefer)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(to string)) *siptest.Client {
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sip.Request)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
@@ -240,9 +240,8 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		OnMediaTimeout: func() {
 			t.Fatal("media timeout from server to test client")
 		},
-		OnDTMF:         onDTMF,
-		OnRefer:        onRefer,
-		NotifyRequests: notifyRequests,
+		OnDTMF:  onDTMF,
+		OnRefer: onRefer,
 	}
 
 	cli, err := siptest.NewClient(id, cconf)
@@ -278,10 +277,10 @@ const (
 func TestSIPJoinOpenRoom(t *testing.T) {
 	lk := runLiveKit(t)
 	var (
-		dmu        sync.Mutex
-		dtmfOut    string
-		dtmfIn     string
-		transferTo string
+		dmu          sync.Mutex
+		dtmfOut      string
+		dtmfIn       string
+		referRequest *sip.Request
 	)
 	const (
 		clientID   = "test-cli"
@@ -324,8 +323,10 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
-	}, func(to string) {
-		transferTo = to
+	}, func(req *sip.Request) {
+		dmu.Lock()
+		defer dmu.Unlock()
+		referRequest = req
 	})
 
 	h := sip.Headers(cli.RemoteHeaders()).GetHeader("X-LK-Accepted")
@@ -391,19 +392,31 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		TransferTo:          "tel:" + transferNumber,
 	})
 
-	time.Sleep(notifyIntervalDelay)
-	notifyRequests <- newNotifyRequest(100, "Trying")
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+
+		return referRequest != nil
+
+	}, 5*time.Second, time.Second/2)
+
+	require.Equal(t, referRequest.cancel)
 
 	time.Sleep(notifyIntervalDelay)
-	notifyRequests <- newNotifyRequest(200, "OK")
+	err = cli.SendNotify("100 Trying")
+	require.NoError(err)
+
+	time.Sleep(notifyIntervalDelay)
+	err = cli.SendNotify("200 OK")
+
+	// SIP participant should have left
+	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 
 	cli.Close()
 	r.Disconnect()
 
-	// SIP participant must disconnect from LK room on hangup.
-	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
-	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 }
 
 func TestSIPJoinPinRoom(t *testing.T) {
@@ -447,7 +460,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
-	}, nil)
+	}, nil, nil)
 
 	// Even though we set this header in the dispatch rule, PIN forces us to send response earlier.
 	// Because of this, we can no longer attach attributes from a selected dispatch rule later.
@@ -530,7 +543,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil)
+	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -592,7 +605,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		rch <- room
 	}()
 
-	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil)
+	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
