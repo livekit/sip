@@ -20,9 +20,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/sdp/v3"
+
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
-	"github.com/pion/sdp/v3"
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
@@ -82,9 +83,9 @@ type MediaPort struct {
 	dtmfOutAudio media.PCM16Writer
 
 	audioOutRTP    *rtp.Stream
-	audioOut       *media.SwitchWriter
-	audioIn        *media.SwitchWriter
-	audioInHandler rtp.Handler // for debug only
+	audioOut       *media.SwitchWriter // SIP PCM -> LK RTP
+	audioIn        *media.SwitchWriter // LK RTP -> SIP PCM
+	audioInHandler rtp.Handler         // for debug only
 	dtmfIn         atomic.Pointer[func(ev dtmf.Event)]
 }
 
@@ -211,6 +212,14 @@ func (p *MediaPort) setupOutput() {
 	// Encoding pipeline (LK -> SIP)
 	audioOut := p.conf.Audio.EncodeRTP(p.audioOutRTP)
 
+	if processor := p.conf.Processor; processor != nil {
+		if audioOut.SampleRate() != processor.SampleRate() {
+			audioOut = media.ResampleWriter(audioOut, processor.SampleRate())
+		}
+		processor.SetWriter(audioOut)
+		audioOut = processor
+	}
+
 	if p.conf.DTMFType != 0 {
 		p.dtmfOutRTP = s.NewStream(p.conf.DTMFType, dtmf.SampleRate)
 		if p.dtmfAudioEnabled {
@@ -221,8 +230,9 @@ func (p *MediaPort) setupOutput() {
 			p.dtmfOutAudio = mix.NewInput()
 		}
 	}
+
 	if w := p.audioOut.Swap(audioOut); w != nil {
-		w.Close()
+		_ = w.Close()
 	}
 }
 

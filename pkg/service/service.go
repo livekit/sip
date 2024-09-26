@@ -29,6 +29,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/stats"
 
@@ -174,6 +175,10 @@ func (s *Service) GetAuthCredentials(ctx context.Context, callID, from, to, toHo
 
 func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {
 	return DispatchCall(ctx, s.psrpcClient, s.log, info)
+}
+
+func (s *Service) GetInboundProcessor(cd sip.CallDispatch) media.PCM16Processor {
+	return nil
 }
 
 func (s *Service) CanAccept() bool {
