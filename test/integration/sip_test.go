@@ -400,7 +400,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 	require.Equal(t, sipgo.REFER, referRequest.Method)
 	transferTo := referRequest.GetHeader("Refer-To")
-	require.Equal(t, "tel:"+transferNumber, transferTo)
+	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
 
 	time.Sleep(notifyIntervalDelay)
 	err = cli.SendNotify(referRequest, "100 Trying")
