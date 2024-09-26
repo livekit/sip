@@ -225,11 +225,11 @@ func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
 	}
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sipgo.Request)) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onRefer)
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onBye, onRefer)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onRefer func(req *sipgo.Request)) *siptest.Client {
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
@@ -241,6 +241,7 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 			t.Fatal("media timeout from server to test client")
 		},
 		OnDTMF:  onDTMF,
+		OnBye:   onBye,
 		OnRefer: onRefer,
 	}
 
@@ -315,12 +316,16 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
+	byeReceived := make(chan struct{})
+
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
 	}, func(ev dtmf.Event) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
+	}, func() {
+		close(byeReceived)
 	}, func(req *sipgo.Request) {
 		dmu.Lock()
 		defer dmu.Unlock()
@@ -409,14 +414,19 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	time.Sleep(notifyIntervalDelay)
 	err = cli.SendNotify(referRequest, "SIP/2.0 200 OK")
 
-	// SIP participant should have left
-	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
-	defer cancel()
-	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
+	select {
+	case <-byeReceived:
+	case <-time.After(participantsLeaveTimeout):
+		t.Fatal("did not receive bye after notify")
+	}
 
 	cli.Close()
 	r.Disconnect()
 
+	// SIP participant should have left
+	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
 }
 
 func TestSIPJoinPinRoom(t *testing.T) {
@@ -460,7 +470,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
-	}, nil, nil)
+	}, nil, nil, nil)
 
 	// Even though we set this header in the dispatch rule, PIN forces us to send response earlier.
 	// Because of this, we can no longer attach attributes from a selected dispatch rule later.
@@ -543,7 +553,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil, nil)
+	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -605,7 +615,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		rch <- room
 	}()
 
-	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil, nil)
+	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -685,7 +695,7 @@ func TestSIPAudio(t *testing.T) {
 						wg.Add(1)
 						go func() {
 							defer wg.Done()
-							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil, nil)
+							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil, nil, nil)
 							mu.Lock()
 							clients[i] = cli
 							audios[i] = cli
