@@ -30,6 +30,7 @@ import (
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/config"
@@ -90,6 +91,7 @@ type CallDispatch struct {
 	DispatchRuleID      string
 	Headers             map[string]string
 	HeadersToAttributes map[string]string
+	EnabledFeatures     []rpc.SIPFeature
 }
 
 type Handler interface {
