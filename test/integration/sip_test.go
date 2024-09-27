@@ -389,11 +389,15 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		return dtmfIn == "4567"
 	}, 5*time.Second, time.Second/2)
 
-	_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
-		RoomName:            "test-open",
-		ParticipantIdentity: "sip_" + clientNumber,
-		TransferTo:          "tel:" + transferNumber,
-	})
+	go func() {
+		// TransferSIPParticipant is synchronous
+		_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
+			RoomName:            "test-open",
+			ParticipantIdentity: "sip_" + clientNumber,
+			TransferTo:          "tel:" + transferNumber,
+		})
+		require.NoError(t, err)
+	}()
 
 	require.Eventually(t, func() bool {
 		dmu.Lock()
