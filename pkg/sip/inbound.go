@@ -1058,13 +1058,14 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 
 	logger.Errorw("SENDING REFER", nil)
 	_, err := sendRefer(c, req, c.s.closing.Watch())
-	logger.Errorw("SENT REFER", err)
+	logger.Errorw("SENT REFER", err, "referDone", c.referDone)
 	if err != nil {
 		return err
 	}
 
 	select {
 	case <-ctx.Done():
+		logger.Errorw("TRANSFER TIMEOUT", nil)
 		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
 	case err := <-c.referDone:
 		logger.Errorw("TRANSFER DONE", err)
@@ -1102,7 +1103,7 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 			// Success
 			select {
 			case c.referDone <- nil:
-				logger.Errorw("HANDLE NOTIFY NIL RES", nil)
+				logger.Errorw("HANDLE NOTIFY NIL RES", nil, "referDone", c.referDone)
 			default:
 				logger.Errorw("HANDLE NOTIFY DEFAULT", nil, "referDone", c.referDone)
 			}
