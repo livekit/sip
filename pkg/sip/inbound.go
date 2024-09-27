@@ -1056,7 +1056,9 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
+	logger.Errorw("SENDING REFER", nil)
 	_, err := sendRefer(c, req, c.s.closing.Watch())
+	logger.Errorw("SENT REFER", err)
 	if err != nil {
 		return err
 	}
