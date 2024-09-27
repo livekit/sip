@@ -549,7 +549,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 	go func() {
 		// TransferSIPParticipant is synchronous
 		_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
-			RoomName:            "test-open",
+			RoomName:            "test-priv",
 			ParticipantIdentity: "sip_" + clientNumber,
 			TransferTo:          "tel:" + transferNumber,
 		})
