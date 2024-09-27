@@ -1056,19 +1056,15 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	logger.Errorw("SENDING REFER", nil)
 	_, err := sendRefer(c, req, c.s.closing.Watch())
-	logger.Errorw("SENT REFER", err, "referDone", c.referDone)
 	if err != nil {
 		return err
 	}
 
 	select {
 	case <-ctx.Done():
-		logger.Errorw("TRANSFER TIMEOUT", nil)
 		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
 	case err := <-c.referDone:
-		logger.Errorw("TRANSFER DONE", err)
 		if err != nil {
 			return err
 		}
@@ -1088,8 +1084,6 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 
-		logger.Errorw("HANDLE NOTIFY OBJ", nil, "cseq", cseq, "referCseq", c.referCseq, "status", status)
-
 		if cseq != 0 && cseq != uint32(c.referCseq) {
 			// NOTIFY for a different REFER, skip
 			return nil
@@ -1097,7 +1091,6 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 
 		switch {
 		case status >= 100 && status < 200:
-			logger.Errorw("HANDLE NOTIFY TRYING", nil)
 			// still trying
 		case status == 200:
 			// Success

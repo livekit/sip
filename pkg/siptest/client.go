@@ -38,7 +38,6 @@ import (
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
 
-	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -155,7 +154,6 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		}
 
 		err = tx.Respond(sip.NewResponseFromRequest(req, 202, "Accepted", nil))
-		logger.Errorw("REFER Respond", err)
 		tx.Terminate()
 	})
 

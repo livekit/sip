@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"github.com/emiago/sipgo/sip"
-	"github.com/livekit/protocol/logger"
 	"github.com/livekit/psrpc"
 	"github.com/pkg/errors"
 )
@@ -174,8 +173,6 @@ func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, stat
 	event := req.GetHeader("Event")
 	var cseq64 uint64
 
-	logger.Errorw("HANDLE NOTIFY Header", nil, "Event", event)
-
 	if m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value())); len(m) > 0 {
 		// REFER Notify
 		method = sip.REFER
@@ -185,7 +182,6 @@ func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, stat
 		}
 
 		status, err = parseNotifyBody(string(req.Body()))
-		logger.Errorw("HANDLE NOTIFY parse", err, "status", status, "cseq", cseq64)
 		if err != nil {
 			return "", 0, 0, err
 		}
