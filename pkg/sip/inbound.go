@@ -760,7 +760,7 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 		invite:    invite,
 		inviteTx:  inviteTx,
 		cancelled: make(chan struct{}),
-		referDone: make(chan error, 1),
+		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
 	c.from, _ = invite.From()
 	if c.from != nil {
@@ -1103,16 +1103,14 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 			// Success
 			select {
 			case c.referDone <- nil:
-				logger.Errorw("HANDLE NOTIFY NIL RES", nil, "referDone", c.referDone)
-			default:
-				logger.Errorw("HANDLE NOTIFY DEFAULT", nil, "referDone", c.referDone)
+			case <-time.After(5 * time.Second):
 			}
 		default:
 			// Failure
 			select {
 			// TODO be more specific in the reported error
 			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			default:
+			case <-time.After(5 * time.Second):
 			}
 		}
 	}
