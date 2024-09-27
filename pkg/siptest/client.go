@@ -437,13 +437,13 @@ func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
 	if to, ok := eventReq.To(); ok {
 		req.AppendHeader((*sip.FromHeader)(to))
 	} else {
-		return errors.New("missing To header in NOTIFY request")
+		return errors.New("missing To header in REFER request")
 	}
 
 	if from, ok := eventReq.From(); ok {
 		req.AppendHeader((*sip.ToHeader)(from))
 	} else {
-		return errors.New("missing From header in NOTIFY request")
+		return errors.New("missing From header in REFER request")
 	}
 
 	if callId, ok := eventReq.CallID(); ok {

@@ -1084,6 +1084,8 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 
+		logger.Errorw("HANDLE NOTIFY OBJ", nil, "cseq", cseq, "referCseq", c.referCseq)
+
 		if cseq != 0 && cseq != uint32(c.referCseq) {
 			// NOTIFY for a different REFER, skip
 			return nil
