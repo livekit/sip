@@ -316,6 +316,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
+	transferDone := make(chan struct{})
 	byeReceived := make(chan struct{})
 
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
@@ -397,6 +398,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 			TransferTo:          "tel:" + transferNumber,
 		})
 		require.NoError(t, err)
+		close(transferDone)
 	}()
 
 	require.Eventually(t, func() bool {
@@ -417,6 +419,13 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 	time.Sleep(notifyIntervalDelay)
 	err = cli.SendNotify(referRequest, "SIP/2.0 200 OK")
+	require.NoError(t, err)
+
+	select {
+	case <-transferDone:
+	case <-time.After(participantsLeaveTimeout):
+		t.Fatal("participant transfer call never completed")
+	}
 
 	select {
 	case <-byeReceived:
@@ -436,8 +445,9 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 func TestSIPJoinPinRoom(t *testing.T) {
 	lk := runLiveKit(t)
 	var (
-		dmu  sync.Mutex
-		dtmf string
+		dmu          sync.Mutex
+		dtmf         string
+		referRequest *sipgo.Request
 	)
 	const (
 		clientID   = "test-cli"
@@ -472,9 +482,15 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
+	transferDone := make(chan struct{})
+
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
-	}, nil, nil, nil)
+	}, nil, nil, func(req *sipgo.Request) {
+		dmu.Lock()
+		defer dmu.Unlock()
+		referRequest = req
+	})
 
 	// Even though we set this header in the dispatch rule, PIN forces us to send response earlier.
 	// Because of this, we can no longer attach attributes from a selected dispatch rule later.
@@ -529,6 +545,62 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		defer dmu.Unlock()
 		return dtmf == dtmfDigits
 	}, 5*time.Second, time.Second/2)
+
+	go func() {
+		// TransferSIPParticipant is synchronous
+		_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
+			RoomName:            "test-open",
+			ParticipantIdentity: "sip_" + clientNumber,
+			TransferTo:          "tel:" + transferNumber,
+		})
+		require.Error(t, err)
+		close(transferDone)
+	}()
+
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+
+		return referRequest != nil
+
+	}, 5*time.Second, time.Second/2)
+
+	require.Equal(t, sipgo.REFER, referRequest.Method)
+	transferTo := referRequest.GetHeader("Refer-To")
+	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
+
+	time.Sleep(notifyIntervalDelay)
+	err = cli.SendNotify(referRequest, "SIP/2.0 403 Fobidden")
+	require.NoError(t, err)
+
+	select {
+	case <-transferDone:
+	case <-time.After(participantsLeaveTimeout):
+		t.Fatal("participant transfer call never completed")
+	}
+
+	// Participants should all still be there
+	time.Sleep(time.Second)
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
+		{Identity: "test"},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+				"test.lk.inbound":      "1", // from SIP headers
+				customAttr:             customVal,
+			},
+		},
+	})
 
 	cli.Close()
 	r.Disconnect()
