@@ -171,6 +171,13 @@ func parseNotifyBody(body string) (int, error) {
 
 func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, status int, err error) {
 	event := req.GetHeader("Event")
+	if event == nil {
+		event = req.GetHeader("o")
+	}
+	if event == nil {
+		return "", 0, 0, psrpc.NewErrorf(psrpc.MalformedRequest, "no event in NOTIFY request")
+	}
+
 	var cseq64 uint64
 
 	if m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value())); len(m) > 0 {
