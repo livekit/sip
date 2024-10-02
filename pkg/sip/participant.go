@@ -31,12 +31,43 @@ const (
 	AttrSIPCallStatus = livekit.AttrSIPPrefix + "callStatus"
 )
 
-type CallStatus string
+type CallStatus int
+
+func (v CallStatus) Attribute() string {
+	switch v {
+	default:
+		return "" // no attribute for these statuses
+	case CallDialing:
+		return "dialing"
+	case CallAutomation:
+		return "automation"
+	case CallActive:
+		return "active"
+	case CallHangup:
+		return "hangup"
+	}
+}
+
+func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
+	switch v {
+	default:
+		return livekit.DisconnectReason_UNKNOWN_REASON
+	case CallHangup:
+		// It's the default that LK sets, but map it here explicitly to show the assumption.
+		return livekit.DisconnectReason_CLIENT_INITIATED
+	case callUnavailable:
+		return livekit.DisconnectReason_USER_UNAVAILABLE
+	case callRejected:
+		return livekit.DisconnectReason_USER_REJECTED
+	}
+}
 
 const (
-	callDropped    = CallStatus("")
-	CallDialing    = CallStatus("dialing")
-	CallAutomation = CallStatus("automation")
-	CallActive     = CallStatus("active")
-	CallHangup     = CallStatus("hangup")
+	callDropped = CallStatus(iota)
+	CallDialing
+	CallAutomation
+	CallActive
+	CallHangup
+	callUnavailable
+	callRejected
 )
