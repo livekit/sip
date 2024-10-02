@@ -209,15 +209,11 @@ func (p *MediaPort) setupOutput() {
 	// TODO: this says "audio", but actually includes DTMF too
 	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", p.conn))
 	p.audioOutRTP = s.NewStream(p.conf.AudioType, p.conf.Audio.Info().RTPClockRate)
+
 	// Encoding pipeline (LK -> SIP)
 	audioOut := p.conf.Audio.EncodeRTP(p.audioOutRTP)
-
 	if processor := p.conf.Processor; processor != nil {
-		if audioOut.SampleRate() != processor.SampleRate() {
-			audioOut = media.ResampleWriter(audioOut, processor.SampleRate())
-		}
-		processor.SetWriter(audioOut)
-		audioOut = processor
+		audioOut = processor(audioOut)
 	}
 
 	if p.conf.DTMFType != 0 {
