@@ -149,7 +149,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		log = log.WithValues("projectID", req.ProjectId)
 	}
 	if req.SipTrunkId != "" {
-		c.log = c.log.WithValues("sipTrunk", req.SipTrunkId)
+		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
 	log = log.WithValues(
 		"callID", req.SipCallId,
