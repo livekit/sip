@@ -177,7 +177,7 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 	return DispatchCall(ctx, s.psrpcClient, s.log, info)
 }
 
-func (s *Service) GetInboundProcessor(cd sip.CallDispatch) media.PCM16Processor {
+func (s *Service) GetMediaProcessor(_ []rpc.SIPFeature) media.PCM16Processor {
 	return nil
 }
 

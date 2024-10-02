@@ -97,7 +97,7 @@ type CallDispatch struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
-	GetInboundProcessor(cd CallDispatch) media.PCM16Processor
+	GetMediaProcessor(features []rpc.SIPFeature) media.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/stats"
@@ -64,7 +65,7 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 	return h.DispatchCallFunc(ctx, info)
 }
 
-func (h TestHandler) GetInboundProcessor(cd CallDispatch) media.PCM16Processor {
+func (h TestHandler) GetMediaProcessor(_ []rpc.SIPFeature) media.PCM16Processor {
 	return nil
 }
 
