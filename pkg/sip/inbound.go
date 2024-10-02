@@ -262,7 +262,6 @@ type inboundCall struct {
 	cc          *sipInbound
 	mon         *stats.CallMonitor
 	extraAttrs  map[string]string
-	handler     Handler
 	ctx         context.Context
 	cancel      func()
 	src         string
@@ -453,7 +452,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	c.mon.SDPSize(len(answerData), false)
 	c.log.Debugw("SDP answer", "sdp", string(answerData))
 
-	mconf.Processor = c.handler.GetMediaProcessor(features)
+	mconf.Processor = c.s.handler.GetMediaProcessor(features)
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}
