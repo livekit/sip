@@ -288,6 +288,10 @@ func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
 }
 
 func (r *Room) Close() error {
+	return r.CloseWithReason(livekit.DisconnectReason_UNKNOWN_REASON)
+}
+
+func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 	if r == nil {
 		return nil
 	}
@@ -296,7 +300,7 @@ func (r *Room) Close() error {
 	err := r.CloseOutput()
 	r.SetDTMFOutput(nil)
 	if r.room != nil {
-		r.room.Disconnect()
+		r.room.DisconnectWithReason(reason)
 		r.room = nil
 	}
 	if r.mix != nil {
