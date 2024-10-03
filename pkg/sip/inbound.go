@@ -25,8 +25,10 @@ import (
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
@@ -211,7 +213,7 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	if c != nil {
 		c.log.Infow("BYE")
 		c.cc.AcceptBye(req, tx)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	ok := false
@@ -272,7 +274,14 @@ type inboundCall struct {
 	done        atomic.Bool
 }
 
-func (s *Server) newInboundCall(log logger.Logger, mon *stats.CallMonitor, cc *sipInbound, src string, extra map[string]string) *inboundCall {
+func (s *Server) newInboundCall(
+	log logger.Logger,
+	mon *stats.CallMonitor,
+	cc *sipInbound,
+	src string,
+	extra map[string]string,
+) *inboundCall {
+
 	extra = HeadersToAttrs(extra, nil, cc)
 	c := &inboundCall{
 		s:          s,
@@ -344,7 +353,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
-	answerData, err := c.runMediaConn(req.Body(), conf)
+	answerData, err := c.runMediaConn(req.Body(), conf, disp.EnabledFeatures)
 	if err != nil {
 		c.log.Errorw("Cannot start media", err)
 		c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
@@ -419,7 +428,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 }
 
-func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, features []rpc.SIPFeature) (answerData []byte, _ error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log.Debugw("SDP offer", "sdp", string(offerData))
 
@@ -443,6 +452,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config) (answe
 	c.mon.SDPSize(len(answerData), false)
 	c.log.Debugw("SDP answer", "sdp", string(answerData))
 
+	mconf.Processor = c.s.handler.GetMediaProcessor(features)
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}

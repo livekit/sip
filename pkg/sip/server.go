@@ -27,8 +27,11 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	"github.com/livekit/protocol/logger"
 	"golang.org/x/exp/maps"
+
+	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -88,11 +91,13 @@ type CallDispatch struct {
 	DispatchRuleID      string
 	Headers             map[string]string
 	HeadersToAttributes map[string]string
+	EnabledFeatures     []rpc.SIPFeature
 }
 
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
+	GetMediaProcessor(features []rpc.SIPFeature) media.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
@@ -263,16 +268,16 @@ func (s *Server) Stop() {
 	s.activeCalls = make(map[RemoteTag]*inboundCall)
 	s.cmu.Unlock()
 	for _, c := range calls {
-		c.Close()
+		_ = c.Close()
 	}
 	if s.sipSrv != nil {
-		s.sipSrv.Close()
+		_ = s.sipSrv.Close()
 	}
 	if s.sipConnUDP != nil {
-		s.sipConnUDP.Close()
+		_ = s.sipConnUDP.Close()
 	}
 	if s.sipConnTCP != nil {
-		s.sipConnTCP.Close()
+		_ = s.sipConnTCP.Close()
 	}
 }
 

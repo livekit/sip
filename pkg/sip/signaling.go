@@ -245,6 +245,7 @@ type MediaConf struct {
 	Audio     rtp.AudioCodec
 	AudioType byte
 	DTMFType  byte
+	Processor media.PCM16Processor
 }
 
 func sdpGetAudioCodec(offer *sdp.SessionDescription) (*MediaConf, error) {

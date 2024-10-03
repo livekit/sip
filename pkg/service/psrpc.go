@@ -101,6 +101,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			DispatchRuleID:      resp.SipDispatchRuleId,
 			Headers:             resp.Headers,
 			HeadersToAttributes: resp.HeadersToAttributes,
+			EnabledFeatures:     resp.EnabledFeatures,
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
@@ -121,6 +122,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			DispatchRuleID:      resp.SipDispatchRuleId,
 			Headers:             resp.Headers,
 			HeadersToAttributes: resp.HeadersToAttributes,
+			EnabledFeatures:     resp.EnabledFeatures,
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{
