@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	sipgo "github.com/emiago/sipgo/sip"
+	"github.com/stretchr/testify/require"
+
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -20,10 +23,6 @@ import (
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
-	"github.com/livekit/sip/pkg/stats"
-
-	"github.com/stretchr/testify/require"
-
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/g711"
@@ -31,6 +30,7 @@ import (
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
+	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/test/lktest"
 )
 
@@ -225,11 +225,11 @@ func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
 	}
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event)) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF)
+func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
+	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onBye, onRefer)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event)) *siptest.Client {
+func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
 		Number:   number,
@@ -240,7 +240,9 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 		OnMediaTimeout: func() {
 			t.Fatal("media timeout from server to test client")
 		},
-		OnDTMF: onDTMF,
+		OnDTMF:  onDTMF,
+		OnBye:   onBye,
+		OnRefer: onRefer,
 	}
 
 	cli, err := siptest.NewClient(id, cconf)
@@ -265,18 +267,21 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 const (
 	serverNumber                   = "+000000000"
 	clientNumber                   = "+111111111"
+	transferNumber                 = "+222222222"
 	participantsJoinTimeout        = 5 * time.Second
 	participantsJoinWithPinTimeout = participantsJoinTimeout + 5*time.Second
 	participantsLeaveTimeout       = 3 * time.Second
 	webrtcSetupDelay               = 5 * time.Second
+	notifyIntervalDelay            = 100 * time.Millisecond
 )
 
 func TestSIPJoinOpenRoom(t *testing.T) {
 	lk := runLiveKit(t)
 	var (
-		dmu     sync.Mutex
-		dtmfOut string
-		dtmfIn  string
+		dmu          sync.Mutex
+		dtmfOut      string
+		dtmfIn       string
+		referRequest *sipgo.Request
 	)
 	const (
 		clientID   = "test-cli"
@@ -311,12 +316,21 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
+	transferDone := make(chan struct{})
+	byeReceived := make(chan struct{})
+
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
 	}, func(ev dtmf.Event) {
 		dmu.Lock()
 		defer dmu.Unlock()
 		dtmfIn += string(ev.Digit)
+	}, func() {
+		close(byeReceived)
+	}, func(req *sipgo.Request) {
+		dmu.Lock()
+		defer dmu.Unlock()
+		referRequest = req
 	})
 
 	h := sip.Headers(cli.RemoteHeaders()).GetHeader("X-LK-Accepted")
@@ -376,10 +390,53 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 		return dtmfIn == "4567"
 	}, 5*time.Second, time.Second/2)
 
+	go func() {
+		// TransferSIPParticipant is synchronous
+		_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
+			RoomName:            roomName,
+			ParticipantIdentity: "sip_" + clientNumber,
+			TransferTo:          "tel:" + transferNumber,
+		})
+		require.NoError(t, err)
+		close(transferDone)
+	}()
+
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+
+		return referRequest != nil
+
+	}, 5*time.Second, time.Second/2)
+
+	require.Equal(t, sipgo.REFER, referRequest.Method)
+	transferTo := referRequest.GetHeader("Refer-To")
+	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
+
+	time.Sleep(notifyIntervalDelay)
+	err = cli.SendNotify(referRequest, "SIP/2.0 100 Trying")
+	require.NoError(t, err)
+
+	time.Sleep(notifyIntervalDelay)
+	err = cli.SendNotify(referRequest, "SIP/2.0 200 OK")
+	require.NoError(t, err)
+
+	select {
+	case <-transferDone:
+	case <-time.After(participantsLeaveTimeout):
+		t.Fatal("participant transfer call never completed")
+	}
+
+	select {
+	case <-byeReceived:
+	case <-time.After(participantsLeaveTimeout):
+		t.Fatal("did not receive bye after notify")
+	}
+
 	cli.Close()
 	r.Disconnect()
 
-	// SIP participant must disconnect from LK room on hangup.
+	// SIP participant should have left
 	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
 	defer cancel()
 	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
@@ -388,8 +445,9 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 func TestSIPJoinPinRoom(t *testing.T) {
 	lk := runLiveKit(t)
 	var (
-		dmu  sync.Mutex
-		dtmf string
+		dmu          sync.Mutex
+		dtmf         string
+		referRequest *sipgo.Request
 	)
 	const (
 		clientID   = "test-cli"
@@ -424,9 +482,15 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		customAttr: customVal,
 	})
 
+	transferDone := make(chan struct{})
+
 	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
-	}, nil)
+	}, nil, nil, func(req *sipgo.Request) {
+		dmu.Lock()
+		defer dmu.Unlock()
+		referRequest = req
+	})
 
 	// Even though we set this header in the dispatch rule, PIN forces us to send response earlier.
 	// Because of this, we can no longer attach attributes from a selected dispatch rule later.
@@ -482,6 +546,62 @@ func TestSIPJoinPinRoom(t *testing.T) {
 		return dtmf == dtmfDigits
 	}, 5*time.Second, time.Second/2)
 
+	go func() {
+		// TransferSIPParticipant is synchronous
+		_, err = lk.SIP.TransferSIPParticipant(context.Background(), &livekit.TransferSIPParticipantRequest{
+			RoomName:            "test-priv",
+			ParticipantIdentity: "sip_" + clientNumber,
+			TransferTo:          "tel:" + transferNumber,
+		})
+		require.Error(t, err)
+		close(transferDone)
+	}()
+
+	require.Eventually(t, func() bool {
+		dmu.Lock()
+		defer dmu.Unlock()
+
+		return referRequest != nil
+
+	}, 5*time.Second, time.Second/2)
+
+	require.Equal(t, sipgo.REFER, referRequest.Method)
+	transferTo := referRequest.GetHeader("Refer-To")
+	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
+
+	time.Sleep(notifyIntervalDelay)
+	err = cli.SendNotify(referRequest, "SIP/2.0 403 Fobidden")
+	require.NoError(t, err)
+
+	select {
+	case <-transferDone:
+	case <-time.After(participantsLeaveTimeout):
+		t.Fatal("participant transfer call never completed")
+	}
+
+	// Participants should all still be there
+	time.Sleep(time.Second)
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
+		{Identity: "test"},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           "<test>", // special case
+				"sip.callStatus":       "active",
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+				"test.lk.inbound":      "1", // from SIP headers
+				customAttr:             customVal,
+			},
+		},
+	})
+
 	cli.Close()
 	r.Disconnect()
 
@@ -509,7 +629,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil)
+	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -571,7 +691,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		rch <- room
 	}()
 
-	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil)
+	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -651,7 +771,7 @@ func TestSIPAudio(t *testing.T) {
 						wg.Add(1)
 						go func() {
 							defer wg.Done()
-							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil)
+							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil, nil, nil)
 							mu.Lock()
 							clients[i] = cli
 							audios[i] = cli

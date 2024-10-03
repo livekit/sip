@@ -746,6 +746,8 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error
 		return err
 	}
 
+	c.log.Infow("inbound call tranferred", "transferTo", transferTo)
+
 	// This is needed to actually terminate the session before a media timeout
 	c.Close()
 
@@ -760,7 +762,7 @@ func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.Serve
 		invite:    invite,
 		inviteTx:  inviteTx,
 		cancelled: make(chan struct{}),
-		referDone: make(chan error, 1),
+		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
 	c.from, _ = invite.From()
 	if c.from != nil {
@@ -1096,14 +1098,14 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 			// Success
 			select {
 			case c.referDone <- nil:
-			default:
+			case <-time.After(notifyAckTimeout):
 			}
 		default:
 			// Failure
 			select {
 			// TODO be more specific in the reported error
 			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			default:
+			case <-time.After(notifyAckTimeout):
 			}
 		}
 	}

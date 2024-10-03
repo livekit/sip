@@ -34,6 +34,7 @@ import (
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
 
@@ -56,6 +57,7 @@ type ClientConfig struct {
 	OnBye          func()
 	OnMediaTimeout func()
 	OnDTMF         func(ev dtmf.Event)
+	OnRefer        func(req *sip.Request)
 	Codec          string
 }
 
@@ -146,6 +148,14 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		default:
 		}
 	})
+	cli.sipServer.OnRefer(func(req *sip.Request, tx sip.ServerTransaction) {
+		if conf.OnRefer != nil {
+			conf.OnRefer(req)
+		}
+
+		err = tx.Respond(sip.NewResponseFromRequest(req, 202, "Accepted", nil))
+		tx.Terminate()
+	})
 
 	return cli, nil
 }
@@ -168,7 +178,8 @@ type Client struct {
 	inviteReq     *sip.Request
 	inviteResp    *sip.Response
 	recordHandler atomic.Pointer[rtp.Handler]
-	closed        atomic.Bool
+	lastCSeq      atomic.Uint32
+	closed        core.Fuse
 }
 
 func (c *Client) LocalIP() string {
@@ -183,23 +194,22 @@ func (c *Client) RemoteHeaders() []sip.Header {
 }
 
 func (c *Client) Close() {
-	if !c.closed.CompareAndSwap(false, true) {
-		return
-	}
-	if c.mediaConn != nil {
-		c.mediaConn.Close()
-	}
-	if c.inviteResp != nil {
-		c.sendBye()
-		c.inviteReq = nil
-		c.inviteResp = nil
-	}
-	if c.sipClient != nil {
-		c.sipClient.Close()
-	}
-	if c.sipServer != nil {
-		c.sipServer.Close()
-	}
+	c.closed.Once(func() {
+		if c.mediaConn != nil {
+			c.mediaConn.Close()
+		}
+		if c.inviteResp != nil {
+			c.sendBye()
+			c.inviteReq = nil
+			c.inviteResp = nil
+		}
+		if c.sipClient != nil {
+			c.sipClient.Close()
+		}
+		if c.sipServer != nil {
+			c.sipServer.Close()
+		}
+	})
 }
 
 func (c *Client) setupRTPReceiver() {
@@ -322,6 +332,11 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 	}
 	c.inviteReq = req
 	c.inviteResp = resp
+
+	if h, ok := req.CSeq(); ok {
+		c.lastCSeq.Store(h.SeqNo)
+	}
+
 	c.mediaConn.SetDestAddr(dstAddr)
 	c.log.Debug("client connected", "media-dst", dstAddr)
 	return nil
@@ -361,6 +376,10 @@ func (c *Client) sendBye() {
 	req := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
 	req.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 
+	cseq := c.lastCSeq.Add(1)
+	cseqH, _ := req.CSeq()
+	cseqH.SeqNo = cseq
+
 	tx, err := c.sipClient.TransactionRequest(req)
 	if err != nil {
 		return
@@ -379,6 +398,96 @@ func (c *Client) sendBye() {
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
 	return dtmf.Write(context.Background(), c.audioOut, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
+}
+
+func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
+	var recipient *sip.Uri
+
+	if contact, ok := eventReq.Contact(); ok {
+		recipient = &contact.Address
+	} else if from, ok := eventReq.From(); ok {
+		recipient = &from.Address
+	} else {
+		return errors.New("missing destination address")
+	}
+
+	req := sip.NewRequest(sip.NOTIFY, recipient)
+
+	req.SipVersion = eventReq.SipVersion
+	sip.CopyHeaders("Via", eventReq, req)
+
+	if len(eventReq.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", eventReq, req)
+	} else {
+		hdrs := c.inviteResp.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	maxForwardsHeader := sip.MaxForwardsHeader(70)
+	req.AppendHeader(&maxForwardsHeader)
+
+	if to, ok := eventReq.To(); ok {
+		req.AppendHeader((*sip.FromHeader)(to))
+	} else {
+		return errors.New("missing To header in REFER request")
+	}
+
+	if from, ok := eventReq.From(); ok {
+		req.AppendHeader((*sip.ToHeader)(from))
+	} else {
+		return errors.New("missing From header in REFER request")
+	}
+
+	if callId, ok := eventReq.CallID(); ok {
+		req.AppendHeader(callId)
+	}
+
+	ct := sip.ContentTypeHeader("message/sipfrag")
+	req.AppendHeader(&ct)
+
+	cseq := c.lastCSeq.Add(1)
+	cseqH := &sip.CSeqHeader{
+		SeqNo:      cseq,
+		MethodName: sip.NOTIFY,
+	}
+	req.AppendHeader(cseqH)
+
+	req.SetTransport(eventReq.Transport())
+	req.SetSource(eventReq.Destination())
+	req.SetDestination(eventReq.Source())
+
+	if eventCSeq, ok := eventReq.CSeq(); ok {
+		req.AppendHeader(sip.NewHeader("Event", fmt.Sprintf("refer;id=%d", eventCSeq.SeqNo)))
+	} else {
+		return errors.New("missing CSeq header in REFER request")
+	}
+
+	req.SetBody([]byte(notifyStatus))
+
+	tx, err := c.sipClient.TransactionRequest(req)
+	if err != nil {
+		return err
+	}
+	defer tx.Terminate()
+
+	resp, err := getResponse(tx)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return fmt.Errorf("NOTIFY failed with status %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 func (c *Client) createOffer() ([]byte, error) {

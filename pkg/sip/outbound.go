@@ -22,6 +22,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
@@ -405,6 +406,8 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string) erro
 		return err
 	}
 
+	c.log.Infow("outbound l tranferred", "transferTo", transferTo)
+
 	// This is needed to actually terminate the session before a media timeout
 	c.CloseWithReason(CallHangup, "call transferred")
 
@@ -423,7 +426,7 @@ func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
 		c:         c,
 		id:        id,
 		from:      fromHeader,
-		referDone: make(chan error, 1),
+		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
 }
 
@@ -742,14 +745,14 @@ func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) e
 			// Success
 			select {
 			case c.referDone <- nil:
-			default:
+			case <-time.After(notifyAckTimeout):
 			}
 		default:
 			// Failure
 			select {
 			// TODO be more specific in the reported error
 			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			default:
+			case <-time.After(notifyAckTimeout):
 			}
 		}
 	}
