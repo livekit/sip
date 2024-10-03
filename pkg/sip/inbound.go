@@ -1096,14 +1096,14 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 			// Success
 			select {
 			case c.referDone <- nil:
-			case <-time.After(5 * time.Second):
+			case <-time.After(notifyAckTimeout):
 			}
 		default:
 			// Failure
 			select {
 			// TODO be more specific in the reported error
 			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			case <-time.After(5 * time.Second):
+			case <-time.After(notifyAckTimeout):
 			}
 		}
 	}

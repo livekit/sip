@@ -19,13 +19,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/psrpc"
 	"github.com/pkg/errors"
 )
 
-var referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
+const (
+	notifyAckTimeout = 5 * time.Second
+)
+
+var (
+	referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
+)
 
 type ErrorStatus struct {
 	StatusCode int

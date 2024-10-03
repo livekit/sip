@@ -408,7 +408,7 @@ func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
 	} else if from, ok := eventReq.From(); ok {
 		recipient = &from.Address
 	} else {
-		errors.New("missing destination address")
+		return errors.New("missing destination address")
 	}
 
 	req := sip.NewRequest(sip.NOTIFY, recipient)
