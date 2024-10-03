@@ -159,9 +159,7 @@ func (c *outboundCall) closeWithTimeout() {
 
 func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 	c.stopped.Once(func() {
-		if status != "" {
-			c.setStatus(status)
-		}
+		c.setStatus(status)
 		if error {
 			c.log.Warnw("Closing outbound call with error", nil, "reason", reason)
 		} else {
@@ -170,7 +168,7 @@ func (c *outboundCall) close(error bool, status CallStatus, reason string) {
 		c.media.Close()
 		_ = c.lkRoom.CloseOutput()
 
-		_ = c.lkRoom.Close()
+		_ = c.lkRoom.CloseWithReason(status.DisconnectReason())
 		c.lkRoomIn = nil
 
 		c.stopSIP(reason)
@@ -198,7 +196,20 @@ func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.dialSIP(ctx); err != nil {
-		c.close(true, callDropped, "invite-failed")
+		status, reason := callDropped, "invite-failed"
+		isError := true
+		var e *ErrorStatus
+		if errors.As(err, &e) {
+			switch e.StatusCode {
+			case int(sip.StatusTemporarilyUnavailable):
+				status, reason = callUnavailable, "unavailable"
+				isError = false
+			case int(sip.StatusBusyHere):
+				status, reason = callRejected, "busy"
+				isError = false
+			}
+		}
+		c.close(isError, status, reason)
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.connectMedia()
@@ -220,7 +231,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 		c.c.RegisterTransferSIPParticipant(sipCallID, c)
 	}
 
-	attrs[AttrSIPCallStatus] = string(CallDialing)
+	attrs[AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
 	r := NewRoom(c.log)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
@@ -253,7 +264,6 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 	}
 	err := c.sipSignal(ctx)
 	if err != nil {
-		// TODO: busy, no-response
 		return err
 	}
 
@@ -307,12 +317,16 @@ func (c *outboundCall) stopSIP(reason string) {
 }
 
 func (c *outboundCall) setStatus(v CallStatus) {
+	attr := v.Attribute()
+	if attr == "" {
+		return
+	}
 	r := c.lkRoom.Room()
 	if r == nil {
 		return
 	}
 	r.LocalParticipant.SetAttributes(map[string]string{
-		AttrSIPCallStatus: string(v),
+		AttrSIPCallStatus: attr,
 	})
 }
 
@@ -503,11 +517,14 @@ authLoop:
 		}
 		var authHeaderName string
 		switch resp.StatusCode {
-		case 200:
+		case sip.StatusOK:
 			break authLoop
 		default:
 			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &ErrorStatus{StatusCode: int(resp.StatusCode)})
-		case 400:
+		case sip.StatusBadRequest,
+			sip.StatusNotFound,
+			sip.StatusTemporarilyUnavailable,
+			sip.StatusBusyHere:
 			err := &ErrorStatus{StatusCode: int(resp.StatusCode)}
 			if body := resp.Body(); len(body) != 0 {
 				err.Message = string(body)
@@ -515,10 +532,10 @@ authLoop:
 				err.Message = s.Value()
 			}
 			return nil, fmt.Errorf("INVITE failed: %w", err)
-		case 401:
+		case sip.StatusUnauthorized:
 			authHeaderName = "WWW-Authenticate"
 			authHeaderRespName = "Authorization"
-		case 407:
+		case sip.StatusProxyAuthRequired:
 			authHeaderName = "Proxy-Authenticate"
 			authHeaderRespName = "Proxy-Authorization"
 		}

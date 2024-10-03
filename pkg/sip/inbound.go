@@ -587,9 +587,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	if !c.done.CompareAndSwap(false, true) {
 		return
 	}
-	if status != "" {
-		c.setStatus(status)
-	}
+	c.setStatus(status)
 	c.mon.CallTerminate(reason)
 	if error {
 		c.log.Warnw("Closing inbound call with error", nil, "reason", reason)
@@ -637,6 +635,10 @@ func (c *inboundCall) closeMedia() {
 }
 
 func (c *inboundCall) setStatus(v CallStatus) {
+	attr := v.Attribute()
+	if attr == "" {
+		return
+	}
 	if c.lkRoom == nil {
 		return
 	}
@@ -646,7 +648,7 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	}
 
 	r.LocalParticipant.SetAttributes(map[string]string{
-		AttrSIPCallStatus: string(v),
+		AttrSIPCallStatus: attr,
 	})
 }
 
@@ -660,7 +662,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	for k, v := range c.extraAttrs {
 		partConf.Attributes[k] = v
 	}
-	partConf.Attributes[AttrSIPCallStatus] = string(CallActive)
+	partConf.Attributes[AttrSIPCallStatus] = CallActive.Attribute()
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
