@@ -489,6 +489,9 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 	case <-ctx.Done():
 		c.closeWithHangup()
 		return false
+	case <-c.lkRoom.Closed():
+		c.closeWithHangup()
+		return false
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
 		return false
@@ -508,6 +511,9 @@ func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
 		c.closeWithCancelled()
 		return false
 	case <-ctx.Done():
+		c.closeWithHangup()
+		return false
+	case <-c.lkRoom.Closed():
 		c.closeWithHangup()
 		return false
 	case <-c.media.Timeout():
@@ -944,6 +950,21 @@ func (c *sipInbound) Cancelled() <-chan struct{} {
 	return c.cancelled
 }
 
+func (c *sipInbound) setDestFromVia(r *sip.Response) {
+	// When behind LB, the source IP may be incorrect and/or the UDP "session" timeout may expire.
+	// This is critical for sending new requests like BYE.
+	//
+	// Thus, instead of relying on LB, we will contact the source IP directly (should be the first Via).
+	// BYE will also copy the same destination address from our response to INVITE.
+	if h, ok := c.invite.Via(); ok && h.Host != "" {
+		port := 5060
+		if h.Port != 0 {
+			port = h.Port
+		}
+		r.SetDestination(fmt.Sprintf("%s:%d", h.Host, port))
+	}
+}
+
 func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort int, sdpData []byte, headers map[string]string) error {
 	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
 	defer span.End()
@@ -957,18 +978,7 @@ func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
 	r.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: contactHost, Port: contactPort}})
 
-	// When behind LB, the source IP may be incorrect and/or the UDP "session" timeout may expire.
-	// This is critical for sending new requests like BYE.
-	//
-	// Thus, instead of relying on LB, we will contact the source IP directly (should be the first Via).
-	// BYE will also copy the same destination address from our response to INVITE.
-	if h, ok := c.invite.Via(); ok && h.Host != "" {
-		port := 5060
-		if h.Port != 0 {
-			port = h.Port
-		}
-		r.SetDestination(fmt.Sprintf("%s:%d", h.Host, port))
-	}
+	c.setDestFromVia(r)
 
 	r.AppendHeader(&contentTypeHeaderSDP)
 	for k, v := range headers {
@@ -1030,6 +1040,22 @@ func (c *sipInbound) sendBye() {
 	c.swapSrcDst(r)
 	c.drop()
 	sendAndACK(c, r)
+}
+
+func (c *sipInbound) sendRejected() {
+	if c.inviteOk != nil {
+		return // call already established
+	}
+	if c.inviteTx == nil {
+		return // rejected or closed
+	}
+	_, span := tracer.Start(context.Background(), "sipInbound.sendRejected")
+	defer span.End()
+
+	r := sip.NewResponseFromRequest(c.invite, sip.StatusBusyHere, "Rejected", nil)
+	c.setDestFromVia(r)
+	_ = c.inviteTx.Respond(r)
+	c.drop()
 }
 
 func (c *sipInbound) WriteRequest(req *sip.Request) error {
@@ -1122,12 +1148,14 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 	return nil
 }
 
-// Close the inbound call cleanly. Depending on the call state it will either send BYE or just terminate INVITE.
+// Close the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with busy status.
 func (c *sipInbound) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteOk != nil {
 		c.sendBye()
+	} else if c.inviteTx != nil {
+		c.sendRejected()
 	} else {
 		c.drop()
 	}
