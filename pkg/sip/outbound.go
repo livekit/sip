@@ -406,10 +406,10 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string) erro
 		return err
 	}
 
-	c.log.Infow("outbound l tranferred", "transferTo", transferTo)
+	c.log.Infow("outbound call tranferred", "transferTo", transferTo)
 
-	// This is needed to actually terminate the session before a media timeout
-	c.CloseWithReason(CallHangup, "call transferred")
+	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
+	time.AfterFunc(referByeTimeout, func() { c.CloseWithReason(CallHangup, "call transferred") })
 
 	return nil
 }
