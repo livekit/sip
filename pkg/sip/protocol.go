@@ -28,6 +28,7 @@ import (
 
 const (
 	notifyAckTimeout = 5 * time.Second
+	referByeTimeout  = time.Second
 )
 
 var (
