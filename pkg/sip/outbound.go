@@ -694,7 +694,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
 	}
 
-	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	req := NewReferRequest(c.invite, c.inviteOk, &sip.ContactHeader{Address: c.from.Address}, transferTo)
 	c.setCSeq(req)
 	cseq, _ := req.CSeq()
 

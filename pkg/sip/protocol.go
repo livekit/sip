@@ -75,7 +75,7 @@ func sendAndACK(c Signaling, req *sip.Request) {
 	}
 }
 
-func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, referToUrl string) *sip.Request {
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string) *sip.Request {
 	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
@@ -119,6 +119,8 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, r
 	if h, _ := inviteRequest.CSeq(); h != nil {
 		sip.CopyHeaders("CSeq", inviteRequest, req)
 	}
+
+	req.AppendHeader(contactHeader)
 
 	cseq, _ := req.CSeq()
 	cseq.SeqNo = cseq.SeqNo + 1
