@@ -1080,11 +1080,12 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 		return psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
 	}
 
-	req := NewReferRequest(c.invite, c.inviteOk, transferTo)
+	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
+	contactHeader := &sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp, Port: c.s.conf.SIPPort}}
+
+	req := NewReferRequest(c.invite, c.inviteOk, contactHeader, transferTo)
 	c.setCSeq(req)
 	c.swapSrcDst(req)
-
-	req.AppendHeader(&sip.ContactHeader{Address: c.to.Address})
 
 	cseq, _ := req.CSeq()
 	if cseq == nil {
