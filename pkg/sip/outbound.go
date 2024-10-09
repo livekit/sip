@@ -290,11 +290,15 @@ func (c *outboundCall) connectMedia() {
 	c.media.HandleDTMF(c.handleDTMF)
 }
 
-func sipResponse(tx sip.ClientTransaction, stop <-chan struct{}) (*sip.Response, error) {
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}) (*sip.Response, error) {
 	cnt := 0
 	for {
 		select {
+		case <-ctx.Done():
+			_ = tx.Cancel()
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
 		case <-stop:
+			_ = tx.Cancel()
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
 		case <-tx.Done():
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
@@ -333,6 +337,19 @@ func (c *outboundCall) setStatus(v CallStatus) {
 func (c *outboundCall) sipSignal(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "outboundCall.sipSignal")
 	defer span.End()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-ctx.Done():
+			// parent context cancellation or success
+			return
+		case <-c.Disconnected():
+		case <-c.Closed():
+		}
+		cancel()
+	}()
 
 	sdpOffer, err := c.media.NewOffer()
 	if err != nil {
@@ -632,7 +649,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.To
 	}
 	defer tx.Terminate()
 
-	resp, err := sipResponse(tx, c.c.closing.Watch())
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch())
 	return req, resp, err
 }
 
@@ -654,22 +671,22 @@ func (c *sipOutbound) sendBye() {
 	if c.invite == nil || c.inviteOk == nil {
 		return // call wasn't established
 	}
-	_, span := tracer.Start(context.Background(), "sipOutbound.sendBye")
+	ctx := context.Background()
+	_, span := tracer.Start(ctx, "sipOutbound.sendBye")
 	defer span.End()
-	bye := sip.NewByeRequest(c.invite, c.inviteOk, nil)
-	bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
+	r.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 	if c.c.closing.IsBroken() {
 		// do not wait for a response
-		_ = c.WriteRequest(bye)
+		_ = c.WriteRequest(r)
 		return
 	}
-	c.setCSeq(bye)
+	c.setCSeq(r)
 	c.drop()
-	sendAndACK(c, bye)
+	sendAndACK(ctx, c, r)
 }
 
 func (c *sipOutbound) drop() {
-	// TODO: cancel the call?
 	c.invite = nil
 	c.inviteOk = nil
 	c.nextRequestCSeq = 0
@@ -705,7 +722,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, err := sendRefer(c, req, c.c.closing.Watch())
+	_, err := sendRefer(ctx, c, req, c.c.closing.Watch())
 	if err != nil {
 		return err
 	}

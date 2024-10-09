@@ -757,7 +757,7 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 }
 
 func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error {
-	err := c.cc.transferCall(ctx, transferTo)
+	err := c.cc.TransferCall(ctx, transferTo)
 	if err != nil {
 		return err
 	}
@@ -1031,7 +1031,8 @@ func (c *sipInbound) sendBye() {
 	if c.invite == nil {
 		return // rejected or closed
 	}
-	_, span := tracer.Start(context.Background(), "sipInbound.sendBye")
+	ctx := context.Background()
+	_, span := tracer.Start(ctx, "sipInbound.sendBye")
 	defer span.End()
 	// This function is for clients, so we need to swap src and dest
 	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
@@ -1039,7 +1040,7 @@ func (c *sipInbound) sendBye() {
 	c.setCSeq(r)
 	c.swapSrcDst(r)
 	c.drop()
-	sendAndACK(c, r)
+	sendAndACK(ctx, c, r)
 }
 
 func (c *sipInbound) sendRejected() {
@@ -1066,18 +1067,17 @@ func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error
 	return c.s.sipSrv.TransactionLayer().Request(req)
 }
 
-func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error {
+func (c *sipInbound) newReferReq(transferTo string) (*sip.Request, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.invite == nil || c.inviteOk == nil {
-		c.mu.Unlock()
-		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
+		return nil, psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
 	from, _ := c.invite.From()
 	if from == nil {
-		c.mu.Unlock()
-		return psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
+		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
 	}
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
@@ -1089,13 +1089,19 @@ func (c *sipInbound) transferCall(ctx context.Context, transferTo string) error 
 
 	cseq, _ := req.CSeq()
 	if cseq == nil {
-		c.mu.Unlock()
-		return psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
+		return nil, psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
 	}
 	c.referCseq = cseq.SeqNo
-	c.mu.Unlock()
+	return req, nil
+}
 
-	_, err := sendRefer(c, req, c.s.closing.Watch())
+func (c *sipInbound) TransferCall(ctx context.Context, transferTo string) error {
+	req, err := c.newReferReq(transferTo)
+	if err != nil {
+		return err
+	}
+
+	_, err = sendRefer(ctx, c, req, c.s.closing.Watch())
 	if err != nil {
 		return err
 	}
@@ -1119,6 +1125,8 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 	}
 
 	switch method {
+	default:
+		return nil
 	case sip.REFER:
 		c.mu.RLock()
 		defer c.mu.RUnlock()
@@ -1128,25 +1136,25 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 			return nil
 		}
 
+		var result error
 		switch {
 		case status >= 100 && status < 200:
 			// still trying
+			return nil
 		case status == 200:
 			// Success
-			select {
-			case c.referDone <- nil:
-			case <-time.After(notifyAckTimeout):
-			}
+			result = nil
 		default:
 			// Failure
-			select {
 			// TODO be more specific in the reported error
-			case c.referDone <- psrpc.NewErrorf(psrpc.Canceled, "call transfer failed"):
-			case <-time.After(notifyAckTimeout):
-			}
+			result = psrpc.NewErrorf(psrpc.Canceled, "call transfer failed")
 		}
+		select {
+		case c.referDone <- result:
+		case <-time.After(notifyAckTimeout):
+		}
+		return nil
 	}
-	return nil
 }
 
 // Close the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with busy status.
