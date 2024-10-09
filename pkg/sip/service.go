@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/emiago/sipgo"
@@ -36,6 +37,14 @@ type Service struct {
 	mon  *stats.Monitor
 	cli  *Client
 	srv  *Server
+
+	mu               sync.Mutex
+	pendingTransfers map[transferKey]struct{}
+}
+
+type transferKey struct {
+	SipCallId  string
+	TransferTo string
 }
 
 func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Service {
@@ -43,11 +52,12 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Ser
 		log = logger.GetLogger()
 	}
 	s := &Service{
-		conf: conf,
-		log:  log,
-		mon:  mon,
-		cli:  NewClient(conf, log, mon),
-		srv:  NewServer(conf, log, mon),
+		conf:             conf,
+		log:              log,
+		mon:              mon,
+		cli:              NewClient(conf, log, mon),
+		srv:              NewServer(conf, log, mon),
+		pendingTransfers: make(map[transferKey]struct{}),
 	}
 	return s
 }
@@ -126,6 +136,25 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 
 	ctx, done := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer done()
+
+	s.mu.Lock()
+	k := transferKey{
+		SipCallId:  req.SipCallId,
+		TransferTo: req.TransferTo,
+	}
+	if _, ok := s.pendingTransfers[k]; ok {
+		s.mu.Unlock()
+		s.log.Debugw("repeated request for call transfer", "callID", req.SipCallId, "transferTo", req.TransferTo)
+		return &emptypb.Empty{}, nil
+	}
+	s.pendingTransfers[k] = struct{}{}
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingTransfers, k)
+		s.mu.Unlock()
+	}()
 
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
