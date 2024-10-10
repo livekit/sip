@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -60,13 +61,13 @@ type Signaling interface {
 	Drop()
 }
 
-func sendAndACK(c Signaling, req *sip.Request) {
+func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
 	tx, err := c.Transaction(req)
 	if err != nil {
 		return
 	}
 	defer tx.Terminate()
-	r, err := sipResponse(tx, nil)
+	r, err := sipResponse(ctx, tx, nil)
 	if err != nil {
 		return
 	}
@@ -138,14 +139,15 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	return req
 }
 
-func sendRefer(c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
+func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Terminate()
 
-	resp, err := sipResponse(tx, stop)
+	ctx = context.WithoutCancel(ctx)
+	resp, err := sipResponse(ctx, tx, stop)
 	if err != nil {
 		return nil, err
 	}

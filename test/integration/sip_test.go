@@ -846,87 +846,95 @@ func TestSIPOutbound(t *testing.T) {
 		meta     = `{"test":true}`
 	)
 
-	for _, withPin := range []bool{true, false} {
-		name := "pin"
-		if !withPin {
-			name = "open"
-		}
-		t.Run(name, func(t *testing.T) {
-			headersIn := map[string]string{
-				"X-LK-From-1": "inbound",
-			}
-			roomPin, dtmfPin := roomPin, dtmfPin
-			if withPin {
-				// We cannot set headers because of the PIN. See TestSIPJoinPinRoom for details.
-				delete(headersIn, "X-LK-From-1")
-			} else {
-				roomPin, dtmfPin = "", ""
-			}
-			// Configure Trunk for inbound server.
-			trunkIn := srvIn.CreateTrunkIn(t, &livekit.SIPInboundTrunkInfo{
-				Numbers:      []string{serverNumber},
-				AuthUsername: userName,
-				AuthPassword: userPass,
-				Headers:      headersIn,
-				HeadersToAttributes: map[string]string{
-					"X-LK-From-2": "test.lk.from",
-				},
-			})
-			t.Cleanup(func() {
-				srvIn.DeleteTrunk(t, trunkIn)
-			})
-			ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta, nil)
-			t.Cleanup(func() {
-				srvIn.DeleteDispatch(t, ruleIn)
-			})
-
-			// Configure Trunk for outbound server and make a SIP call.
-			trunkOut := srvOut.CreateTrunkOut(t, &livekit.SIPOutboundTrunkInfo{
-				Numbers:      []string{clientNumber},
-				Address:      srvIn.Address,
-				AuthUsername: userName,
-				AuthPassword: userPass,
-				Headers: map[string]string{
-					"X-LK-From-2": "outbound",
-				},
-				HeadersToAttributes: map[string]string{
-					"X-LK-From-1": "test.lk.from",
-				},
-			})
-			t.Cleanup(func() {
-				srvIn.DeleteTrunk(t, trunkOut)
-			})
-
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
-
-			expAttrsIn := map[string]string{
-				"test.lk.from": "outbound",
-			}
-			expAttrsOut := map[string]string{
-				"test.lk.from": "inbound",
-			}
-			if withPin {
-				delete(expAttrsOut, "test.lk.from")
-			}
-			// Run the test twice to make sure participants with the same identities can be re-created.
-			for i := 0; i < 2; i++ {
-				// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
-				t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
-					lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
-						TrunkOut:  trunkOut,
-						NumberOut: clientNumber,
-						RoomOut:   "outbound",
-						TrunkIn:   trunkIn,
-						RuleIn:    ruleIn,
-						NumberIn:  serverNumber,
-						RoomIn:    roomIn,
-						RoomPin:   dtmfPin,
-						MetaIn:    meta,
-						AttrsIn:   expAttrsIn,
-						AttrsOut:  expAttrsOut,
-						TestDMTF:  true,
+	for _, tr := range []livekit.SIPTransport{
+		livekit.SIPTransport_SIP_TRANSPORT_UDP,
+		livekit.SIPTransport_SIP_TRANSPORT_TCP,
+	} {
+		t.Run(tr.String(), func(t *testing.T) {
+			for _, withPin := range []bool{true, false} {
+				name := "pin"
+				if !withPin {
+					name = "open"
+				}
+				t.Run(name, func(t *testing.T) {
+					headersIn := map[string]string{
+						"X-LK-From-1": "inbound",
+					}
+					roomPin, dtmfPin := roomPin, dtmfPin
+					if withPin {
+						// We cannot set headers because of the PIN. See TestSIPJoinPinRoom for details.
+						delete(headersIn, "X-LK-From-1")
+					} else {
+						roomPin, dtmfPin = "", ""
+					}
+					// Configure Trunk for inbound server.
+					trunkIn := srvIn.CreateTrunkIn(t, &livekit.SIPInboundTrunkInfo{
+						Numbers:      []string{serverNumber},
+						AuthUsername: userName,
+						AuthPassword: userPass,
+						Headers:      headersIn,
+						HeadersToAttributes: map[string]string{
+							"X-LK-From-2": "test.lk.from",
+						},
 					})
+					t.Cleanup(func() {
+						srvIn.DeleteTrunk(t, trunkIn)
+					})
+					ruleIn := srvIn.CreateDirectDispatch(t, roomIn, roomPin, meta, nil)
+					t.Cleanup(func() {
+						srvIn.DeleteDispatch(t, ruleIn)
+					})
+
+					// Configure Trunk for outbound server and make a SIP call.
+					trunkOut := srvOut.CreateTrunkOut(t, &livekit.SIPOutboundTrunkInfo{
+						Numbers:      []string{clientNumber},
+						Address:      srvIn.Address,
+						Transport:    tr,
+						AuthUsername: userName,
+						AuthPassword: userPass,
+						Headers: map[string]string{
+							"X-LK-From-2": "outbound",
+						},
+						HeadersToAttributes: map[string]string{
+							"X-LK-From-1": "test.lk.from",
+						},
+					})
+					t.Cleanup(func() {
+						srvIn.DeleteTrunk(t, trunkOut)
+					})
+
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+
+					expAttrsIn := map[string]string{
+						"test.lk.from": "outbound",
+					}
+					expAttrsOut := map[string]string{
+						"test.lk.from": "inbound",
+					}
+					if withPin {
+						delete(expAttrsOut, "test.lk.from")
+					}
+					// Run the test twice to make sure participants with the same identities can be re-created.
+					for i := 0; i < 2; i++ {
+						// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
+						t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
+							lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
+								TrunkOut:  trunkOut,
+								NumberOut: clientNumber,
+								RoomOut:   "outbound",
+								TrunkIn:   trunkIn,
+								RuleIn:    ruleIn,
+								NumberIn:  serverNumber,
+								RoomIn:    roomIn,
+								RoomPin:   dtmfPin,
+								MetaIn:    meta,
+								AttrsIn:   expAttrsIn,
+								AttrsOut:  expAttrsOut,
+								TestDMTF:  true,
+							})
+						})
+					}
 				})
 			}
 		})

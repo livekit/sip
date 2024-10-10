@@ -82,7 +82,15 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	})
 
 	// Start the outbound call. It should hit Trunk Provider and initiate an inbound call back to the second server.
-	lkOut.CreateSIPParticipant(t, params.TrunkOut, params.RoomOut, outIdentity, outName, outMeta, params.NumberIn, params.RoomPin)
+	lkOut.CreateSIPParticipant(t, &livekit.CreateSIPParticipantRequest{
+		SipTrunkId:          params.TrunkOut,
+		SipCallTo:           params.NumberIn,
+		RoomName:            params.RoomOut,
+		ParticipantIdentity: outIdentity,
+		ParticipantName:     outName,
+		ParticipantMetadata: outMeta,
+		Dtmf:                params.RoomPin,
+	})
 
 	const (
 		nameOut = "testOut"

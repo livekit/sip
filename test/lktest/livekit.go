@@ -80,16 +80,8 @@ func (lk *LiveKit) RoomParticipants(t TB, room string) []*livekit.ParticipantInf
 	return resp.Participants
 }
 
-func (lk *LiveKit) CreateSIPParticipant(t TB, trunk, room, identity, name, meta, number, dtmf string) {
-	r, err := lk.SIP.CreateSIPParticipant(context.Background(), &livekit.CreateSIPParticipantRequest{
-		SipTrunkId:          trunk,
-		SipCallTo:           number,
-		RoomName:            room,
-		ParticipantIdentity: identity,
-		ParticipantName:     name,
-		ParticipantMetadata: meta,
-		Dtmf:                dtmf,
-	})
+func (lk *LiveKit) CreateSIPParticipant(t TB, req *livekit.CreateSIPParticipantRequest) {
+	r, err := lk.SIP.CreateSIPParticipant(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +89,7 @@ func (lk *LiveKit) CreateSIPParticipant(t TB, trunk, room, identity, name, meta,
 	// Some tests may reuse LK server, in which case the participant could stay in a room for a long time.
 	t.Cleanup(func() {
 		_, _ = lk.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
-			Room: room, Identity: r.ParticipantIdentity,
+			Room: req.RoomName, Identity: r.ParticipantIdentity,
 		})
 	})
 }
