@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
 
 	"github.com/emiago/sipgo"
@@ -28,6 +29,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
+
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
@@ -39,8 +41,8 @@ type Client struct {
 	mon  *stats.Monitor
 
 	sipCli           *sipgo.Client
-	signalingIp      string
-	signalingIpLocal string
+	signalingIp      netip.Addr
+	signalingIpLocal netip.Addr
 
 	closing     core.Fuse
 	cmu         sync.Mutex
@@ -74,7 +76,11 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 			return err
 		}
 	} else if c.conf.NAT1To1IP != "" {
-		c.signalingIp = c.conf.NAT1To1IP
+		ip, err := netip.ParseAddr(c.conf.NAT1To1IP)
+		if err != nil {
+			return err
+		}
+		c.signalingIp = ip
 		c.signalingIpLocal = c.signalingIp
 	} else {
 		if c.signalingIp, err = getLocalIP(c.conf.LocalNet); err != nil {
@@ -95,7 +101,7 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 	}
 
 	c.sipCli, err = sipgo.NewClient(agent,
-		sipgo.WithClientHostname(c.signalingIp),
+		sipgo.WithClientHostname(c.signalingIp.String()),
 		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
 	)
 	if err != nil {

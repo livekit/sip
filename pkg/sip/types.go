@@ -100,6 +100,17 @@ func (u URI) GetURI() *sip.Uri {
 	return su
 }
 
+func (u URI) GetContactURI() *sip.Uri {
+	su := &sip.Uri{
+		User: u.User,
+		Host: u.Addr.Addr().String(),
+	}
+	if port := u.Addr.Port(); port != 0 {
+		su.Port = int(port)
+	}
+	return su
+}
+
 type LocalTag string
 type RemoteTag string
 

@@ -74,7 +74,7 @@ type outboundCall struct {
 
 func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	if sipConf.host == "" {
-		sipConf.host = c.signalingIp
+		sipConf.host = c.signalingIp.String()
 	}
 	call := &outboundCall{
 		c:   c,
@@ -82,7 +82,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		cc: c.newOutbound(id, URI{
 			User: sipConf.from,
 			Host: sipConf.host,
-			Addr: netip.AddrPortFrom(netip.Addr{}, uint16(conf.SIPPort)),
+			Addr: netip.AddrPortFrom(c.signalingIp, uint16(conf.SIPPort)),
 		}),
 		sipConf: sipConf,
 	}
@@ -438,19 +438,24 @@ func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
 		Address:     *from.GetURI(),
 		Params:      sip.NewParams(),
 	}
+	contactHeader := &sip.ContactHeader{
+		Address: *from.GetContactURI(),
+	}
 	fromHeader.Params.Add("tag", string(id))
 	return &sipOutbound{
 		c:         c,
 		id:        id,
 		from:      fromHeader,
+		contact:   contactHeader,
 		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
 }
 
 type sipOutbound struct {
-	c    *Client
-	id   LocalTag
-	from *sip.FromHeader
+	c       *Client
+	id      LocalTag
+	from    *sip.FromHeader
+	contact *sip.ContactHeader
 
 	mu              sync.RWMutex
 	tag             RemoteTag
@@ -631,7 +636,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.To
 	req.SetBody(offer)
 	req.AppendHeader(to)
 	req.AppendHeader(c.from)
-	req.AppendHeader(&sip.ContactHeader{Address: c.from.Address})
+	req.AppendHeader(c.contact)
 
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))

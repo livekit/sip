@@ -147,7 +147,7 @@ func sdpAnswerMediaDesc(rtpListenerPort int, res *MediaConf) []*sdp.MediaDescrip
 	}
 }
 
-func sdpGenerateOffer(publicIp string, rtpListenerPort int) ([]byte, error) {
+func sdpGenerateOffer(publicIp netip.Addr, rtpListenerPort int) ([]byte, error) {
 	sessId := rand.Uint64() // TODO: do we need to track these?
 
 	mediaDesc := sdpMediaOffer(rtpListenerPort)
@@ -159,13 +159,13 @@ func sdpGenerateOffer(publicIp string, rtpListenerPort int) ([]byte, error) {
 			SessionVersion: sessId,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
-			UnicastAddress: publicIp,
+			UnicastAddress: publicIp.String(),
 		},
 		SessionName: "LiveKit",
 		ConnectionInformation: &sdp.ConnectionInformation{
 			NetworkType: "IN",
 			AddressType: "IP4",
-			Address:     &sdp.Address{Address: publicIp},
+			Address:     &sdp.Address{Address: publicIp.String()},
 		},
 		TimeDescriptions: []sdp.TimeDescription{
 			{
@@ -182,7 +182,7 @@ func sdpGenerateOffer(publicIp string, rtpListenerPort int) ([]byte, error) {
 	return data, err
 }
 
-func sdpGenerateAnswer(offer *sdp.SessionDescription, publicIp string, rtpListenerPort int, res *MediaConf) ([]byte, error) {
+func sdpGenerateAnswer(offer *sdp.SessionDescription, publicIp netip.Addr, rtpListenerPort int, res *MediaConf) ([]byte, error) {
 	answer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
@@ -191,13 +191,13 @@ func sdpGenerateAnswer(offer *sdp.SessionDescription, publicIp string, rtpListen
 			SessionVersion: offer.Origin.SessionID + 2,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
-			UnicastAddress: publicIp,
+			UnicastAddress: publicIp.String(),
 		},
 		SessionName: "LiveKit",
 		ConnectionInformation: &sdp.ConnectionInformation{
 			NetworkType: "IN",
 			AddressType: "IP4",
-			Address:     &sdp.Address{Address: publicIp},
+			Address:     &sdp.Address{Address: publicIp.String()},
 		},
 		TimeDescriptions: []sdp.TimeDescription{
 			{

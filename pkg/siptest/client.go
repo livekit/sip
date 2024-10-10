@@ -24,6 +24,7 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -49,7 +50,7 @@ import (
 )
 
 type ClientConfig struct {
-	IP             string
+	IP             netip.Addr
 	Number         string
 	AuthUser       string
 	AuthPass       string
@@ -73,7 +74,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if id != "" {
 		conf.Log = conf.Log.With("id", id)
 	}
-	if conf.IP == "" {
+	if !conf.IP.IsValid() {
 		localIP, err := config.GetLocalIP()
 		if err != nil {
 			return nil, err
@@ -123,7 +124,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	cli.sipClient, err = sipgo.NewClient(ua, sipgo.WithClientHostname(conf.IP))
+	cli.sipClient, err = sipgo.NewClient(ua, sipgo.WithClientHostname(conf.IP.String()))
 	if err != nil {
 		cli.Close()
 		return nil, err
@@ -183,7 +184,7 @@ type Client struct {
 }
 
 func (c *Client) LocalIP() string {
-	return c.conf.IP
+	return c.conf.IP.String()
 }
 
 func (c *Client) RemoteHeaders() []sip.Header {
@@ -501,13 +502,13 @@ func (c *Client) createOffer() ([]byte, error) {
 			SessionVersion: sessionId,
 			NetworkType:    "IN",
 			AddressType:    "IP4",
-			UnicastAddress: c.conf.IP,
+			UnicastAddress: c.conf.IP.String(),
 		},
 		SessionName: "LiveKit",
 		ConnectionInformation: &sdp.ConnectionInformation{
 			NetworkType: "IN",
 			AddressType: "IP4",
-			Address:     &sdp.Address{Address: c.conf.IP},
+			Address:     &sdp.Address{Address: c.conf.IP.String()},
 		},
 		TimeDescriptions: []sdp.TimeDescription{
 			{

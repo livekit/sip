@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +34,7 @@ import (
 )
 
 type MediaConfig struct {
-	IP                  string
+	IP                  netip.Addr
 	Ports               rtcconfig.PortRange
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
@@ -71,7 +72,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPCon
 type MediaPort struct {
 	log              logger.Logger
 	mon              *stats.CallMonitor
-	externalIP       string
+	externalIP       netip.Addr
 	conn             *rtp.Conn
 	mediaTimeout     <-chan struct{}
 	dtmfAudioEnabled bool

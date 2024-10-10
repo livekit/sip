@@ -17,6 +17,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"time"
 
@@ -164,14 +165,14 @@ func (c *Config) GetLoggerFields() logrus.Fields {
 	return fields
 }
 
-func GetLocalIP() (string, error) {
+func GetLocalIP() (netip.Addr, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", nil
+		return netip.Addr{}, nil
 	}
 	type Iface struct {
 		Name string
-		Addr net.IP
+		Addr netip.Addr
 	}
 	var candidates []Iface
 	for _, ifc := range ifaces {
@@ -191,15 +192,16 @@ func GetLocalIP() (string, error) {
 				continue
 			}
 			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				ip, _ := netip.AddrFromSlice(ip4)
 				candidates = append(candidates, Iface{
-					Name: ifc.Name, Addr: ip4,
+					Name: ifc.Name, Addr: ip,
 				})
-				logger.Debugw("considering interface", "iface", ifc.Name, "ip", ip4)
+				logger.Debugw("considering interface", "iface", ifc.Name, "ip", ip)
 			}
 		}
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("No local IP found")
+		return netip.Addr{}, fmt.Errorf("No local IP found")
 	}
-	return candidates[0].Addr.String(), nil
+	return candidates[0].Addr, nil
 }

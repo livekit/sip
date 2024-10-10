@@ -31,6 +31,7 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+
 	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/config"
@@ -110,8 +111,8 @@ type Server struct {
 	sipConnUDP       *net.UDPConn
 	sipConnTCP       *net.TCPListener
 	sipUnhandled     RequestHandler
-	signalingIp      string
-	signalingIpLocal string
+	signalingIp      netip.Addr
+	signalingIpLocal netip.Addr
 
 	inProgressInvites []*inProgressInvite
 
@@ -208,7 +209,11 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 			return err
 		}
 	} else if s.conf.NAT1To1IP != "" {
-		s.signalingIp = s.conf.NAT1To1IP
+		ip, err := netip.ParseAddr(s.conf.NAT1To1IP)
+		if err != nil {
+			return err
+		}
+		s.signalingIp = ip
 		s.signalingIpLocal = s.signalingIp
 	} else {
 		if s.signalingIp, err = getLocalIP(s.conf.LocalNet); err != nil {

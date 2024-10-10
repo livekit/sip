@@ -66,7 +66,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		Redis:             lk.Redis,
 		SIPPort:           sipPort,
 		SIPPortListen:     sipPort,
-		ListenIP:          local,
+		ListenIP:          local.String(),
 		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
 		UseExternalIP:     false,
 		MaxCpuUtilization: 0.9,
