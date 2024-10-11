@@ -43,17 +43,19 @@ import (
 )
 
 type sipOutboundConfig struct {
-	address        string
-	transport      livekit.SIPTransport
-	host           string
-	from           string
-	to             string
-	user           string
-	pass           string
-	dtmf           string
-	ringtone       bool
-	headers        map[string]string
-	headersToAttrs map[string]string
+	address         string
+	transport       livekit.SIPTransport
+	host            string
+	from            string
+	to              string
+	user            string
+	pass            string
+	dtmf            string
+	ringtone        bool
+	headers         map[string]string
+	headersToAttrs  map[string]string
+	ringingTimeout  time.Duration
+	maxCallDuration time.Duration
 }
 
 type outboundCall struct {
@@ -75,6 +77,12 @@ type outboundCall struct {
 func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
 	if sipConf.host == "" {
 		sipConf.host = c.signalingIp.String()
+	}
+	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
+		sipConf.maxCallDuration = maxCallDuration
+	}
+	if sipConf.ringingTimeout <= 0 {
+		sipConf.ringingTimeout = defaultRingingTimeout
 	}
 	call := &outboundCall{
 		c:   c,
@@ -112,6 +120,8 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 
 func (c *outboundCall) Start(ctx context.Context) {
 	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
+	defer cancel()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 	err := c.ConnectSIP(ctx)
@@ -231,7 +241,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 		c.c.RegisterTransferSIPParticipant(sipCallID, c)
 	}
 
-	attrs[AttrSIPCallStatus] = CallDialing.Attribute()
+	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
 	r := NewRoom(c.log)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
@@ -330,13 +340,19 @@ func (c *outboundCall) setStatus(v CallStatus) {
 		return
 	}
 	r.LocalParticipant.SetAttributes(map[string]string{
-		AttrSIPCallStatus: attr,
+		livekit.AttrSIPCallStatus: attr,
 	})
 }
 
 func (c *outboundCall) sipSignal(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "outboundCall.sipSignal")
 	defer span.End()
+
+	if c.sipConf.ringingTimeout > 0 {
+		var cancel func()
+		ctx, cancel = context.WithTimeout(ctx, c.sipConf.ringingTimeout)
+		defer cancel()
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

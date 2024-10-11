@@ -14,7 +14,22 @@
 
 package sip
 
-import "github.com/livekit/protocol/livekit"
+import (
+	"time"
+
+	"github.com/livekit/protocol/livekit"
+)
+
+const (
+	// maxCallDuration sets a global max call duration.
+	maxCallDuration = 24 * time.Hour
+	// defaultRingingTimeout is a maximal duration which SIP participant will wait to connect.
+	//
+	// For inbound, the participant will wait this duration for other participant tracks.
+	//
+	// For outbound, this sets a timeout for the other end to pick up the call.
+	defaultRingingTimeout = 3 * time.Minute
+)
 
 var headerToLog = map[string]string{
 	"X-Twilio-AccountSid": "twilioAccSID",
@@ -26,10 +41,6 @@ var headerToAttr = map[string]string{
 	"X-Twilio-CallSid":    livekit.AttrSIPPrefix + "twilio.callSid",
 	"X-Lk-Test-Id":        "lktest.id",
 }
-
-const (
-	AttrSIPCallStatus = livekit.AttrSIPPrefix + "callStatus"
-)
 
 type CallStatus int
 

@@ -102,6 +102,8 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			Headers:             resp.Headers,
 			HeadersToAttributes: resp.HeadersToAttributes,
 			EnabledFeatures:     resp.EnabledFeatures,
+			RingingTimeout:      resp.RingingTimeout.AsDuration(),
+			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
@@ -123,6 +125,8 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			Headers:             resp.Headers,
 			HeadersToAttributes: resp.HeadersToAttributes,
 			EnabledFeatures:     resp.EnabledFeatures,
+			RingingTimeout:      resp.RingingTimeout.AsDuration(),
+			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{

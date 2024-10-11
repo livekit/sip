@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -93,6 +94,8 @@ type CallDispatch struct {
 	Headers             map[string]string
 	HeadersToAttributes map[string]string
 	EnabledFeatures     []rpc.SIPFeature
+	RingingTimeout      time.Duration
+	MaxCallDuration     time.Duration
 }
 
 type Handler interface {
