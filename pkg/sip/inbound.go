@@ -47,10 +47,6 @@ const (
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
-
-	// callSubscribeTimeout is a maximal duration which SIP participant will wait for other participant tracks.
-	// If no participant tracks are published by this time, the call will disconnect.
-	callSubscribeTimeout = 3 * time.Minute
 )
 
 func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
@@ -397,6 +393,14 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			}
 		}
 	}
+	if disp.MaxCallDuration <= 0 || disp.MaxCallDuration > maxCallDuration {
+		disp.MaxCallDuration = maxCallDuration
+	}
+	if disp.RingingTimeout <= 0 {
+		disp.RingingTimeout = defaultRingingTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
+	defer cancel()
 	if !c.joinRoom(ctx, disp.Room) {
 		return // already sent a response
 	}
@@ -411,7 +415,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		c.log.Infow("Waiting for track subscription(s)")
 		// For dispatches without pin, we first wait for LK participant to become available,
 		// and also for at least one track subscription. In the meantime we keep ringing.
-		if !c.waitSubscribe(ctx) {
+		if !c.waitSubscribe(ctx, disp.RingingTimeout) {
 			return // already sent a response
 		}
 		if !acceptCall() {
@@ -502,11 +506,11 @@ func (c *inboundCall) waitMedia(ctx context.Context) bool {
 	return true
 }
 
-func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
+func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) bool {
 	ctx, span := tracer.Start(ctx, "inboundCall.waitSubscribe")
 	defer span.End()
-	timeout := time.NewTimer(callSubscribeTimeout)
-	defer timeout.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-c.cc.Cancelled():
 		c.closeWithCancelled()
@@ -520,7 +524,7 @@ func (c *inboundCall) waitSubscribe(ctx context.Context) bool {
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
 		return false
-	case <-timeout.C:
+	case <-timer.C:
 		c.close(false, callDropped, "cannot-subscribe")
 		return false
 	case <-c.lkRoom.Subscribed():
@@ -665,7 +669,7 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	}
 
 	r.LocalParticipant.SetAttributes(map[string]string{
-		AttrSIPCallStatus: attr,
+		livekit.AttrSIPCallStatus: attr,
 	})
 }
 
@@ -679,7 +683,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	for k, v := range c.extraAttrs {
 		partConf.Attributes[k] = v
 	}
-	partConf.Attributes[AttrSIPCallStatus] = CallActive.Attribute()
+	partConf.Attributes[livekit.AttrSIPCallStatus] = CallActive.Attribute()
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():

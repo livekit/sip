@@ -179,17 +179,19 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		},
 	}
 	sipConf := sipOutboundConfig{
-		address:        req.Address,
-		transport:      req.Transport,
-		host:           req.Hostname,
-		from:           req.Number,
-		to:             req.CallTo,
-		user:           req.Username,
-		pass:           req.Password,
-		dtmf:           req.Dtmf,
-		ringtone:       req.PlayRingtone,
-		headers:        req.Headers,
-		headersToAttrs: req.HeadersToAttributes,
+		address:         req.Address,
+		transport:       req.Transport,
+		host:            req.Hostname,
+		from:            req.Number,
+		to:              req.CallTo,
+		user:            req.Username,
+		pass:            req.Password,
+		dtmf:            req.Dtmf,
+		ringtone:        req.PlayRingtone,
+		headers:         req.Headers,
+		headersToAttrs:  req.HeadersToAttributes,
+		ringingTimeout:  req.RingingTimeout.AsDuration(),
+		maxCallDuration: req.MaxCallDuration.AsDuration(),
 	}
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
