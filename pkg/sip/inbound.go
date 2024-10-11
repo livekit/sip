@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -362,7 +363,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 	acceptCall := func() bool {
 		c.log.Infow("Accepting the call", "headers", disp.Headers)
-		if err = c.cc.Accept(ctx, c.s.signalingIp, c.s.conf.SIPPort, answerData, disp.Headers); err != nil {
+		if err = c.cc.Accept(ctx, netip.AddrPortFrom(c.s.signalingIp, uint16(c.s.conf.SIPPort)), answerData, disp.Headers); err != nil {
 			c.log.Errorw("Cannot respond to INVITE", err)
 			return false
 		}
@@ -965,7 +966,7 @@ func (c *sipInbound) setDestFromVia(r *sip.Response) {
 	}
 }
 
-func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort int, sdpData []byte, headers map[string]string) error {
+func (c *sipInbound) Accept(ctx context.Context, contactHost netip.AddrPort, sdpData []byte, headers map[string]string) error {
 	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
 	defer span.End()
 	c.mu.Lock()
@@ -976,7 +977,7 @@ func (c *sipInbound) Accept(ctx context.Context, contactHost string, contactPort
 	r := sip.NewResponseFromRequest(c.invite, 200, "OK", sdpData)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
-	r.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: contactHost, Port: contactPort}})
+	r.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: contactHost.Addr().String(), Port: int(contactHost.Port())}})
 
 	c.setDestFromVia(r)
 
@@ -1081,7 +1082,7 @@ func (c *sipInbound) newReferReq(transferTo string) (*sip.Request, error) {
 	}
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
-	contactHeader := &sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp, Port: c.s.conf.SIPPort}}
+	contactHeader := &sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp.String(), Port: c.s.conf.SIPPort}}
 
 	req := NewReferRequest(c.invite, c.inviteOk, contactHeader, transferTo)
 	c.setCSeq(req)

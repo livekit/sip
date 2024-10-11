@@ -20,45 +20,47 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 )
 
-func getPublicIP() (string, error) {
+func getPublicIP() (netip.Addr, error) {
 	req, err := http.Get("http://ip-api.com/json/")
 	if err != nil {
-		return "", err
+		return netip.Addr{}, err
 	}
 	defer req.Body.Close()
 
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return "", err
+		return netip.Addr{}, err
 	}
 
 	ip := struct {
 		Query string
 	}{}
 	if err = json.Unmarshal(body, &ip); err != nil {
-		return "", err
+		return netip.Addr{}, err
 	}
 
 	if ip.Query == "" {
-		return "", fmt.Errorf("Query entry was not populated")
+		return netip.Addr{}, fmt.Errorf("Query entry was not populated")
 	}
 
-	return ip.Query, nil
+	return netip.ParseAddr(ip.Query)
 }
 
-func getLocalIP(localNet string) (string, error) {
+func getLocalIP(localNet string) (netip.Addr, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", err
+		return netip.Addr{}, err
 	}
-	var netw *net.IPNet
+	var netw *netip.Prefix
 	if localNet != "" {
-		_, netw, err = net.ParseCIDR(localNet)
+		nw, err := netip.ParsePrefix(localNet)
 		if err != nil {
-			return "", err
+			return netip.Addr{}, err
 		}
+		netw = &nw
 	}
 	for _, i := range ifaces {
 		addrs, err := i.Addrs()
@@ -69,23 +71,33 @@ func getLocalIP(localNet string) (string, error) {
 		for _, a := range addrs {
 			switch v := a.(type) {
 			case *net.IPAddr:
-				if netw != nil && !netw.Contains(v.IP) {
+				if v.IP.To4() == nil {
 					continue
 				}
-				if !v.IP.IsLoopback() && v.IP.To4() != nil {
-					return v.IP.String(), nil
+				ip, ok := netip.AddrFromSlice(v.IP.To4())
+				if !ok || ip.IsLoopback() {
+					continue
 				}
+				if netw != nil && !netw.Contains(ip) {
+					continue
+				}
+				return ip, nil
 			case *net.IPNet:
-				if netw != nil && !netw.Contains(v.IP) {
+				if v.IP.To4() == nil {
 					continue
 				}
-				if !v.IP.IsLoopback() && v.IP.To4() != nil {
-					return v.IP.String(), nil
+				ip, ok := netip.AddrFromSlice(v.IP.To4())
+				if !ok || ip.IsLoopback() {
+					continue
 				}
+				if netw != nil && !netw.Contains(ip) {
+					continue
+				}
+				return ip, nil
 			}
 
 		}
 	}
 
-	return "", fmt.Errorf("No local interface found")
+	return netip.Addr{}, fmt.Errorf("No local interface found")
 }
