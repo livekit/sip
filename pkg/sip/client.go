@@ -26,6 +26,7 @@ import (
 	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
@@ -138,6 +139,18 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 }
 
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	callInfo := &livekit.SIPCallInfo{
+		CallId:              req.SipCallId,
+		TrunkId:             req.SipTrunkId,
+		RoomName:            req.RoomName,
+		ParticipantIdentity: req.ParticipantIdentity,
+		//		FromUri:
+		ToUri: livekit.SIPUri{
+			User: req.CallTo,
+			Host: req.Address,
+		},
+	}
+
 	if !c.mon.CanAccept() {
 		return nil, siperrors.ErrUnavailable
 	}

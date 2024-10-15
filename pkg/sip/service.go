@@ -33,11 +33,12 @@ import (
 )
 
 type Service struct {
-	conf *config.Config
-	log  logger.Logger
-	mon  *stats.Monitor
-	cli  *Client
-	srv  *Server
+	conf     *config.Config
+	log      logger.Logger
+	mon      *stats.Monitor
+	cli      *Client
+	srv      *Server
+	ioClient rpc.IOInfoClient
 
 	mu               sync.Mutex
 	pendingTransfers map[transferKey]chan struct{}
@@ -48,7 +49,7 @@ type transferKey struct {
 	TransferTo string
 }
 
-func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Service {
+func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, ioClient rpc.IOInfoClient) *Service {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -58,6 +59,7 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Ser
 		mon:              mon,
 		cli:              NewClient(conf, log, mon),
 		srv:              NewServer(conf, log, mon),
+		ioClient:         ioClient,
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	return s
@@ -124,7 +126,18 @@ func (s *Service) Start() error {
 }
 
 func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	return s.cli.CreateSIPParticipant(ctx, req)
+	resp, err := s.cli.CreateSIPParticipant(ctx, req)
+
+	switch err {
+	case nil:
+	default:
+	}
+
+	s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+		CallInfo: info,
+	})
+
+	return resp, err
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
