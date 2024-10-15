@@ -113,8 +113,8 @@ func (u URI) GetContactURI() *sip.Uri {
 	return su
 }
 
-func (u URI) ToSIPUri() livekit.SIPUri {
-	return livekit.SIPUri{
+func (u URI) ToSIPUri() *livekit.SIPUri {
+	return &livekit.SIPUri{
 		User: u.User,
 		Host: u.GetHost(),
 		Port: fmt.Sprintf("%d", u.GetPort()),

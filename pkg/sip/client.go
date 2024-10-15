@@ -183,6 +183,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	sipConf := sipOutboundConfig{
 		address:         req.Address,
 		transport:       req.Transport,
+		trunkID:         req.SipTrunkId,
 		host:            req.Hostname,
 		from:            req.Number,
 		to:              req.CallTo,

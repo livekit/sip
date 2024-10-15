@@ -128,6 +128,8 @@ github.com/livekit/psrpc v0.6.1-0.20240924010758-9f0a4268a3b9 h1:33oBjGpVD9tYkDX
 github.com/livekit/psrpc v0.6.1-0.20240924010758-9f0a4268a3b9/go.mod h1:CQUBSPfYYAaevg1TNCc6/aYsa8DJH4jSRFdCeSZk5u0=
 github.com/livekit/server-sdk-go/v2 v2.2.2-0.20241003085414-b42e5a1da639 h1:5+iT4OaIukZ4TJwbOXAN+uh/wuAGArUoJyk5vmfQMY0=
 github.com/livekit/server-sdk-go/v2 v2.2.2-0.20241003085414-b42e5a1da639/go.mod h1:ymqG/+SKb219C7E7i5AzahiFUPWdddH8H9sLRlzaJyY=
+github.com/livekit/server-sdk-go/v2 v2.2.2-0.20241015094126-b8538ae5d67b h1:R1GpKwVbSYsG08k5sIkNCukvnrkOE18R8IO1YeujR8o=
+github.com/livekit/server-sdk-go/v2 v2.2.2-0.20241015094126-b8538ae5d67b/go.mod h1:m2IukIyPCvJCdx04mdWIud9FoCBUAWc3526x3KgT8qY=
 github.com/livekit/sipgo v0.13.2-0.20240820220653-befde351a575 h1:9On8gLpup6Hs9f679MO2jNtLZzpB901vSRKXzVmRP4w=
 github.com/livekit/sipgo v0.13.2-0.20240820220653-befde351a575/go.mod h1:BY01/cjS7NQGCKAvgD+4FtIJ/8hPXwcDKnSan5uvklc=
 github.com/mackerelio/go-osstat v0.2.4 h1:qxGbdPkFo65PXOb/F/nhDKpF2nGmGaCFDLXoZjJTtUs=
@@ -365,6 +367,8 @@ google.golang.org/protobuf v1.26.0-rc.1/go.mod h1:jlhhOSvTdKEhbULTjvd4ARK9grFBp0
 google.golang.org/protobuf v1.33.0/go.mod h1:c6P6GXX6sHbq/GpV6MGZEdwhWPcYBgnhAHhKbcUYpos=
 google.golang.org/protobuf v1.34.2 h1:6xV6lTsCfpGD21XK49h7MhtcApnLqkfYgPcdHftf6hg=
 google.golang.org/protobuf v1.34.2/go.mod h1:qYOHts0dSfpeUzUFpOMr/WGzszTmLH+DiWniOlNbLDw=
+google.golang.org/protobuf v1.35.1 h1:m3LfL6/Ca+fqnjnlqQXNpFPABW1UD7mjh8KO2mKFytA=
+google.golang.org/protobuf v1.35.1/go.mod h1:9fA7Ob0pmnwhb644+1+CVWFRbNajQ6iRojtC/QF5bRE=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=

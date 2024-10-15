@@ -33,12 +33,11 @@ import (
 )
 
 type Service struct {
-	conf     *config.Config
-	log      logger.Logger
-	mon      *stats.Monitor
-	cli      *Client
-	srv      *Server
-	ioClient rpc.IOInfoClient
+	conf *config.Config
+	log  logger.Logger
+	mon  *stats.Monitor
+	cli  *Client
+	srv  *Server
 
 	mu               sync.Mutex
 	pendingTransfers map[transferKey]chan struct{}
@@ -57,9 +56,8 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, ioCl
 		conf:             conf,
 		log:              log,
 		mon:              mon,
-		cli:              NewClient(conf, log, mon),
+		cli:              NewClient(conf, log, mon, ioClient),
 		srv:              NewServer(conf, log, mon),
-		ioClient:         ioClient,
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	return s

@@ -2,9 +2,9 @@ module github.com/livekit/sip
 
 replace github.com/livekit/protocol => ../protocol
 
-go 1.22
+go 1.22.7
 
-toolchain go1.22.2
+toolchain go1.23.1
 
 require (
 	github.com/at-wat/ebml-go v0.17.1
@@ -17,7 +17,7 @@ require (
 	github.com/livekit/mediatransportutil v0.0.0-20240730083616-559fa5ece598
 	github.com/livekit/protocol v1.24.1-0.20241014220402-b75479104c82
 	github.com/livekit/psrpc v0.6.1-0.20240924010758-9f0a4268a3b9
-	github.com/livekit/server-sdk-go/v2 v2.2.2-0.20241003085414-b42e5a1da639
+	github.com/livekit/server-sdk-go/v2 v2.2.2-0.20241015094126-b8538ae5d67b
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.30
@@ -31,7 +31,7 @@ require (
 	github.com/urfave/cli/v2 v2.27.2
 	github.com/zaf/resample v1.5.0
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
-	google.golang.org/protobuf v1.34.2
+	google.golang.org/protobuf v1.35.1
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )

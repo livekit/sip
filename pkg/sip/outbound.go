@@ -46,6 +46,7 @@ import (
 type sipOutboundConfig struct {
 	address         string
 	transport       livekit.SIPTransport
+	trunkID         string
 	host            string
 	from            string
 	to              string
@@ -91,7 +92,6 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		Host: sipConf.host,
 		Addr: netip.AddrPortFrom(c.signalingIp, uint16(conf.SIPPort)),
 	}
-	to := c.getToUri()
 
 	call := &outboundCall{
 		c:       c,
@@ -100,7 +100,8 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf: sipConf,
 	}
 
-	call.initSIPCallInfo(from, to, sipConf.transport)
+	to := call.getToUri()
+	call.initSIPCallInfo(from, to, sipConf.transport, room)
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
 
@@ -152,12 +153,12 @@ func (c *outboundCall) getToUri() URI {
 	return uri
 }
 
-func (c *outboundCall) initSIPCallInfo(from URI, to URI, transport livekit.SIPTransport) {
+func (c *outboundCall) initSIPCallInfo(from URI, to URI, transport livekit.SIPTransport, room RoomConfig) {
 	c.callInfo = &livekit.SIPCallInfo{
-		CallId:              req.SipCallId,
-		TrunkId:             req.SipTrunkId,
-		RoomName:            req.RoomName,
-		ParticipantIdentity: req.Identity,
+		CallId:              string(c.cc.ID()),
+		TrunkId:             c.sipConf.trunkID,
+		RoomName:            room.RoomName,
+		ParticipantIdentity: room.Participant.Identity,
 		FromUri:             from.ToSIPUri(),
 		ToUri:               to.ToSIPUri(),
 	}
