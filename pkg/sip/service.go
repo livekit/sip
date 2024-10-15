@@ -126,18 +126,7 @@ func (s *Service) Start() error {
 }
 
 func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	resp, err := s.cli.CreateSIPParticipant(ctx, req)
-
-	switch err {
-	case nil:
-	default:
-	}
-
-	s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-		CallInfo: info,
-	})
-
-	return resp, err
+	return s.cli.CreateSIPParticipant(ctx, req)
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {

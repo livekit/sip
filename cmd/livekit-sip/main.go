@@ -90,7 +90,7 @@ func runService(c *cli.Context) error {
 		return err
 	}
 
-	sipsrv := sip.NewService(conf, mon, log)
+	sipsrv := sip.NewService(conf, mon, log, psrpcClient)
 	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
 	sipsrv.SetHandler(svc)
 

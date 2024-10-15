@@ -16,11 +16,13 @@ package sip
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 )
 
@@ -109,6 +111,14 @@ func (u URI) GetContactURI() *sip.Uri {
 		su.Port = int(port)
 	}
 	return su
+}
+
+func (u URI) ToSIPUri() livekit.SIPUri {
+	return livekit.SIPUri{
+		User: u.User,
+		Host: u.GetHost(),
+		Port: fmt.Sprintf("%d", u.GetPort()),
+	}
 }
 
 type LocalTag string

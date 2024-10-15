@@ -26,7 +26,6 @@ import (
 	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
-	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
@@ -50,10 +49,11 @@ type Client struct {
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
 
-	handler Handler
+	handler  Handler
+	ioClient rpc.IOInfoClient
 }
 
-func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
+func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, ioClient rpc.IOInfoClient) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -61,6 +61,7 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Clie
 		conf:        conf,
 		log:         log,
 		mon:         mon,
+		ioClient:    ioClient,
 		activeCalls: make(map[LocalTag]*outboundCall),
 		byRemote:    make(map[RemoteTag]*outboundCall),
 	}
@@ -139,18 +140,6 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 }
 
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	callInfo := &livekit.SIPCallInfo{
-		CallId:              req.SipCallId,
-		TrunkId:             req.SipTrunkId,
-		RoomName:            req.RoomName,
-		ParticipantIdentity: req.ParticipantIdentity,
-		//		FromUri:
-		ToUri: livekit.SIPUri{
-			User: req.CallTo,
-			Host: req.Address,
-		},
-	}
-
 	if !c.mon.CanAccept() {
 		return nil, siperrors.ErrUnavailable
 	}
