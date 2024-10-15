@@ -44,6 +44,17 @@ type URI struct {
 	Addr netip.AddrPort
 }
 
+func CreateURIFromUserAndAddress(user string, address string) URI {
+	uri := URI{
+		User: user,
+		Host: address,
+	}
+
+	uri.Normalize()
+
+	return uri
+}
+
 func (u URI) Normalize() URI {
 	if addr, sport, err := net.SplitHostPort(u.Host); err == nil {
 		if port, err := strconv.Atoi(sport); err == nil {

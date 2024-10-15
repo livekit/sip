@@ -31,7 +31,6 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -46,7 +45,6 @@ import (
 type sipOutboundConfig struct {
 	address         string
 	transport       livekit.SIPTransport
-	trunkID         string
 	host            string
 	from            string
 	to              string
@@ -77,7 +75,7 @@ type outboundCall struct {
 	sipRunning bool
 }
 
-func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
+func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, callInfo *livekit.SIPCallInfo) (*outboundCall, error) {
 	if sipConf.host == "" {
 		sipConf.host = c.signalingIp.String()
 	}
@@ -87,38 +85,21 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	if sipConf.ringingTimeout <= 0 {
 		sipConf.ringingTimeout = defaultRingingTimeout
 	}
-	from := URI{
-		User: sipConf.from,
-		Host: sipConf.host,
-		Addr: netip.AddrPortFrom(c.signalingIp, uint16(conf.SIPPort)),
-	}
 
 	call := &outboundCall{
-		c:       c,
-		log:     log,
-		cc:      c.newOutbound(id, from),
-		sipConf: sipConf,
+		c:   c,
+		log: log,
+		cc: c.newOutbound(id, URI{
+			User: sipConf.from,
+			Host: sipConf.host,
+			Addr: netip.AddrPortFrom(c.signalingIp, uint16(conf.SIPPort)),
+		}),
+		sipConf:  sipConf,
+		callInfo: callInfo,
 	}
 
-	to := call.getToUri()
-	call.initSIPCallInfo(from, to, sipConf.transport, room)
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
-
-	defer func() {
-		switch err {
-		case nil:
-			call.callInfo.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
-		default:
-			call.callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
-			call.callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
-			call.callInfo.Error = err.Error()
-		}
-
-		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: call.callInfo,
-		})
-	}()
 
 	call.media, err = NewMediaPort(call.log, call.mon, &MediaConfig{
 		IP:                  c.signalingIp,
@@ -140,31 +121,6 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	defer c.cmu.Unlock()
 	c.activeCalls[id] = call
 	return call, nil
-}
-
-func (c *outboundCall) getToUri() URI {
-	uri := URI{
-		User: c.sipConf.to,
-		Host: c.sipConf.address,
-	}
-
-	uri.Normalize()
-
-	return uri
-}
-
-func (c *outboundCall) initSIPCallInfo(from URI, to URI, transport livekit.SIPTransport, room RoomConfig) {
-	c.callInfo = &livekit.SIPCallInfo{
-		CallId:              string(c.cc.ID()),
-		TrunkId:             c.sipConf.trunkID,
-		RoomName:            room.RoomName,
-		ParticipantIdentity: room.Participant.Identity,
-		FromUri:             from.ToSIPUri(),
-		ToUri:               to.ToSIPUri(),
-	}
-
-	c.callInfo.ToUri.Transport = transport
-	c.callInfo.FromUri.Transport = transport
 }
 
 func (c *outboundCall) Start(ctx context.Context) {
@@ -426,7 +382,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.mon.InviteReq()
 
-	toUri := c.getToUri()
+	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address)
 
 	sdpResp, err := c.cc.Invite(ctx, c.sipConf.transport, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
 	if err != nil {

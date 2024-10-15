@@ -26,6 +26,7 @@ import (
 	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
@@ -169,6 +170,24 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toHost", req.Address,
 		"toUser", req.CallTo,
 	)
+
+	var err error
+	callInfo := c.createSIPCallInfo(req)
+	defer func() {
+		switch err {
+		case nil:
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
+		default:
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+			callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
+			callInfo.Error = err.Error()
+		}
+
+		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: callInfo,
+		})
+	}()
+
 	roomConf := RoomConfig{
 		WsUrl:    req.WsUrl,
 		Token:    req.Token,
@@ -183,7 +202,6 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	sipConf := sipOutboundConfig{
 		address:         req.Address,
 		transport:       req.Transport,
-		trunkID:         req.SipTrunkId,
 		host:            req.Hostname,
 		from:            req.Number,
 		to:              req.CallTo,
@@ -197,7 +215,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		maxCallDuration: req.MaxCallDuration.AsDuration(),
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, callInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +229,29 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		SipCallId:           req.SipCallId,
 	}, nil
 
+}
+
+func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
+	toUri := CreateURIFromUserAndAddress(req.CallTo, req.Address)
+	fromiUri := URI{
+		User: req.Number,
+		Host: req.Hostname,
+		Addr: netip.AddrPortFrom(c.signalingIp, uint16(c.conf.SIPPort)),
+	}
+
+	callInfo := &livekit.SIPCallInfo{
+		CallId:              req.SipCallId,
+		TrunkId:             req.SipTrunkId,
+		RoomName:            req.RoomName,
+		ParticipantIdentity: req.ParticipantIdentity,
+		ToUri:               toUri.ToSIPUri(),
+		FromUri:             fromiUri.ToSIPUri(),
+	}
+
+	callInfo.ToUri.Transport = req.Transport
+	callInfo.FromUri.Transport = req.Transport
+
+	return callInfo
 }
 
 func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
