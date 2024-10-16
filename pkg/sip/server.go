@@ -54,7 +54,7 @@ type CallInfo struct {
 	FromUser   string
 	ToUser     string
 	ToHost     string
-	SrcAddress string
+	SrcAddress netip.Addr
 	Pin        string
 	NoPin      bool
 }
@@ -99,7 +99,7 @@ type CallDispatch struct {
 }
 
 type Handler interface {
-	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
+	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
 	GetMediaProcessor(features []rpc.SIPFeature) media.PCM16Processor
 
