@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -11,7 +12,7 @@ import (
 	"github.com/livekit/sip/pkg/sip"
 )
 
-func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, callID, from, to, toHost, srcAddress string) (sip.AuthInfo, error) {
+func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, callID, from, to, toHost string, srcAddress netip.Addr) (sip.AuthInfo, error) {
 	ctx, span := tracer.Start(ctx, "service.GetAuthCredentials")
 	defer span.End()
 	resp, err := psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
@@ -19,7 +20,7 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, callI
 		From:       from,
 		To:         to,
 		ToHost:     toHost,
-		SrcAddress: srcAddress,
+		SrcAddress: srcAddress.String(),
 	})
 
 	if err != nil {
@@ -56,7 +57,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 		CallingNumber: info.FromUser,
 		CalledNumber:  info.ToUser,
 		CalledHost:    info.ToHost,
-		SrcAddress:    info.SrcAddress,
+		SrcAddress:    info.SrcAddress.String(),
 		Pin:           info.Pin,
 		NoPin:         info.NoPin,
 	})
