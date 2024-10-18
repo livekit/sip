@@ -63,6 +63,7 @@ type outboundCall struct {
 	log     logger.Logger
 	cc      *sipOutbound
 	media   *MediaPort
+	started core.Fuse
 	stopped core.Fuse
 	closing core.Fuse
 
@@ -223,6 +224,7 @@ func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 		return fmt.Errorf("update SIP failed: %w", err)
 	}
 	c.connectMedia()
+	c.started.Break()
 	c.lkRoom.Subscribe()
 	c.log.Infow("Outbound SIP call established")
 	return nil
@@ -433,8 +435,29 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string) error {
-	err := c.cc.transferCall(ctx, transferTo)
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, ringtone bool) error {
+	var err error
+
+	if ringtone && c.started.IsBroken() && !c.stopped.IsBroken() {
+		const ringVolume = math.MaxInt16 / 2
+		rctx, rcancel := context.WithCancel(ctx)
+		defer rcancel()
+
+		// mute the room audio to the SIP participant
+		w := c.lkRoom.SwapOutput(nil)
+
+		defer func() {
+			if err != nil && !c.stopped.IsBroken() {
+				c.lkRoom.SwapOutput(w)
+			}
+		}()
+
+		go func() {
+			tones.Play(rctx, c.media.GetAudioWriter(), ringVolume, tones.ETSIRinging)
+		}()
+	}
+
+	err = c.cc.transferCall(ctx, transferTo)
 	if err != nil {
 		c.log.Infow("outound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err

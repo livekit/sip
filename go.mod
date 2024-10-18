@@ -4,6 +4,8 @@ go 1.22.7
 
 toolchain go1.22.8
 
+replace github.com/livekit/protocol => ../protocol
+
 require (
 	github.com/at-wat/ebml-go v0.17.1
 	github.com/emiago/sipgo v0.13.1
