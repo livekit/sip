@@ -436,6 +436,7 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 func (c *outboundCall) transferCall(ctx context.Context, transferTo string) error {
 	err := c.cc.transferCall(ctx, transferTo)
 	if err != nil {
+		c.log.Infow("outound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
 	}
 
@@ -732,7 +733,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
 	}
 
-	req := NewReferRequest(c.invite, c.inviteOk, &sip.ContactHeader{Address: c.from.Address}, transferTo)
+	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo)
 	c.setCSeq(req)
 	cseq, _ := req.CSeq()
 
