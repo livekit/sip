@@ -131,6 +131,16 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	log = LoggerWithHeaders(log, cc)
 	log.Infow("processing invite")
 
+	panic("TODO populate roomid, roomName, participant identity")
+
+	callInfo := &livekit.SIPCallInfo{
+		CallId:     string(c.cc.ID()),
+		FromUri:    CreateURIFromUserAndAddress(cc.From().User, src).ToSIPUri(),
+		ToUri:      CreateURIFromUserAndAddress(cc.To().User, cc.To().Host).ToSIPUri(),
+		CallStatus: livekit.SIPCallStatus_SCS_CALL_INCOMING,
+		CreatedAt:  time.Now().UnixNano(),
+	}
+
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
 			cc.Drop()
@@ -165,6 +175,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	if r.TrunkID != "" {
 		log = log.WithValues("sipTrunk", r.TrunkID)
+		callInfo.TrunkId = r.TrunkID
 	}
 	switch r.Result {
 	case AuthDrop:

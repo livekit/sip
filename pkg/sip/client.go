@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -246,6 +247,7 @@ func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest)
 		ParticipantIdentity: req.ParticipantIdentity,
 		ToUri:               toUri.ToSIPUri(),
 		FromUri:             fromiUri.ToSIPUri(),
+		CreatedAt:           time.Now().UnixNano(),
 	}
 
 	callInfo.ToUri.Transport = req.Transport

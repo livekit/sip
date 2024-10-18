@@ -30,6 +30,7 @@ import (
 	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 
@@ -49,14 +50,9 @@ var (
 )
 
 type CallInfo struct {
-	TrunkID    string
-	ID         string
-	FromUser   string
-	ToUser     string
-	ToHost     string
-	SrcAddress string
-	Pin        string
-	NoPin      bool
+	livekit.SIPCallInfo
+	Pin   string
+	NoPin bool
 }
 
 type AuthResult int

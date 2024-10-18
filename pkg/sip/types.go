@@ -125,11 +125,16 @@ func (u URI) GetContactURI() *sip.Uri {
 }
 
 func (u URI) ToSIPUri() *livekit.SIPUri {
-	return &livekit.SIPUri{
+	url := &livekit.SIPUri{
 		User: u.User,
 		Host: u.GetHost(),
 		Port: fmt.Sprintf("%d", u.GetPort()),
 	}
+
+	if u.Addr.Addr().IsValid() {
+		url.Ip = u.Addr.Addr().String()
+	}
+	return url
 }
 
 type LocalTag string
