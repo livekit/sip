@@ -769,6 +769,7 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error {
 	err := c.cc.TransferCall(ctx, transferTo)
 	if err != nil {
+		c.log.Infow("inbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
 	}
 
