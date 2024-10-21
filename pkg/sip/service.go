@@ -197,7 +197,7 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	s.srv.cmu.Unlock()
 
 	if in != nil {
-		err := in.transferCall(ctx, transferTo)
+		err := in.transferCall(ctx, transferTo, ringtone)
 		if err != nil {
 			return err
 		}

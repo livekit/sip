@@ -67,12 +67,11 @@ type outboundCall struct {
 	stopped core.Fuse
 	closing core.Fuse
 
-	mu         sync.RWMutex
-	mon        *stats.CallMonitor
-	lkRoom     *Room
-	lkRoomIn   media.PCM16Writer // output to room; OPUS at 48k
-	sipConf    sipOutboundConfig
-	sipRunning bool
+	mu       sync.RWMutex
+	mon      *stats.CallMonitor
+	lkRoom   *Room
+	lkRoomIn media.PCM16Writer // output to room; OPUS at 48k
+	sipConf  sipOutboundConfig
 }
 
 func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
@@ -288,7 +287,6 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 	}
 	c.setStatus(CallActive)
 
-	c.sipRunning = true
 	return nil
 }
 
@@ -329,7 +327,6 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 func (c *outboundCall) stopSIP(reason string) {
 	c.mon.CallTerminate(reason)
 	c.cc.Close()
-	c.sipRunning = false
 }
 
 func (c *outboundCall) setStatus(v CallStatus) {
