@@ -432,7 +432,7 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) error {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) (retErr error) {
 	var err error
 
 	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
@@ -444,7 +444,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 		w := c.lkRoom.SwapOutput(nil)
 
 		defer func() {
-			if err != nil && !c.stopped.IsBroken() {
+			if retErr != nil && !c.stopped.IsBroken() {
 				c.lkRoom.SwapOutput(w)
 			} else {
 				w.Close()

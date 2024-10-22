@@ -773,7 +773,7 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) error {
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) (retErr error) {
 	var err error
 
 	if dialtone && c.started.IsBroken() && !c.done.Load() {
@@ -785,7 +785,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialt
 		w := c.lkRoom.SwapOutput(nil)
 
 		defer func() {
-			if err != nil && !c.done.Load() {
+			if retErr != nil && !c.done.Load() {
 				c.lkRoom.SwapOutput(w)
 			} else {
 				w.Close()
