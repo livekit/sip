@@ -446,6 +446,8 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 		defer func() {
 			if err != nil && !c.stopped.IsBroken() {
 				c.lkRoom.SwapOutput(w)
+			} else {
+				w.Close()
 			}
 		}()
 

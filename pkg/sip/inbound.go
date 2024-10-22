@@ -787,6 +787,8 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialt
 		defer func() {
 			if err != nil && !c.done.Load() {
 				c.lkRoom.SwapOutput(w)
+			} else {
+				w.Close()
 			}
 		}()
 
