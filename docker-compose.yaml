@@ -5,7 +5,9 @@ services:
       - redis_data:/data
     expose:
       - 6379
-    network_mode: host
+    # The following line might be uncommented to run on MacOS
+    # for testing and development purposes only.
+    # network_mode: host
   livekit:
     image: livekit/livekit-server
     command: --dev --redis-host localhost:6379
