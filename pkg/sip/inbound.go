@@ -773,10 +773,10 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string, ringtone bool) error {
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) error {
 	var err error
 
-	if ringtone && c.started.IsBroken() && !c.done.Load() {
+	if dialtone && c.started.IsBroken() && !c.done.Load() {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()

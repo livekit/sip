@@ -51,7 +51,7 @@ type sipOutboundConfig struct {
 	user            string
 	pass            string
 	dtmf            string
-	ringtone        bool
+	dialtone        bool
 	headers         map[string]string
 	headersToAttrs  map[string]string
 	ringingTimeout  time.Duration
@@ -248,7 +248,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}
-	// We have to create the track early because we might play a ringtone while SIP connects.
+	// We have to create the track early because we might play a dialtone while SIP connects.
 	// Thus, we are forced to set full sample rate here instead of letting the codec adapt to the SIP source sample rate.
 	local, err := r.NewParticipantTrack(RoomSampleRate)
 	if err != nil {
@@ -261,12 +261,12 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 }
 
 func (c *outboundCall) dialSIP(ctx context.Context) error {
-	if c.sipConf.ringtone {
+	if c.sipConf.dialtone {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
-		// Play a ringtone to the room while participant connects
+		// Play dialtone to the room while participant connects
 		go func() {
 			rctx, span := tracer.Start(rctx, "tones.Play")
 			defer span.End()
@@ -432,10 +432,10 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, ringtone bool) error {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) error {
 	var err error
 
-	if ringtone && c.started.IsBroken() && !c.stopped.IsBroken() {
+	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
