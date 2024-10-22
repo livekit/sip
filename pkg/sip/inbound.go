@@ -791,7 +791,10 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialt
 		}()
 
 		go func() {
-			tones.Play(rctx, c.media.GetAudioWriter(), ringVolume, tones.ETSIRinging)
+			aw := c.media.GetAudioWriter()
+
+			tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+			aw.Close()
 		}()
 	}
 
