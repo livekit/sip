@@ -187,7 +187,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		user:            req.Username,
 		pass:            req.Password,
 		dtmf:            req.Dtmf,
-		ringtone:        req.PlayRingtone,
+		dialtone:        req.PlayDialtone,
 		headers:         req.Headers,
 		headersToAttrs:  req.HeadersToAttributes,
 		ringingTimeout:  req.RingingTimeout.AsDuration(),
