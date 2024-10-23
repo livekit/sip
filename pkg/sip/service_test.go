@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -53,11 +54,11 @@ func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 }
 
 type TestHandler struct {
-	GetAuthCredentialsFunc func(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
+	GetAuthCredentialsFunc func(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
 }
 
-func (h TestHandler) GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error) {
+func (h TestHandler) GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error) {
 	return h.GetAuthCredentialsFunc(ctx, callID, fromUser, toUser, toHost, srcAddress)
 }
 
@@ -129,7 +130,7 @@ func TestService_AuthFailure(t *testing.T) {
 		expectedToUser   = "bar"
 	)
 	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error) {
+		GetAuthCredentialsFunc: func(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error) {
 			require.Equal(t, expectedFromUser, fromUser)
 			require.Equal(t, expectedToUser, toUser)
 			return AuthInfo{}, fmt.Errorf("Auth Failure")
@@ -150,7 +151,7 @@ func TestService_AuthDrop(t *testing.T) {
 		expectedToUser   = "bar"
 	)
 	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error) {
+		GetAuthCredentialsFunc: func(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error) {
 			require.Equal(t, expectedFromUser, fromUser)
 			require.Equal(t, expectedToUser, toUser)
 			return AuthInfo{Result: AuthDrop}, nil

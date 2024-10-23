@@ -30,7 +30,6 @@ import (
 	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
-	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 
@@ -50,9 +49,14 @@ var (
 )
 
 type CallInfo struct {
-	livekit.SIPCallInfo
-	Pin   string
-	NoPin bool
+	TrunkID    string
+	ID         string
+	FromUser   string
+	ToUser     string
+	ToHost     string
+	SrcAddress netip.Addr
+	Pin        string
+	NoPin      bool
 }
 
 type AuthResult int
@@ -95,7 +99,7 @@ type CallDispatch struct {
 }
 
 type Handler interface {
-	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost, srcAddress string) (AuthInfo, error)
+	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
 	GetMediaProcessor(features []rpc.SIPFeature) media.PCM16Processor
 

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"slices"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 
 	"github.com/livekit/protocol/livekit"
@@ -39,6 +41,7 @@ import (
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/res"
 )
@@ -118,11 +121,16 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	ctx := context.Background()
 	s.mon.InviteReqRaw(stats.Inbound)
+	src, err := netip.ParseAddrPort(req.Source())
+	if err != nil {
+		tx.Terminate()
+		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
+		return
+	}
 	callID := lksip.NewCallID()
-	src := req.Source()
 	log := s.log.WithValues(
 		"callID", callID,
-		"fromIP", src,
+		"fromIP", src.Addr(),
 		"toIP", req.Destination(),
 	)
 
@@ -163,7 +171,7 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		cc.Processing()
 	}
 
-	r, err := s.handler.GetAuthCredentials(ctx, callID, from.User, to.User, to.Host, src)
+	r, err := s.handler.GetAuthCredentials(ctx, callID, from.User, to.User, to.Host, src.Addr())
 	if err != nil {
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)
@@ -272,7 +280,7 @@ type inboundCall struct {
 	extraAttrs  map[string]string
 	ctx         context.Context
 	cancel      func()
-	src         string
+	src         netip.AddrPort
 	media       *MediaPort
 	dtmf        chan dtmf.Event // buffered
 	lkRoom      *Room           // LiveKit room; only active after correct pin is entered
@@ -280,13 +288,14 @@ type inboundCall struct {
 	joinDur     func() time.Duration
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
+	started     core.Fuse
 }
 
 func (s *Server) newInboundCall(
 	log logger.Logger,
 	mon *stats.CallMonitor,
 	cc *sipInbound,
-	src string,
+	src netip.AddrPort,
 	extra map[string]string,
 ) *inboundCall {
 
@@ -324,7 +333,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		FromUser:   c.cc.From().User,
 		ToUser:     c.cc.To().User,
 		ToHost:     c.cc.To().Host,
-		SrcAddress: c.src,
+		SrcAddress: c.src.Addr(),
 		Pin:        "",
 		NoPin:      false,
 	})
@@ -433,6 +442,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			return // already sent a response
 		}
 	}
+
+	c.started.Break()
+
 	// Wait for the caller to terminate the call.
 	select {
 	case <-ctx.Done():
@@ -581,7 +593,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 					FromUser:   c.cc.From().User,
 					ToUser:     c.cc.To().User,
 					ToHost:     c.cc.To().Host,
-					SrcAddress: c.src,
+					SrcAddress: c.src.Addr(),
 					Pin:        pin,
 					NoPin:      noPin,
 				})
@@ -772,9 +784,36 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string) error {
-	err := c.cc.TransferCall(ctx, transferTo)
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) (retErr error) {
+	var err error
+
+	if dialtone && c.started.IsBroken() && !c.done.Load() {
+		const ringVolume = math.MaxInt16 / 2
+		rctx, rcancel := context.WithCancel(ctx)
+		defer rcancel()
+
+		// mute the room audio to the SIP participant
+		w := c.lkRoom.SwapOutput(nil)
+
+		defer func() {
+			if retErr != nil && !c.done.Load() {
+				c.lkRoom.SwapOutput(w)
+			} else {
+				w.Close()
+			}
+		}()
+
+		go func() {
+			aw := c.media.GetAudioWriter()
+
+			tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+			aw.Close()
+		}()
+	}
+
+	err = c.cc.TransferCall(ctx, transferTo)
 	if err != nil {
+		c.log.Infow("inbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
 	}
 
