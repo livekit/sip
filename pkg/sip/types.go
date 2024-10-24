@@ -21,6 +21,7 @@ import (
 	"strconv"
 
 	"github.com/emiago/sipgo/sip"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 )
 
@@ -36,10 +37,31 @@ func (h Headers) GetHeader(name string) sip.Header {
 	return nil
 }
 
+func TransportFrom(t livekit.SIPTransport) Transport {
+	switch t {
+	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
+		return TransportUDP
+	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
+		return TransportTCP
+	case livekit.SIPTransport_SIP_TRANSPORT_TLS:
+		return TransportTLS
+	}
+	return ""
+}
+
+type Transport string
+
+const (
+	TransportUDP = Transport("udp")
+	TransportTCP = Transport("tcp")
+	TransportTLS = Transport("tls")
+)
+
 type URI struct {
-	User string
-	Host string
-	Addr netip.AddrPort
+	User      string
+	Host      string
+	Addr      netip.AddrPort
+	Transport Transport
 }
 
 func (u URI) Normalize() URI {
@@ -97,16 +119,23 @@ func (u URI) GetURI() *sip.Uri {
 	if port := u.Addr.Port(); port != 0 {
 		su.Port = int(port)
 	}
+	if u.Transport != "" {
+		if su.UriParams == nil {
+			su.UriParams = make(sip.HeaderParams)
+		}
+		su.UriParams.Add("transport", string(u.Transport))
+	}
 	return su
 }
 
 func (u URI) GetContactURI() *sip.Uri {
-	su := &sip.Uri{
-		User: u.User,
-		Host: u.Addr.Addr().String(),
-	}
-	if port := u.Addr.Port(); port != 0 {
-		su.Port = int(port)
+	su := u.GetURI()
+	switch u.Transport {
+	case TransportUDP, TransportTCP:
+		// Use IP instead of a hostname for TCP and UDP.
+		if addr := u.Addr.Addr(); addr.IsValid() {
+			su.Host = addr.String()
+		}
 	}
 	return su
 }

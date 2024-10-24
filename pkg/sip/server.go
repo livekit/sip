@@ -16,8 +16,10 @@ package sip
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -111,8 +113,7 @@ type Server struct {
 	log              logger.Logger
 	mon              *stats.Monitor
 	sipSrv           *sipgo.Server
-	sipConnUDP       *net.UDPConn
-	sipConnTCP       *net.TCPListener
+	sipListeners     []io.Closer
 	sipUnhandled     RequestHandler
 	signalingIp      netip.Addr
 	signalingIpLocal netip.Addr
@@ -154,6 +155,10 @@ func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
+func (s *Server) ContactURI(tr Transport) URI {
+	return getContactURI(s.conf, s.signalingIp, tr)
+}
+
 func (s *Server) startUDP(addr netip.AddrPort) error {
 	lis, err := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   addr.Addr().AsSlice(),
@@ -162,10 +167,10 @@ func (s *Server) startUDP(addr netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("cannot listen on the UDP signaling port %d: %w", s.conf.SIPPortListen, err)
 	}
-	s.sipConnUDP = lis
+	s.sipListeners = append(s.sipListeners, lis)
 	s.log.Infow("sip signaling listening on",
 		"local", s.signalingIpLocal, "external", s.signalingIp,
-		"port", s.conf.SIPPortListen, "announce-port", s.conf.SIPPort,
+		"port", addr.Port(), "announce-port", s.conf.SIPPort,
 		"proto", "udp",
 	)
 
@@ -185,16 +190,40 @@ func (s *Server) startTCP(addr netip.AddrPort) error {
 	if err != nil {
 		return fmt.Errorf("cannot listen on the TCP signaling port %d: %w", s.conf.SIPPortListen, err)
 	}
-	s.sipConnTCP = lis
+	s.sipListeners = append(s.sipListeners, lis)
 	s.log.Infow("sip signaling listening on",
 		"local", s.signalingIpLocal, "external", s.signalingIp,
-		"port", s.conf.SIPPortListen, "announce-port", s.conf.SIPPort,
+		"port", addr.Port(), "announce-port", s.conf.SIPPort,
 		"proto", "tcp",
 	)
 
 	go func() {
 		if err := s.sipSrv.ServeTCP(lis); err != nil && !errors.Is(err, net.ErrClosed) {
 			panic(fmt.Errorf("SIP listen TCP error: %w", err))
+		}
+	}()
+	return nil
+}
+
+func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
+	tlis, err := net.ListenTCP("tcp", &net.TCPAddr{
+		IP:   addr.Addr().AsSlice(),
+		Port: int(addr.Port()),
+	})
+	if err != nil {
+		return fmt.Errorf("cannot listen on the TLS signaling port %d: %w", s.conf.SIPPortListen, err)
+	}
+	lis := tls.NewListener(tlis, conf)
+	s.sipListeners = append(s.sipListeners, lis)
+	s.log.Infow("sip signaling listening on",
+		"local", s.signalingIpLocal, "external", s.signalingIp,
+		"port", addr.Port(), "announce-port", s.conf.TLS.Port,
+		"proto", "tls",
+	)
+
+	go func() {
+		if err := s.sipSrv.ServeTLS(lis); err != nil && !errors.Is(err, net.ErrClosed) {
+			panic(fmt.Errorf("SIP listen TLS error: %w", err))
 		}
 	}()
 	return nil
@@ -265,6 +294,27 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 	if err := s.startTCP(addr); err != nil {
 		return err
 	}
+	if tconf := s.conf.TLS; tconf != nil {
+		if len(tconf.Certs) == 0 {
+			return errors.New("TLS certificate required")
+		}
+		var certs []tls.Certificate
+		for _, c := range tconf.Certs {
+			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			if err != nil {
+				return err
+			}
+			certs = append(certs, cert)
+		}
+		tlsConf := &tls.Config{
+			NextProtos:   []string{"sip"},
+			Certificates: certs,
+		}
+		addrTLS := netip.AddrPortFrom(ip, uint16(tconf.ListenPort))
+		if err := s.startTLS(addrTLS, tlsConf); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -281,11 +331,8 @@ func (s *Server) Stop() {
 	if s.sipSrv != nil {
 		_ = s.sipSrv.Close()
 	}
-	if s.sipConnUDP != nil {
-		_ = s.sipConnUDP.Close()
-	}
-	if s.sipConnTCP != nil {
-		_ = s.sipConnTCP.Close()
+	for _, l := range s.sipListeners {
+		_ = l.Close()
 	}
 }
 
