@@ -141,7 +141,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return c.createSIPParticipant(ctx, req)
 }
 
-func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
 	if !c.mon.CanAccept() {
 		return nil, siperrors.ErrUnavailable
 	}
@@ -172,16 +172,15 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
-	var err error
 	callInfo := c.createSIPCallInfo(req)
 	defer func() {
-		switch err {
+		switch retErr {
 		case nil:
 			callInfo.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
 		default:
 			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
 			callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
-			callInfo.Error = err.Error()
+			callInfo.Error = rerErr.Error()
 		}
 
 		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
