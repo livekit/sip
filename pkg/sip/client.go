@@ -20,9 +20,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/emiago/sipgo"
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
+	"github.com/livekit/sipgo"
+	"github.com/livekit/sipgo/sip"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/logger"

@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -831,16 +831,15 @@ func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, invit
 		cancelled: make(chan struct{}),
 		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
-	c.from, _ = invite.From()
+	c.from = invite.From()
 	if c.from != nil {
 		c.tag, _ = getTagFrom(c.from.Params)
 	}
-	c.to, _ = invite.To()
-	h, _ := invite.CSeq()
-	if h != nil {
+	c.to = invite.To()
+	if h := invite.CSeq(); h != nil {
 		c.nextRequestCSeq = h.SeqNo + 1
 	}
-	if callID, _ := invite.CallID(); callID != nil {
+	if callID := invite.CallID(); callID != nil {
 		c.callID = callID.Value()
 	}
 	return c
@@ -1015,7 +1014,7 @@ func (c *sipInbound) setDestFromVia(r *sip.Response) {
 	//
 	// Thus, instead of relying on LB, we will contact the source IP directly (should be the first Via).
 	// BYE will also copy the same destination address from our response to INVITE.
-	if h, ok := c.invite.Via(); ok && h.Host != "" {
+	if h := c.invite.Via(); h != nil && h.Host != "" {
 		port := 5060
 		if h.Port != 0 {
 			port = h.Port
@@ -1060,10 +1059,10 @@ func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 func (c *sipInbound) swapSrcDst(req *sip.Request) {
-	if contact, ok := c.invite.Contact(); ok {
-		req.Recipient = &contact.Address
+	if contact := c.invite.Contact(); contact != nil {
+		req.Recipient = contact.Address
 	} else {
-		req.Recipient = &c.from.Address
+		req.Recipient = c.from.Address
 	}
 	req.SetSource(c.inviteOk.Source())
 	req.SetDestination(c.inviteOk.Destination())
@@ -1071,7 +1070,7 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	req.AppendHeader((*sip.FromHeader)(c.to))
 	req.RemoveHeader("To")
 	req.AppendHeader((*sip.ToHeader)(c.from))
-	if route, ok := req.RecordRoute(); ok {
+	if route := req.RecordRoute(); route != nil {
 		req.RemoveHeader("Record-Route")
 		req.AppendHeader(&sip.RouteHeader{Address: route.Address})
 	}
@@ -1134,7 +1133,7 @@ func (c *sipInbound) newReferReq(transferTo string) (*sip.Request, error) {
 		return nil, psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
-	from, _ := c.invite.From()
+	from := c.invite.From()
 	if from == nil {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
 	}
@@ -1144,7 +1143,7 @@ func (c *sipInbound) newReferReq(transferTo string) (*sip.Request, error) {
 	c.setCSeq(req)
 	c.swapSrcDst(req)
 
-	cseq, _ := req.CSeq()
+	cseq := req.CSeq()
 	if cseq == nil {
 		return nil, psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
 	}

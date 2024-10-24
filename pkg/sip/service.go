@@ -23,7 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/emiago/sipgo"
+	"github.com/livekit/sipgo"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/logger"

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	sipgo "github.com/emiago/sipgo/sip"
+	sipgo "github.com/livekit/sipgo/sip"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
