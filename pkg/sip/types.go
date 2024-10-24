@@ -20,9 +20,9 @@ import (
 	"net/netip"
 	"strconv"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/sipgo/sip"
 )
 
 type Headers []sip.Header
@@ -183,8 +183,8 @@ type LocalTag string
 type RemoteTag string
 
 func getFromTag(r *sip.Request) (RemoteTag, error) {
-	from, ok := r.From()
-	if !ok {
+	from := r.From()
+	if from == nil {
 		return "", errors.New("no From on Request")
 	}
 	tag, ok := getTagFrom(from.Params)
@@ -195,8 +195,8 @@ func getFromTag(r *sip.Request) (RemoteTag, error) {
 }
 
 func getToTag(r *sip.Response) (RemoteTag, error) {
-	to, ok := r.To()
-	if !ok {
+	to := r.To()
+	if to == nil {
 		return "", errors.New("no To on Response")
 	}
 	tag, ok := getTagFrom(to.Params)

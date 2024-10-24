@@ -26,18 +26,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emiago/sipgo"
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-
-	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sipgo"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
 )
 

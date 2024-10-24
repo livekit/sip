@@ -33,11 +33,12 @@ import (
 
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
-	"github.com/emiago/sipgo"
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
+
+	"github.com/livekit/sipgo"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"
@@ -286,8 +287,8 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 				return err
 			}
 
-			toHeader, ok := resp.To()
-			if !ok {
+			toHeader := resp.To()
+			if toHeader == nil {
 				return errors.New("no To header on Request")
 			}
 
@@ -308,14 +309,14 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 		break
 	}
 
-	if contactHeader, ok := resp.Contact(); ok {
-		req.Recipient = &contactHeader.Address
+	if contactHeader := resp.Contact(); contactHeader != nil {
+		req.Recipient = contactHeader.Address
 		if req.Recipient.Port == 0 {
 			req.Recipient.Port = 5060
 		}
 	}
 
-	if recordRouteHeader, ok := resp.RecordRoute(); ok {
+	if recordRouteHeader := resp.RecordRoute(); recordRouteHeader != nil {
 		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
@@ -334,7 +335,7 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 	c.inviteReq = req
 	c.inviteResp = resp
 
-	if h, ok := req.CSeq(); ok {
+	if h := req.CSeq(); h != nil {
 		c.lastCSeq.Store(h.SeqNo)
 	}
 
@@ -344,7 +345,7 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 }
 
 func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader string, headers map[string]string) (*sip.Request, *sip.Response, error) {
-	req := sip.NewRequest(sip.INVITE, &sip.Uri{User: number, Host: uri})
+	req := sip.NewRequest(sip.INVITE, sip.Uri{User: number, Host: uri})
 	req.SetDestination(ip)
 	req.SetBody(offer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
@@ -378,7 +379,7 @@ func (c *Client) sendBye() {
 	req.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 
 	cseq := c.lastCSeq.Add(1)
-	cseqH, _ := req.CSeq()
+	cseqH := req.CSeq()
 	cseqH.SeqNo = cseq
 
 	tx, err := c.sipClient.TransactionRequest(req)
@@ -402,12 +403,12 @@ func (c *Client) SendDTMF(digits string) error {
 }
 
 func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
-	var recipient *sip.Uri
+	var recipient sip.Uri
 
-	if contact, ok := eventReq.Contact(); ok {
-		recipient = &contact.Address
-	} else if from, ok := eventReq.From(); ok {
-		recipient = &from.Address
+	if contact := eventReq.Contact(); contact != nil {
+		recipient = contact.Address
+	} else if from := eventReq.From(); from != nil {
+		recipient = from.Address
 	} else {
 		return errors.New("missing destination address")
 	}
@@ -435,19 +436,19 @@ func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
 	maxForwardsHeader := sip.MaxForwardsHeader(70)
 	req.AppendHeader(&maxForwardsHeader)
 
-	if to, ok := eventReq.To(); ok {
+	if to := eventReq.To(); to != nil {
 		req.AppendHeader((*sip.FromHeader)(to))
 	} else {
 		return errors.New("missing To header in REFER request")
 	}
 
-	if from, ok := eventReq.From(); ok {
+	if from := eventReq.From(); from != nil {
 		req.AppendHeader((*sip.ToHeader)(from))
 	} else {
 		return errors.New("missing From header in REFER request")
 	}
 
-	if callId, ok := eventReq.CallID(); ok {
+	if callId := eventReq.CallID(); callId != nil {
 		req.AppendHeader(callId)
 	}
 
@@ -465,7 +466,7 @@ func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
 	req.SetSource(eventReq.Destination())
 	req.SetDestination(eventReq.Source())
 
-	if eventCSeq, ok := eventReq.CSeq(); ok {
+	if eventCSeq := eventReq.CSeq(); eventCSeq != nil {
 		req.AppendHeader(sip.NewHeader("Event", fmt.Sprintf("refer;id=%d", eventCSeq.SeqNo)))
 	} else {
 		return errors.New("missing CSeq header in REFER request")

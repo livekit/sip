@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pkg/errors"
@@ -34,6 +33,7 @@ import (
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -653,8 +653,8 @@ authLoop:
 		if err != nil {
 			return nil, err
 		}
-		toHeader, ok := resp.To()
-		if !ok {
+		toHeader := resp.To()
+		if toHeader == nil {
 			return nil, errors.New("no 'To' header on Response")
 		}
 
@@ -672,31 +672,30 @@ authLoop:
 	}
 
 	c.invite, c.inviteOk = req, resp
-	var ok bool
-	toHeader, ok = resp.To()
-	if !ok {
+	toHeader = resp.To()
+	if toHeader == nil {
 		return nil, errors.New("no To header in INVITE response")
 	}
+	var ok bool
 	c.tag, ok = getTagFrom(toHeader.Params)
 	if !ok {
 		return nil, errors.New("no tag in To header in INVITE response")
 	}
-	if callID, _ := c.invite.CallID(); callID != nil {
+	if callID := c.invite.CallID(); callID != nil {
 		c.callID = callID.Value()
 	}
-	h, _ := c.invite.CSeq()
-	if h != nil {
+	if h := c.invite.CSeq(); h != nil {
 		c.nextRequestCSeq = h.SeqNo + 1
 	}
 
-	if cont, ok := resp.Contact(); ok {
-		req.Recipient = &cont.Address
+	if cont := resp.Contact(); cont != nil {
+		req.Recipient = cont.Address
 		if req.Recipient.Port == 0 {
 			req.Recipient.Port = 5060
 		}
 	}
 
-	if recordRouteHeader, ok := resp.RecordRoute(); ok {
+	if recordRouteHeader := resp.RecordRoute(); recordRouteHeader != nil {
 		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
@@ -714,9 +713,9 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 func (c *sipOutbound) attemptInvite(ctx context.Context, prev *sip.Request, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
-	req := sip.NewRequest(sip.INVITE, &to.Address)
+	req := sip.NewRequest(sip.INVITE, to.Address)
 	if prev != nil {
-		if cid, _ := prev.CallID(); cid != nil {
+		if cid := prev.CallID(); cid != nil {
 			req.RemoveHeader("Call-ID")
 			req.AppendHeader(cid)
 		}
@@ -807,7 +806,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 
 	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo)
 	c.setCSeq(req)
-	cseq, _ := req.CSeq()
+	cseq := req.CSeq()
 
 	if cseq == nil {
 		c.mu.Unlock()
