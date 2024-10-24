@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,6 +26,8 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/psrpc"
 	"github.com/pkg/errors"
+
+	"github.com/livekit/sip/pkg/config"
 )
 
 const (
@@ -59,6 +62,35 @@ type Signaling interface {
 	Transaction(req *sip.Request) (sip.ClientTransaction, error)
 
 	Drop()
+}
+
+func transportFromReq(req *sip.Request) Transport {
+	if to, _ := req.To(); to != nil {
+		if tr, _ := to.Params.Get("transport"); tr != "" {
+			return Transport(strings.ToLower(tr))
+		}
+	}
+	if via, _ := req.Via(); via != nil {
+		return Transport(strings.ToLower(via.Transport))
+	}
+	return ""
+}
+
+func transportPort(c *config.Config, t Transport) int {
+	if t == TransportTLS {
+		if tc := c.TLS; tc != nil {
+			return tc.Port
+		}
+	}
+	return c.SIPPort
+}
+
+func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
+	return URI{
+		Host:      c.SIPHostname,
+		Addr:      netip.AddrPortFrom(ip, uint16(transportPort(c, t))),
+		Transport: t,
+	}
 }
 
 func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {

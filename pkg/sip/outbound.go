@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -75,23 +74,26 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig) (*outboundCall, error) {
-	if sipConf.host == "" {
-		sipConf.host = c.signalingIp.String()
-	}
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
 	if sipConf.ringingTimeout <= 0 {
 		sipConf.ringingTimeout = defaultRingingTimeout
 	}
+	tr := TransportFrom(sipConf.transport)
+	contact := c.ContactURI(tr)
+	if sipConf.host == "" {
+		sipConf.host = contact.GetHost()
+	}
 	call := &outboundCall{
 		c:   c,
 		log: log,
 		cc: c.newOutbound(id, URI{
-			User: sipConf.from,
-			Host: sipConf.host,
-			Addr: netip.AddrPortFrom(c.signalingIp, uint16(conf.SIPPort)),
-		}),
+			User:      sipConf.from,
+			Host:      sipConf.host,
+			Addr:      contact.Addr,
+			Transport: tr,
+		}, contact),
 		sipConf: sipConf,
 	}
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
@@ -375,9 +377,10 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	joinDur := c.mon.JoinDur()
 
 	c.mon.InviteReq()
-	sdpResp, err := c.cc.Invite(ctx, c.sipConf.transport, URI{
-		User: c.sipConf.to,
-		Host: c.sipConf.address,
+	sdpResp, err := c.cc.Invite(ctx, URI{
+		User:      c.sipConf.to,
+		Host:      c.sipConf.address,
+		Transport: TransportFrom(c.sipConf.transport),
 	}, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
@@ -473,7 +476,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 	return nil
 }
 
-func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
+func (c *Client) newOutbound(id LocalTag, from, contact URI) *sipOutbound {
 	from = from.Normalize()
 	fromHeader := &sip.FromHeader{
 		DisplayName: from.User,
@@ -481,7 +484,7 @@ func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
 		Params:      sip.NewParams(),
 	}
 	contactHeader := &sip.ContactHeader{
-		Address: *from.GetContactURI(),
+		Address: *contact.GetContactURI(),
 	}
 	fromHeader.Params.Add("tag", string(id))
 	return &sipOutbound{
@@ -542,20 +545,13 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, transport livekit.SIPTransport, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.Invite")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	to = to.Normalize()
 	toHeader := &sip.ToHeader{Address: *to.GetURI()}
-	toHeader.Address.UriParams = make(sip.HeaderParams)
-	switch transport {
-	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
-		toHeader.Address.UriParams.Add("transport", "udp")
-	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
-		toHeader.Address.UriParams.Add("transport", "tcp")
-	}
 
 	dest := to.GetDest()
 

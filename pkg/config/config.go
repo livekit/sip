@@ -35,12 +35,24 @@ import (
 )
 
 const (
-	DefaultSIPPort int = 5060
+	DefaultSIPPort    int = 5060
+	DefaultSIPPortTLS int = 5061
 )
 
 var (
 	DefaultRTPPortRange = rtcconfig.PortRange{Start: 10000, End: 20000}
 )
+
+type TLSCert struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+type TLSConfig struct {
+	Port       int       `yaml:"port"`        // announced SIP signaling port
+	ListenPort int       `yaml:"port_listen"` // SIP signaling port to listen on
+	Certs      []TLSCert `yaml:"certs"`
+}
 
 type Config struct {
 	Redis     *redis.RedisConfig `yaml:"redis"`      // required
@@ -53,6 +65,8 @@ type Config struct {
 	PProfPort         int                 `yaml:"pprof_port"`
 	SIPPort           int                 `yaml:"sip_port"`        // announced SIP signaling port
 	SIPPortListen     int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
+	SIPHostname       string              `yaml:"sip_hostname"`
+	TLS               *TLSConfig          `yaml:"tls"`
 	RTPPort           rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging           logger.Config       `yaml:"logging"`
 	ClusterID         string              `yaml:"cluster_id"` // cluster this instance belongs to
@@ -108,6 +122,14 @@ func (c *Config) Init() error {
 	}
 	if c.SIPPortListen == 0 {
 		c.SIPPortListen = c.SIPPort
+	}
+	if tc := c.TLS; tc != nil {
+		if tc.Port == 0 {
+			tc.Port = DefaultSIPPortTLS
+		}
+		if tc.ListenPort == 0 {
+			tc.ListenPort = tc.Port
+		}
 	}
 	if c.RTPPort.Start == 0 {
 		c.RTPPort.Start = DefaultRTPPortRange.Start

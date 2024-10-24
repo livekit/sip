@@ -131,6 +131,10 @@ func (c *Client) SetHandler(handler Handler) {
 	c.handler = handler
 }
 
+func (c *Client) ContactURI(tr Transport) URI {
+	return getContactURI(c.conf, c.signalingIp, tr)
+}
+
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	ctx, span := tracer.Start(ctx, "Client.CreateSIPParticipant")
 	defer span.End()

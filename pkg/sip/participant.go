@@ -75,6 +75,7 @@ func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
 
 const (
 	callDropped = CallStatus(iota)
+	callFlood
 	CallDialing
 	CallAutomation
 	CallActive
