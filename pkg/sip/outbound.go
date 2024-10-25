@@ -16,7 +16,6 @@ package sip
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"net/netip"
@@ -27,6 +26,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/livekit"
@@ -108,12 +108,12 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		MediaTimeout:        c.conf.MediaTimeout,
 	}, RoomSampleRate)
 	if err != nil {
-		call.close(true, callDropped, "media-failed")
+		call.close(errors.Wrap(err, "media failed"), callDropped, "media-failed", livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, err
 	}
 	call.media.SetDTMFAudio(conf.AudioDTMF)
 	if err := call.connectToRoom(ctx, room); err != nil {
-		call.close(true, callDropped, "join-failed")
+		call.close(errors.Wrap(err, "room join failed"), callDropped, "join-failed", livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
 
@@ -129,17 +129,16 @@ func (c *outboundCall) Start(ctx context.Context) {
 	defer cancel()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
-	err := c.ConnectSIP(ctx)
-	if err != nil {
-		c.log.Infow("SIP call failed", "error", err)
-		c.CloseWithReason(callDropped, "connect error")
+	ok := c.ConnectSIP(ctx)
+	if !ok {
 		return
 	}
 	select {
 	case <-c.Disconnected():
-		c.CloseWithReason(callDropped, "removed")
+		c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
+		c.callInfo.Error = psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout").Error()
 	case <-c.Closed():
 	}
 }
@@ -156,37 +155,39 @@ func (c *outboundCall) Close() error {
 	c.closing.Break()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(false, callDropped, "shutdown")
+	c.close(nil, callDropped, "shutdown", livekit.DisconnectReason_SERVER_SHUTDOWN)
 	return nil
 }
 
-func (c *outboundCall) CloseWithReason(status CallStatus, reason string) {
+func (c *outboundCall) CloseWithReason(status CallStatus, description string, reason livekit.DisconnectReason) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(false, status, reason)
+	c.close(nil, status, description, reason)
 }
 
 func (c *outboundCall) closeWithTimeout() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(true, callDropped, "media-timeout")
+	c.close(psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"), callDropped, "media-timeout", livekit.DisconnectReason_UNKNOWN_REASON)
 }
 
-func (c *outboundCall) close(error bool, status CallStatus, reason string) {
+func (c *outboundCall) close(err error, status CallStatus, description string, reason livekit.DisconnectReason) {
 	c.stopped.Once(func() {
 		c.setStatus(status)
-		if error {
-			c.log.Warnw("Closing outbound call with error", nil, "reason", reason)
+		if err != nil {
+			c.log.Warnw("Closing outbound call with error", nil, "reason", description)
+			c.callInfo.Error = err.Error()
 		} else {
-			c.log.Infow("Closing outbound call", "reason", reason)
+			c.log.Infow("Closing outbound call", "reason", description)
 		}
+		c.callInfo.DisconnectReason = reason
 		c.media.Close()
 		_ = c.lkRoom.CloseOutput()
 
 		_ = c.lkRoom.CloseWithReason(status.DisconnectReason())
 		c.lkRoomIn = nil
 
-		c.stopSIP(reason)
+		c.stopSIP(description)
 
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())
@@ -205,33 +206,34 @@ func (c *outboundCall) Participant() ParticipantInfo {
 	return c.lkRoom.Participant()
 }
 
-func (c *outboundCall) ConnectSIP(ctx context.Context) error {
+func (c *outboundCall) ConnectSIP(ctx context.Context) bool {
 	ctx, span := tracer.Start(ctx, "outboundCall.ConnectSIP")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.dialSIP(ctx); err != nil {
-		status, reason := callDropped, "invite-failed"
-		isError := true
+		c.log.Infow("SIP call failed", "error", err)
+
+		status, desc, reason := callDropped, "invite-failed", livekit.DisconnectReason_UNKNOWN_REASON
 		var e *ErrorStatus
 		if errors.As(err, &e) {
 			switch e.StatusCode {
 			case int(sip.StatusTemporarilyUnavailable):
-				status, reason = callUnavailable, "unavailable"
-				isError = false
+				status, desc, reason = callUnavailable, "unavailable", livekit.DisconnectReason_USER_UNAVAILABLE
+				err = nil
 			case int(sip.StatusBusyHere):
-				status, reason = callRejected, "busy"
-				isError = false
+				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
+				err = nil
 			}
 		}
-		c.close(isError, status, reason)
-		return fmt.Errorf("update SIP failed: %w", err)
+		c.close(err, status, desc, reason)
+		return false
 	}
 	c.connectMedia()
 	c.started.Break()
 	c.lkRoom.Subscribe()
 	c.log.Infow("Outbound SIP call established")
-	return nil
+	return true
 }
 
 func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) error {
@@ -473,7 +475,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 	c.log.Infow("outbound call tranferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
-	time.AfterFunc(referByeTimeout, func() { c.CloseWithReason(CallHangup, "call transferred") })
+	time.AfterFunc(referByeTimeout, func() { c.CloseWithReason(CallHangup, "call transferred", livekit.DisconnectReason_CLIENT_INITIATED) })
 
 	return nil
 }

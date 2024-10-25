@@ -178,7 +178,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		case nil:
 			callInfo.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
 		default:
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 			callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
 			callInfo.Error = retErr.Error()
 		}
@@ -221,7 +221,20 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}
 	p := call.Participant()
 	// Start actual SIP call async.
-	go call.Start(context.WithoutCancel(ctx))
+	go func() {
+		call.Start(context.WithoutCancel(ctx))
+
+		if callInfo.Error != "" {
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+		} else {
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+		}
+
+		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: callInfo,
+		})
+
+	}()
 
 	return &rpc.InternalCreateSIPParticipantResponse{
 		ParticipantId:       p.ID,
@@ -276,7 +289,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	}
 	call.log.Infow("BYE")
 	go func(call *outboundCall) {
-		call.CloseWithReason(CallHangup, "bye")
+		call.CloseWithReason(CallHangup, "bye", livekit.DisconnectReason_CLIENT_INITIATED)
 	}(call)
 	return true
 }
