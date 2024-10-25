@@ -16,6 +16,9 @@ package sip
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,18 +29,25 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
 
+type ServiceConfig struct {
+	SignalingIP      netip.Addr
+	SignalingIPLocal netip.Addr
+}
+
 type Service struct {
-	conf *config.Config
-	log  logger.Logger
-	mon  *stats.Monitor
-	cli  *Client
-	srv  *Server
+	conf  *config.Config
+	sconf *ServiceConfig
+	log   logger.Logger
+	mon   *stats.Monitor
+	cli   *Client
+	srv   *Server
 
 	mu               sync.Mutex
 	pendingTransfers map[transferKey]chan struct{}
@@ -48,7 +58,7 @@ type transferKey struct {
 	TransferTo string
 }
 
-func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Service {
+func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -60,7 +70,27 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger) *Ser
 		srv:              NewServer(conf, log, mon),
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
-	return s
+	var err error
+	s.sconf, err = GetServiceConfig(s.conf)
+	if err != nil {
+		return nil, err
+	}
+
+	s.conf.SIPHostname = strings.ReplaceAll(
+		s.conf.SIPHostname,
+		"${IP}",
+		strings.NewReplacer(
+			".", "-", // IPv4
+			"[", "", "]", "", ":", "-", // IPv6
+		).Replace(s.sconf.SignalingIP.String()),
+	)
+	if strings.ContainsAny(s.conf.SIPHostname, "$%{}[]:/| ") {
+		return nil, fmt.Errorf("invalid hostname: %q", s.conf.SIPHostname)
+	}
+	if s.conf.SIPHostname != "" {
+		log.Infow("using hostname", "hostname", s.conf.SIPHostname)
+	}
+	return s, nil
 }
 
 func (s *Service) ActiveCalls() int {
@@ -111,12 +141,12 @@ func (s *Service) Start() error {
 	if err != nil {
 		return err
 	}
-	if err := s.cli.Start(ua); err != nil {
+	if err := s.cli.Start(ua, s.sconf); err != nil {
 		return err
 	}
 	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
 	// Thus, all unhandled transactions will be checked by the client.
-	if err := s.srv.Start(ua, s.cli.OnRequest); err != nil {
+	if err := s.srv.Start(ua, s.sconf, s.cli.OnRequest); err != nil {
 		return err
 	}
 	s.log.Debugw("sip service ready")

@@ -26,6 +26,7 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+
 	"github.com/livekit/sip/pkg/stats"
 
 	"github.com/livekit/sip/pkg/config"
@@ -90,7 +91,10 @@ func runService(c *cli.Context) error {
 		return err
 	}
 
-	sipsrv := sip.NewService(conf, mon, log)
+	sipsrv, err := sip.NewService(conf, mon, log)
+	if err != nil {
+		return err
+	}
 	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
 	sipsrv.SetHandler(svc)
 

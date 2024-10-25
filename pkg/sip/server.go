@@ -110,13 +110,11 @@ type Handler interface {
 }
 
 type Server struct {
-	log              logger.Logger
-	mon              *stats.Monitor
-	sipSrv           *sipgo.Server
-	sipListeners     []io.Closer
-	sipUnhandled     RequestHandler
-	signalingIp      netip.Addr
-	signalingIpLocal netip.Addr
+	log          logger.Logger
+	mon          *stats.Monitor
+	sipSrv       *sipgo.Server
+	sipListeners []io.Closer
+	sipUnhandled RequestHandler
 
 	inProgressInvites []*inProgressInvite
 
@@ -127,6 +125,7 @@ type Server struct {
 
 	handler Handler
 	conf    *config.Config
+	sconf   *ServiceConfig
 
 	res mediaRes
 }
@@ -156,7 +155,7 @@ func (s *Server) SetHandler(handler Handler) {
 }
 
 func (s *Server) ContactURI(tr Transport) URI {
-	return getContactURI(s.conf, s.signalingIp, tr)
+	return getContactURI(s.conf, s.sconf.SignalingIP, tr)
 }
 
 func (s *Server) startUDP(addr netip.AddrPort) error {
@@ -169,7 +168,7 @@ func (s *Server) startUDP(addr netip.AddrPort) error {
 	}
 	s.sipListeners = append(s.sipListeners, lis)
 	s.log.Infow("sip signaling listening on",
-		"local", s.signalingIpLocal, "external", s.signalingIp,
+		"local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP,
 		"port", addr.Port(), "announce-port", s.conf.SIPPort,
 		"proto", "udp",
 	)
@@ -192,7 +191,7 @@ func (s *Server) startTCP(addr netip.AddrPort) error {
 	}
 	s.sipListeners = append(s.sipListeners, lis)
 	s.log.Infow("sip signaling listening on",
-		"local", s.signalingIpLocal, "external", s.signalingIp,
+		"local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP,
 		"port", addr.Port(), "announce-port", s.conf.SIPPort,
 		"proto", "tcp",
 	)
@@ -216,7 +215,7 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 	lis := tls.NewListener(tlis, conf)
 	s.sipListeners = append(s.sipListeners, lis)
 	s.log.Infow("sip signaling listening on",
-		"local", s.signalingIpLocal, "external", s.signalingIp,
+		"local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP,
 		"port", addr.Port(), "announce-port", s.conf.TLS.Port,
 		"proto", "tls",
 	)
@@ -231,29 +230,9 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 
 type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
 
-func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
-	var err error
-	if s.conf.UseExternalIP {
-		if s.signalingIp, err = getPublicIP(); err != nil {
-			return err
-		}
-		if s.signalingIpLocal, err = getLocalIP(s.conf.LocalNet); err != nil {
-			return err
-		}
-	} else if s.conf.NAT1To1IP != "" {
-		ip, err := netip.ParseAddr(s.conf.NAT1To1IP)
-		if err != nil {
-			return err
-		}
-		s.signalingIp = ip
-		s.signalingIpLocal = s.signalingIp
-	} else {
-		if s.signalingIp, err = getLocalIP(s.conf.LocalNet); err != nil {
-			return err
-		}
-		s.signalingIpLocal = s.signalingIp
-	}
-	s.log.Infow("server starting", "local", s.signalingIpLocal, "external", s.signalingIp)
+func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled RequestHandler) error {
+	s.sconf = sc
+	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
 	if agent == nil {
 		ua, err := sipgo.NewUA(
@@ -265,6 +244,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, unhandled RequestHandler) error {
 		agent = ua
 	}
 
+	var err error
 	s.sipSrv, err = sipgo.NewServer(agent,
 		sipgo.WithServerLogger(slog.New(logger.ToSlogHandler(s.log))),
 	)

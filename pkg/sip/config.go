@@ -21,7 +21,35 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+
+	"github.com/livekit/sip/pkg/config"
 )
+
+func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
+	s := new(ServiceConfig)
+	var err error
+	if conf.UseExternalIP {
+		if s.SignalingIP, err = getPublicIP(); err != nil {
+			return nil, err
+		}
+		if s.SignalingIPLocal, err = getLocalIP(conf.LocalNet); err != nil {
+			return nil, err
+		}
+	} else if conf.NAT1To1IP != "" {
+		ip, err := netip.ParseAddr(conf.NAT1To1IP)
+		if err != nil {
+			return nil, err
+		}
+		s.SignalingIP = ip
+		s.SignalingIPLocal = s.SignalingIP
+	} else {
+		if s.SignalingIP, err = getLocalIP(conf.LocalNet); err != nil {
+			return nil, err
+		}
+		s.SignalingIPLocal = s.SignalingIP
+	}
+	return s, nil
+}
 
 func getPublicIP() (netip.Addr, error) {
 	req, err := http.Get("http://ip-api.com/json/")
