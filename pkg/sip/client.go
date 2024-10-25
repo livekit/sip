@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -233,7 +234,7 @@ func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest)
 	fromiUri := URI{
 		User: req.Number,
 		Host: req.Hostname,
-		Addr: netip.AddrPortFrom(c.signalingIp, uint16(c.conf.SIPPort)),
+		Addr: netip.AddrPortFrom(c.sconf.SignalingIP, uint16(c.conf.SIPPort)),
 	}
 
 	callInfo := &livekit.SIPCallInfo{
@@ -245,9 +246,6 @@ func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest)
 		FromUri:             fromiUri.ToSIPUri(),
 		CreatedAt:           time.Now().UnixNano(),
 	}
-
-	callInfo.ToUri.Transport = req.Transport
-	callInfo.FromUri.Transport = req.Transport
 
 	return callInfo
 }
