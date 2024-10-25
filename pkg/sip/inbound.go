@@ -152,15 +152,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		"toIP", req.Destination(),
 	)
 
-	cc := s.newInbound(LocalTag(callID), req, tx)
+	tr := transportFromReq(req)
+	cc := s.newInbound(LocalTag(callID), s.ContactURI(tr), req, tx)
 	log = LoggerWithParams(log, cc)
 	log = LoggerWithHeaders(log, cc)
 	log.Infow("processing invite")
 
 	callInfo := &livekit.SIPCallInfo{
 		CallId:     string(cc.ID()),
-		FromUri:    CreateURIFromUserAndAddress(cc.From().User, src.String()).ToSIPUri(),
-		ToUri:      CreateURIFromUserAndAddress(cc.To().User, cc.To().Host).ToSIPUri(),
+		FromUri:    CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
+		ToUri:      CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
 		CallStatus: livekit.SIPCallStatus_SCS_CALL_INCOMING,
 		CreatedAt:  time.Now().UnixNano(),
 	}
@@ -389,7 +390,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	case DispatchNoRuleDrop:
 		c.log.Debugw("Rejecting inbound flood")
 		c.cc.Drop()
-		c.close(false, callDropped, "flood")
+		c.close(false, callFlood, "flood")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case DispatchNoRuleReject:
 		c.log.Infow("Rejecting inbound call, doesn't match any Dispatch Rules")
@@ -412,7 +413,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 	acceptCall := func() (bool, error) {
 		c.log.Infow("Accepting the call", "headers", disp.Headers)
-		if err = c.cc.Accept(ctx, netip.AddrPortFrom(c.s.signalingIp, uint16(c.s.conf.SIPPort)), answerData, disp.Headers); err != nil {
+		if err = c.cc.Accept(ctx, answerData, disp.Headers); err != nil {
 			c.log.Errorw("Cannot respond to INVITE", err)
 			return false, err
 		}
@@ -684,7 +685,10 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	} else {
 		c.log.Infow("Closing inbound call", "reason", reason)
 	}
-	defer c.log.Infow("Inbound call closed", "reason", reason)
+	if status != callFlood {
+		defer c.log.Infow("Inbound call closed", "reason", reason)
+	}
+
 	c.closeMedia()
 	c.cc.Close()
 	if c.callDur != nil {
@@ -874,12 +878,15 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, dialt
 
 }
 
-func (s *Server) newInbound(id LocalTag, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
+func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, inviteTx sip.ServerTransaction) *sipInbound {
 	c := &sipInbound{
-		s:         s,
-		id:        id,
-		invite:    invite,
-		inviteTx:  inviteTx,
+		s:        s,
+		id:       id,
+		invite:   invite,
+		inviteTx: inviteTx,
+		contact: &sip.ContactHeader{
+			Address: *contact.GetContactURI(),
+		},
 		cancelled: make(chan struct{}),
 		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
@@ -902,6 +909,7 @@ type sipInbound struct {
 	tag       RemoteTag
 	invite    *sip.Request
 	inviteTx  sip.ServerTransaction
+	contact   *sip.ContactHeader
 	cancelled chan struct{}
 	from      *sip.FromHeader
 	to        *sip.ToHeader
@@ -1068,7 +1076,7 @@ func (c *sipInbound) setDestFromVia(r *sip.Response) {
 	}
 }
 
-func (c *sipInbound) Accept(ctx context.Context, contactHost netip.AddrPort, sdpData []byte, headers map[string]string) error {
+func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
 	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
 	defer span.End()
 	c.mu.Lock()
@@ -1079,7 +1087,7 @@ func (c *sipInbound) Accept(ctx context.Context, contactHost netip.AddrPort, sdp
 	r := sip.NewResponseFromRequest(c.invite, 200, "OK", sdpData)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
-	r.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: contactHost.Addr().String(), Port: int(contactHost.Port())}})
+	r.AppendHeader(c.contact)
 
 	c.setDestFromVia(r)
 
@@ -1184,9 +1192,7 @@ func (c *sipInbound) newReferReq(transferTo string) (*sip.Request, error) {
 	}
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
-	contactHeader := &sip.ContactHeader{Address: sip.Uri{Host: c.s.signalingIp.String(), Port: c.s.conf.SIPPort}}
-
-	req := NewReferRequest(c.invite, c.inviteOk, contactHeader, transferTo)
+	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo)
 	c.setCSeq(req)
 	c.swapSrcDst(req)
 

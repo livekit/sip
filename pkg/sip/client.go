@@ -135,6 +135,10 @@ func (c *Client) SetHandler(handler Handler) {
 	c.handler = handler
 }
 
+func (c *Client) ContactURI(tr Transport) URI {
+	return getContactURI(c.conf, c.signalingIp, tr)
+}
+
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	ctx, span := tracer.Start(ctx, "Client.CreateSIPParticipant")
 	defer span.End()
@@ -213,6 +217,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		headersToAttrs:  req.HeadersToAttributes,
 		ringingTimeout:  req.RingingTimeout.AsDuration(),
 		maxCallDuration: req.MaxCallDuration.AsDuration(),
+		enabledFeatures: req.EnabledFeatures,
 	}
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, callInfo)
@@ -245,7 +250,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 }
 
 func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
-	toUri := CreateURIFromUserAndAddress(req.CallTo, req.Address)
+	toUri := CreateURIFromUserAndAddress(req.CallTo, req.Address, TransportFrom(req.Transport))
 	fromiUri := URI{
 		User: req.Number,
 		Host: req.Hostname,

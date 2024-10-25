@@ -38,16 +38,51 @@ func (h Headers) GetHeader(name string) sip.Header {
 	return nil
 }
 
-type URI struct {
-	User string
-	Host string
-	Addr netip.AddrPort
+func TransportFrom(t livekit.SIPTransport) Transport {
+	switch t {
+	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
+		return TransportUDP
+	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
+		return TransportTCP
+	case livekit.SIPTransport_SIP_TRANSPORT_TLS:
+		return TransportTLS
+	}
+	return ""
 }
 
-func CreateURIFromUserAndAddress(user string, address string) URI {
+func SIPTransportFrom(t Transport) livekit.SIPTransport {
+	switch t {
+	case TransportUDP:
+		return livekit.SIPTransport_SIP_TRANSPORT_UDP
+	case TransportTCP:
+		return livekit.SIPTransport_SIP_TRANSPORT_TCP
+	case TransportTLS:
+		return livekit.SIPTransport_SIP_TRANSPORT_TLS
+	}
+
+	return livekit.SIPTransport_SIP_TRANSPORT_AUTO
+}
+
+type Transport string
+
+const (
+	TransportUDP = Transport("udp")
+	TransportTCP = Transport("tcp")
+	TransportTLS = Transport("tls")
+)
+
+type URI struct {
+	User      string
+	Host      string
+	Addr      netip.AddrPort
+	Transport Transport
+}
+
+func CreateURIFromUserAndAddress(user string, address string, transport Transport) URI {
 	uri := URI{
-		User: user,
-		Host: address,
+		User:      user,
+		Host:      address,
+		Transport: transport,
 	}
 
 	uri.Normalize()
@@ -110,25 +145,33 @@ func (u URI) GetURI() *sip.Uri {
 	if port := u.Addr.Port(); port != 0 {
 		su.Port = int(port)
 	}
+	if u.Transport != "" {
+		if su.UriParams == nil {
+			su.UriParams = make(sip.HeaderParams)
+		}
+		su.UriParams.Add("transport", string(u.Transport))
+	}
 	return su
 }
 
 func (u URI) GetContactURI() *sip.Uri {
-	su := &sip.Uri{
-		User: u.User,
-		Host: u.Addr.Addr().String(),
-	}
-	if port := u.Addr.Port(); port != 0 {
-		su.Port = int(port)
+	su := u.GetURI()
+	switch u.Transport {
+	case TransportUDP, TransportTCP:
+		// Use IP instead of a hostname for TCP and UDP.
+		if addr := u.Addr.Addr(); addr.IsValid() {
+			su.Host = addr.String()
+		}
 	}
 	return su
 }
 
 func (u URI) ToSIPUri() *livekit.SIPUri {
 	url := &livekit.SIPUri{
-		User: u.User,
-		Host: u.GetHost(),
-		Port: fmt.Sprintf("%d", u.GetPort()),
+		User:      u.User,
+		Host:      u.GetHost(),
+		Port:      fmt.Sprintf("%d", u.GetPort()),
+		Transport: SIPTransportFrom(u.Transport),
 	}
 
 	if u.Addr.Addr().IsValid() {

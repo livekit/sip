@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"net/netip"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +30,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -56,6 +56,7 @@ type sipOutboundConfig struct {
 	headersToAttrs  map[string]string
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
+	enabledFeatures []rpc.SIPFeature
 }
 
 type outboundCall struct {
@@ -76,9 +77,6 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, callInfo *livekit.SIPCallInfo) (*outboundCall, error) {
-	if sipConf.host == "" {
-		sipConf.host = c.signalingIp.String()
-	}
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -86,14 +84,20 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf.ringingTimeout = defaultRingingTimeout
 	}
 
+	tr := TransportFrom(sipConf.transport)
+	contact := c.ContactURI(tr)
+	if sipConf.host == "" {
+		sipConf.host = contact.GetHost()
+	}
 	call := &outboundCall{
 		c:   c,
 		log: log,
 		cc: c.newOutbound(id, URI{
-			User: sipConf.from,
-			Host: sipConf.host,
-			Addr: netip.AddrPortFrom(c.signalingIp, uint16(conf.SIPPort)),
-		}),
+			User:      sipConf.from,
+			Host:      sipConf.host,
+			Addr:      contact.Addr,
+			Transport: tr,
+		}, contact),
 		sipConf:  sipConf,
 		callInfo: callInfo,
 	}
@@ -383,9 +387,9 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.mon.InviteReq()
 
-	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address)
+	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
-	sdpResp, err := c.cc.Invite(ctx, c.sipConf.transport, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
+	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
 		var e *ErrorStatus
@@ -403,9 +407,15 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
-	if err := c.media.SetAnswer(sdpResp); err != nil {
+	mc, err := c.media.SetAnswer(sdpResp)
+	if err != nil {
 		return err
 	}
+	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures)
+	if err = c.media.SetConfig(mc); err != nil {
+		return err
+	}
+
 	c.c.cmu.Lock()
 	c.c.byRemote[c.cc.Tag()] = c
 	c.c.cmu.Unlock()
@@ -480,7 +490,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 	return nil
 }
 
-func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
+func (c *Client) newOutbound(id LocalTag, from, contact URI) *sipOutbound {
 	from = from.Normalize()
 	fromHeader := &sip.FromHeader{
 		DisplayName: from.User,
@@ -488,7 +498,7 @@ func (c *Client) newOutbound(id LocalTag, from URI) *sipOutbound {
 		Params:      sip.NewParams(),
 	}
 	contactHeader := &sip.ContactHeader{
-		Address: *from.GetContactURI(),
+		Address: *contact.GetContactURI(),
 	}
 	fromHeader.Params.Add("tag", string(id))
 	return &sipOutbound{
@@ -549,19 +559,12 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, transport livekit.SIPTransport, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.Invite")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	toHeader := &sip.ToHeader{Address: *to.GetURI()}
-	toHeader.Address.UriParams = make(sip.HeaderParams)
-	switch transport {
-	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
-		toHeader.Address.UriParams.Add("transport", "udp")
-	case livekit.SIPTransport_SIP_TRANSPORT_TCP:
-		toHeader.Address.UriParams.Add("transport", "tcp")
-	}
 
 	dest := to.GetDest()
 
