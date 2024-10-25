@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -38,13 +37,12 @@ import (
 )
 
 type Client struct {
-	conf *config.Config
-	log  logger.Logger
-	mon  *stats.Monitor
+	conf  *config.Config
+	sconf *ServiceConfig
+	log   logger.Logger
+	mon   *stats.Monitor
 
-	sipCli           *sipgo.Client
-	signalingIp      netip.Addr
-	signalingIpLocal netip.Addr
+	sipCli *sipgo.Client
 
 	closing     core.Fuse
 	cmu         sync.Mutex
@@ -70,29 +68,9 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, ioCli
 	return c
 }
 
-func (c *Client) Start(agent *sipgo.UserAgent) error {
-	var err error
-	if c.conf.UseExternalIP {
-		if c.signalingIp, err = getPublicIP(); err != nil {
-			return err
-		}
-		if c.signalingIpLocal, err = getLocalIP(c.conf.LocalNet); err != nil {
-			return err
-		}
-	} else if c.conf.NAT1To1IP != "" {
-		ip, err := netip.ParseAddr(c.conf.NAT1To1IP)
-		if err != nil {
-			return err
-		}
-		c.signalingIp = ip
-		c.signalingIpLocal = c.signalingIp
-	} else {
-		if c.signalingIp, err = getLocalIP(c.conf.LocalNet); err != nil {
-			return err
-		}
-		c.signalingIpLocal = c.signalingIp
-	}
-	c.log.Infow("client starting", "local", c.signalingIpLocal, "external", c.signalingIp)
+func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
+	c.sconf = sc
+	c.log.Infow("client starting", "local", c.sconf.SignalingIPLocal, "external", c.sconf.SignalingIP)
 
 	if agent == nil {
 		ua, err := sipgo.NewUA(
@@ -104,8 +82,9 @@ func (c *Client) Start(agent *sipgo.UserAgent) error {
 		agent = ua
 	}
 
+	var err error
 	c.sipCli, err = sipgo.NewClient(agent,
-		sipgo.WithClientHostname(c.signalingIp.String()),
+		sipgo.WithClientHostname(c.sconf.SignalingIP.String()),
 		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
 	)
 	if err != nil {
@@ -136,7 +115,7 @@ func (c *Client) SetHandler(handler Handler) {
 }
 
 func (c *Client) ContactURI(tr Transport) URI {
-	return getContactURI(c.conf, c.signalingIp, tr)
+	return getContactURI(c.conf, c.sconf.SignalingIP, tr)
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
