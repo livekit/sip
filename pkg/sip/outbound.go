@@ -30,6 +30,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -55,6 +56,7 @@ type sipOutboundConfig struct {
 	headersToAttrs  map[string]string
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
+	enabledFeatures []rpc.SIPFeature
 }
 
 type outboundCall struct {
@@ -399,9 +401,15 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
-	if err := c.media.SetAnswer(sdpResp); err != nil {
+	mc, err := c.media.SetAnswer(sdpResp)
+	if err != nil {
 		return err
 	}
+	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures)
+	if err = c.media.SetConfig(mc); err != nil {
+		return err
+	}
+
 	c.c.cmu.Lock()
 	c.c.byRemote[c.cc.Tag()] = c
 	c.c.cmu.Unlock()
