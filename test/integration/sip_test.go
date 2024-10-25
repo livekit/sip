@@ -79,7 +79,10 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sipsrv := sip.NewService(conf, mon, log)
+	sipsrv, err := sip.NewService(conf, mon, log)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus, mon)
 	sipsrv.SetHandler(svc)

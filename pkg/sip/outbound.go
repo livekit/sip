@@ -99,7 +99,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
 	call.media, err = NewMediaPort(call.log, call.mon, &MediaConfig{
-		IP:                  c.signalingIp,
+		IP:                  c.sconf.SignalingIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
