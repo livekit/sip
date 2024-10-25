@@ -180,7 +180,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		default:
 			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
 			callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
-			callInfo.Error = rerErr.Error()
+			callInfo.Error = retErr.Error()
 		}
 
 		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{

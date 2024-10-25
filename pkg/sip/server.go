@@ -111,6 +111,7 @@ type Server struct {
 	log              logger.Logger
 	mon              *stats.Monitor
 	sipSrv           *sipgo.Server
+	ioClient         rpc.IOInfoClient
 	sipConnUDP       *net.UDPConn
 	sipConnTCP       *net.TCPListener
 	sipUnhandled     RequestHandler
@@ -135,7 +136,7 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Server {
+func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor, ioClient rpc.IOInfoClient) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -143,6 +144,7 @@ func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Serv
 		log:         log,
 		conf:        conf,
 		mon:         mon,
+		ioClient:    ioClient,
 		activeCalls: make(map[RemoteTag]*inboundCall),
 		byLocal:     make(map[LocalTag]*inboundCall),
 	}

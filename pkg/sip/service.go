@@ -57,7 +57,7 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, ioCl
 		log:              log,
 		mon:              mon,
 		cli:              NewClient(conf, log, mon, ioClient),
-		srv:              NewServer(conf, log, mon),
+		srv:              NewServer(conf, log, mon, ioClient),
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	return s
