@@ -165,13 +165,13 @@ func (p *MediaPort) decodeSDP(data []byte) (*sdp.SessionDescription, *MediaConf,
 	return desc, c, nil
 }
 
-// SetAnswer decodes and applies SDP answer for offer from NewOffer. It calls SetConfig with a decoded configuration.
-func (p *MediaPort) SetAnswer(answer []byte) error {
+// SetAnswer decodes and applies SDP answer for offer from NewOffer. SetConfig must be called with the decoded configuration.
+func (p *MediaPort) SetAnswer(answer []byte) (*MediaConf, error) {
 	_, c, err := p.decodeSDP(answer)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return p.SetConfig(c)
+	return c, nil
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.

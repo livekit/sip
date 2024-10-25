@@ -27,9 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
-	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
@@ -183,7 +184,10 @@ func TestMediaPort(t *testing.T) {
 
 					t.Logf("SDP answer:\n%s", string(answer))
 
-					err = m1.SetAnswer(answer)
+					mc, err := m1.SetAnswer(answer)
+					require.NoError(t, err)
+
+					err = m1.SetConfig(mc)
 					require.NoError(t, err)
 
 					err = m2.SetConfig(conf)
