@@ -135,8 +135,17 @@ func (c *outboundCall) Start(ctx context.Context) {
 	defer c.mon.CallEnd()
 	ok := c.ConnectSIP(ctx)
 	if !ok {
-		return
+		return // ConnectSIP updates the error code on the callInfo
 	}
+
+	c.callInfo.RoomId = c.lkRoom.room.SID()
+	c.callInfo.StartedAt = time.Now().UnixNano()
+	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
+
+	c.c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+		CallInfo: c.callInfo,
+	})
+
 	select {
 	case <-c.Disconnected():
 		c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
