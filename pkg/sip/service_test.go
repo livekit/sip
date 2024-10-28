@@ -14,6 +14,7 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/media"
 
@@ -90,12 +91,16 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
+	bus := psrpc.NewLocalMessageBus()
+	psrpcClient, err := rpc.NewIOInfoClient(bus)
+	require.NoError(t, err)
+
 	s, err := NewService(&config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, logger.GetLogger())
+	}, mon, logger.GetLogger(), psrpcClient)
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
