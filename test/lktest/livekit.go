@@ -64,8 +64,10 @@ type LiveKit struct {
 	WsUrl     string
 }
 
-func (lk *LiveKit) ListRooms(t TB) []*livekit.Room {
-	resp, err := lk.Rooms.ListRooms(context.Background(), &livekit.ListRoomsRequest{})
+func (lk *LiveKit) ListRooms(t TB, names []string) []*livekit.Room {
+	resp, err := lk.Rooms.ListRooms(context.Background(), &livekit.ListRoomsRequest{
+		Names: names,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,12 +433,12 @@ wait:
 	}
 }
 
-func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool, filter func(r *livekit.Room) bool) []*livekit.Room {
+func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool, filter func(r *livekit.Room) bool, names []string) []*livekit.Room {
 	var rooms []*livekit.Room
 	ticker := time.NewTicker(time.Second / 4)
 	defer ticker.Stop()
 	for {
-		rooms = lk.ListRooms(t)
+		rooms = lk.ListRooms(t, names)
 		if filter != nil {
 			var out []*livekit.Room
 			for _, r := range rooms {
@@ -467,7 +469,7 @@ func (lk *LiveKit) ExpectRoomWithParticipants(t TB, ctx context.Context, room st
 	filter := func(r *livekit.Room) bool {
 		return r.Name == room
 	}
-	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter)
+	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter, []string{room})
 	if len(participants) == 0 && len(rooms) == 0 {
 		return
 	}
@@ -481,7 +483,7 @@ func (lk *LiveKit) ExpectRoomPref(t TB, ctx context.Context, pref, number string
 	filter := func(r *livekit.Room) bool {
 		return r.Name != pref && strings.HasPrefix(r.Name, pref+"_"+number+"_")
 	}
-	rooms := lk.waitRooms(t, ctx, none, filter)
+	rooms := lk.waitRooms(t, ctx, none, filter, nil)
 	require.Len(t, rooms, 1)
 	require.True(t, filter(rooms[0]))
 	t.Log("Room:", rooms[0].Name)
