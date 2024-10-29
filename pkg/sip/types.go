@@ -120,9 +120,9 @@ func (u URI) GetHost() string {
 }
 
 func (u URI) GetPort() int {
-	port = int(u.Port)
+	port := int(u.Port)
 	if port == 0 {
-		port := int(u.Addr.Port())
+		port = int(u.Addr.Port())
 	}
 	if port == 0 {
 		port = 5060
