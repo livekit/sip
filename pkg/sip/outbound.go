@@ -142,9 +142,11 @@ func (c *outboundCall) Start(ctx context.Context) {
 	c.callInfo.StartedAt = time.Now().UnixNano()
 	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 
-	c.c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-		CallInfo: c.callInfo,
-	})
+	if c.c.ioClient != nil {
+		c.c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: c.callInfo,
+		})
+	}
 
 	select {
 	case <-c.Disconnected():

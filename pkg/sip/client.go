@@ -167,9 +167,11 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			callInfo.Error = retErr.Error()
 		}
 
-		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: callInfo,
-		})
+		if c.ioClient != nil {
+			c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+				CallInfo: callInfo,
+			})
+		}
 	}()
 
 	roomConf := RoomConfig{
@@ -215,9 +217,11 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
 		}
 
-		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: callInfo,
-		})
+		if c.ioClient != nil {
+			c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+				CallInfo: callInfo,
+			})
+		}
 
 	}()
 

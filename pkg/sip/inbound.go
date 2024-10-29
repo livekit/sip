@@ -130,9 +130,11 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		callInfo.EndedAt = time.Now().UnixNano()
 
-		s.ioClient.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: callInfo,
-		})
+		if s.ioClient != nil {
+			s.ioClient.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{
+				CallInfo: callInfo,
+			})
+		}
 	}
 }
 
@@ -166,9 +168,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		CreatedAt:  time.Now().UnixNano(),
 	}
 
-	s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-		CallInfo: callInfo,
-	})
+	if s.ioClient != nil {
+		s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: callInfo,
+		})
+	}
 
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
@@ -483,9 +487,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.started.Break()
 
-	c.s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-		CallInfo: c.callInfo,
-	})
+	if c.s.ioClient != nil {
+		c.s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: c.callInfo,
+		})
+	}
 
 	// Wait for the caller to terminate the call.
 	select {
