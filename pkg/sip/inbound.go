@@ -119,7 +119,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 }
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
-	callInfo, err := s.processInvite(req, tx)
+	callInfo, ioClient, err := s.processInvite(req, tx)
 
 	if callInfo != nil {
 		if err != nil {
@@ -130,22 +130,22 @@ func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		callInfo.EndedAt = time.Now().UnixNano()
 
-		if s.ioClient != nil {
-			s.ioClient.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{
+		if ioClient != nil {
+			ioClient.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{
 				CallInfo: callInfo,
 			})
 		}
 	}
 }
 
-func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*livekit.SIPCallInfo, error) {
+func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*livekit.SIPCallInfo, rpc.IOInfoClient, error) {
 	ctx := context.Background()
 	s.mon.InviteReqRaw(stats.Inbound)
 	src, err := netip.ParseAddrPort(req.Source())
 	if err != nil {
 		tx.Terminate()
 		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
-		return nil, psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
+		return nil, nil, psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
 	callID := lksip.NewCallID()
 	log := s.log.WithValues(
@@ -168,19 +168,13 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		CreatedAt:  time.Now().UnixNano(),
 	}
 
-	if s.ioClient != nil {
-		s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: callInfo,
-		})
-	}
-
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
 			cc.Drop()
 		} else {
 			cc.RespondAndDrop(sip.StatusBadRequest, "Bad request")
 		}
-		return callInfo, psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
+		return callInfo, nil, psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
 	}
 	ctx, span := tracer.Start(ctx, "Server.onInvite")
 	defer span.End()
@@ -201,7 +195,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
-		return callInfo, psrpc.NewError(psrpc.PermissionDenied, errors.Wrap(err, "rejecting inbound, auth check failed"))
+		return callInfo, nil, psrpc.NewError(psrpc.PermissionDenied, errors.Wrap(err, "rejecting inbound, auth check failed"))
 	}
 	if r.ProjectID != "" {
 		log = log.WithValues("projectID", r.ProjectID)
@@ -210,17 +204,25 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		log = log.WithValues("sipTrunk", r.TrunkID)
 		callInfo.TrunkId = r.TrunkID
 	}
+
+	ioClient := s.getIOClient(r.ProjectID)
+	if ioClient != nil {
+		ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: callInfo,
+		})
+	}
+
 	switch r.Result {
 	case AuthDrop:
 		cmon.InviteErrorShort("flood")
 		log.Debugw("Dropping inbound flood")
 		cc.Drop()
-		return callInfo, psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
+		return callInfo, ioClient, psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case AuthNotFound:
 		cmon.InviteErrorShort("no-rule")
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
-		return callInfo, psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
+		return callInfo, ioClient, psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case AuthPassword:
 		if s.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
@@ -229,21 +231,21 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		if !s.handleInviteAuth(log, req, tx, from.User, r.Username, r.Password) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
-			return callInfo, psrpc.NewErrorf(psrpc.PermissionDenied, "invalid crendentials were provided")
+			return callInfo, ioClient, psrpc.NewErrorf(psrpc.PermissionDenied, "invalid crendentials were provided")
 		}
 		fallthrough
 	case AuthAccept:
 		// ok
 	}
 
-	call := s.newInboundCall(log, cmon, cc, src, callInfo, nil)
+	call := s.newInboundCall(log, cmon, cc, src, callInfo, ioClient, nil)
 	call.joinDur = joinDur
 	err = call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 	if err != nil {
-		return callInfo, err
+		return callInfo, ioClient, err
 	}
 
-	return callInfo, nil
+	return callInfo, ioClient, nil
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
@@ -307,6 +309,7 @@ type inboundCall struct {
 	log         logger.Logger
 	cc          *sipInbound
 	mon         *stats.CallMonitor
+	ioClient    rpc.IOInfoClient
 	extraAttrs  map[string]string
 	ctx         context.Context
 	cancel      func()
@@ -328,6 +331,7 @@ func (s *Server) newInboundCall(
 	cc *sipInbound,
 	src netip.AddrPort,
 	callInfo *livekit.SIPCallInfo,
+	ioClient rpc.IOInfoClient,
 	extra map[string]string,
 ) *inboundCall {
 
@@ -339,6 +343,7 @@ func (s *Server) newInboundCall(
 		cc:         cc,
 		src:        src,
 		callInfo:   callInfo,
+		ioClient:   ioClient,
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
@@ -487,8 +492,8 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.started.Break()
 
-	if c.s.ioClient != nil {
-		c.s.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+	if c.ioClient != nil {
+		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
 			CallInfo: c.callInfo,
 		})
 	}

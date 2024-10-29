@@ -50,11 +50,11 @@ type Client struct {
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
 
-	handler  Handler
-	ioClient rpc.IOInfoClient
+	handler     Handler
+	getIOClient GetIOInfoClient
 }
 
-func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, ioClient rpc.IOInfoClient) *Client {
+func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -62,7 +62,7 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, ioCli
 		conf:        conf,
 		log:         log,
 		mon:         mon,
-		ioClient:    ioClient,
+		getIOClient: getIOClient,
 		activeCalls: make(map[LocalTag]*outboundCall),
 		byRemote:    make(map[RemoteTag]*outboundCall),
 	}
@@ -156,6 +156,8 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
+	ioClient := c.getIOClient(req.ProjectId)
+
 	callInfo := c.createSIPCallInfo(req)
 	defer func() {
 		switch retErr {
@@ -167,8 +169,8 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			callInfo.Error = retErr.Error()
 		}
 
-		if c.ioClient != nil {
-			c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+		if ioClient != nil {
+			ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
 				CallInfo: callInfo,
 			})
 		}
@@ -202,7 +204,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		enabledFeatures: req.EnabledFeatures,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, callInfo)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, callInfo, ioClient)
 	if err != nil {
 		return nil, err
 	}
@@ -217,8 +219,8 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
 		}
 
-		if c.ioClient != nil {
-			c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+		if ioClient != nil {
+			ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
 				CallInfo: callInfo,
 			})
 		}

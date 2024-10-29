@@ -62,6 +62,7 @@ type sipOutboundConfig struct {
 type outboundCall struct {
 	c        *Client
 	log      logger.Logger
+	ioClient rpc.IOInfoClient
 	cc       *sipOutbound
 	media    *MediaPort
 	callInfo *livekit.SIPCallInfo
@@ -76,7 +77,7 @@ type outboundCall struct {
 	sipConf  sipOutboundConfig
 }
 
-func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, callInfo *livekit.SIPCallInfo) (*outboundCall, error) {
+func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, callInfo *livekit.SIPCallInfo, ioClient rpc.IOInfoClient) (*outboundCall, error) {
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -100,6 +101,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		}, contact),
 		sipConf:  sipConf,
 		callInfo: callInfo,
+		ioClient: ioClient,
 	}
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
@@ -142,8 +144,8 @@ func (c *outboundCall) Start(ctx context.Context) {
 	c.callInfo.StartedAt = time.Now().UnixNano()
 	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 
-	if c.c.ioClient != nil {
-		c.c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+	if c.ioClient != nil {
+		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
 			CallInfo: c.callInfo,
 		})
 	}

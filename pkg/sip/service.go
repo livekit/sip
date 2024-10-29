@@ -58,7 +58,9 @@ type transferKey struct {
 	TransferTo string
 }
 
-func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, ioClient rpc.IOInfoClient) (*Service, error) {
+type GetIOInfoClient func(projectID string) rpc.IOInfoClient
+
+func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -66,8 +68,8 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, ioCl
 		conf:             conf,
 		log:              log,
 		mon:              mon,
-		cli:              NewClient(conf, log, mon, ioClient),
-		srv:              NewServer(conf, log, mon, ioClient),
+		cli:              NewClient(conf, log, mon, getIOClient),
+		srv:              NewServer(conf, log, mon, getIOClient),
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	var err error

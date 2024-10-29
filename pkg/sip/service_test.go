@@ -95,7 +95,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, logger.GetLogger(), nil)
+	}, mon, logger.GetLogger(), func(projectID string) rpc.IOInfoClient { return nil })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
