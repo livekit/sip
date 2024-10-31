@@ -422,15 +422,13 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	}
 	joinDur()
 
-	if len(c.cc.RemoteHeaders()) != 0 {
-		extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.cc)
-		if c.lkRoom != nil && len(extra) != 0 {
-			room := c.lkRoom.Room()
-			if room != nil {
-				room.LocalParticipant.SetAttributes(extra)
-			} else {
-				c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
-			}
+	extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.cc)
+	if c.lkRoom != nil && len(extra) != 0 {
+		room := c.lkRoom.Room()
+		if room != nil {
+			room.LocalParticipant.SetAttributes(extra)
+		} else {
+			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
 		}
 	}
 	return nil
@@ -512,6 +510,7 @@ type sipOutbound struct {
 
 	mu              sync.RWMutex
 	tag             RemoteTag
+	callID          string
 	invite          *sip.Request
 	inviteOk        *sip.Response
 	to              *sip.ToHeader
@@ -542,6 +541,12 @@ func (c *sipOutbound) Tag() RemoteTag {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.tag
+}
+
+func (c *sipOutbound) CallID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.callID
 }
 
 func (c *sipOutbound) RemoteHeaders() Headers {
@@ -646,6 +651,9 @@ authLoop:
 	c.tag, ok = getTagFrom(toHeader.Params)
 	if !ok {
 		return nil, errors.New("no tag in To header in INVITE response")
+	}
+	if callID, _ := c.invite.CallID(); callID != nil {
+		c.callID = callID.Value()
 	}
 	h, _ := c.invite.CSeq()
 	if h != nil {
