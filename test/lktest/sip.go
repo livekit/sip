@@ -17,6 +17,7 @@ package lktest
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/livekit/protocol/livekit"
@@ -27,13 +28,36 @@ import (
 
 func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {
 	exp, got = maps.Clone(exp), maps.Clone(got)
-	if _, ok := exp[livekit.AttrSIPCallID]; ok {
-		require.True(t, strings.HasPrefix(got[livekit.AttrSIPCallID], guid.SIPCallPrefix))
-		delete(exp, livekit.AttrSIPCallID)
-		delete(got, livekit.AttrSIPCallID)
+
+	var keepKeys []string
+	for _, a := range []string{
+		livekit.AttrSIPCallID,
+		livekit.AttrSIPPrefix + "callIDFull",
+		livekit.AttrSIPPrefix + "callTag",
+	} {
+		if _, ok := exp[a]; !ok {
+			continue
+		}
+		v, ok := got[a]
+		if !ok {
+			// let the caller fail
+			keepKeys = append(keepKeys, a)
+			continue
+		}
+		require.True(t, ok, "missing attribute %q", a)
+		require.NotEmpty(t, v, "empty attribute %q", a)
+		switch a {
+		case livekit.AttrSIPCallID:
+			require.True(t, strings.HasPrefix(v, guid.SIPCallPrefix))
+		}
+		delete(exp, a)
+		delete(got, a)
 	}
 	// remove extra attributes from comparison
 	for key := range got {
+		if slices.Contains(keepKeys, key) {
+			continue
+		}
 		if _, ok := exp[key]; !ok {
 			delete(got, key)
 		}
@@ -129,6 +153,8 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	t.Log("checking rooms (outbound)")
 	expAttrsOut := map[string]string{
 		"sip.callID":           "<test>", // special case
+		"sip.callTag":          "<test>", // special case
+		"sip.callIDFull":       "<test>", // special case
 		"sip.callStatus":       "active",
 		"sip.trunkPhoneNumber": params.NumberOut,
 		"sip.phoneNumber":      params.NumberIn,
@@ -150,6 +176,8 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	t.Log("checking rooms (inbound)")
 	expAttrsIn := map[string]string{
 		"sip.callID":           "<test>", // special case
+		"sip.callTag":          "<test>", // special case
+		"sip.callIDFull":       "<test>", // special case
 		"sip.callStatus":       "active",
 		"sip.trunkPhoneNumber": params.NumberIn,
 		"sip.phoneNumber":      params.NumberOut,

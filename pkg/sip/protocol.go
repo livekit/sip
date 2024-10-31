@@ -56,6 +56,7 @@ type Signaling interface {
 	To() sip.Uri
 	ID() LocalTag
 	Tag() RemoteTag
+	CallID() string
 	RemoteHeaders() Headers
 
 	WriteRequest(req *sip.Request) error
