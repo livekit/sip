@@ -1064,10 +1064,27 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	req.AppendHeader((*sip.FromHeader)(c.to))
 	req.RemoveHeader("To")
 	req.AppendHeader((*sip.ToHeader)(c.from))
+	req.RemoveHeader("Via")
+	req.PrependHeader(c.generateViaHeader(req))
 	if route, ok := req.RecordRoute(); ok {
 		req.RemoveHeader("Record-Route")
 		req.AppendHeader(&sip.RouteHeader{Address: route.Address})
 	}
+}
+
+func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
+	newvia := &sip.ViaHeader{
+		ProtocolName:    "SIP",
+		ProtocolVersion: "2.0",
+		Transport:       req.Transport(),
+		Host:            c.s.sconf.SignalingIPLocal.String(), // This can be rewritten by transport layer
+		Port:            c.s.conf.SIPPortListen,              // This can be rewritten by transport layer
+		Params:          sip.NewParams(),
+	}
+	// NOTE: Consider lenght of branch configurable
+	newvia.Params.Add("branch", sip.GenerateBranchN(16))
+
+	return newvia
 }
 
 func (c *sipInbound) setCSeq(req *sip.Request) {
