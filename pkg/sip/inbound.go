@@ -1077,8 +1077,8 @@ func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
 		ProtocolName:    "SIP",
 		ProtocolVersion: "2.0",
 		Transport:       req.Transport(),
-		Host:            c.s.sconf.SignalingIPLocal.String(), // This can be rewritten by transport layer
-		Port:            c.s.conf.SIPPortListen,              // This can be rewritten by transport layer
+		Host:            c.s.sconf.SignalingIP.String(), // This can be rewritten by transport layer
+		Port:            c.s.conf.SIPPort,               // This can be rewritten by transport layer
 		Params:          sip.NewParams(),
 	}
 	// NOTE: Consider lenght of branch configurable
