@@ -74,7 +74,6 @@ const (
 type URI struct {
 	User      string
 	Host      string
-	Port      uint16
 	Addr      netip.AddrPort
 	Transport Transport
 }
@@ -95,17 +94,7 @@ func (u URI) Normalize() URI {
 	if addr, sport, err := net.SplitHostPort(u.Host); err == nil {
 		if port, err := strconv.Atoi(sport); err == nil {
 			u.Host = addr
-			u.Port = uint16(port) // Store the port separately in case the AddrPort is not valid
-
-			if !u.Addr.IsValid() {
-				// Attempt to parse host as AddrPort
-				naddr, err := netip.ParseAddr(u.Host)
-				if err == nil {
-					u.Addr = netip.AddrPortFrom(naddr, uint16(port))
-				}
-			} else {
-				u.Addr = netip.AddrPortFrom(u.Addr.Addr(), uint16(port))
-			}
+			u.Addr = netip.AddrPortFrom(u.Addr.Addr(), uint16(port))
 		}
 	}
 	return u
@@ -120,10 +109,7 @@ func (u URI) GetHost() string {
 }
 
 func (u URI) GetPort() int {
-	port := int(u.Port)
-	if port == 0 {
-		port = int(u.Addr.Port())
-	}
+	port := int(u.Addr.Port())
 	if port == 0 {
 		port = 5060
 	}
@@ -156,7 +142,7 @@ func (u URI) GetURI() *sip.Uri {
 		User: u.User,
 		Host: u.GetHost(),
 	}
-	if port := u.GetPortOrNone(); port != 0 {
+	if port := u.Addr.Port(); port != 0 {
 		su.Port = int(port)
 	}
 	if u.Transport != "" {
