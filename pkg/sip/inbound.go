@@ -1064,7 +1064,9 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	req.AppendHeader((*sip.FromHeader)(c.to))
 	req.RemoveHeader("To")
 	req.AppendHeader((*sip.ToHeader)(c.from))
-	req.RemoveHeader("Via")
+	// Remove all Via headers
+	for req.RemoveHeader("Via") {
+	}
 	req.PrependHeader(c.generateViaHeader(req))
 	if route, ok := req.RecordRoute(); ok {
 		req.RemoveHeader("Record-Route")
