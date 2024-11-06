@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sipgo/sip"
 	"github.com/pkg/errors"
 
 	"github.com/livekit/sip/pkg/config"
@@ -56,6 +56,7 @@ type Signaling interface {
 	To() sip.Uri
 	ID() LocalTag
 	Tag() RemoteTag
+	CallID() string
 	RemoteHeaders() Headers
 
 	WriteRequest(req *sip.Request) error
@@ -65,12 +66,12 @@ type Signaling interface {
 }
 
 func transportFromReq(req *sip.Request) Transport {
-	if to, _ := req.To(); to != nil {
+	if to := req.To(); to != nil {
 		if tr, _ := to.Params.Get("transport"); tr != "" {
 			return Transport(strings.ToLower(tr))
 		}
 	}
-	if via, _ := req.Via(); via != nil {
+	if via := req.Via(); via != nil {
 		return Transport(strings.ToLower(via.Transport))
 	}
 	return ""
@@ -115,7 +116,7 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	sip.CopyHeaders("Via", inviteRequest, req)
 	// if inviteResponse.IsSuccess() {
 	// update branch, 2xx ACK is separate Tx
-	viaHop, _ := req.Via()
+	viaHop := req.Via()
 	viaHop.Params.Add("branch", sip.GenerateBranch())
 	// }
 
@@ -137,25 +138,25 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	maxForwardsHeader := sip.MaxForwardsHeader(70)
 	req.AppendHeader(&maxForwardsHeader)
 
-	if h, _ := inviteRequest.From(); h != nil {
+	if h := inviteRequest.From(); h != nil {
 		sip.CopyHeaders("From", inviteRequest, req)
 	}
 
-	if h, _ := inviteResponse.To(); h != nil {
+	if h := inviteResponse.To(); h != nil {
 		sip.CopyHeaders("To", inviteResponse, req)
 	}
 
-	if h, _ := inviteRequest.CallID(); h != nil {
+	if h := inviteRequest.CallID(); h != nil {
 		sip.CopyHeaders("Call-ID", inviteRequest, req)
 	}
 
-	if h, _ := inviteRequest.CSeq(); h != nil {
+	if h := inviteRequest.CSeq(); h != nil {
 		sip.CopyHeaders("CSeq", inviteRequest, req)
 	}
 
 	req.AppendHeader(contactHeader)
 
-	cseq, _ := req.CSeq()
+	cseq := req.CSeq()
 	cseq.SeqNo = cseq.SeqNo + 1
 	cseq.MethodName = sip.REFER
 

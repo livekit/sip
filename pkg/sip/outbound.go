@@ -23,9 +23,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"github.com/livekit/sipgo/sip"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/livekit"
@@ -422,15 +422,13 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	}
 	joinDur()
 
-	if len(c.cc.RemoteHeaders()) != 0 {
-		extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.cc)
-		if c.lkRoom != nil && len(extra) != 0 {
-			room := c.lkRoom.Room()
-			if room != nil {
-				room.LocalParticipant.SetAttributes(extra)
-			} else {
-				c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
-			}
+	extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.cc)
+	if c.lkRoom != nil && len(extra) != 0 {
+		room := c.lkRoom.Room()
+		if room != nil {
+			room.LocalParticipant.SetAttributes(extra)
+		} else {
+			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
 		}
 	}
 	return nil
@@ -512,6 +510,7 @@ type sipOutbound struct {
 
 	mu              sync.RWMutex
 	tag             RemoteTag
+	callID          string
 	invite          *sip.Request
 	inviteOk        *sip.Response
 	to              *sip.ToHeader
@@ -542,6 +541,12 @@ func (c *sipOutbound) Tag() RemoteTag {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.tag
+}
+
+func (c *sipOutbound) CallID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.callID
 }
 
 func (c *sipOutbound) RemoteHeaders() Headers {
@@ -619,8 +624,8 @@ authLoop:
 		if err != nil {
 			return nil, err
 		}
-		toHeader, ok := resp.To()
-		if !ok {
+		toHeader := resp.To()
+		if toHeader == nil {
 			return nil, errors.New("no 'To' header on Response")
 		}
 
@@ -638,28 +643,30 @@ authLoop:
 	}
 
 	c.invite, c.inviteOk = req, resp
-	var ok bool
-	toHeader, ok = resp.To()
-	if !ok {
+	toHeader = resp.To()
+	if toHeader == nil {
 		return nil, errors.New("no To header in INVITE response")
 	}
+	var ok bool
 	c.tag, ok = getTagFrom(toHeader.Params)
 	if !ok {
 		return nil, errors.New("no tag in To header in INVITE response")
 	}
-	h, _ := c.invite.CSeq()
-	if h != nil {
+	if callID := c.invite.CallID(); callID != nil {
+		c.callID = callID.Value()
+	}
+	if h := c.invite.CSeq(); h != nil {
 		c.nextRequestCSeq = h.SeqNo + 1
 	}
 
-	if cont, ok := resp.Contact(); ok {
-		req.Recipient = &cont.Address
+	if cont := resp.Contact(); cont != nil {
+		req.Recipient = cont.Address
 		if req.Recipient.Port == 0 {
 			req.Recipient.Port = 5060
 		}
 	}
 
-	if recordRouteHeader, ok := resp.RecordRoute(); ok {
+	if recordRouteHeader := resp.RecordRoute(); recordRouteHeader != nil {
 		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
 	}
 
@@ -677,7 +684,7 @@ func (c *sipOutbound) AckInvite(ctx context.Context) error {
 func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
-	req := sip.NewRequest(sip.INVITE, &to.Address)
+	req := sip.NewRequest(sip.INVITE, to.Address)
 	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(to)
@@ -764,7 +771,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 
 	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo)
 	c.setCSeq(req)
-	cseq, _ := req.CSeq()
+	cseq := req.CSeq()
 
 	if cseq == nil {
 		c.mu.Unlock()
