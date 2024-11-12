@@ -16,7 +16,6 @@ package sip
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
@@ -170,7 +169,7 @@ func (u URI) ToSIPUri() *livekit.SIPUri {
 	url := &livekit.SIPUri{
 		User:      u.User,
 		Host:      u.GetHost(),
-		Port:      fmt.Sprintf("%d", u.GetPort()),
+		Port:      uint32(u.GetPort()),
 		Transport: SIPTransportFrom(u.Transport),
 	}
 
