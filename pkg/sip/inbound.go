@@ -910,7 +910,9 @@ func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, invit
 	if h != nil {
 		c.nextRequestCSeq = h.SeqNo + 1
 	}
-
+	if callID, _ := invite.CallID(); callID != nil {
+		c.callID = callID.Value()
+	}
 	return c
 }
 
@@ -918,6 +920,7 @@ type sipInbound struct {
 	s         *Server
 	id        LocalTag
 	tag       RemoteTag
+	callID    string
 	invite    *sip.Request
 	inviteTx  sip.ServerTransaction
 	contact   *sip.ContactHeader
@@ -1002,6 +1005,10 @@ func (c *sipInbound) ID() LocalTag {
 
 func (c *sipInbound) Tag() RemoteTag {
 	return c.tag
+}
+
+func (c *sipInbound) CallID() string {
+	return c.callID
 }
 
 func (c *sipInbound) RemoteHeaders() Headers {

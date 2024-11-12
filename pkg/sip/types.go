@@ -253,5 +253,11 @@ func HeadersToAttrs(attrs, hdrToAttr map[string]string, c Signaling) map[string]
 			attrs[name] = h.Value()
 		}
 	}
+	if tag := c.Tag(); tag != "" {
+		attrs[AttrSIPCallTag] = string(tag)
+	}
+	if cid := c.CallID(); cid != "" {
+		attrs[AttrSIPCallIDFull] = cid
+	}
 	return attrs
 }

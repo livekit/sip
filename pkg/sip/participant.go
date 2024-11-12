@@ -31,6 +31,11 @@ const (
 	defaultRingingTimeout = 3 * time.Minute
 )
 
+const (
+	AttrSIPCallIDFull = livekit.AttrSIPPrefix + "callIDFull"
+	AttrSIPCallTag    = livekit.AttrSIPPrefix + "callTag"
+)
+
 var headerToLog = map[string]string{
 	"X-Twilio-AccountSid": "twilioAccSID",
 	"X-Twilio-CallSid":    "twilioCallSID",
