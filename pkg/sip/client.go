@@ -18,13 +18,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
@@ -47,10 +50,11 @@ type Client struct {
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
 
-	handler Handler
+	handler     Handler
+	getIOClient GetIOInfoClient
 }
 
-func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Client {
+func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -58,6 +62,7 @@ func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor) *Clie
 		conf:        conf,
 		log:         log,
 		mon:         mon,
+		getIOClient: getIOClient,
 		activeCalls: make(map[LocalTag]*outboundCall),
 		byRemote:    make(map[RemoteTag]*outboundCall),
 	}
@@ -120,7 +125,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return c.createSIPParticipant(ctx, req)
 }
 
-func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
 	if !c.mon.CanAccept() {
 		return nil, siperrors.ErrUnavailable
 	}
@@ -150,6 +155,27 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toHost", req.Address,
 		"toUser", req.CallTo,
 	)
+
+	ioClient := c.getIOClient(req.ProjectId)
+
+	callInfo := c.createSIPCallInfo(req)
+	defer func() {
+		switch retErr {
+		case nil:
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
+		default:
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+			callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
+			callInfo.Error = retErr.Error()
+		}
+
+		if ioClient != nil {
+			ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+				CallInfo: callInfo,
+			})
+		}
+	}()
+
 	roomConf := RoomConfig{
 		WsUrl:    req.WsUrl,
 		Token:    req.Token,
@@ -178,13 +204,28 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		enabledFeatures: req.EnabledFeatures,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, callInfo, ioClient)
 	if err != nil {
 		return nil, err
 	}
 	p := call.Participant()
 	// Start actual SIP call async.
-	go call.Start(context.WithoutCancel(ctx))
+	go func() {
+		call.Start(context.WithoutCancel(ctx))
+
+		if callInfo.Error != "" {
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+		} else {
+			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+		}
+
+		if ioClient != nil {
+			ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+				CallInfo: callInfo,
+			})
+		}
+
+	}()
 
 	return &rpc.InternalCreateSIPParticipantResponse{
 		ParticipantId:       p.ID,
@@ -192,6 +233,27 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		SipCallId:           req.SipCallId,
 	}, nil
 
+}
+
+func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
+	toUri := CreateURIFromUserAndAddress(req.CallTo, req.Address, TransportFrom(req.Transport))
+	fromiUri := URI{
+		User: req.Number,
+		Host: req.Hostname,
+		Addr: netip.AddrPortFrom(c.sconf.SignalingIP, uint16(c.conf.SIPPort)),
+	}
+
+	callInfo := &livekit.SIPCallInfo{
+		CallId:              req.SipCallId,
+		TrunkId:             req.SipTrunkId,
+		RoomName:            req.RoomName,
+		ParticipantIdentity: req.ParticipantIdentity,
+		ToUri:               toUri.ToSIPUri(),
+		FromUri:             fromiUri.ToSIPUri(),
+		CreatedAt:           time.Now().UnixNano(),
+	}
+
+	return callInfo
 }
 
 func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
@@ -215,7 +277,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	}
 	call.log.Infow("BYE")
 	go func(call *outboundCall) {
-		call.CloseWithReason(CallHangup, "bye")
+		call.CloseWithReason(CallHangup, "bye", livekit.DisconnectReason_CLIENT_INITIATED)
 	}(call)
 	return true
 }

@@ -79,7 +79,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sipsrv, err := sip.NewService(conf, mon, log)
+	sipsrv, err := sip.NewService(conf, mon, log, func(projectID string) rpc.IOInfoClient { return psrpcCli })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,6 +49,19 @@ func TransportFrom(t livekit.SIPTransport) Transport {
 	return ""
 }
 
+func SIPTransportFrom(t Transport) livekit.SIPTransport {
+	switch t {
+	case TransportUDP:
+		return livekit.SIPTransport_SIP_TRANSPORT_UDP
+	case TransportTCP:
+		return livekit.SIPTransport_SIP_TRANSPORT_TCP
+	case TransportTLS:
+		return livekit.SIPTransport_SIP_TRANSPORT_TLS
+	}
+
+	return livekit.SIPTransport_SIP_TRANSPORT_AUTO
+}
+
 type Transport string
 
 const (
@@ -62,6 +75,18 @@ type URI struct {
 	Host      string
 	Addr      netip.AddrPort
 	Transport Transport
+}
+
+func CreateURIFromUserAndAddress(user string, address string, transport Transport) URI {
+	uri := URI{
+		User:      user,
+		Host:      address,
+		Transport: transport,
+	}
+
+	uri = uri.Normalize()
+
+	return uri
 }
 
 func (u URI) Normalize() URI {
@@ -138,6 +163,20 @@ func (u URI) GetContactURI() *sip.Uri {
 		}
 	}
 	return su
+}
+
+func (u URI) ToSIPUri() *livekit.SIPUri {
+	url := &livekit.SIPUri{
+		User:      u.User,
+		Host:      u.GetHost(),
+		Port:      uint32(u.GetPort()),
+		Transport: SIPTransportFrom(u.Transport),
+	}
+
+	if u.Addr.Addr().IsValid() {
+		url.Ip = u.Addr.Addr().String()
+	}
+	return url
 }
 
 type LocalTag string
