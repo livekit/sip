@@ -16,12 +16,11 @@ package sip
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pion/sdp/v3"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
@@ -29,9 +28,15 @@ import (
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sip/pkg/mixer"
 	"github.com/livekit/sip/pkg/stats"
 )
+
+type MediaConf struct {
+	sdp.MediaConfig
+	Processor media.PCM16Processor
+}
 
 type MediaConfig struct {
 	IP                  netip.Addr
@@ -148,55 +153,49 @@ func (p *MediaPort) GetAudioWriter() media.PCM16Writer {
 }
 
 // NewOffer generates an SDP offer for the media.
-func (p *MediaPort) NewOffer() ([]byte, error) {
-	return sdpGenerateOffer(p.externalIP, p.Port())
-}
-
-func (p *MediaPort) decodeSDP(data []byte) (*sdp.SessionDescription, *MediaConf, error) {
-	desc := &sdp.SessionDescription{}
-	if err := desc.Unmarshal(data); err != nil {
-		return nil, nil, err
-	}
-	c, err := sdpGetAudioCodec(desc)
-	if err != nil {
-		p.log.Infow("SIP SDP failed", "error", err)
-		return nil, nil, err
-	}
-	return desc, c, nil
+func (p *MediaPort) NewOffer() *sdp.Offer {
+	return sdp.NewOffer(p.externalIP, p.Port())
 }
 
 // SetAnswer decodes and applies SDP answer for offer from NewOffer. SetConfig must be called with the decoded configuration.
-func (p *MediaPort) SetAnswer(answer []byte) (*MediaConf, error) {
-	_, c, err := p.decodeSDP(answer)
+func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte) (*MediaConf, error) {
+	answer, err := sdp.ParseAnswer(answerData)
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	mc, err := answer.Apply(offer)
+	if err != nil {
+		return nil, err
+	}
+	return &MediaConf{MediaConfig: *mc}, nil
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
-func (p *MediaPort) SetOffer(offer []byte) ([]byte, *MediaConf, error) {
-	off, c, err := p.decodeSDP(offer)
+func (p *MediaPort) SetOffer(offerData []byte) (*sdp.Answer, *MediaConf, error) {
+	offer, err := sdp.ParseOffer(offerData)
 	if err != nil {
 		return nil, nil, err
 	}
-	answer, err := sdpGenerateAnswer(off, p.externalIP, p.Port(), c)
+	answer, mc, err := offer.Answer(p.externalIP, p.Port())
 	if err != nil {
 		return nil, nil, err
 	}
-	return answer, c, nil
+	return answer, &MediaConf{MediaConfig: *mc}, nil
 }
 
 func (p *MediaPort) SetConfig(c *MediaConf) error {
 	p.log.Infow("using codecs",
-		"audio-codec", c.Audio.Info().SDPName, "audio-rtp", c.AudioType,
-		"dtmf-rtp", c.DTMFType,
+		"audio-codec", c.Audio.Codec.Info().SDPName, "audio-rtp", c.Audio.Type,
+		"dtmf-rtp", c.Audio.DTMFType,
 	)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if c.Dest != nil {
-		p.conn.SetDestAddr(c.Dest)
+	if ip := c.Remote; ip.IsValid() {
+		p.conn.SetDestAddr(&net.UDPAddr{
+			IP:   ip.Addr().AsSlice(),
+			Port: int(ip.Port()),
+		})
 	}
 	p.conf = c
 
@@ -209,16 +208,16 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 func (p *MediaPort) setupOutput() {
 	// TODO: this says "audio", but actually includes DTMF too
 	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", p.conn))
-	p.audioOutRTP = s.NewStream(p.conf.AudioType, p.conf.Audio.Info().RTPClockRate)
+	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, p.conf.Audio.Codec.Info().RTPClockRate)
 
 	// Encoding pipeline (LK -> SIP)
-	audioOut := p.conf.Audio.EncodeRTP(p.audioOutRTP)
+	audioOut := p.conf.Audio.Codec.EncodeRTP(p.audioOutRTP)
 	if processor := p.conf.Processor; processor != nil {
 		audioOut = processor(audioOut)
 	}
 
-	if p.conf.DTMFType != 0 {
-		p.dtmfOutRTP = s.NewStream(p.conf.DTMFType, dtmf.SampleRate)
+	if p.conf.Audio.DTMFType != 0 {
+		p.dtmfOutRTP = s.NewStream(p.conf.Audio.DTMFType, dtmf.SampleRate)
 		if p.dtmfAudioEnabled {
 			// Add separate mixer for DTMF audio.
 			// TODO: optimize, if we'll ever need this code path
@@ -235,14 +234,14 @@ func (p *MediaPort) setupOutput() {
 
 func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP -> LK)
-	audioHandler := p.conf.Audio.DecodeRTP(p.audioIn, p.conf.AudioType)
+	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
-	audioHandler = rtp.HandleJitter(p.conf.Audio.Info().RTPClockRate, audioHandler)
+	audioHandler = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, audioHandler)
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.mon, "", nil))
-	mux.Register(p.conf.AudioType, newRTPStatsHandler(p.mon, p.conf.Audio.Info().SDPName, audioHandler))
-	if p.conf.DTMFType != 0 {
-		mux.Register(p.conf.DTMFType, newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(pck *rtp.Packet) error {
+	mux.Register(p.conf.Audio.Type, newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler))
+	if p.conf.Audio.DTMFType != 0 {
+		mux.Register(p.conf.Audio.DTMFType, newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(pck *rtp.Packet) error {
 			ptr := p.dtmfIn.Load()
 			if ptr == nil {
 				return nil
