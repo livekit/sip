@@ -55,6 +55,8 @@ func (v CallStatus) Attribute() string {
 		return "" // no attribute for these statuses
 	case CallDialing:
 		return "dialing"
+	case CallRinging:
+		return "ringing"
 	case CallAutomation:
 		return "automation"
 	case CallActive:
@@ -82,6 +84,7 @@ const (
 	callDropped = CallStatus(iota)
 	callFlood
 	CallDialing
+	CallRinging
 	CallAutomation
 	CallActive
 	CallHangup

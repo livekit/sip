@@ -430,6 +430,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		if ok, err := c.waitMedia(ctx); !ok {
 			return false, err
 		}
+		c.setStatus(CallActive)
 		return true, nil
 	}
 
@@ -464,7 +465,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
-	if err := c.joinRoom(ctx, disp.Room); err != nil {
+	status := CallRinging
+	if pinPrompt {
+		status = CallActive
+	}
+	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
 		return errors.Wrap(err, "failed joining room")
 	}
 	// Publish our own track.
@@ -759,7 +764,7 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	})
 }
 
-func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig) error {
+func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig, status CallStatus) error {
 	ctx, span := tracer.Start(ctx, "inboundCall.createLiveKitParticipant")
 	defer span.End()
 	partConf := &rconf.Participant
@@ -769,7 +774,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	for k, v := range c.extraAttrs {
 		partConf.Attributes[k] = v
 	}
-	partConf.Attributes[livekit.AttrSIPCallStatus] = CallActive.Attribute()
+	partConf.Attributes[livekit.AttrSIPCallStatus] = status.Attribute()
 	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
@@ -799,7 +804,7 @@ func (c *inboundCall) publishTrack() error {
 	return nil
 }
 
-func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig) error {
+func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status CallStatus) error {
 	if c.joinDur != nil {
 		c.joinDur()
 	}
@@ -810,7 +815,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig) error {
 		"participantName", rconf.Participant.Name,
 	)
 	c.log.Infow("Joining room")
-	if err := c.createLiveKitParticipant(ctx, rconf); err != nil {
+	if err := c.createLiveKitParticipant(ctx, rconf, status); err != nil {
 		c.log.Errorw("Cannot create LiveKit participant", err)
 		c.close(true, callDropped, "participant-failed")
 		return errors.Wrap(err, "cannot create LiveKit participant")
