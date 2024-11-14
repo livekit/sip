@@ -609,8 +609,11 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 		}
 	}
 authLoop:
-	for {
-		req, resp, err = c.attemptInvite(ctx, dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+	for try := 0; ; try++ {
+		if try >= 5 {
+			return nil, fmt.Errorf("max auth retry attemps reached")
+		}
+		req, resp, err = c.attemptInvite(ctx, req, dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
 		}
@@ -708,10 +711,16 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, prev *sip.Request, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, &to.Address)
+	if prev != nil {
+		if cid, _ := prev.CallID(); cid != nil {
+			req.RemoveHeader("Call-ID")
+			req.AppendHeader(cid)
+		}
+	}
 	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(to)
