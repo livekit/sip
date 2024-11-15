@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	sipgo "github.com/livekit/sipgo/sip"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -22,6 +21,7 @@ import (
 	"github.com/livekit/protocol/utils"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	sipgo "github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/dtmf"

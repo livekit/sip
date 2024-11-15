@@ -8,20 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/livekit/sipgo"
-	"github.com/livekit/sipgo/sip"
+	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-
-	"github.com/livekit/sip/pkg/media"
-
-	"github.com/livekit/sip/pkg/stats"
-
-	"github.com/stretchr/testify/require"
+	"github.com/livekit/sipgo"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 const (
@@ -113,7 +110,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	offer, err := sdpGenerateOffer(localIP, 0xB0B)
 	require.NoError(t, err)
 
-	inviteRecipent := &sip.Uri{User: to, Host: sipServerAddress}
+	inviteRecipent := sip.Uri{User: to, Host: sipServerAddress}
 	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipent)
 	inviteRequest.SetDestination(sipServerAddress)
 	inviteRequest.SetBody(offer)

@@ -23,9 +23,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo/sip"
-	"github.com/pkg/errors"
 
 	"github.com/livekit/sip/pkg/config"
 )
@@ -100,7 +101,7 @@ func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
 		return
 	}
 	defer tx.Terminate()
-	r, err := sipResponse(ctx, tx, nil)
+	r, err := sipResponse(ctx, tx, nil, nil)
 	if err != nil {
 		return
 	}
@@ -180,7 +181,7 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	defer tx.Terminate()
 
 	ctx = context.WithoutCancel(ctx)
-	resp, err := sipResponse(ctx, tx, stop)
+	resp, err := sipResponse(ctx, tx, stop, nil)
 	if err != nil {
 		return nil, err
 	}

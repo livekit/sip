@@ -324,7 +324,7 @@ func (c *outboundCall) connectMedia() {
 	c.media.HandleDTMF(c.handleDTMF)
 }
 
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}) (*sip.Response, error) {
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState func(code sip.StatusCode)) (*sip.Response, error) {
 	cnt := 0
 	for {
 		select {
@@ -337,13 +337,15 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		case <-tx.Done():
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
 		case res := <-tx.Responses():
-			switch res.StatusCode {
-			default:
+			status := res.StatusCode
+			if status/100 != 1 { // != 1xx
 				return res, nil
-			case 100, 180, 183:
-				// continue
-				cnt++
 			}
+			if setState != nil {
+				setState(res.StatusCode)
+			}
+			// continue
+			cnt++
 		}
 	}
 }
@@ -402,7 +404,13 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
-	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer)
+	ringing := false
+	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer, func(code sip.StatusCode) {
+		if !ringing && code >= sip.StatusRinging {
+			ringing = true
+			c.setStatus(CallRinging)
+		}
+	})
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
 		var e *ErrorStatus
@@ -434,7 +442,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	c.c.cmu.Unlock()
 
 	c.mon.InviteAccept()
-	err = c.cc.AckInvite(ctx)
+	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
 		return err
@@ -577,7 +585,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte, setState func(code sip.StatusCode)) ([]byte, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.Invite")
 	defer span.End()
 	c.mu.Lock()
@@ -601,8 +609,11 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 		}
 	}
 authLoop:
-	for {
-		req, resp, err = c.attemptInvite(ctx, dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders)
+	for try := 0; ; try++ {
+		if try >= 5 {
+			return nil, fmt.Errorf("max auth retry attemps reached")
+		}
+		req, resp, err = c.attemptInvite(ctx, req, dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
 		}
@@ -691,18 +702,24 @@ authLoop:
 	return c.inviteOk.Body(), nil
 }
 
-func (c *sipOutbound) AckInvite(ctx context.Context) error {
-	ctx, span := tracer.Start(ctx, "sipOutbound.AckInvite")
+func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "sipOutbound.AckInviteOK")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, prev *sip.Request, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, to.Address)
+	if prev != nil {
+		if cid := prev.CallID(); cid != nil {
+			req.RemoveHeader("Call-ID")
+			req.AppendHeader(cid)
+		}
+	}
 	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(to)
@@ -725,7 +742,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, to *sip.To
 	}
 	defer tx.Terminate()
 
-	resp, err := sipResponse(ctx, tx, c.c.closing.Watch())
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
 	return req, resp, err
 }
 

@@ -8,11 +8,12 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/redis"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/ory/dockertest/v3"
-	"github.com/ory/dockertest/v3/docker"
 
 	"github.com/livekit/sip/test/lktest"
 )

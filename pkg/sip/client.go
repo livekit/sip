@@ -16,21 +16,23 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/frostbyte73/core"
-	"github.com/livekit/sipgo"
-	"github.com/livekit/sipgo/sip"
 	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/sipgo"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
@@ -137,6 +139,18 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		return nil, fmt.Errorf("trunk outbound number must be set")
 	} else if req.RoomName == "" {
 		return nil, fmt.Errorf("room name must be set")
+	}
+	if strings.Contains(req.CallTo, "@") {
+		return nil, errors.New("call_to should be a phone number or SIP user, not a full SIP URI")
+	}
+	if strings.HasPrefix(req.Address, "sip:") || strings.HasPrefix(req.Address, "sips:") {
+		return nil, errors.New("address must be a hostname without 'sip:' prefix")
+	}
+	if strings.Contains(req.Address, "transport=") {
+		return nil, errors.New("address must not contain parameters; use transport field")
+	}
+	if strings.ContainsAny(req.Address, ";=") {
+		return nil, errors.New("address must not contain parameters")
 	}
 	log := c.log
 	if req.ProjectId != "" {

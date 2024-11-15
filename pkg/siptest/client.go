@@ -35,9 +35,10 @@ import (
 	"github.com/at-wat/ebml-go/webm"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	"github.com/pion/sdp/v3"
+
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
-	"github.com/pion/sdp/v3"
 
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"

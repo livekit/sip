@@ -20,10 +20,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/utils/guid"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/stretchr/testify/require"
 )
 
 func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {

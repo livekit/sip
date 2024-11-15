@@ -19,9 +19,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/stretchr/testify/require"
 )
 
 type DTMFParticipant interface {

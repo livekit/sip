@@ -23,12 +23,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/livekit/sipgo"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sipgo"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
