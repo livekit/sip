@@ -24,8 +24,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/emiago/sipgo"
-	"github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
@@ -33,6 +31,8 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/sipgo"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"

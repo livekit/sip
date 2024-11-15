@@ -24,9 +24,8 @@ import (
 	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/protocol/livekit"
-	"github.com/livekit/protocol/sip"
-
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"

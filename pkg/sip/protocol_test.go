@@ -3,12 +3,13 @@ package sip
 import (
 	"testing"
 
-	"github.com/emiago/sipgo/sip"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sipgo/sip"
 )
 
 func TestHandleNotify(t *testing.T) {
-	req := sip.NewRequest(sip.NOTIFY, &sip.Uri{
+	req := sip.NewRequest(sip.NOTIFY, sip.Uri{
 		Host: "foo.bar",
 	})
 
@@ -21,7 +22,7 @@ func TestHandleNotify(t *testing.T) {
 	require.Equal(t, uint32(0), c)
 	require.Equal(t, 200, s)
 
-	req = sip.NewRequest(sip.NOTIFY, &sip.Uri{
+	req = sip.NewRequest(sip.NOTIFY, sip.Uri{
 		Host: "foo.bar",
 	})
 
@@ -34,7 +35,7 @@ func TestHandleNotify(t *testing.T) {
 	require.Equal(t, uint32(1234), c)
 	require.Equal(t, 200, s)
 
-	req = sip.NewRequest(sip.NOTIFY, &sip.Uri{
+	req = sip.NewRequest(sip.NOTIFY, sip.Uri{
 		Host: "foo.bar",
 	})
 
@@ -47,7 +48,7 @@ func TestHandleNotify(t *testing.T) {
 	require.Equal(t, uint32(1234), c)
 	require.Equal(t, 404, s)
 
-	req = sip.NewRequest(sip.NOTIFY, &sip.Uri{
+	req = sip.NewRequest(sip.NOTIFY, sip.Uri{
 		Host: "foo.bar",
 	})
 
@@ -57,7 +58,7 @@ func TestHandleNotify(t *testing.T) {
 	m, c, s, err = handleNotify(req)
 	require.Error(t, err)
 
-	req = sip.NewRequest(sip.NOTIFY, &sip.Uri{
+	req = sip.NewRequest(sip.NOTIFY, sip.Uri{
 		Host: "foo.bar",
 	})
 
