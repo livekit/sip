@@ -294,7 +294,13 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		go func() {
 			rctx, span := tracer.Start(rctx, "tones.Play")
 			defer span.End()
-			tones.Play(rctx, c.lkRoomIn, ringVolume, tones.ETSIRinging)
+			c.mu.RLock()
+			dst := c.lkRoomIn
+			c.mu.RUnlock()
+			if dst == nil {
+				return
+			}
+			tones.Play(rctx, dst, ringVolume, tones.ETSIRinging)
 		}()
 	}
 	err := c.sipSignal(ctx)
