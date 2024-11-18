@@ -398,12 +398,13 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		cancel()
 	}()
 
-	sdpOffer, err := c.media.NewOffer()
+	sdpOffer := c.media.NewOffer()
+	sdpOfferData, err := sdpOffer.SDP.Marshal()
 	if err != nil {
 		return err
 	}
-	c.mon.SDPSize(len(sdpOffer), true)
-	c.log.Debugw("SDP offer", "sdp", string(sdpOffer))
+	c.mon.SDPSize(len(sdpOfferData), true)
+	c.log.Debugw("SDP offer", "sdp", string(sdpOfferData))
 	joinDur := c.mon.JoinDur()
 
 	c.mon.InviteReq()
@@ -411,7 +412,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
 	ringing := false
-	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOffer, func(code sip.StatusCode) {
+	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode) {
 		if !ringing && code >= sip.StatusRinging {
 			ringing = true
 			c.setStatus(CallRinging)
@@ -434,7 +435,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
-	mc, err := c.media.SetAnswer(sdpResp)
+	mc, err := c.media.SetAnswer(sdpOffer, sdpResp)
 	if err != nil {
 		return err
 	}

@@ -174,17 +174,20 @@ func TestMediaPort(t *testing.T) {
 					require.NoError(t, err)
 					defer m2.Close()
 
-					offer, err := m1.NewOffer()
+					offer := m1.NewOffer()
+					offerData, err := offer.SDP.Marshal()
 					require.NoError(t, err)
 
-					t.Logf("SDP offer:\n%s", string(offer))
+					t.Logf("SDP offer:\n%s", string(offerData))
 
-					answer, conf, err := m2.SetOffer(offer)
+					answer, conf, err := m2.SetOffer(offerData)
+					require.NoError(t, err)
+					answerData, err := answer.SDP.Marshal()
 					require.NoError(t, err)
 
-					t.Logf("SDP answer:\n%s", string(answer))
+					t.Logf("SDP answer:\n%s", string(answerData))
 
-					mc, err := m1.SetAnswer(answer)
+					mc, err := m1.SetAnswer(offer, answerData)
 					require.NoError(t, err)
 
 					err = m1.SetConfig(mc)
@@ -193,8 +196,8 @@ func TestMediaPort(t *testing.T) {
 					err = m2.SetConfig(conf)
 					require.NoError(t, err)
 
-					require.Equal(t, info.SDPName, m1.Config().Audio.Info().SDPName)
-					require.Equal(t, info.SDPName, m2.Config().Audio.Info().SDPName)
+					require.Equal(t, info.SDPName, m1.Config().Audio.Codec.Info().SDPName)
+					require.Equal(t, info.SDPName, m2.Config().Audio.Codec.Info().SDPName)
 
 					var buf1 media.PCM16Sample
 					m1.WriteAudioTo(media.NewPCM16BufferWriter(&buf1, rate))

@@ -18,6 +18,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -107,13 +108,14 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	sipClient, err := sipgo.NewClient(sipUserAgent)
 	require.NoError(t, err)
 
-	offer, err := sdpGenerateOffer(localIP, 0xB0B)
+	offer := sdp.NewOffer(localIP, 0xB0B)
+	offerData, err := offer.SDP.Marshal()
 	require.NoError(t, err)
 
 	inviteRecipent := sip.Uri{User: to, Host: sipServerAddress}
 	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipent)
 	inviteRequest.SetDestination(sipServerAddress)
-	inviteRequest.SetBody(offer)
+	inviteRequest.SetBody(offerData)
 	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 
 	tx, err := sipClient.TransactionRequest(inviteRequest)

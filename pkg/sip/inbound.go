@@ -535,7 +535,11 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	c.media.EnableTimeout(false) // enabled once we accept the call
 	c.media.SetDTMFAudio(conf.AudioDTMF)
 
-	answerData, mconf, err := mp.SetOffer(offerData)
+	answer, mconf, err := mp.SetOffer(offerData)
+	if err != nil {
+		return nil, err
+	}
+	answerData, err = answer.SDP.Marshal()
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +550,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}
-	if mconf.DTMFType != 0 {
+	if mconf.Audio.DTMFType != 0 {
 		c.media.HandleDTMF(c.handleDTMF)
 	}
 
@@ -554,7 +558,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
 		_ = w.Close()
 	}
-	if mconf.DTMFType != 0 {
+	if mconf.Audio.DTMFType != 0 {
 		c.lkRoom.SetDTMFOutput(c.media)
 	}
 	return answerData, nil
