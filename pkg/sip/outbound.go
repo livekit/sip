@@ -721,12 +721,12 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, prev *sip.Request, dest
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, to.Address)
-	if prev != nil {
+	/*	if prev != nil {
 		if cid := prev.CallID(); cid != nil {
 			req.RemoveHeader("Call-ID")
 			req.AppendHeader(cid)
 		}
-	}
+	}*/
 	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(to)
