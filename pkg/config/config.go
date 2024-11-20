@@ -27,7 +27,7 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
-	"github.com/livekit/protocol/utils"
+	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
@@ -115,7 +115,7 @@ func NewConfig(confString string) (*Config, error) {
 }
 
 func (c *Config) Init() error {
-	c.NodeID = utils.NewGuid("NE_")
+	c.NodeID = guid.New("NE_")
 
 	if c.SIPPort == 0 {
 		c.SIPPort = DefaultSIPPort
