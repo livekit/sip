@@ -37,17 +37,60 @@ import (
 )
 
 type testUDPConn struct {
-	addr   *net.UDPAddr
+	addr   netip.AddrPort
 	closed chan struct{}
 	buf    chan []byte
 	peer   atomic.Pointer[testUDPConn]
 }
 
-func (c *testUDPConn) LocalAddr() net.Addr {
-	return c.addr
+func (c *testUDPConn) Read(b []byte) (int, error) {
+	n, _, err := c.ReadFromUDPAddrPort(b)
+	return n, err
 }
 
-func (c *testUDPConn) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
+func (c *testUDPConn) Write(b []byte) (int, error) {
+	return c.WriteToUDPAddrPort(b, netip.AddrPort{})
+}
+
+func (c *testUDPConn) RemoteAddr() net.Addr {
+	p := c.peer.Load()
+	if p == nil {
+		return &net.UDPAddr{}
+	}
+	return p.LocalAddr()
+}
+
+func (c *testUDPConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *testUDPConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *testUDPConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, error) {
+	peer := c.peer.Load()
+	if peer == nil {
+		return 0, netip.AddrPort{}, io.ErrClosedPipe
+	}
+	select {
+	case <-c.closed:
+		return 0, netip.AddrPort{}, io.ErrClosedPipe
+	case data := <-c.buf:
+		n := copy(buf, data)
+		var err error
+		if n < len(data) {
+			err = io.ErrShortBuffer
+		}
+		return n, peer.addr, err
+	}
+}
+
+func (c *testUDPConn) WriteToUDPAddrPort(buf []byte, addr netip.AddrPort) (int, error) {
 	peer := c.peer.Load()
 	if peer == nil {
 		return 0, io.ErrClosedPipe
@@ -65,21 +108,10 @@ func (c *testUDPConn) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
 	}
 }
 
-func (c *testUDPConn) ReadFromUDP(buf []byte) (int, *net.UDPAddr, error) {
-	peer := c.peer.Load()
-	if peer == nil {
-		return 0, nil, io.ErrClosedPipe
-	}
-	select {
-	case <-c.closed:
-		return 0, nil, io.ErrClosedPipe
-	case data := <-c.buf:
-		n := copy(buf, data)
-		var err error
-		if n < len(data) {
-			err = io.ErrShortBuffer
-		}
-		return n, peer.addr, err
+func (c *testUDPConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{
+		IP:   c.addr.Addr().AsSlice(),
+		Port: int(c.addr.Port()),
 	}
 }
 
@@ -90,20 +122,20 @@ func (c *testUDPConn) Close() error {
 	return nil
 }
 
-func newUDPConn(i int) *testUDPConn {
+func newTestConn(i int) *testUDPConn {
 	return &testUDPConn{
-		addr: &net.UDPAddr{
-			IP:   net.IPv4(byte(i), byte(i), byte(i), byte(i)),
-			Port: 10000 * i,
-		},
+		addr: netip.AddrPortFrom(
+			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
+			uint16(10000*i),
+		),
 		buf:    make(chan []byte, 10),
 		closed: make(chan struct{}),
 	}
 }
 
 func newUDPPipe() (c1, c2 *testUDPConn) {
-	c1 = newUDPConn(1)
-	c2 = newUDPConn(2)
+	c1 = newTestConn(1)
+	c2 = newTestConn(2)
 	c1.peer.Store(c2)
 	c2.peer.Store(c1)
 	return
@@ -151,11 +183,18 @@ func TestMediaPort(t *testing.T) {
 				nativeRate *= 2 // error in RFC
 			}
 
-			for _, rate := range []int{
-				nativeRate,
-				48000,
+			for _, tconf := range []struct {
+				Rate      int
+				Encrypted bool
+			}{
+				{nativeRate, false},
+				{48000, true},
 			} {
-				t.Run(strconv.Itoa(rate), func(t *testing.T) {
+				suff := ""
+				if tconf.Encrypted {
+					suff = " srtp"
+				}
+				t.Run(fmt.Sprintf("%d%s", tconf.Rate, suff), func(t *testing.T) {
 					c1, c2 := newUDPPipe()
 
 					log := logger.GetLogger()
@@ -163,18 +202,19 @@ func TestMediaPort(t *testing.T) {
 					m1, err := NewMediaPortWith(log.WithName("one"), nil, c1, &MediaConfig{
 						IP:    newIP("1.1.1.1"),
 						Ports: rtcconfig.PortRange{Start: 10000},
-					}, rate)
+					}, tconf.Rate)
 					require.NoError(t, err)
 					defer m1.Close()
 
 					m2, err := NewMediaPortWith(log.WithName("two"), nil, c2, &MediaConfig{
 						IP:    newIP("2.2.2.2"),
 						Ports: rtcconfig.PortRange{Start: 20000},
-					}, rate)
+					}, tconf.Rate)
 					require.NoError(t, err)
 					defer m2.Close()
 
-					offer := m1.NewOffer()
+					offer, err := m1.NewOffer(tconf.Encrypted)
+					require.NoError(t, err)
 					offerData, err := offer.SDP.Marshal()
 					require.NoError(t, err)
 
@@ -200,15 +240,15 @@ func TestMediaPort(t *testing.T) {
 					require.Equal(t, info.SDPName, m2.Config().Audio.Codec.Info().SDPName)
 
 					var buf1 media.PCM16Sample
-					m1.WriteAudioTo(media.NewPCM16BufferWriter(&buf1, rate))
+					m1.WriteAudioTo(media.NewPCM16BufferWriter(&buf1, tconf.Rate))
 
 					var buf2 media.PCM16Sample
-					m2.WriteAudioTo(media.NewPCM16BufferWriter(&buf2, rate))
+					m2.WriteAudioTo(media.NewPCM16BufferWriter(&buf2, tconf.Rate))
 
 					w1 := m1.GetAudioWriter()
 					w2 := m2.GetAudioWriter()
 
-					packetSize := uint32(rate / int(time.Second/rtp.DefFrameDur))
+					packetSize := uint32(tconf.Rate / int(time.Second/rtp.DefFrameDur))
 					sample1 := make(media.PCM16Sample, packetSize)
 					sample2 := make(media.PCM16Sample, packetSize)
 					for i := range packetSize {
@@ -217,7 +257,7 @@ func TestMediaPort(t *testing.T) {
 					}
 
 					writes := 1
-					if rate == nativeRate {
+					if tconf.Rate == nativeRate {
 						expChain := fmt.Sprintf("Switch(%d) -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain, w1.String())
 						require.Equal(t, expChain, w2.String())
