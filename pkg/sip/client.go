@@ -160,6 +160,10 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if req.SipTrunkId != "" {
 		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
+	enc, err := sdpEncryption(req.MediaEncryption)
+	if err != nil {
+		return nil, err
+	}
 	log = log.WithValues(
 		"callID", req.SipCallId,
 		"room", req.RoomName,
@@ -215,6 +219,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		ringingTimeout:  req.RingingTimeout.AsDuration(),
 		maxCallDuration: req.MaxCallDuration.AsDuration(),
 		enabledFeatures: req.EnabledFeatures,
+		mediaEncryption: enc,
 	}
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state)

@@ -7,7 +7,6 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
-
 	"github.com/livekit/sip/pkg/sip"
 )
 
@@ -82,10 +81,11 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 	case rpc.SIPDispatchResult_LEGACY_ACCEPT_OR_PIN:
 		if resp.RequestPin {
 			return sip.CallDispatch{
-				ProjectID:      resp.ProjectId,
-				TrunkID:        resp.SipTrunkId,
-				DispatchRuleID: resp.SipDispatchRuleId,
-				Result:         sip.DispatchRequestPin,
+				ProjectID:       resp.ProjectId,
+				TrunkID:         resp.SipTrunkId,
+				DispatchRuleID:  resp.SipDispatchRuleId,
+				Result:          sip.DispatchRequestPin,
+				MediaEncryption: resp.MediaEncryption,
 			}
 		}
 		// TODO: finally deprecate and drop
@@ -114,6 +114,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			EnabledFeatures:     resp.EnabledFeatures,
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
+			MediaEncryption:     resp.MediaEncryption,
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
@@ -141,12 +142,14 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			EnabledFeatures:     resp.EnabledFeatures,
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
+			MediaEncryption:     resp.MediaEncryption,
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{
-			ProjectID: resp.ProjectId,
-			Result:    sip.DispatchRequestPin,
-			TrunkID:   resp.SipTrunkId,
+			ProjectID:       resp.ProjectId,
+			Result:          sip.DispatchRequestPin,
+			TrunkID:         resp.SipTrunkId,
+			MediaEncryption: resp.MediaEncryption,
 		}
 	case rpc.SIPDispatchResult_REJECT:
 		return sip.CallDispatch{

@@ -15,12 +15,13 @@ require (
 	github.com/livekit/protocol v1.36.2-0.20250408143132-c193b8d080da
 	github.com/livekit/psrpc v0.6.1-0.20250205181828-a0beed2e4126
 	github.com/livekit/server-sdk-go/v2 v2.5.0
-	github.com/livekit/sipgo v0.13.2-0.20250130142851-36ed3228d934
+	github.com/livekit/sipgo v0.13.2-0.20250410120437-ca5b8ca7b53d
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.11.0
 	github.com/pion/interceptor v0.1.37
 	github.com/pion/rtp v1.8.11
 	github.com/pion/sdp/v3 v3.0.10
+	github.com/pion/srtp/v3 v3.0.4
 	github.com/pion/webrtc/v4 v4.0.9
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.20.5
@@ -98,7 +99,6 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.15 // indirect
 	github.com/pion/sctp v1.8.35 // indirect
-	github.com/pion/srtp/v3 v3.0.4 // indirect
 	github.com/pion/stun/v3 v3.0.0 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/pion/turn/v4 v4.0.0 // indirect

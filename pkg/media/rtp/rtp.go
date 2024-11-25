@@ -17,6 +17,7 @@ package rtp
 import (
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sync"
 
 	"github.com/pion/interceptor"
@@ -31,7 +32,7 @@ type BytesFrame interface {
 }
 
 type Writer interface {
-	WriteRTP(p *rtp.Packet) error
+	WriteRTP(h *rtp.Header, payload []byte) (int, error)
 }
 
 type Reader interface {
@@ -39,13 +40,13 @@ type Reader interface {
 }
 
 type Handler interface {
-	HandleRTP(p *rtp.Packet) error
+	HandleRTP(h *rtp.Header, payload []byte) error
 }
 
-type HandlerFunc func(p *rtp.Packet) error
+type HandlerFunc func(h *rtp.Header, payload []byte) error
 
-func (fnc HandlerFunc) HandleRTP(p *rtp.Packet) error {
-	return fnc(p)
+func (fnc HandlerFunc) HandleRTP(h *rtp.Header, payload []byte) error {
+	return fnc(h, payload)
 }
 
 func HandleLoop(r Reader, h Handler) error {
@@ -54,7 +55,7 @@ func HandleLoop(r Reader, h Handler) error {
 		if err != nil {
 			return err
 		}
-		err = h.HandleRTP(p)
+		err = h.HandleRTP(&p.Header, p.Payload)
 		if err != nil {
 			return err
 		}
@@ -64,26 +65,27 @@ func HandleLoop(r Reader, h Handler) error {
 // Buffer is a Writer that clones and appends RTP packets into a slice.
 type Buffer []*Packet
 
-func (b *Buffer) WriteRTP(p *Packet) error {
-	p2 := p.Clone()
-	*b = append(*b, p2)
-	return nil
+func (b *Buffer) WriteRTP(h *rtp.Header, payload []byte) (int, error) {
+	*b = append(*b, &rtp.Packet{
+		Header:  *h,
+		Payload: slices.Clone(payload),
+	})
+	return len(payload), nil
 }
 
 // NewSeqWriter creates an RTP writer that automatically increments the sequence number.
 func NewSeqWriter(w Writer) *SeqWriter {
 	s := &SeqWriter{w: w}
-	s.p = rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			SSRC:           rand.Uint32(),
-			SequenceNumber: 0,
-		},
+	s.h = rtp.Header{
+		Version:        2,
+		SSRC:           rand.Uint32(),
+		SequenceNumber: 0,
 	}
 	return s
 }
 
 type Packet = rtp.Packet
+type Header = rtp.Header
 
 type Event struct {
 	Type      byte
@@ -95,20 +97,19 @@ type Event struct {
 type SeqWriter struct {
 	mu sync.Mutex
 	w  Writer
-	p  Packet
+	h  Header
 }
 
 func (s *SeqWriter) WriteEvent(ev *Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.p.PayloadType = ev.Type
-	s.p.Payload = ev.Payload
-	s.p.Marker = ev.Marker
-	s.p.Timestamp = ev.Timestamp
-	if err := s.w.WriteRTP(&s.p); err != nil {
+	s.h.PayloadType = ev.Type
+	s.h.Marker = ev.Marker
+	s.h.Timestamp = ev.Timestamp
+	if _, err := s.w.WriteRTP(&s.h, ev.Payload); err != nil {
 		return err
 	}
-	s.p.Header.SequenceNumber++
+	s.h.SequenceNumber++
 	return nil
 }
 
@@ -211,6 +212,6 @@ func (s *MediaStreamIn[T]) String() string {
 	return fmt.Sprintf("RTP(%d) -> %s", s.Writer.SampleRate(), s.Writer)
 }
 
-func (s *MediaStreamIn[T]) HandleRTP(p *rtp.Packet) error {
-	return s.Writer.WriteSample(T(p.Payload))
+func (s *MediaStreamIn[T]) HandleRTP(_ *rtp.Header, payload []byte) error {
+	return s.Writer.WriteSample(T(payload))
 }

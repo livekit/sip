@@ -161,11 +161,11 @@ func Decode(data []byte) (Event, error) {
 	}, nil
 }
 
-func DecodeRTP(p *rtp.Packet) (Event, bool) {
-	if !p.Marker {
+func DecodeRTP(h *rtp.Header, payload []byte) (Event, bool) {
+	if !h.Marker {
 		return Event{}, false
 	}
-	ev, err := Decode(p.Payload)
+	ev, err := Decode(payload)
 	if err != nil {
 		return Event{}, false
 	}

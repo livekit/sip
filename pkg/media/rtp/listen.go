@@ -18,14 +18,15 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+	"net/netip"
 )
 
 var ListenErr = errors.New("failed to listen on udp port")
 
-func ListenUDPPortRange(portMin, portMax int, IP net.IP) (*net.UDPConn, error) {
+func ListenUDPPortRange(portMin, portMax int, ip netip.Addr) (*net.UDPConn, error) {
 	if portMin == 0 && portMax == 0 {
 		return net.ListenUDP("udp", &net.UDPAddr{
-			IP:   IP,
+			IP:   ip.AsSlice(),
 			Port: 0,
 		})
 	}
@@ -48,7 +49,7 @@ func ListenUDPPortRange(portMin, portMax int, IP net.IP) (*net.UDPConn, error) {
 	portCurrent := portStart
 
 	for {
-		c, e := net.ListenUDP("udp", &net.UDPAddr{IP: IP, Port: portCurrent})
+		c, e := net.ListenUDP("udp", &net.UDPAddr{IP: ip.AsSlice(), Port: portCurrent})
 		if e == nil {
 			return c, nil
 		}
