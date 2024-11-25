@@ -108,7 +108,8 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	sipClient, err := sipgo.NewClient(sipUserAgent)
 	require.NoError(t, err)
 
-	offer := sdp.NewOffer(localIP, 0xB0B)
+	offer, err := sdp.NewOffer(localIP, 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
 	offerData, err := offer.SDP.Marshal()
 	require.NoError(t, err)
 
