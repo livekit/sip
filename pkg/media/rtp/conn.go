@@ -16,6 +16,7 @@ package rtp
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,9 +132,11 @@ func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0"
 	}
-
-	var err error
-	c.conn, err = ListenUDPPortRange(portMin, portMax, net.ParseIP(listenAddr))
+	ip, err := netip.ParseAddr(listenAddr)
+	if err != nil {
+		return err
+	}
+	c.conn, err = ListenUDPPortRange(portMin, portMax, ip)
 	if err != nil {
 		return err
 	}
@@ -167,24 +170,23 @@ func (c *Conn) readLoop() {
 			close(c.received)
 		}
 		if h := c.onRTP.Load(); h != nil {
-			_ = (*h).HandleRTP(&p)
+			_ = (*h).HandleRTP(&p.Header, p.Payload)
 		}
 	}
 }
 
-func (c *Conn) WriteRTP(p *rtp.Packet) error {
+func (c *Conn) WriteRTP(h *rtp.Header, payload []byte) (int, error) {
 	addr := c.dest.Load()
 	if addr == nil {
-		return nil
+		return 0, nil
 	}
-	data, err := p.Marshal()
+	data, err := (&rtp.Packet{Header: *h, Payload: payload}).Marshal()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	_, err = c.conn.WriteToUDP(data, addr)
-	return err
+	return c.conn.WriteToUDP(data, addr)
 }
 
 func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {
