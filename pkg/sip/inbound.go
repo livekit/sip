@@ -465,11 +465,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
-	status := CallRinging
-	if pinPrompt {
-		status = CallActive
-	}
-	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
+	if err := c.joinRoom(ctx, disp.Room, CallActive); err != nil {
 		return errors.Wrap(err, "failed joining room")
 	}
 	// Publish our own track.
