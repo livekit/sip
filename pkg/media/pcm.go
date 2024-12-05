@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 // PlayAudio into a given writer. It assumes that frames are already at the writer's sample rate.

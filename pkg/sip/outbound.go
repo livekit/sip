@@ -56,7 +56,7 @@ type sipOutboundConfig struct {
 	headersToAttrs  map[string]string
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
-	enabledFeatures []rpc.SIPFeature
+	enabledFeatures []livekit.SIPFeature
 }
 
 type outboundCall struct {

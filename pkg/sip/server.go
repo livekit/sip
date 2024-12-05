@@ -30,8 +30,8 @@ import (
 	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -94,7 +94,7 @@ type CallDispatch struct {
 	DispatchRuleID      string
 	Headers             map[string]string
 	HeadersToAttributes map[string]string
-	EnabledFeatures     []rpc.SIPFeature
+	EnabledFeatures     []livekit.SIPFeature
 	RingingTimeout      time.Duration
 	MaxCallDuration     time.Duration
 }
@@ -102,7 +102,7 @@ type CallDispatch struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
-	GetMediaProcessor(features []rpc.SIPFeature) media.PCM16Processor
+	GetMediaProcessor(features []livekit.SIPFeature) media.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)

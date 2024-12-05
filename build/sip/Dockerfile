@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG GOVERSION=1.22
+ARG GOVERSION=1.23
 
 FROM golang:$GOVERSION AS builder
 
