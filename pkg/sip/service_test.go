@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
@@ -65,7 +66,7 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 	return h.DispatchCallFunc(ctx, info)
 }
 
-func (h TestHandler) GetMediaProcessor(_ []rpc.SIPFeature) media.PCM16Processor {
+func (h TestHandler) GetMediaProcessor(_ []livekit.SIPFeature) media.PCM16Processor {
 	return nil
 }
 
