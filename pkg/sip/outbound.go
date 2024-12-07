@@ -656,9 +656,10 @@ authLoop:
 		if headerVal == nil {
 			return nil, errors.New("no auth header in response")
 		}
-		challenge, err := digest.ParseChallenge(headerVal.Value())
+		challengeStr := headerVal.Value()
+		challenge, err := digest.ParseChallenge(challengeStr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("invalid challenge %q: %w", challengeStr, err)
 		}
 		toHeader := resp.To()
 		if toHeader == nil {
