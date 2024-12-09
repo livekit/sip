@@ -251,9 +251,9 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 		err  error
 	)
 	if c.Crypto != nil {
-		sess, err = srtp.NewSession(p.port, c.Crypto)
+		sess, err = srtp.NewSession(p.log, p.port, c.Crypto)
 	} else {
-		sess = rtp.NewSession(p.port)
+		sess = rtp.NewSession(p.log, p.port)
 	}
 	if err != nil {
 		return err
@@ -295,7 +295,8 @@ func (p *MediaPort) rtpLoop(sess rtp.Session) {
 }
 
 func (p *MediaPort) rtpReadLoop(r rtp.ReadStream) {
-	buf := make([]byte, 1500)
+	buf := make([]byte, rtp.MTUSize+1)
+	overflow := false
 	var h rtp.Header
 	for {
 		h = rtp.Header{}
@@ -305,6 +306,13 @@ func (p *MediaPort) rtpReadLoop(r rtp.ReadStream) {
 		} else if err != nil {
 			p.log.Errorw("read RTP failed", err)
 			return
+		}
+		if n > rtp.MTUSize {
+			overflow = true
+			if !overflow {
+				p.log.Errorw("RTP packet is larger than MTU limit", nil)
+			}
+			continue // ignore partial messages
 		}
 
 		ptr := p.hnd.Load()

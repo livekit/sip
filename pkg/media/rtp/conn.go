@@ -23,11 +23,14 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/rtp"
+
+	"github.com/livekit/protocol/logger"
 )
 
 var _ Writer = (*Conn)(nil)
 
 type ConnConfig struct {
+	Log                 logger.Logger
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
 	TimeoutCallback     func()
@@ -41,6 +44,9 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 	if conf == nil {
 		conf = &ConnConfig{}
 	}
+	if conf.Log == nil {
+		conf.Log = logger.GetLogger()
+	}
 	if conf.MediaTimeoutInitial <= 0 {
 		conf.MediaTimeoutInitial = 30 * time.Second
 	}
@@ -48,7 +54,8 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 		conf.MediaTimeout = 15 * time.Second
 	}
 	c := &Conn{
-		readBuf:        make([]byte, 1500), // MTU
+		log:            conf.Log,
+		readBuf:        make([]byte, MTUSize+1), // larger buffer to detect overflow
 		received:       make(chan struct{}),
 		conn:           conn,
 		timeout:        conf.MediaTimeout,
@@ -69,6 +76,7 @@ type UDPConn interface {
 }
 
 type Conn struct {
+	log            logger.Logger
 	wmu            sync.Mutex
 	conn           UDPConn
 	closed         core.Fuse
@@ -153,6 +161,7 @@ func (c *Conn) ListenAndServe(portMin, portMax int, listenAddr string) error {
 
 func (c *Conn) readLoop() {
 	conn, buf := c.conn, c.readBuf
+	overflow := false
 	var p rtp.Packet
 	for {
 		n, srcAddr, err := conn.ReadFromUDP(buf)
@@ -160,6 +169,13 @@ func (c *Conn) readLoop() {
 			return
 		}
 		c.dest.Store(srcAddr)
+		if n > MTUSize {
+			if !overflow {
+				overflow = true
+				c.log.Errorw("RTP packet is larger than MTU limit", nil)
+			}
+			continue // ignore partial messages
+		}
 
 		p = rtp.Packet{}
 		if err := p.Unmarshal(buf[:n]); err != nil {

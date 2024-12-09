@@ -20,8 +20,9 @@ import (
 	"net"
 
 	prtp "github.com/pion/rtp"
-	"github.com/pion/srtp/v2"
+	"github.com/pion/srtp/v3"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/media/rtp"
 )
 
@@ -96,16 +97,17 @@ type Profile struct {
 type Config = srtp.Config
 type SessionKeys = srtp.SessionKeys
 
-func NewSession(conn net.Conn, conf *Config) (rtp.Session, error) {
+func NewSession(log logger.Logger, conn net.Conn, conf *Config) (rtp.Session, error) {
 	s, err := srtp.NewSessionSRTP(conn, conf)
 	if err != nil {
 		return nil, err
 	}
-	return &session{s: s}, nil
+	return &session{log: log, s: s}, nil
 }
 
 type session struct {
-	s *srtp.SessionSRTP
+	log logger.Logger
+	s   *srtp.SessionSRTP
 }
 
 func (s *session) OpenWriteStream() (rtp.WriteStream, error) {

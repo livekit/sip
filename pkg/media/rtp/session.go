@@ -22,9 +22,14 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/rtp"
+
+	"github.com/livekit/protocol/logger"
 )
 
-const enableZeroCopy = true
+const (
+	enableZeroCopy = true
+	MTUSize        = 1500
+)
 
 type Session interface {
 	OpenWriteStream() (WriteStream, error)
@@ -42,21 +47,24 @@ type ReadStream interface {
 	ReadRTP(h *rtp.Header, payload []byte) (int, error)
 }
 
-func NewSession(conn net.Conn) Session {
+func NewSession(log logger.Logger, conn net.Conn) Session {
 	return &session{
+		log:    log,
 		conn:   conn,
 		w:      &writeStream{conn: conn},
 		bySSRC: make(map[uint32]*readStream),
+		rbuf:   make([]byte, MTUSize+1), // larger buffer to detect overflow
 	}
 }
 
 type session struct {
+	log    logger.Logger
 	conn   net.Conn
 	closed core.Fuse
 	w      *writeStream
 
 	rmu    sync.Mutex
-	rbuf   [1500]byte
+	rbuf   []byte
 	bySSRC map[uint32]*readStream
 }
 
@@ -67,10 +75,18 @@ func (s *session) OpenWriteStream() (WriteStream, error) {
 func (s *session) AcceptStream() (ReadStream, uint32, error) {
 	s.rmu.Lock()
 	defer s.rmu.Unlock()
+	overflow := false
 	for {
 		n, err := s.conn.Read(s.rbuf[:])
 		if err != nil {
 			return nil, 0, err
+		}
+		if n > MTUSize {
+			overflow = true
+			if !overflow {
+				s.log.Errorw("RTP packet is larger than MTU limit", nil)
+			}
+			continue // ignore partial messages
 		}
 		buf := s.rbuf[:n]
 		var p rtp.Packet
