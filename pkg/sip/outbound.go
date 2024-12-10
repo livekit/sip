@@ -93,7 +93,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	call := &outboundCall{
 		c:   c,
 		log: log,
-		cc: c.newOutbound(id, URI{
+		cc: c.newOutbound(log, id, URI{
 			User:      sipConf.from,
 			Host:      sipConf.host,
 			Addr:      contact.Addr,
@@ -516,7 +516,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 	return nil
 }
 
-func (c *Client) newOutbound(id LocalTag, from, contact URI) *sipOutbound {
+func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI) *sipOutbound {
 	from = from.Normalize()
 	fromHeader := &sip.FromHeader{
 		DisplayName: from.User,
@@ -528,6 +528,7 @@ func (c *Client) newOutbound(id LocalTag, from, contact URI) *sipOutbound {
 	}
 	fromHeader.Params.Add("tag", string(id))
 	return &sipOutbound{
+		log:       log,
 		c:         c,
 		id:        id,
 		from:      fromHeader,
@@ -537,6 +538,7 @@ func (c *Client) newOutbound(id LocalTag, from, contact URI) *sipOutbound {
 }
 
 type sipOutbound struct {
+	log     logger.Logger
 	c       *Client
 	id      LocalTag
 	from    *sip.FromHeader
@@ -648,6 +650,11 @@ authLoop:
 			authHeaderName = "Proxy-Authenticate"
 			authHeaderRespName = "Proxy-Authorization"
 		}
+		cid := ""
+		if h := resp.CallID(); h != nil {
+			cid = h.Value()
+		}
+		c.log.Infow("auth requested", "sipCallID", cid, "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
 			return nil, errors.New("server required auth, but no username or password was provided")

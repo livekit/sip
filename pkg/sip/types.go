@@ -224,6 +224,9 @@ func LoggerWithParams(log logger.Logger, c Signaling) logger.Logger {
 	if tag := c.Tag(); tag != "" {
 		log = log.WithValues("sipTag", tag)
 	}
+	if cid := c.CallID(); cid != "" {
+		log = log.WithValues("sipCallID", cid)
+	}
 	return log
 }
 
