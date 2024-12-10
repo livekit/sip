@@ -31,6 +31,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
@@ -534,6 +535,7 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI) 
 		from:      fromHeader,
 		contact:   contactHeader,
 		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
+		nextCSeq:  1,
 	}
 }
 
@@ -544,13 +546,13 @@ type sipOutbound struct {
 	from    *sip.FromHeader
 	contact *sip.ContactHeader
 
-	mu              sync.RWMutex
-	tag             RemoteTag
-	callID          string
-	invite          *sip.Request
-	inviteOk        *sip.Response
-	to              *sip.ToHeader
-	nextRequestCSeq uint32
+	mu       sync.RWMutex
+	tag      RemoteTag
+	callID   string
+	invite   *sip.Request
+	inviteOk *sip.Response
+	to       *sip.ToHeader
+	nextCSeq uint32
 
 	referCseq uint32
 	referDone chan error
@@ -602,6 +604,8 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 	toHeader := &sip.ToHeader{Address: *to.GetURI()}
 
 	dest := to.GetDest()
+	c.callID = guid.HashedID(fmt.Sprintf("%s-%s", string(c.id), toHeader.Address.String()))
+	c.log = c.log.WithValues("sipCallID", c.callID)
 
 	var (
 		sipHeaders         Headers
@@ -622,7 +626,7 @@ authLoop:
 		if try >= 5 {
 			return nil, fmt.Errorf("max auth retry attemps reached")
 		}
-		req, resp, err = c.attemptInvite(ctx, req, dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
 		}
@@ -650,11 +654,7 @@ authLoop:
 			authHeaderName = "Proxy-Authenticate"
 			authHeaderRespName = "Proxy-Authorization"
 		}
-		cid := ""
-		if h := resp.CallID(); h != nil {
-			cid = h.Value()
-		}
-		c.log.Infow("auth requested", "sipCallID", cid, "status", resp.StatusCode, "body", string(resp.Body()))
+		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
 			return nil, errors.New("server required auth, but no username or password was provided")
@@ -696,12 +696,6 @@ authLoop:
 	if !ok {
 		return nil, errors.New("no tag in To header in INVITE response")
 	}
-	if callID := c.invite.CallID(); callID != nil {
-		c.callID = callID.Value()
-	}
-	if h := c.invite.CSeq(); h != nil {
-		c.nextRequestCSeq = h.SeqNo + 1
-	}
 
 	if cont := resp.Contact(); cont != nil {
 		req.Recipient = cont.Address
@@ -725,19 +719,14 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, prev *sip.Request, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, to.Address)
+	c.setCSeq(req)
+	req.RemoveHeader("Call-ID")
+	req.AppendHeader(&callID)
 
-	const reuseCallID = false // FIXME some service may require the call ID to be kept between auth attempts, but Telnyx requires it to change
-
-	if reuseCallID && prev != nil {
-		if cid := prev.CallID(); cid != nil {
-			req.RemoveHeader("Call-ID")
-			req.AppendHeader(cid)
-		}
-	}
 	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(to)
@@ -773,9 +762,9 @@ func (c *sipOutbound) Transaction(req *sip.Request) (sip.ClientTransaction, erro
 }
 
 func (c *sipOutbound) setCSeq(req *sip.Request) {
-	setCSeq(req, c.nextRequestCSeq)
+	setCSeq(req, c.nextCSeq)
 
-	c.nextRequestCSeq++
+	c.nextCSeq++
 }
 
 func (c *sipOutbound) sendBye() {
@@ -800,7 +789,7 @@ func (c *sipOutbound) sendBye() {
 func (c *sipOutbound) drop() {
 	c.invite = nil
 	c.inviteOk = nil
-	c.nextRequestCSeq = 0
+	c.nextCSeq = 0
 }
 
 func (c *sipOutbound) Drop() {
