@@ -399,7 +399,10 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		cancel()
 	}()
 
-	sdpOffer := c.media.NewOffer()
+	sdpOffer, err := c.media.NewOffer(false) // FIXME: enable for TLS?
+	if err != nil {
+		return err
+	}
 	sdpOfferData, err := sdpOffer.SDP.Marshal()
 	if err != nil {
 		return err

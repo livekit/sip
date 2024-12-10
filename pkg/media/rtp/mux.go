@@ -35,25 +35,25 @@ type Mux struct {
 
 // HandleRTP selects a Handler based on payload type.
 // Types can be registered with Register. If no handler is set, a default one will be used.
-func (m *Mux) HandleRTP(p *rtp.Packet) error {
+func (m *Mux) HandleRTP(h *rtp.Header, payload []byte) error {
 	if m == nil {
 		return nil
 	}
-	var h Handler
+	var r Handler
 	m.mu.RLock()
-	if p.PayloadType < byte(len(m.static)) {
-		h = m.static[p.PayloadType]
+	if h.PayloadType < byte(len(m.static)) {
+		r = m.static[h.PayloadType]
 	} else {
-		h = m.dynamic[p.PayloadType]
+		r = m.dynamic[h.PayloadType]
 	}
-	if h == nil {
-		h = m.def
+	if r == nil {
+		r = m.def
 	}
 	m.mu.RUnlock()
-	if h == nil {
+	if r == nil {
 		return nil
 	}
-	return h.HandleRTP(p)
+	return r.HandleRTP(h, payload)
 }
 
 // SetDefault sets a default RTP handler.
