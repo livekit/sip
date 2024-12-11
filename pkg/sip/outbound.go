@@ -505,11 +505,11 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 
 	err = c.cc.transferCall(ctx, transferTo)
 	if err != nil {
-		c.log.Infow("outound call failed to transfer", "error", err, "transferTo", transferTo)
+		c.log.Warnw("outbound call failed to transfer", err, "transferTo", transferTo)
 		return err
 	}
 
-	c.log.Infow("outbound call tranferred", "transferTo", transferTo)
+	c.log.Infow("outbound call transferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() { c.CloseWithReason(CallHangup, "call transferred", livekit.DisconnectReason_CLIENT_INITIATED) })
