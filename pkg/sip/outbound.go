@@ -423,7 +423,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		// TODO: should we retry? maybe new offer will work
 		var e *ErrorStatus
 		if errors.As(err, &e) {
-			c.mon.InviteError(fmt.Sprintf("status-%d", e.StatusCode))
+			c.mon.InviteError(statusName(e.StatusCode))
 		} else {
 			c.mon.InviteError("other")
 		}

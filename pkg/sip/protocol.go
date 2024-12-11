@@ -40,6 +40,70 @@ var (
 	referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 )
 
+// TODO: Add String method to sipgo.StatusCode
+var statusNamesMap = map[int]string{
+	100: "Trying",
+	180: "Ringing",
+	181: "CallIsForwarded",
+	182: "Queued",
+	183: "SessionInProgress",
+
+	200: "OK",
+	202: "Accepted",
+
+	301: "MovedPermanently",
+	302: "MovedTemporarily",
+	305: "UseProxy",
+
+	400: "BadRequest",
+	401: "Unauthorized",
+	402: "PaymentRequired",
+	403: "Forbidden",
+	404: "NotFound",
+	405: "MethodNotAllowed",
+	406: "NotAcceptable",
+	407: "ProxyAuthRequired",
+	408: "RequestTimeout",
+	409: "Conflict",
+	410: "Gone",
+	413: "RequestEntityTooLarge",
+	414: "RequestURITooLong",
+	415: "UnsupportedMediaType",
+	416: "RequestedRangeNotSatisfiable",
+	420: "BadExtension",
+	421: "ExtensionRequired",
+	423: "IntervalToBrief",
+	480: "TemporarilyUnavailable",
+	481: "CallTransactionDoesNotExists",
+	482: "LoopDetected",
+	483: "TooManyHops",
+	484: "AddressIncomplete",
+	485: "Ambiguous",
+	486: "BusyHere",
+	487: "RequestTerminated",
+	488: "NotAcceptableHere",
+
+	500: "InternalServerError",
+	501: "NotImplemented",
+	502: "BadGateway",
+	503: "ServiceUnavailable",
+	504: "GatewayTimeout",
+	505: "VersionNotSupported",
+	513: "MessageTooLarge",
+
+	600: "GlobalBusyEverywhere",
+	603: "GlobalDecline",
+	604: "GlobalDoesNotExistAnywhere",
+	606: "GlobalNotAcceptable",
+}
+
+func statusName(status int) string {
+	if name := statusNamesMap[status]; name != "" {
+		return fmt.Sprintf("%d-%s", status, name)
+	}
+	return fmt.Sprintf("status-%d", status)
+}
+
 type ErrorStatus struct {
 	StatusCode int
 	Message    string
