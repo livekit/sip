@@ -412,17 +412,21 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		pinPrompt = true
 	}
 
-	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
-	answerData, err := c.runMediaConn(req.Body(), conf, disp.EnabledFeatures)
-	if err != nil {
-		c.log.Errorw("Cannot start media", err)
-		c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
-		c.close(true, callDropped, "media-failed")
-		return err
+	runMedia := func(enc livekit.SIPMediaEncryption) ([]byte, error) {
+		answerData, err := c.runMediaConn(req.Body(), enc, conf, disp.EnabledFeatures)
+		if err != nil {
+			c.log.Errorw("Cannot start media", err)
+			c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
+			c.close(true, callDropped, "media-failed")
+			return nil, err
+		}
+		return answerData, nil
 	}
-	acceptCall := func() (bool, error) {
+
+	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
+	acceptCall := func(answerData []byte) (bool, error) {
 		c.log.Infow("Accepting the call", "headers", disp.Headers)
-		if err = c.cc.Accept(ctx, answerData, disp.Headers); err != nil {
+		if err := c.cc.Accept(ctx, answerData, disp.Headers); err != nil {
 			c.log.Errorw("Cannot respond to INVITE", err)
 			return false, err
 		}
@@ -435,14 +439,29 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	ok := false
+	var answerData []byte
 	if pinPrompt {
+		var err error
 		// Accept the call first on the SIP side, so that we can send audio prompts.
-		if ok, err = acceptCall(); !ok {
+		// This also means we have to pick encryption setting early, before room is selected.
+		// Backend must explicitly enable encryption for pin prompts.
+		answerData, err = runMedia(disp.MediaEncryption)
+		if err != nil {
+			return err // already sent a response
+		}
+		if ok, err = acceptCall(answerData); !ok {
 			return err // could be success if the caller hung up
 		}
 		disp, ok, err = c.pinPrompt(ctx, trunkID)
 		if !ok {
 			return err // already sent a response. Could be success if user hung up
+		}
+	} else {
+		// Start media with given encryption settings.
+		var err error
+		answerData, err = runMedia(disp.MediaEncryption)
+		if err != nil {
+			return err // already sent a response
 		}
 	}
 	if len(disp.HeadersToAttributes) != 0 {
@@ -486,7 +505,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
-		if ok, err := acceptCall(); !ok {
+		if ok, err := acceptCall(answerData); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
 	}
@@ -518,11 +537,16 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 }
 
-func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log.Debugw("SDP offer", "sdp", string(offerData))
+	e, err := sdpEncryption(enc)
+	if err != nil {
+		c.log.Errorw("Cannot parse encryption", err)
+		return nil, err
+	}
 
-	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
+	mp, err := NewMediaPort(c.log, c.mon, &MediaOptions{
 		IP:                  c.s.sconf.SignalingIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
@@ -535,7 +559,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	c.media.EnableTimeout(false) // enabled once we accept the call
 	c.media.SetDTMFAudio(conf.AudioDTMF)
 
-	answer, mconf, err := mp.SetOffer(offerData)
+	answer, mconf, err := mp.SetOffer(offerData, e)
 	if err != nil {
 		return nil, err
 	}
