@@ -31,7 +31,7 @@ import (
 var (
 	// durBucketsOp lists histogram buckets for relatively short operations like SIP INVITE.
 	durBucketsOp = []float64{
-		0.1, 0.5, 1, 5, 10, 30, 60, 3 * 60,
+		0.1, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 3 * 60,
 	}
 	// durBucketsLong lists histogram buckets for long operations like call/session durations.
 	durBucketsLong = []float64{
@@ -46,9 +46,9 @@ type CallDir bool
 
 func (d CallDir) String() string {
 	if d == Inbound {
-		return "inbound"
+		return "in"
 	}
-	return "outbound"
+	return "out"
 }
 
 const (
