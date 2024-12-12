@@ -27,15 +27,11 @@ var (
 	fOutKey    = flag.String("key-out", "", "LiveKit API key (outbound)")
 	fOutSecret = flag.String("secret-out", "", "LiveKit API secret (outbound)")
 	fOutTrunk  = flag.String("trunk-out", "", "SIP Trunk ID (outbound)")
-	fOutNumber = flag.String("number-out", "", "Phone number (outbound)")
 	fOutRoom   = flag.String("room-out", "sip-test-out", "room name (outbound)")
 
-	fInURL     = flag.String("ws-in", "", "LiveKit WS URL (inbound)")
-	fInKey     = flag.String("key-in", "", "LiveKit API key (inbound)")
-	fInSecret  = flag.String("secret-in", "", "LiveKit API secret (inbound)")
-	fInNumber  = flag.String("number-in", "", "Phone number (inbound)")
-	fInRoom    = flag.String("room-in", "sip-test-in", "room name (inbound)")
-	fInRoomPin = flag.String("room-pin", "", "room pin (inbound)")
+	fInURL    = flag.String("ws-in", "", "LiveKit WS URL (inbound)")
+	fInKey    = flag.String("key-in", "", "LiveKit API key (inbound)")
+	fInSecret = flag.String("secret-in", "", "LiveKit API secret (inbound)")
 
 	fTimeout = flag.Duration("timeout", time.Minute, "timeout for the test")
 )
@@ -54,11 +50,7 @@ func run(ctx context.Context, t lktest.TB) {
 	lkIn := lktest.New(*fInURL, *fInKey, *fInSecret)
 
 	lktest.TestSIPOutbound(t, ctx, lkOut, lkIn, lktest.SIPOutboundTestParams{
-		TrunkOut:  *fOutTrunk,
-		NumberOut: *fOutNumber,
-		RoomOut:   *fOutRoom,
-		NumberIn:  *fInNumber,
-		RoomIn:    *fInRoom,
-		RoomPin:   *fInRoomPin,
+		TrunkOut: *fOutTrunk,
+		RoomOut:  *fOutRoom,
 	})
 }
