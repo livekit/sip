@@ -27,7 +27,7 @@ jobs:
     runs-on: buildjet-8vcpu-ubuntu-2204
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install Opus dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libsoxr-dev
@@ -63,7 +63,7 @@ jobs:
           go test -coverpkg=./... -json -v -coverprofile=coverage2.out -covermode=atomic ./test/integration/... 2>&1 | tee -a /tmp/gotest.log | gotestfmt
 
       - name: Upload test log
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-log
