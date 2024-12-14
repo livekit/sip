@@ -12,16 +12,16 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241128072814-c363618d4c98
-	github.com/livekit/protocol v1.28.2-0.20241128072830-b738aedbd841
+	github.com/livekit/protocol v1.29.5-0.20241209183753-f6b5078b2244
 	github.com/livekit/psrpc v0.6.1-0.20241018124827-1efff3d113a8
-	github.com/livekit/server-sdk-go/v2 v2.4.0
+	github.com/livekit/server-sdk-go/v2 v2.4.1-0.20241211082531-7610e1639c28
 	github.com/livekit/sipgo v0.13.2-0.20241209123643-27500ef99c39
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/pion/interceptor v0.1.37
 	github.com/pion/rtp v1.8.9
 	github.com/pion/sdp/v3 v3.0.9
-	github.com/pion/webrtc/v4 v4.0.4
+	github.com/pion/webrtc/v4 v4.0.5
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sirupsen/logrus v1.9.3

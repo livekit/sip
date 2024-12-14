@@ -132,7 +132,7 @@ func (s *SIPServer) CreateTrunkOut(t testing.TB, trunk *livekit.SIPOutboundTrunk
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Trunk (out):", tr.SipTrunkId)
+	t.Log("New trunk (outbound):", tr.SipTrunkId)
 	return tr.SipTrunkId
 }
 
@@ -144,7 +144,7 @@ func (s *SIPServer) CreateTrunkIn(t testing.TB, trunk *livekit.SIPInboundTrunkIn
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Trunk (in):", tr.SipTrunkId)
+	t.Log("New trunk (inbound):", tr.SipTrunkId)
 	return tr.SipTrunkId
 }
 
@@ -181,6 +181,7 @@ func (s *SIPServer) CreateTrunkAndIndividual(t testing.TB, trunk *livekit.SIPInb
 func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta string, attrs map[string]string) string {
 	ctx := context.Background()
 	dr, err := s.Client.CreateSIPDispatchRule(ctx, &livekit.CreateSIPDispatchRuleRequest{
+		Name:       room,
 		Metadata:   meta,
 		Attributes: attrs,
 		Rule: &livekit.SIPDispatchRule{
@@ -194,7 +195,7 @@ func (s *SIPServer) CreateDirectDispatch(t testing.TB, room, pin string, meta st
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Dispatch (direct):", dr.SipDispatchRuleId)
+	t.Log("New dispatch rule (direct):", dr.SipDispatchRuleId)
 	return dr.SipDispatchRuleId
 }
 
@@ -357,7 +358,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 			Kind:     livekit.ParticipantInfo_SIP,
 			Metadata: meta,
 			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
+				"sip.callID":           lktest.AttrTestAny, // special case
 				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
@@ -519,7 +520,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 			Kind:     livekit.ParticipantInfo_SIP,
 			Metadata: meta,
 			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
+				"sip.callID":           lktest.AttrTestAny, // special case
 				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
@@ -592,7 +593,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 			Kind:     livekit.ParticipantInfo_SIP,
 			Metadata: meta,
 			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
+				"sip.callID":           lktest.AttrTestAny, // special case
 				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
@@ -649,7 +650,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 			Kind:     livekit.ParticipantInfo_SIP,
 			Metadata: meta,
 			Attributes: map[string]string{
-				"sip.callID":           "<test>", // special case
+				"sip.callID":           lktest.AttrTestAny, // special case
 				"sip.callStatus":       "active",
 				"sip.trunkPhoneNumber": serverNumber,
 				"sip.phoneNumber":      clientNumber,
@@ -718,7 +719,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 				Kind:     livekit.ParticipantInfo_SIP,
 				Metadata: meta,
 				Attributes: map[string]string{
-					"sip.callID":           "<test>", // special case
+					"sip.callID":           lktest.AttrTestAny, // special case
 					"sip.callStatus":       "active",
 					"sip.trunkPhoneNumber": serverNumber,
 					"sip.phoneNumber":      clientNumber,
@@ -793,7 +794,7 @@ func TestSIPAudio(t *testing.T) {
 							Kind:     livekit.ParticipantInfo_SIP,
 							Metadata: meta,
 							Attributes: map[string]string{
-								"sip.callID":           "<test>", // special case
+								"sip.callID":           lktest.AttrTestAny, // special case
 								"sip.callStatus":       "active",
 								"sip.trunkPhoneNumber": serverNumber,
 								"sip.phoneNumber":      fmt.Sprintf("+%d", 111111111*(i+1)),
@@ -845,7 +846,6 @@ func TestSIPOutbound(t *testing.T) {
 		userName = "test-user"
 		userPass = "test-pass"
 		roomPin  = "*1234"
-		dtmfPin  = "ww*12w34ww#" // with added delays
 		meta     = `{"test":true}`
 	)
 
@@ -863,15 +863,16 @@ func TestSIPOutbound(t *testing.T) {
 					headersIn := map[string]string{
 						"X-LK-From-1": "inbound",
 					}
-					roomPin, dtmfPin := roomPin, dtmfPin
+					roomPin := roomPin
 					if withPin {
 						// We cannot set headers because of the PIN. See TestSIPJoinPinRoom for details.
 						delete(headersIn, "X-LK-From-1")
 					} else {
-						roomPin, dtmfPin = "", ""
+						roomPin = ""
 					}
 					// Configure Trunk for inbound server.
 					trunkIn := srvIn.CreateTrunkIn(t, &livekit.SIPInboundTrunkInfo{
+						Name:         "Test In",
 						Numbers:      []string{serverNumber},
 						AuthUsername: userName,
 						AuthPassword: userPass,
@@ -890,6 +891,7 @@ func TestSIPOutbound(t *testing.T) {
 
 					// Configure Trunk for outbound server and make a SIP call.
 					trunkOut := srvOut.CreateTrunkOut(t, &livekit.SIPOutboundTrunkInfo{
+						Name:         "Test Out",
 						Numbers:      []string{clientNumber},
 						Address:      srvIn.Address,
 						Transport:    tr,
@@ -923,18 +925,12 @@ func TestSIPOutbound(t *testing.T) {
 						// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
 						t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
 							lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPOutboundTestParams{
-								TrunkOut:  trunkOut,
-								NumberOut: clientNumber,
-								RoomOut:   "outbound",
-								TrunkIn:   trunkIn,
-								RuleIn:    ruleIn,
-								NumberIn:  serverNumber,
-								RoomIn:    roomIn,
-								RoomPin:   dtmfPin,
-								MetaIn:    meta,
-								AttrsIn:   expAttrsIn,
-								AttrsOut:  expAttrsOut,
-								TestDMTF:  true,
+								TrunkOut: trunkOut,
+								RoomOut:  "outbound",
+								TrunkIn:  trunkIn,
+								RuleIn:   ruleIn,
+								AttrsIn:  expAttrsIn,
+								AttrsOut: expAttrsOut,
 							})
 						})
 					}

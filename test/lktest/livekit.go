@@ -80,7 +80,7 @@ func (lk *LiveKit) RoomParticipants(t TB, room string) []*livekit.ParticipantInf
 	return resp.Participants
 }
 
-func (lk *LiveKit) CreateSIPParticipant(t TB, req *livekit.CreateSIPParticipantRequest) {
+func (lk *LiveKit) CreateSIPParticipant(t TB, req *livekit.CreateSIPParticipantRequest) *livekit.SIPParticipantInfo {
 	r, err := lk.SIP.CreateSIPParticipant(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -92,6 +92,7 @@ func (lk *LiveKit) CreateSIPParticipant(t TB, req *livekit.CreateSIPParticipantR
 			Room: req.RoomName, Identity: r.ParticipantIdentity,
 		})
 	})
+	return r
 }
 
 func (lk *LiveKit) Connect(t TB, room, identity string, cb *lksdk.RoomCallback) *lksdk.Room {
@@ -141,9 +142,17 @@ func (lk *LiveKit) ConnectWithAudio(t TB, room, identity string, cb *lksdk.RoomC
 	return r
 }
 
-func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.RoomCallback) *Participant {
+type RoomParticipantCallback struct {
+	lksdk.RoomCallback
+	OnSIPStatus func(p *lksdk.RemoteParticipant, callID string, status string)
+}
+
+func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *RoomParticipantCallback) *Participant {
+	var origCB lksdk.RoomCallback
 	if cb == nil {
-		cb = new(lksdk.RoomCallback)
+		cb = new(RoomParticipantCallback)
+	} else {
+		origCB = cb.RoomCallback
 	}
 	p := &Participant{t: t}
 	pr, pw := media.Pipe[media.PCM16Sample](RoomSampleRate)
@@ -153,14 +162,17 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 	})
 	p.AudioIn = pr
 	p.mixIn = mixer.NewMixer(pw, rtp.DefFrameDur)
-	cb.ParticipantCallback.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	cb.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if pub.Kind() == lksdk.TrackKindAudio {
 			if err := pub.SetSubscribed(true); err != nil {
 				t.Error("cannot subscribe to the track", pub.SID(), err)
 			}
 		}
+		if origCB.OnTrackPublished != nil {
+			origCB.OnTrackPublished(pub, rp)
+		}
 	}
-	cb.ParticipantCallback.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	cb.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		inp := p.mixIn.NewInput()
 		defer inp.Close()
 
@@ -173,14 +185,50 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *lksdk.Roo
 		h := rtp.NewMediaStreamIn[opus.Sample](odec)
 		_ = rtp.HandleLoop(track, h)
 	}
-	cb.OnAttributesChanged = func(changed map[string]string, p lksdk.Participant) {
-		name := ""
-		if p != nil {
-			name = p.Name()
+	cb.OnParticipantConnected = func(p *lksdk.RemoteParticipant) {
+		if origCB.OnParticipantConnected != nil {
+			origCB.OnParticipantConnected(p)
 		}
-		t.Logf("attributes changed: %s: %v", name, changed)
+		switch p.Kind() {
+		case lksdk.ParticipantSIP:
+			if cb.OnSIPStatus != nil {
+				callID := p.Attributes()[livekit.AttrSIPCallID]
+				status := p.Attributes()[livekit.AttrSIPCallStatus]
+				cb.OnSIPStatus(p, callID, status)
+			}
+		}
 	}
-	p.Room = lk.Connect(t, room, identity, cb)
+	cb.OnParticipantDisconnected = func(p *lksdk.RemoteParticipant) {
+		if origCB.OnParticipantDisconnected != nil {
+			origCB.OnParticipantDisconnected(p)
+		}
+		switch p.Kind() {
+		case lksdk.ParticipantSIP:
+			if cb.OnSIPStatus != nil {
+				callID := p.Attributes()[livekit.AttrSIPCallID]
+				status := p.Attributes()[livekit.AttrSIPCallStatus]
+				if status == "" {
+					status = "disconnect-unk"
+				}
+				cb.OnSIPStatus(p, callID, status)
+			}
+		}
+	}
+	cb.OnAttributesChanged = func(changed map[string]string, p lksdk.Participant) {
+		if origCB.OnAttributesChanged != nil {
+			origCB.OnAttributesChanged(changed, p)
+		}
+		switch p.Kind() {
+		case lksdk.ParticipantSIP:
+			rp, _ := p.(*lksdk.RemoteParticipant)
+			if rp != nil && cb.OnSIPStatus != nil {
+				callID := p.Attributes()[livekit.AttrSIPCallID]
+				status := p.Attributes()[livekit.AttrSIPCallStatus]
+				cb.OnSIPStatus(rp, callID, status)
+			}
+		}
+	}
+	p.Room = lk.Connect(t, room, identity, &cb.RoomCallback)
 	for _, rp := range p.Room.GetRemoteParticipants() {
 		for _, pub := range rp.TrackPublications() {
 			cb.ParticipantCallback.OnTrackPublished(pub.(*lksdk.RemoteTrackPublication), rp)
@@ -394,7 +442,7 @@ func compareParticipants(t TB, exp *ParticipantInfo, got *livekit.ParticipantInf
 	return nil
 }
 
-func (lk *LiveKit) ExpectParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) {
+func (lk *LiveKit) ExpectParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) []*livekit.ParticipantInfo {
 	slices.SortFunc(participants, func(a, b ParticipantInfo) int {
 		return strings.Compare(a.Identity, b.Identity)
 	})
@@ -407,7 +455,7 @@ wait:
 			select {
 			case <-ctx.Done():
 				require.Len(t, list, len(participants), "timeout waiting for participants")
-				return
+				return nil
 			case <-ticker.C:
 				continue wait
 			}
@@ -421,13 +469,13 @@ wait:
 				select {
 				case <-ctx.Done():
 					require.NoError(t, err)
-					return
+					return nil
 				case <-ticker.C:
 					continue wait
 				}
 			}
 		}
-		return // all good
+		return list // all good
 	}
 }
 
@@ -463,18 +511,18 @@ func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool, filter func(r
 	}
 }
 
-func (lk *LiveKit) ExpectRoomWithParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) {
+func (lk *LiveKit) ExpectRoomWithParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) []*livekit.ParticipantInfo {
 	filter := func(r *livekit.Room) bool {
 		return r.Name == room
 	}
 	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter)
 	if len(participants) == 0 && len(rooms) == 0 {
-		return
+		return nil
 	}
 	require.Len(t, rooms, 1)
 	require.True(t, filter(rooms[0]))
 
-	lk.ExpectParticipants(t, ctx, room, participants)
+	return lk.ExpectParticipants(t, ctx, room, participants)
 }
 
 func (lk *LiveKit) ExpectRoomPref(t TB, ctx context.Context, pref, number string, none bool) *livekit.Room {
@@ -488,7 +536,7 @@ func (lk *LiveKit) ExpectRoomPref(t TB, ctx context.Context, pref, number string
 	return rooms[0]
 }
 
-func (lk *LiveKit) ExpectRoomPrefWithParticipants(t TB, ctx context.Context, pref, number string, participants []ParticipantInfo) {
+func (lk *LiveKit) ExpectRoomPrefWithParticipants(t TB, ctx context.Context, pref, number string, participants []ParticipantInfo) []*livekit.ParticipantInfo {
 	room := lk.ExpectRoomPref(t, ctx, pref, number, len(participants) != 0)
-	lk.ExpectParticipants(t, ctx, room.Name, participants)
+	return lk.ExpectParticipants(t, ctx, room.Name, participants)
 }

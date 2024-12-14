@@ -29,6 +29,7 @@ const testing = false // do not allow import of testing package
 
 // TB mirrors testing.TB interface without including the actual testing package.
 type TB interface {
+	Failed() bool
 	Cleanup(func())
 	Error(args ...any)
 	Errorf(format string, args ...any)
@@ -87,6 +88,7 @@ type skip struct{}
 
 type testingImpl struct {
 	mu      sync.Mutex
+	failed  bool
 	err     error
 	cleanup []func()
 }
@@ -101,6 +103,12 @@ func (t *testingImpl) doCleanup() {
 	}
 }
 
+func (t *testingImpl) Failed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failed
+}
+
 func (t *testingImpl) Cleanup(f func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -111,6 +119,7 @@ func (t *testingImpl) setError(err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.err = err
+	t.failed = true
 }
 
 func (t *testingImpl) Error(args ...any) {
@@ -127,6 +136,9 @@ func (t *testingImpl) Errorf(format string, args ...any) {
 }
 
 func (t *testingImpl) FailNow() {
+	t.mu.Lock()
+	t.failed = true
+	t.mu.Unlock()
 	panic(fatal{})
 }
 
