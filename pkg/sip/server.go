@@ -94,6 +94,8 @@ type CallDispatch struct {
 	DispatchRuleID      string
 	Headers             map[string]string
 	HeadersToAttributes map[string]string
+	IncludeHeaders      livekit.SIPHeaderOptions
+	AttributesToHeaders map[string]string
 	EnabledFeatures     []livekit.SIPFeature
 	RingingTimeout      time.Duration
 	MaxCallDuration     time.Duration

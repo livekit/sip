@@ -54,7 +54,9 @@ type sipOutboundConfig struct {
 	dtmf            string
 	dialtone        bool
 	headers         map[string]string
+	includeHeaders  livekit.SIPHeaderOptions
 	headersToAttrs  map[string]string
+	attrsToHeaders  map[string]string
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
 	enabledFeatures []livekit.SIPFeature
@@ -92,18 +94,28 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf.host = contact.GetHost()
 	}
 	call := &outboundCall{
-		c:   c,
-		log: log,
-		cc: c.newOutbound(log, id, URI{
-			User:      sipConf.from,
-			Host:      sipConf.host,
-			Addr:      contact.Addr,
-			Transport: tr,
-		}, contact),
+		c:        c,
+		log:      log,
 		sipConf:  sipConf,
 		callInfo: callInfo,
 		ioClient: ioClient,
 	}
+	call.cc = c.newOutbound(log, id, URI{
+		User:      sipConf.from,
+		Host:      sipConf.host,
+		Addr:      contact.Addr,
+		Transport: tr,
+	}, contact, func(headers map[string]string) map[string]string {
+		c := call
+		if len(c.sipConf.attrsToHeaders) == 0 {
+			return headers
+		}
+		r := c.lkRoom.Room()
+		if r == nil {
+			return headers
+		}
+		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
+	})
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -457,7 +469,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	}
 	joinDur()
 
-	extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.cc)
+	extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc)
 	if c.lkRoom != nil && len(extra) != 0 {
 		room := c.lkRoom.Room()
 		if room != nil {
@@ -476,7 +488,7 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dialtone bool) (retErr error) {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
 	var err error
 
 	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
@@ -503,7 +515,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 		}()
 	}
 
-	err = c.cc.transferCall(ctx, transferTo)
+	err = c.cc.transferCall(ctx, transferTo, headers)
 	if err != nil {
 		c.log.Infow("outound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
@@ -517,7 +529,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, dial
 	return nil
 }
 
-func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI) *sipOutbound {
+func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, getHeaders setHeadersFunc) *sipOutbound {
 	from = from.Normalize()
 	fromHeader := &sip.FromHeader{
 		DisplayName: from.User,
@@ -529,13 +541,14 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI) 
 	}
 	fromHeader.Params.Add("tag", string(id))
 	return &sipOutbound{
-		log:       log,
-		c:         c,
-		id:        id,
-		from:      fromHeader,
-		contact:   contactHeader,
-		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
-		nextCSeq:  1,
+		log:        log,
+		c:          c,
+		id:         id,
+		from:       fromHeader,
+		contact:    contactHeader,
+		referDone:  make(chan error), // Do not buffer the channel to avoid reading a result for an old request
+		nextCSeq:   1,
+		getHeaders: getHeaders,
 	}
 }
 
@@ -546,13 +559,14 @@ type sipOutbound struct {
 	from    *sip.FromHeader
 	contact *sip.ContactHeader
 
-	mu       sync.RWMutex
-	tag      RemoteTag
-	callID   string
-	invite   *sip.Request
-	inviteOk *sip.Response
-	to       *sip.ToHeader
-	nextCSeq uint32
+	mu         sync.RWMutex
+	tag        RemoteTag
+	callID     string
+	invite     *sip.Request
+	inviteOk   *sip.Response
+	to         *sip.ToHeader
+	nextCSeq   uint32
+	getHeaders setHeadersFunc
 
 	referCseq uint32
 	referDone chan error
@@ -776,6 +790,11 @@ func (c *sipOutbound) sendBye() {
 	defer span.End()
 	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
 	r.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+	if c.getHeaders != nil {
+		for k, v := range c.getHeaders(nil) {
+			r.AppendHeader(sip.NewHeader(k, v))
+		}
+	}
 	if c.c.closing.IsBroken() {
 		// do not wait for a response
 		_ = c.WriteRequest(r)
@@ -798,7 +817,7 @@ func (c *sipOutbound) Drop() {
 	c.drop()
 }
 
-func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error {
+func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, headers map[string]string) error {
 	c.mu.Lock()
 
 	if c.invite == nil || c.inviteOk == nil {
@@ -811,7 +830,11 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string) error
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
 	}
 
-	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo)
+	if c.getHeaders != nil {
+		headers = c.getHeaders(headers)
+	}
+
+	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers)
 	c.setCSeq(req)
 	cseq := req.CSeq()
 
