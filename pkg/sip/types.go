@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -240,21 +241,43 @@ func LoggerWithHeaders(log logger.Logger, c Signaling) logger.Logger {
 	return log
 }
 
-func HeadersToAttrs(attrs, hdrToAttr map[string]string, c Signaling) map[string]string {
+func HeadersToAttrs(attrs, hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, c Signaling) map[string]string {
 	if attrs == nil {
 		attrs = make(map[string]string)
 	}
 	headers := c.RemoteHeaders()
+	// Map all headers, if requested
+	if opts != livekit.SIPHeaderOptions_SIP_NO_HEADERS {
+		for _, h := range headers {
+			if h == nil {
+				continue
+			}
+			name := strings.ToLower(h.Name())
+			if name == "" {
+				continue
+			}
+			switch opts {
+			case livekit.SIPHeaderOptions_SIP_X_HEADERS:
+				if !strings.HasPrefix(name, "x-") {
+					continue
+				}
+			}
+			attrs[livekit.AttrSIPHeaderPrefix+name] = h.Value()
+		}
+	}
+	// Global header mapping
 	for hdr, name := range headerToAttr {
 		if h := headers.GetHeader(hdr); h != nil {
 			attrs[name] = h.Value()
 		}
 	}
+	// Request mapping
 	for hdr, name := range hdrToAttr {
 		if h := headers.GetHeader(hdr); h != nil {
 			attrs[name] = h.Value()
 		}
 	}
+	// Other metadata
 	if tag := c.Tag(); tag != "" {
 		attrs[AttrSIPCallTag] = string(tag)
 	}
@@ -262,4 +285,21 @@ func HeadersToAttrs(attrs, hdrToAttr map[string]string, c Signaling) map[string]
 		attrs[AttrSIPCallIDFull] = cid
 	}
 	return attrs
+}
+
+func AttrsToHeaders(attrs, attrToHdr, headers map[string]string) map[string]string {
+	if len(attrToHdr) == 0 {
+		return headers
+	}
+	if headers == nil {
+		headers = make(map[string]string)
+	}
+	for attr, hdr := range attrToHdr {
+		val, ok := attrs[attr]
+		if !ok {
+			continue
+		}
+		headers[hdr] = val
+	}
+	return headers
 }

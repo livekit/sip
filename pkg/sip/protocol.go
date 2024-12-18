@@ -116,6 +116,8 @@ func (e *ErrorStatus) Error() string {
 	return fmt.Sprintf("sip status: %d", e.StatusCode)
 }
 
+type setHeadersFunc func(headers map[string]string) map[string]string
+
 type Signaling interface {
 	From() sip.Uri
 	To() sip.Uri
@@ -174,7 +176,7 @@ func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
 	}
 }
 
-func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string) *sip.Request {
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
 	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
@@ -233,6 +235,10 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	req.SetTransport(inviteRequest.Transport())
 	req.SetSource(inviteRequest.Source())
 	req.SetDestination(inviteRequest.Destination())
+
+	for k, v := range headers {
+		req.AppendHeader(sip.NewHeader(k, v))
+	}
 
 	return req
 }

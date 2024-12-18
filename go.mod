@@ -12,7 +12,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241128072814-c363618d4c98
-	github.com/livekit/protocol v1.29.5-0.20241209183753-f6b5078b2244
+	github.com/livekit/protocol v1.29.5-0.20241218124228-1975b61b7e43
 	github.com/livekit/psrpc v0.6.1-0.20241018124827-1efff3d113a8
 	github.com/livekit/server-sdk-go/v2 v2.4.1-0.20241211082531-7610e1639c28
 	github.com/livekit/sipgo v0.13.2-0.20241209123643-27500ef99c39

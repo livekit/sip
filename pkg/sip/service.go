@@ -183,7 +183,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			ctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cdone()
 
-			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, req.PlayDialtone)
+			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, req.Headers, req.PlayDialtone)
 			transfetResult.Store(&err)
 			close(done)
 
@@ -209,14 +209,14 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	}
 }
 
-func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, dialtone bool) error {
+func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) error {
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
 	out := s.cli.activeCalls[LocalTag(callID)]
 	s.cli.cmu.Unlock()
 
 	if out != nil {
-		err := out.transferCall(ctx, transferTo, dialtone)
+		err := out.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
 			return err
 		}
@@ -229,7 +229,7 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	s.srv.cmu.Unlock()
 
 	if in != nil {
-		err := in.transferCall(ctx, transferTo, dialtone)
+		err := in.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
 			return err
 		}
