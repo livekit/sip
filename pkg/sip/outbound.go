@@ -303,17 +303,21 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
+		dst := c.lkRoomIn // already under mutex
+
 		// Play dialtone to the room while participant connects
 		go func() {
 			rctx, span := tracer.Start(rctx, "tones.Play")
 			defer span.End()
-			c.mu.RLock()
-			dst := c.lkRoomIn
-			c.mu.RUnlock()
+
 			if dst == nil {
+				c.log.Infow("room is not ready, ignoring dial tone")
 				return
 			}
-			tones.Play(rctx, dst, ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, dst, ringVolume, tones.ETSIRinging)
+			if err != nil {
+				c.log.Infow("cannot play dial tone", "error", err)
+			}
 		}()
 	}
 	err := c.sipSignal(ctx)
