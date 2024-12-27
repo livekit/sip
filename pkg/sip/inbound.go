@@ -893,11 +893,11 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 	err = c.cc.TransferCall(ctx, transferTo, headers)
 	if err != nil {
-		c.log.Infow("inbound call failed to transfer", "error", err, "transferTo", transferTo)
+		c.log.Warnw("inbound call failed to transfer", err, "transferTo", transferTo)
 		return err
 	}
 
-	c.log.Infow("inbound call tranferred", "transferTo", transferTo)
+	c.log.Infow("inbound call transferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() { c.Close() })
