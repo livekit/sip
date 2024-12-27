@@ -68,6 +68,8 @@ type RoomConfig struct {
 	Token       string
 	RoomName    string
 	Participant ParticipantConfig
+	RoomPreset  string
+	RoomConfig  *livekit.RoomConfiguration
 }
 
 func NewRoom(log logger.Logger) *Room {
@@ -197,11 +199,17 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 			}
 		}
 		var err error
-		rconf.Token, err = sip.BuildSIPToken(
-			conf.ApiKey, conf.ApiSecret, rconf.RoomName,
-			partConf.Identity, partConf.Name, partConf.Metadata,
-			tokenAttrs,
-		)
+		rconf.Token, err = sip.BuildSIPToken(sip.SIPTokenParams{
+			APIKey:                conf.ApiKey,
+			APISecret:             conf.ApiSecret,
+			RoomName:              rconf.RoomName,
+			ParticipantIdentity:   partConf.Identity,
+			ParticipantName:       partConf.Name,
+			ParticipantMetadata:   partConf.Metadata,
+			ParticipantAttributes: tokenAttrs,
+			RoomPreset:            rconf.RoomPreset,
+			RoomConfig:            rconf.RoomConfig,
+		})
 		if err != nil {
 			return err
 		}
