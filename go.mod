@@ -12,7 +12,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
-	github.com/livekit/protocol v1.30.0
+	github.com/livekit/protocol v1.30.1-0.20241227014403-69cf309a1f75
 	github.com/livekit/psrpc v0.6.1-0.20241018124827-1efff3d113a8
 	github.com/livekit/server-sdk-go/v2 v2.4.1-0.20241211082531-7610e1639c28
 	github.com/livekit/sipgo v0.13.2-0.20241209123643-27500ef99c39
@@ -33,8 +33,6 @@ require (
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/livekit/protocol => ../protocol
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.35.1-20240920164238-5a7b106cbb87.1 // indirect
