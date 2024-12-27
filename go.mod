@@ -12,7 +12,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
-	github.com/livekit/protocol v1.30.1-0.20241227014403-69cf309a1f75
+	github.com/livekit/protocol v1.30.1-0.20241227151129-409558f441a6
 	github.com/livekit/psrpc v0.6.1-0.20241018124827-1efff3d113a8
 	github.com/livekit/server-sdk-go/v2 v2.4.1-0.20241211082531-7610e1639c28
 	github.com/livekit/sipgo v0.13.2-0.20241209123643-27500ef99c39
@@ -21,6 +21,7 @@ require (
 	github.com/pion/interceptor v0.1.37
 	github.com/pion/rtp v1.8.9
 	github.com/pion/sdp/v3 v3.0.9
+	github.com/pion/srtp/v3 v3.0.4
 	github.com/pion/webrtc/v4 v4.0.5
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.20.5
@@ -96,7 +97,6 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.14 // indirect
 	github.com/pion/sctp v1.8.35 // indirect
-	github.com/pion/srtp/v3 v3.0.4 // indirect
 	github.com/pion/stun/v3 v3.0.0 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/pion/turn/v4 v4.0.0 // indirect

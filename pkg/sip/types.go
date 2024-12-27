@@ -23,6 +23,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 )
 
@@ -302,4 +303,16 @@ func AttrsToHeaders(attrs, attrToHdr, headers map[string]string) map[string]stri
 		headers[hdr] = val
 	}
 	return headers
+}
+
+func sdpEncryption(e livekit.SIPMediaEncryption) (sdp.Encryption, error) {
+	switch e {
+	case livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE:
+		return sdp.EncryptionNone, nil
+	case livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_ALLOW:
+		return sdp.EncryptionAllow, nil
+	case livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE:
+		return sdp.EncryptionRequire, nil
+	}
+	return sdp.EncryptionAllow, errors.New("invalid SIP media encryption type")
 }

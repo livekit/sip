@@ -17,6 +17,8 @@ package sip
 import (
 	"strconv"
 
+	prtp "github.com/pion/rtp"
+
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/stats"
 )
@@ -26,13 +28,13 @@ const (
 	RoomSampleRate = 48000
 )
 
-func newRTPStatsHandler(mon *stats.CallMonitor, typ string, h rtp.Handler) rtp.Handler {
-	if h == nil {
-		h = rtp.HandlerFunc(func(p *rtp.Packet) error {
+func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) rtp.Handler {
+	if r == nil {
+		r = rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
 			return nil
 		})
 	}
-	return &rtpStatsHandler{h: h, typ: typ, mon: mon}
+	return &rtpStatsHandler{h: r, typ: typ, mon: mon}
 }
 
 type rtpStatsHandler struct {
@@ -41,34 +43,34 @@ type rtpStatsHandler struct {
 	mon *stats.CallMonitor
 }
 
-func (h *rtpStatsHandler) HandleRTP(p *rtp.Packet) error {
-	if h.mon != nil {
-		typ := h.typ
+func (r *rtpStatsHandler) HandleRTP(h *rtp.Header, payload []byte) error {
+	if r.mon != nil {
+		typ := r.typ
 		if typ == "" {
-			typ = strconv.Itoa(int(p.PayloadType))
+			typ = strconv.Itoa(int(h.PayloadType))
 		}
-		h.mon.RTPPacketRecv(typ)
+		r.mon.RTPPacketRecv(typ)
 	}
-	return h.h.HandleRTP(p)
+	return r.h.HandleRTP(h, payload)
 }
 
-func newRTPStatsWriter(mon *stats.CallMonitor, typ string, w rtp.Writer) rtp.Writer {
+func newRTPStatsWriter(mon *stats.CallMonitor, typ string, w rtp.WriteStream) rtp.WriteStream {
 	return &rtpStatsWriter{w: w, typ: typ, mon: mon}
 }
 
 type rtpStatsWriter struct {
-	w   rtp.Writer
+	w   rtp.WriteStream
 	typ string
 	mon *stats.CallMonitor
 }
 
-func (h *rtpStatsWriter) WriteRTP(p *rtp.Packet) error {
-	if h.mon != nil {
-		typ := h.typ
+func (w *rtpStatsWriter) WriteRTP(h *prtp.Header, payload []byte) (int, error) {
+	if w.mon != nil {
+		typ := w.typ
 		if typ == "" {
-			typ = strconv.Itoa(int(p.PayloadType))
+			typ = strconv.Itoa(int(h.PayloadType))
 		}
-		h.mon.RTPPacketSend(typ)
+		w.mon.RTPPacketSend(typ)
 	}
-	return h.w.WriteRTP(p)
+	return w.w.WriteRTP(h, payload)
 }
