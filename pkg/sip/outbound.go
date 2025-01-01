@@ -315,7 +315,7 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 				return
 			}
 			err := tones.Play(rctx, dst, ringVolume, tones.ETSIRinging)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
 		}()
