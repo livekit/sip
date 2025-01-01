@@ -100,21 +100,27 @@ func (r *Room) Room() *lksdk.Room {
 }
 
 func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
+	log := r.log.WithValues("participant", rp.Identity())
+	log.Debugw("participant joined")
 	switch rp.Kind() {
 	case lksdk.ParticipantSIP:
 		// Avoid a deadlock where two SIP participant join a room and won't publish their track.
 		// Each waits for the other's track to subscribe before publishing its own track.
 		// So we just assume SIP participants will eventually start speaking.
 		r.subscribed.Break()
+		log.Infow("unblocking subscription - second sip participant is in the room")
 	}
 }
 
-func (r *Room) subscribeTo(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	if publication.Kind() != lksdk.TrackKindAudio {
+func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	log := r.log.WithValues("participant", rp.Identity(), "track", pub.SID(), "trackName", pub.Name())
+	if pub.Kind() != lksdk.TrackKindAudio {
+		log.Debugw("skipping non-audio track")
 		return
 	}
-	if err := publication.SetSubscribed(true); err != nil {
-		r.log.Errorw("cannot subscribe to the track", err, "trackID", publication.SID())
+	log.Debugw("subscribing to a track")
+	if err := pub.SetSubscribed(true); err != nil {
+		log.Errorw("cannot subscribe to the track", err)
 		return
 	}
 	r.subscribed.Break()
@@ -132,31 +138,37 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	roomCallback := &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
+			log := r.log.WithValues("participant", rp.Identity())
 			if !r.subscribe.Load() {
+				log.Debugw("skipping participant join event - subscribed flag not set")
 				return // will subscribe later
 			}
 			r.participantJoin(rp)
 		},
 		ParticipantCallback: lksdk.ParticipantCallback{
-			OnTrackPublished: func(publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+			OnTrackPublished: func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				log := r.log.WithValues("participant", rp.Identity(), "track", pub.SID(), "trackName", pub.Name())
 				if !r.subscribe.Load() {
+					log.Debugw("skipping track publish event - subscribed flag not set")
 					return // will subscribe later
 				}
-				r.subscribeTo(publication, rp)
+				r.subscribeTo(pub, rp)
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				log := r.log.WithValues("participant", rp.Identity(), "track", track.ID(), "trackName", pub.Name())
 				if !r.ready.Load() {
-					r.log.Warnw("ignoring track, room not ready", nil, "trackID", pub.SID())
+					log.Warnw("ignoring track, room not ready", nil)
 					return
 				}
+				log.Infow("mixing track")
 
 				go func() {
 					mTrack := r.NewTrack()
 					defer mTrack.Close()
 
-					odec, err := opus.Decode(mTrack, channels, r.log)
+					odec, err := opus.Decode(mTrack, channels, log)
 					if err != nil {
-						r.log.Errorw("cannot create opus decoder", err, "trackID", pub.SID())
+						log.Errorw("cannot create opus decoder", err)
 						return
 					}
 					defer odec.Close()
@@ -165,7 +177,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
 					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
-						logger.Infow("room track rtp handler returned with failure", "error", err)
+						log.Infow("room track rtp handler returned with failure", "error", err)
 					}
 				}()
 			},
@@ -236,7 +248,9 @@ func (r *Room) Subscribe() {
 		return
 	}
 	r.subscribe.Store(true)
-	for _, rp := range r.room.GetRemoteParticipants() {
+	list := r.room.GetRemoteParticipants()
+	r.log.Debugw("subscribing to existing room participants", "participants", len(list))
+	for _, rp := range list {
 		r.participantJoin(rp)
 		for _, pub := range rp.TrackPublications() {
 			if remotePub, ok := pub.(*lksdk.RemoteTrackPublication); ok {
