@@ -263,6 +263,7 @@ func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest)
 		TrunkId:             req.SipTrunkId,
 		RoomName:            req.RoomName,
 		ParticipantIdentity: req.ParticipantIdentity,
+		CallDirection:       livekit.SIPCallDirection_SCD_OUTBOUND,
 		ToUri:               toUri.ToSIPUri(),
 		FromUri:             fromiUri.ToSIPUri(),
 		CreatedAt:           time.Now().UnixNano(),

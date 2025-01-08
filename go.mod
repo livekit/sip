@@ -1,5 +1,7 @@
 module github.com/livekit/sip
 
+replace github.com/livekit/protocol => ../protocol
+
 go 1.23
 
 toolchain go1.23.1
