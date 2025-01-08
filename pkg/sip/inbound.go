@@ -173,11 +173,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 	log.Infow("processing invite")
 
 	callInfo := &livekit.SIPCallInfo{
-		CallId:     string(cc.ID()),
-		FromUri:    CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
-		ToUri:      CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
-		CallStatus: livekit.SIPCallStatus_SCS_CALL_INCOMING,
-		CreatedAt:  time.Now().UnixNano(),
+		CallId:        string(cc.ID()),
+		FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
+		ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
+		CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
+		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
+		CreatedAt:     time.Now().UnixNano(),
 	}
 
 	if err := cc.ValidateInvite(); err != nil {
