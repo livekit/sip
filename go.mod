@@ -1,7 +1,5 @@
 module github.com/livekit/sip
 
-replace github.com/livekit/protocol => ../protocol
-
 go 1.23
 
 toolchain go1.23.1
@@ -14,7 +12,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
-	github.com/livekit/protocol v1.30.1-0.20241227014403-69cf309a1f75
+	github.com/livekit/protocol v1.30.1-0.20250108225018-c533a46256c2
 	github.com/livekit/psrpc v0.6.1-0.20241018124827-1efff3d113a8
 	github.com/livekit/server-sdk-go/v2 v2.4.2-0.20250108162600-c551c7c10e15
 	github.com/livekit/sipgo v0.13.2-0.20241209123643-27500ef99c39
