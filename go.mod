@@ -14,7 +14,7 @@ require (
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
 	github.com/livekit/protocol v1.30.1-0.20250108225018-c533a46256c2
 	github.com/livekit/psrpc v0.6.1-0.20241018124827-1efff3d113a8
-	github.com/livekit/server-sdk-go/v2 v2.4.2-0.20250108162600-c551c7c10e15
+	github.com/livekit/server-sdk-go/v2 v2.4.2-0.20250110074101-30b57947c1c4
 	github.com/livekit/sipgo v0.13.2-0.20241209123643-27500ef99c39
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.10.0
@@ -29,7 +29,7 @@ require (
 	github.com/urfave/cli/v2 v2.27.2
 	github.com/zaf/resample v1.5.0
 	golang.org/x/exp v0.0.0-20241217172543-b2144cdd0a67
-	google.golang.org/protobuf v1.36.1
+	google.golang.org/protobuf v1.36.2
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
