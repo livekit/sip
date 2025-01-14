@@ -45,15 +45,17 @@ type ParticipantInfo struct {
 
 type Room struct {
 	log        logger.Logger
+	roomLog    logger.Logger // deferred logger
 	room       *lksdk.Room
 	mix        *mixer.Mixer
 	out        *media.SwitchWriter
 	outDtmf    atomic.Pointer[dtmf.Writer]
 	p          ParticipantInfo
-	ready      atomic.Bool
+	ready      core.Fuse
 	subscribe  atomic.Bool
 	subscribed core.Fuse
 	stopped    core.Fuse
+	closed     core.Fuse
 }
 
 type ParticipantConfig struct {
@@ -75,6 +77,21 @@ type RoomConfig struct {
 func NewRoom(log logger.Logger) *Room {
 	r := &Room{log: log, out: media.NewSwitchWriter(RoomSampleRate)}
 	r.mix = mixer.NewMixer(r.out, rtp.DefFrameDur)
+
+	roomLog, resolve := log.WithDeferredValues()
+	r.roomLog = roomLog
+
+	go func() {
+		select {
+		case <-r.ready.Watch():
+			resolve("room", r.room.Name(), "roomID", r.room.SID())
+		case <-r.stopped.Watch():
+			resolve()
+		case <-r.closed.Watch():
+			resolve()
+		}
+	}()
+
 	return r
 }
 
@@ -100,7 +117,7 @@ func (r *Room) Room() *lksdk.Room {
 }
 
 func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
-	log := r.log.WithValues("participant", rp.Identity())
+	log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID())
 	log.Debugw("participant joined")
 	switch rp.Kind() {
 	case lksdk.ParticipantSIP:
@@ -112,8 +129,13 @@ func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
 	}
 }
 
+func (r *Room) participantLeft(rp *lksdk.RemoteParticipant) {
+	log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID())
+	log.Debugw("participant left")
+}
+
 func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	log := r.log.WithValues("participant", rp.Identity(), "track", pub.SID(), "trackName", pub.Name())
+	log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
 	if pub.Kind() != lksdk.TrackKindAudio {
 		log.Debugw("skipping non-audio track")
 		return
@@ -138,16 +160,19 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	roomCallback := &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
-			log := r.log.WithValues("participant", rp.Identity())
+			log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID())
 			if !r.subscribe.Load() {
 				log.Debugw("skipping participant join event - subscribed flag not set")
 				return // will subscribe later
 			}
 			r.participantJoin(rp)
 		},
+		OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
+			r.participantLeft(rp)
+		},
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				log := r.log.WithValues("participant", rp.Identity(), "track", pub.SID(), "trackName", pub.Name())
+				log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
 				if !r.subscribe.Load() {
 					log.Debugw("skipping track publish event - subscribed flag not set")
 					return // will subscribe later
@@ -155,8 +180,8 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 				r.subscribeTo(pub, rp)
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				log := r.log.WithValues("participant", rp.Identity(), "track", track.ID(), "trackName", pub.Name())
-				if !r.ready.Load() {
+				log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
+				if !r.ready.IsBroken() {
 					log.Warnw("ignoring track, room not ready", nil)
 					return
 				}
@@ -236,7 +261,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
 	room.LocalParticipant.SetAttributes(partConf.Attributes)
-	r.ready.Store(true)
+	r.ready.Break()
 	r.subscribe.Store(false) // already false, but keep for visibility
 
 	// Not subscribing to any tracks just yet!
@@ -316,7 +341,8 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 	if r == nil {
 		return nil
 	}
-	r.ready.Store(false)
+
+	r.closed.Break()
 	r.subscribe.Store(false)
 	err := r.CloseOutput()
 	r.SetDTMFOutput(nil)
@@ -358,7 +384,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (media.WriteCloser[media.PCM1
 }
 
 func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {
-	if r == nil || !r.ready.Load() {
+	if r == nil || !r.ready.IsBroken() || r.closed.IsBroken() {
 		return nil
 	}
 	return r.room.LocalParticipant.PublishDataPacket(data, opts...)
