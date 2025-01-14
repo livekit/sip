@@ -44,19 +44,18 @@ type ParticipantInfo struct {
 }
 
 type Room struct {
-	log            logger.Logger
-	roomLog        logger.Logger // deferred logger
-	roomLogResolve func()
-	room           *lksdk.Room
-	mix            *mixer.Mixer
-	out            *media.SwitchWriter
-	outDtmf        atomic.Pointer[dtmf.Writer]
-	p              ParticipantInfo
-	ready          core.Fuse
-	subscribe      atomic.Bool
-	subscribed     core.Fuse
-	stopped        core.Fuse
-	closed         core.Fuse
+	log        logger.Logger
+	roomLog    logger.Logger // deferred logger
+	room       *lksdk.Room
+	mix        *mixer.Mixer
+	out        *media.SwitchWriter
+	outDtmf    atomic.Pointer[dtmf.Writer]
+	p          ParticipantInfo
+	ready      core.Fuse
+	subscribe  atomic.Bool
+	subscribed core.Fuse
+	stopped    core.Fuse
+	closed     core.Fuse
 }
 
 type ParticipantConfig struct {
