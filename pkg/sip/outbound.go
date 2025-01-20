@@ -729,6 +729,13 @@ authLoop:
 	return c.inviteOk.Body(), nil
 }
 
+func (c *sipOutbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
+	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.drop() // mark as closed
+}
+
 func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "sipOutbound.AckInviteOK")
 	defer span.End()

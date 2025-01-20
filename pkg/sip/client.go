@@ -289,10 +289,15 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	call := c.byRemote[tag]
 	c.cmu.Unlock()
 	if call == nil {
+		if tag != "" {
+			c.log.Infow("BYE for non-existent call", "sipTag", tag)
+		}
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
 		return false
 	}
 	call.log.Infow("BYE")
 	go func(call *outboundCall) {
+		call.cc.AcceptBye(req, tx)
 		call.CloseWithReason(CallHangup, "bye", livekit.DisconnectReason_CLIENT_INITIATED)
 	}(call)
 	return true
