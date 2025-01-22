@@ -3,8 +3,8 @@ services:
     image: redis
     volumes:
       - redis_data:/data
-    expose:
-      - 6379
+    ports:
+      - 6379:6379
     # The following line might be uncommented to run on MacOS
     # for testing and development purposes only.
     # network_mode: host
@@ -12,6 +12,9 @@ services:
     image: livekit/livekit-server
     command: --dev --redis-host localhost:6379
     network_mode: host
+    depends_on:
+        redis:
+            condition: service_started
   sip:
     image: livekit/sip
     network_mode: host
