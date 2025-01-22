@@ -86,7 +86,7 @@ func NewMonitor(conf *config.Config) (*Monitor, error) {
 		maxUtilization: conf.MaxCpuUtilization,
 	}
 	cpu, err := hwstats.NewCPUStats(func(idle float64) {
-		if m.cpu != nil {
+		if m.started.IsBroken() {
 			m.cpuLoad.Set(1 - idle/m.cpu.NumCPU())
 		}
 	})
