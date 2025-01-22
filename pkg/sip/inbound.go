@@ -838,6 +838,9 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status Cal
 
 func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample) {
 	t := c.lkRoom.NewTrack()
+	if t == nil {
+		return // closed
+	}
 	defer t.Close()
 
 	sampleRate := res.SampleRate

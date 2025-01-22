@@ -157,12 +157,20 @@ func (m *Mixer) start() {
 }
 
 func (m *Mixer) Stop() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.stopped.Break()
 }
 
 func (m *Mixer) NewInput() *Input {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.stopped.IsBroken() {
+		return nil
+	}
 
 	inp := &Input{
 		m:          m,
@@ -222,6 +230,9 @@ func (i *Input) SampleRate() int {
 }
 
 func (i *Input) Close() error {
+	if i == nil {
+		return nil
+	}
 	i.m.RemoveInput(i)
 	return nil
 }

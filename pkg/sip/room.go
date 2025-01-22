@@ -189,6 +189,9 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 				go func() {
 					mTrack := r.NewTrack()
+					if mTrack == nil {
+						return // closed
+					}
 					defer mTrack.Close()
 
 					odec, err := opus.Decode(mTrack, channels, log)
@@ -352,7 +355,6 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 	}
 	if r.mix != nil {
 		r.mix.Stop()
-		r.mix = nil
 	}
 	return err
 }
@@ -391,5 +393,8 @@ func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) 
 }
 
 func (r *Room) NewTrack() *mixer.Input {
+	if r == nil {
+		return nil
+	}
 	return r.mix.NewInput()
 }
