@@ -514,18 +514,20 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		go func() {
 			aw := c.media.GetAudioWriter()
 
-			tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
-			aw.Close()
+			err := tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				c.log.Infow("cannot play dial tone", "error", err)
+			}
 		}()
 	}
 
 	err = c.cc.transferCall(ctx, transferTo, headers)
 	if err != nil {
-		c.log.Infow("outound call failed to transfer", "error", err, "transferTo", transferTo)
+		c.log.Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
 	}
 
-	c.log.Infow("outbound call tranferred", "transferTo", transferTo)
+	c.log.Infow("outbound call transferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() { c.CloseWithReason(CallHangup, "call transferred", livekit.DisconnectReason_CLIENT_INITIATED) })
