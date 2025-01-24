@@ -890,8 +890,10 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		go func() {
 			aw := c.media.GetAudioWriter()
 
-			tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
-			aw.Close()
+			err := tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				c.log.Infow("cannot play dial tone", "error", err)
+			}
 		}()
 	}
 
@@ -901,7 +903,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		return err
 	}
 
-	c.log.Infow("inbound call tranferred", "transferTo", transferTo)
+	c.log.Infow("inbound call transferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() { c.Close() })
