@@ -34,7 +34,7 @@ To accept inbound calls, the workflow goes like this:
 * SIP service receives a call
 * SIP service connects to the LiveKit room and SIP caller is a participant
 
-See [SIP Quickstart](https://docs.livekit.io/sip/quickstart/) for a full guide.
+See [SIP Quickstart](https://docs.livekit.io/sip/quickstarts/configuring-sip-trunk/) for a full guide.
 
 ### Service Architecture
 
