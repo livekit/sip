@@ -31,10 +31,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: |
+            ~/.cache/go-build
             ~/go/pkg/mod
-            ~/go/bin
-            ~/bin/protoc
-            ~/.cache
           key: sip-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             sip-
