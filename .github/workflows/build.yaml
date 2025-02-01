@@ -37,7 +37,7 @@ jobs:
             ~/.cache
           key: sip-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-sip-
+            sip-
 
       - name: Build docker image
         run: docker build -t sip -f ./build/sip/Dockerfile .
