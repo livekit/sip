@@ -28,14 +28,5 @@ jobs:
         with:
           lfs: true
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: sip-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            sip-
-
       - name: Build docker image
         run: docker build -t sip -f ./build/sip/Dockerfile .
