@@ -104,18 +104,6 @@ func statusName(status int) string {
 	return fmt.Sprintf("status-%d", status)
 }
 
-type ErrorStatus struct {
-	StatusCode int
-	Message    string
-}
-
-func (e *ErrorStatus) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("sip status: %d: %s", e.StatusCode, e.Message)
-	}
-	return fmt.Sprintf("sip status: %d", e.StatusCode)
-}
-
 type setHeadersFunc func(headers map[string]string) map[string]string
 
 type Signaling interface {

@@ -95,6 +95,24 @@ func (lk *LiveKit) CreateSIPParticipant(t TB, req *livekit.CreateSIPParticipantR
 	return r
 }
 
+func (lk *LiveKit) CreateSIPParticipantSync(t TB, req *livekit.CreateSIPParticipantRequest) (*livekit.SIPParticipantInfo, error) {
+	req.WaitUntilAnswered = true
+	r, err := lk.SIP.CreateSIPParticipant(context.Background(), req)
+	if err == nil {
+		// Make sure we delete outbound SIP participant.
+		// Some tests may reuse LK server, in which case the participant could stay in a room for a long time.
+		t.Cleanup(func() {
+			_, _ = lk.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
+				Room: req.RoomName, Identity: r.ParticipantIdentity,
+			})
+		})
+	}
+	if e := lksdk.SIPStatusFrom(err); e != nil {
+		err = e
+	}
+	return r, err
+}
+
 func (lk *LiveKit) Connect(t TB, room, identity string, cb *lksdk.RoomCallback) *lksdk.Room {
 	r := lksdk.NewRoom(cb)
 	err := r.Join(lk.WsUrl, lksdk.ConnectInfo{

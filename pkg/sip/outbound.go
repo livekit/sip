@@ -142,35 +142,69 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	return call, nil
 }
 
-func (c *outboundCall) Start(ctx context.Context) {
-	ctx = context.WithoutCancel(ctx)
-	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
-	defer cancel()
-	c.mon.CallStart()
-	defer c.mon.CallEnd()
-	ok := c.ConnectSIP(ctx)
-	if !ok {
-		return // ConnectSIP updates the error code on the callInfo
+func (c *outboundCall) updateErrStatus(ctx context.Context) {
+	if c.callInfo.Error != "" {
+		c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+	} else {
+		c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
 	}
-
-	c.callInfo.RoomId = c.lkRoom.room.SID()
-	c.callInfo.StartedAt = time.Now().UnixNano()
-	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 
 	if c.ioClient != nil {
 		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
 			CallInfo: c.callInfo,
 		})
 	}
+}
 
+func (c *outboundCall) Dial(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
+	defer cancel()
+	c.mon.CallStart()
+	defer c.mon.CallEnd()
+
+	defer c.updateErrStatus(ctx)
+
+	err := c.ConnectSIP(ctx)
+	if err != nil {
+		return err // ConnectSIP updates the error code on the callInfo
+	}
+
+	c.callInfo.RoomId = c.lkRoom.room.SID()
+	c.callInfo.StartedAt = time.Now().UnixNano()
+	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
+	if c.ioClient != nil {
+		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+			CallInfo: c.callInfo,
+		})
+	}
+	return nil
+}
+
+func (c *outboundCall) WaitClose(ctx context.Context) error {
+	ctx = context.WithoutCancel(ctx)
+	defer c.updateErrStatus(ctx)
 	select {
 	case <-c.Disconnected():
 		c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
+		return nil
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
-		c.callInfo.Error = psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout").Error()
+		err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
+		c.callInfo.Error = err.Error()
+		return err
 	case <-c.Closed():
+		return nil
 	}
+}
+
+func (c *outboundCall) DialAsync(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		if err := c.Dial(ctx); err != nil {
+			return
+		}
+		_ = c.WaitClose(ctx)
+	}()
 }
 
 func (c *outboundCall) Closed() <-chan struct{} {
@@ -236,7 +270,7 @@ func (c *outboundCall) Participant() ParticipantInfo {
 	return c.lkRoom.Participant()
 }
 
-func (c *outboundCall) ConnectSIP(ctx context.Context) bool {
+func (c *outboundCall) ConnectSIP(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "outboundCall.ConnectSIP")
 	defer span.End()
 	c.mu.Lock()
@@ -244,26 +278,27 @@ func (c *outboundCall) ConnectSIP(ctx context.Context) bool {
 	if err := c.dialSIP(ctx); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
 
+		reportErr := err
 		status, desc, reason := callDropped, "invite-failed", livekit.DisconnectReason_UNKNOWN_REASON
-		var e *ErrorStatus
+		var e *livekit.SIPStatus
 		if errors.As(err, &e) {
-			switch e.StatusCode {
+			switch int(e.Code) {
 			case int(sip.StatusTemporarilyUnavailable):
 				status, desc, reason = callUnavailable, "unavailable", livekit.DisconnectReason_USER_UNAVAILABLE
-				err = nil
+				reportErr = nil
 			case int(sip.StatusBusyHere):
 				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
-				err = nil
+				reportErr = nil
 			}
 		}
-		c.close(err, status, desc, reason)
-		return false
+		c.close(reportErr, status, desc, reason)
+		return err
 	}
 	c.connectMedia()
 	c.started.Break()
 	c.lkRoom.Subscribe()
 	c.log.Infow("Outbound SIP call established")
-	return true
+	return nil
 }
 
 func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) error {
@@ -437,9 +472,9 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	})
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
-		var e *ErrorStatus
+		var e *livekit.SIPStatus
 		if errors.As(err, &e) {
-			c.mon.InviteError(statusName(e.StatusCode))
+			c.mon.InviteError(statusName(int(e.Code)))
 		} else {
 			c.mon.InviteError("other")
 		}
@@ -655,16 +690,16 @@ authLoop:
 		case sip.StatusOK:
 			break authLoop
 		default:
-			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &ErrorStatus{StatusCode: int(resp.StatusCode)})
+			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)})
 		case sip.StatusBadRequest,
 			sip.StatusNotFound,
 			sip.StatusTemporarilyUnavailable,
 			sip.StatusBusyHere:
-			err := &ErrorStatus{StatusCode: int(resp.StatusCode)}
+			err := &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
 			if body := resp.Body(); len(body) != 0 {
-				err.Message = string(body)
+				err.Status = string(body)
 			} else if s := resp.GetHeader("X-Twillio-Error"); s != nil {
-				err.Message = s.Value()
+				err.Status = s.Value()
 			}
 			return nil, fmt.Errorf("INVITE failed: %w", err)
 		case sip.StatusUnauthorized:

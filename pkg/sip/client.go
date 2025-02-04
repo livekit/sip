@@ -225,29 +225,21 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}
 	p := call.Participant()
 	// Start actual SIP call async.
-	go func() {
-		call.Start(context.WithoutCancel(ctx))
 
-		if callInfo.Error != "" {
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
-		} else {
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
-		}
-
-		if ioClient != nil {
-			ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-				CallInfo: callInfo,
-			})
-		}
-
-	}()
-
-	return &rpc.InternalCreateSIPParticipantResponse{
+	info := &rpc.InternalCreateSIPParticipantResponse{
 		ParticipantId:       p.ID,
 		ParticipantIdentity: p.Identity,
 		SipCallId:           req.SipCallId,
-	}, nil
-
+	}
+	if !req.WaitUntilAnswered {
+		call.DialAsync(ctx)
+		return info, nil
+	}
+	if err := call.Dial(ctx); err != nil {
+		return nil, err
+	}
+	go call.WaitClose(context.WithoutCancel(ctx))
+	return info, nil
 }
 
 func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
