@@ -180,31 +180,80 @@ sip --config=config.yaml
 
 #### Running with Docker
 
-To run against a local LiveKit server, a Redis server must be running locally. The SIP service must be instructed to connect to LiveKit server and Redis on the host. The host network is accessible from within the container on IP:
-- host.docker.internal on MacOS and Windows
-- 172.17.0.1 on linux
+You can run the entire stack `livekit-server`, `livekit-sip` and the `redis` server locally with Docker-Compose.
 
-Create a file named `config.yaml` with the following content:
+To bootup all the needed services:
 
-```yaml
-log_level: debug
-api_key: <your-api-key>
-api_secret: <your-api-secret>
-ws_url: ws://host.docker.internal:7880 (or ws://172.17.0.1:7880 on linux)
-redis:
-  address: host.docker.internal:6379 (or 172.17.0.1:6379 on linux)
+```
+$ docker compose up -d
 ```
 
-The container must be run with host networking enabled. SIP by default uses UDP port 1000 -> 2000 and 5060, this large range of ports is hard for docker to handle at this time.
+To verify all is running ok:
 
-Then to run the service:
-
-```shell
-docker run --rm \
-    -e SIP_CONFIG_BODY="`cat config.yaml`" \
-    --network host \
-    livekit/sip
 ```
+$ docker compose ps
+
+NAME                    IMAGE                    COMMAND                  SERVICE   CREATED        STATUS        PORTS
+livekit-sip-livekit-1   livekit/livekit-server   "/livekit-server --d…"   livekit   40 hours ago   Up 40 hours   
+livekit-sip-redis-1     redis                    "docker-entrypoint.s…"   redis     40 hours ago   Up 40 hours   0.0.0.0:6379->6379/tcp, :::6379->6379/tcp
+livekit-sip-sip-1       livekit/sip              "livekit-sip --confi…"   sip       40 hours ago   Up 40 hours
+```
+
+> SIP by default uses UDP port 1000 -> 2000 and 5060, this large range of ports is hard for docker to handle at this time. So the container must be run with host networking enabled.
+
+Now you need create an [inbound trunk](https://docs.livekit.io/sip/trunk-inbound/) and a [dispatch rule](https://docs.livekit.io/sip/dispatch-rule/) for your calls, using the Livekit Documentation. Use the following data to interact with your container:
+
+```
+Livekit API URL: http://127.0.0.1:7880
+api_key: devkey
+api_secret: secret
+```
+
+For example, if you use the Python SDK, initialize the `api.LivekitAPI` method with the following params:
+
+```python
+import asyncio
+from livekit import api
+
+async def main():
+  """
+  @see: https://docs.livekit.io/python/livekit/api/index.html#livekit.api.LiveKitAPI
+  """
+  livekit_api = api.LiveKitAPI(url = "http://127.0.0.1:7880",
+    api_key = "devkey",
+    api_secret = "secret")
+
+  # Put here the code to create your inbound trunk and dispatch rule...
+```
+
+And when code your Python Agent, initialize your app with the following params:
+
+```python
+from livekit.agents import cli, WorkerOptions
+
+if __name__ == "__main__":
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
+            api_key="devkey",
+            api_secret="secret"
+        ),
+    )
+```
+
+When finish, you can stop the container stack:
+
+```
+$ docker compose stop
+```
+
+If you want to delete all the container stack and their resources:
+
+```
+$ docker compose down
+```
+
 
 
 
