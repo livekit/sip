@@ -195,7 +195,7 @@ redis:
   address: host.docker.internal:6379 (or 172.17.0.1:6379 on linux)
 ```
 
-The container must be run with host networking enabled. SIP by default uses UDP port 1000 -> 2000 and 5060, this large range of ports is hard for docker to handle at this time.
+The container must be run with host networking enabled. SIP by default uses UDP port 10000 -> 20000 and 5060, this large range of ports is hard for docker to handle at this time.
 
 Then to run the service:
 
