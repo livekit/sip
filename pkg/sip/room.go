@@ -84,7 +84,11 @@ func NewRoom(log logger.Logger) *Room {
 	go func() {
 		select {
 		case <-r.ready.Watch():
-			resolve("room", r.room.Name(), "roomID", r.room.SID())
+			if r.room != nil {
+				resolve("room", r.room.Name(), "roomID", r.room.SID())
+			} else {
+				resolve()
+			}
 		case <-r.stopped.Watch():
 			resolve()
 		case <-r.closed.Watch():
