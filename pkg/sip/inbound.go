@@ -1169,9 +1169,13 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	for req.RemoveHeader("Via") {
 	}
 	req.PrependHeader(c.generateViaHeader(req))
-	if route := req.RecordRoute(); route != nil {
-		req.RemoveHeader("Record-Route")
-		req.AppendHeader(&sip.RouteHeader{Address: route.Address})
+
+	rrHdrs := req.GetHeaders("Record-Route")
+	for _, hdr := range rrHdrs {
+		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
+	}
+	// Remove all Record-Route headers
+	for req.RemoveHeader("Record-Route") {
 	}
 }
 
