@@ -13,7 +13,7 @@ require (
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
 	github.com/livekit/protocol v1.32.2-0.20250206110518-331f97dbf4f3
-	github.com/livekit/psrpc v0.6.1-0.20250204212339-6de8b05bfcff
+	github.com/livekit/psrpc v0.6.1-0.20250205181828-a0beed2e4126
 	github.com/livekit/server-sdk-go/v2 v2.4.3-0.20250206112024-0e16924f9906
 	github.com/livekit/sipgo v0.13.2-0.20250130142851-36ed3228d934
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
