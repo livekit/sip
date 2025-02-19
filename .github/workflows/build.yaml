@@ -28,14 +28,5 @@ jobs:
         with:
           lfs: true
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/go/bin
-            ~/bin/protoc
-            ~/.cache
-          key: sip
-
       - name: Build docker image
         run: docker build -t sip -f ./build/sip/Dockerfile .
