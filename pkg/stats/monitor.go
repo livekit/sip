@@ -21,6 +21,7 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/livekit/protocol/utils/hwstats"
 
@@ -71,6 +72,7 @@ type Monitor struct {
 	durJoin         *prometheus.HistogramVec
 	cpuLoad         prometheus.Gauge
 	sdpSize         *prometheus.HistogramVec
+	nodeAvailable   prometheus.GaugeFunc
 
 	cpu            *hwstats.CPUStats
 	maxUtilization float64
@@ -112,6 +114,9 @@ func mustRegister[T prometheus.Collector](m *Monitor, c T) T {
 }
 
 func (m *Monitor) Start(conf *config.Config) error {
+	prometheus.Unregister(collectors.NewGoCollector())
+	mustRegister(m, collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll)))
+
 	m.inviteReqRaw = mustRegister(m, prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
@@ -203,6 +208,20 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     sizeBuckets,
 	}, []string{"type"}))
+
+	m.nodeAvailable = mustRegister(m, prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "available",
+		Help:        "Whether node can accept new requests",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, func() float64 {
+		c := m.CanAccept()
+		if c {
+			return 1
+		}
+		return 0
+	}))
 
 	m.cpuLoad = mustRegister(m, prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace:   "livekit",
