@@ -113,6 +113,7 @@ type Handler interface {
 type Server struct {
 	log          logger.Logger
 	mon          *stats.Monitor
+	region       string
 	sipSrv       *sipgo.Server
 	getIOClient  GetIOInfoClient
 	sipListeners []io.Closer
@@ -137,13 +138,14 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Server {
+func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	s := &Server{
 		log:         log,
 		conf:        conf,
+		region:      region,
 		mon:         mon,
 		getIOClient: getIOClient,
 		activeCalls: make(map[RemoteTag]*inboundCall),
