@@ -28,7 +28,11 @@ func init() {
 	media.OnRegister(func(c media.Codec) {
 		name := c.Info().SDPName
 		if name != "" {
-			codecByName[strings.ToLower(name)] = c
+			name = strings.ToLower(name)
+			codecByName[name] = c
+			if strings.Count(name, "/") == 1 {
+				codecByName[name+"/1"] = c
+			}
 		}
 	})
 }
