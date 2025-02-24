@@ -306,7 +306,7 @@ func ParseMedia(d *sdp.MediaDescription) (*MediaDesc, error) {
 				continue
 			}
 			name := sub[1]
-			if name == dtmf.SDPName {
+			if name == dtmf.SDPName || name == dtmf.SDPName+"/1" {
 				out.DTMFType = byte(typ)
 				continue
 			}

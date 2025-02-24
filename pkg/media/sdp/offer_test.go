@@ -214,6 +214,20 @@ func TestSDPMediaAnswer(t *testing.T) {
 				DTMFType: 101,
 			},
 		},
+		{
+			name: "explicit mono channel",
+			offer: sdp.MediaDescription{
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 PCMU/8000/1"},
+					{Key: "rtpmap", Value: "101 telephone-event/8000/1"},
+				},
+			},
+			exp: &AudioConfig{
+				Codec:    getCodec(g711.ULawSDPName),
+				Type:     0,
+				DTMFType: 101,
+			},
+		},
 	}
 	for _, c := range cases {
 		c := c
