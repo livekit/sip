@@ -115,7 +115,7 @@ func mustRegister[T prometheus.Collector](m *Monitor, c T) T {
 
 func (m *Monitor) Start(conf *config.Config) error {
 	prometheus.Unregister(collectors.NewGoCollector())
-	prometheus.MustRegister(collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll)))
+	mustRegister(m, collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll)))
 
 	m.inviteReqRaw = mustRegister(m, prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace:   "livekit",
