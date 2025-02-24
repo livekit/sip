@@ -30,7 +30,6 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/protocol/rpc"
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
@@ -119,33 +118,33 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 }
 
 func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
-	callInfo, ioClient, err := s.processInvite(req, tx)
-
-	if callInfo != nil {
-		if err != nil {
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
-			callInfo.Error = err.Error()
-		} else {
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
-		}
-		callInfo.EndedAt = time.Now().UnixNano()
-
-		if ioClient != nil {
-			ioClient.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{
-				CallInfo: callInfo,
-			})
-		}
-	}
+	// Error processed in defer
+	_ = s.processInvite(req, tx)
 }
 
-func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*livekit.SIPCallInfo, rpc.IOInfoClient, error) {
+func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
+	var state *CallState
 	ctx := context.Background()
+	defer func() {
+		if state == nil {
+			return
+		}
+		state.Update(ctx, func(info *livekit.SIPCallInfo) {
+			if err := retErr; err != nil && info.Error == "" {
+				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+				info.Error = err.Error()
+			} else {
+				info.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+			}
+			info.EndedAtNs = time.Now().UnixNano()
+		})
+	}()
 	s.mon.InviteReqRaw(stats.Inbound)
 	src, err := netip.ParseAddrPort(req.Source())
 	if err != nil {
 		tx.Terminate()
 		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
-		return nil, nil, psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
+		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
 	callID := lksip.NewCallID()
 	log := s.log.WithValues(
@@ -172,22 +171,13 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 	log = LoggerWithHeaders(log, cc)
 	log.Infow("processing invite")
 
-	callInfo := &livekit.SIPCallInfo{
-		CallId:        string(cc.ID()),
-		FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
-		ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
-		CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
-		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
-		CreatedAt:     time.Now().UnixNano(),
-	}
-
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
 			cc.Drop()
 		} else {
 			cc.RespondAndDrop(sip.StatusBadRequest, "Bad request")
 		}
-		return callInfo, nil, psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
+		return psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
 	}
 	ctx, span := tracer.Start(ctx, "Server.onInvite")
 	defer span.End()
@@ -208,34 +198,38 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
-		return callInfo, nil, psrpc.NewError(psrpc.PermissionDenied, errors.Wrap(err, "rejecting inbound, auth check failed"))
+		return psrpc.NewError(psrpc.PermissionDenied, errors.Wrap(err, "rejecting inbound, auth check failed"))
 	}
 	if r.ProjectID != "" {
 		log = log.WithValues("projectID", r.ProjectID)
 	}
 	if r.TrunkID != "" {
 		log = log.WithValues("sipTrunk", r.TrunkID)
-		callInfo.TrunkId = r.TrunkID
 	}
 
-	ioClient := s.getIOClient(r.ProjectID)
-	if ioClient != nil {
-		ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: callInfo,
-		})
-	}
+	state = NewCallState(s.getIOClient(r.ProjectID), &livekit.SIPCallInfo{
+		CallId:        string(cc.ID()),
+		Region:        s.region,
+		FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
+		ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
+		CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
+		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
+		CreatedAtNs:   time.Now().UnixNano(),
+		TrunkId:       r.TrunkID,
+	})
+	state.Flush(ctx)
 
 	switch r.Result {
 	case AuthDrop:
 		cmon.InviteErrorShort("flood")
 		log.Debugw("Dropping inbound flood")
 		cc.Drop()
-		return callInfo, ioClient, psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
+		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case AuthNotFound:
 		cmon.InviteErrorShort("no-rule")
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
-		return callInfo, ioClient, psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
+		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case AuthPassword:
 		if s.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
@@ -244,21 +238,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (*liv
 		if !s.handleInviteAuth(log, req, tx, from.User, r.Username, r.Password) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
-			return callInfo, ioClient, psrpc.NewErrorf(psrpc.PermissionDenied, "invalid crendentials were provided")
+			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid crendentials were provided")
 		}
 		fallthrough
 	case AuthAccept:
 		// ok
 	}
 
-	call = s.newInboundCall(log, cmon, cc, src, callInfo, ioClient, nil)
+	call = s.newInboundCall(log, cmon, cc, src, state, nil)
 	call.joinDur = joinDur
-	err = call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
-	if err != nil {
-		return callInfo, ioClient, err
-	}
-
-	return callInfo, ioClient, nil
+	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 }
 
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
@@ -322,12 +311,11 @@ type inboundCall struct {
 	log         logger.Logger
 	cc          *sipInbound
 	mon         *stats.CallMonitor
-	ioClient    rpc.IOInfoClient
+	state       *CallState
 	extraAttrs  map[string]string
 	attrsToHdr  map[string]string
 	ctx         context.Context
 	cancel      func()
-	callInfo    *livekit.SIPCallInfo
 	src         netip.AddrPort
 	media       *MediaPort
 	dtmf        chan dtmf.Event // buffered
@@ -344,8 +332,7 @@ func (s *Server) newInboundCall(
 	mon *stats.CallMonitor,
 	cc *sipInbound,
 	src netip.AddrPort,
-	callInfo *livekit.SIPCallInfo,
-	ioClient rpc.IOInfoClient,
+	state *CallState,
 	extra map[string]string,
 ) *inboundCall {
 	// Map known headers immediately on join. The rest of the mapping will be available later.
@@ -356,8 +343,7 @@ func (s *Server) newInboundCall(
 		mon:        mon,
 		cc:         cc,
 		src:        src,
-		callInfo:   callInfo,
-		ioClient:   ioClient,
+		state:      state,
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
@@ -399,8 +385,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		c.log = c.log.WithValues("sipRule", disp.DispatchRuleID)
 	}
 
-	c.callInfo.RoomName = disp.Room.RoomName
-	c.callInfo.ParticipantIdentity = disp.Room.Participant.Identity
+	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		info.TrunkId = disp.TrunkID
+		info.DispatchRuleId = disp.DispatchRuleID
+		info.RoomName = disp.Room.RoomName
+		info.ParticipantIdentity = disp.Room.Participant.Identity
+		info.ParticipantAttributes = disp.Room.Participant.Attributes
+	})
 
 	var pinPrompt bool
 	switch disp.Result {
@@ -500,17 +491,17 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		}
 	}
 
-	c.callInfo.RoomId = c.lkRoom.room.SID()
-	c.callInfo.StartedAt = time.Now().UnixNano()
-	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
+	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		info.StartedAtNs = time.Now().UnixNano()
+		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
+		if r := c.lkRoom.Room(); r != nil {
+			info.RoomId = r.SID()
+			info.RoomName = r.Name()
+			info.ParticipantAttributes = r.LocalParticipant.Attributes()
+		}
+	})
 
 	c.started.Break()
-
-	if c.ioClient != nil {
-		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: c.callInfo,
-		})
-	}
 
 	// Wait for the caller to terminate the call.
 	select {
@@ -518,7 +509,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		c.closeWithHangup()
 		return nil
 	case <-c.lkRoom.Closed():
-		c.callInfo.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+			info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+		})
 		c.close(false, callDropped, "removed")
 		return nil
 	case <-c.media.Timeout():
@@ -570,6 +563,9 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	if mconf.Audio.DTMFType != 0 {
 		c.lkRoom.SetDTMFOutput(c.media)
 	}
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.AudioCodec = mconf.Audio.Codec.Info().SDPName
+	})
 	return answerData, nil
 }
 
@@ -645,7 +641,6 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 			return disp, false, nil
 		case <-ctx.Done():
 			c.closeWithHangup()
-			c.callInfo.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
 			return disp, false, nil
 		case <-c.media.Timeout():
 			c.closeWithTimeout()
@@ -738,12 +733,16 @@ func (c *inboundCall) closeWithTimeout() {
 }
 
 func (c *inboundCall) closeWithCancelled() {
-	c.callInfo.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+	})
 	c.close(false, CallHangup, "cancelled")
 }
 
 func (c *inboundCall) closeWithHangup() {
-	c.callInfo.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+	})
 	c.close(false, CallHangup, "hangup")
 }
 

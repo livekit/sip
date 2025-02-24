@@ -29,7 +29,6 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
@@ -63,15 +62,14 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c        *Client
-	log      logger.Logger
-	ioClient rpc.IOInfoClient
-	cc       *sipOutbound
-	media    *MediaPort
-	callInfo *livekit.SIPCallInfo
-	started  core.Fuse
-	stopped  core.Fuse
-	closing  core.Fuse
+	c       *Client
+	log     logger.Logger
+	state   *CallState
+	cc      *sipOutbound
+	media   *MediaPort
+	started core.Fuse
+	stopped core.Fuse
+	closing core.Fuse
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
@@ -80,7 +78,7 @@ type outboundCall struct {
 	sipConf  sipOutboundConfig
 }
 
-func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, callInfo *livekit.SIPCallInfo, ioClient rpc.IOInfoClient) (*outboundCall, error) {
+func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState) (*outboundCall, error) {
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -94,11 +92,10 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf.host = contact.GetHost()
 	}
 	call := &outboundCall{
-		c:        c,
-		log:      log,
-		sipConf:  sipConf,
-		callInfo: callInfo,
-		ioClient: ioClient,
+		c:       c,
+		log:     log,
+		sipConf: sipConf,
+		state:   state,
 	}
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
@@ -142,18 +139,33 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	return call, nil
 }
 
-func (c *outboundCall) updateErrStatus(ctx context.Context) {
-	if c.callInfo.Error != "" {
-		c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
-	} else {
-		c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
-	}
+func (c *outboundCall) ensureClosed(ctx context.Context) {
+	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		if info.Error != "" {
+			info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+		} else {
+			info.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+		}
+		if r := c.lkRoom.Room(); r != nil {
+			if p := r.LocalParticipant; p != nil {
+				info.ParticipantIdentity = p.Identity()
+				info.ParticipantAttributes = p.Attributes()
+			}
+		}
+	})
+}
 
-	if c.ioClient != nil {
-		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: c.callInfo,
-		})
+func (c *outboundCall) setErrStatus(ctx context.Context, err error) {
+	if err == nil {
+		return
 	}
+	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		if info.Error != "" {
+			return
+		}
+		info.Error = err.Error()
+		info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+	})
 }
 
 func (c *outboundCall) Dial(ctx context.Context) error {
@@ -162,27 +174,24 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 
-	defer c.updateErrStatus(ctx)
+	defer c.ensureClosed(ctx)
 
 	err := c.ConnectSIP(ctx)
 	if err != nil {
 		return err // ConnectSIP updates the error code on the callInfo
 	}
 
-	c.callInfo.RoomId = c.lkRoom.room.SID()
-	c.callInfo.StartedAt = time.Now().UnixNano()
-	c.callInfo.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
-	if c.ioClient != nil {
-		c.ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-			CallInfo: c.callInfo,
-		})
-	}
+	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		info.RoomId = c.lkRoom.room.SID()
+		info.StartedAtNs = time.Now().UnixNano()
+		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
+	})
 	return nil
 }
 
 func (c *outboundCall) WaitClose(ctx context.Context) error {
 	ctx = context.WithoutCancel(ctx)
-	defer c.updateErrStatus(ctx)
+	defer c.ensureClosed(ctx)
 	select {
 	case <-c.Disconnected():
 		c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
@@ -190,7 +199,7 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	case <-c.media.Timeout():
 		c.closeWithTimeout()
 		err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
-		c.callInfo.Error = err.Error()
+		c.setErrStatus(ctx, err)
 		return err
 	case <-c.Closed():
 		return nil
@@ -240,11 +249,16 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 		c.setStatus(status)
 		if err != nil {
 			c.log.Warnw("Closing outbound call with error", nil, "reason", description)
-			c.callInfo.Error = err.Error()
 		} else {
 			c.log.Infow("Closing outbound call", "reason", description)
 		}
-		c.callInfo.DisconnectReason = reason
+		c.state.Update(context.Background(), func(info *livekit.SIPCallInfo) {
+			if err != nil && info.Error == "" {
+				info.Error = err.Error()
+				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+			}
+			info.DisconnectReason = reason
+		})
 		c.media.Close()
 		_ = c.lkRoom.CloseOutput()
 
@@ -475,6 +489,9 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		var e *livekit.SIPStatus
 		if errors.As(err, &e) {
 			c.mon.InviteError(statusName(int(e.Code)))
+			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+				info.CallStatusCode = e
+			})
 		} else {
 			c.mon.InviteError("other")
 		}
@@ -517,6 +534,12 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
 		}
 	}
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.AudioCodec = mc.Audio.Codec.Info().SDPName
+		if r := c.lkRoom.Room(); r != nil {
+			info.ParticipantAttributes = r.LocalParticipant.Attributes()
+		}
+	})
 	return nil
 }
 

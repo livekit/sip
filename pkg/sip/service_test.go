@@ -89,7 +89,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
-	s, err := NewService(&config.Config{
+	s, err := NewService("", &config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,

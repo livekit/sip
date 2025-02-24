@@ -39,10 +39,11 @@ import (
 )
 
 type Client struct {
-	conf  *config.Config
-	sconf *ServiceConfig
-	log   logger.Logger
-	mon   *stats.Monitor
+	conf   *config.Config
+	sconf  *ServiceConfig
+	log    logger.Logger
+	region string
+	mon    *stats.Monitor
 
 	sipCli *sipgo.Client
 
@@ -55,13 +56,14 @@ type Client struct {
 	getIOClient GetIOInfoClient
 }
 
-func NewClient(conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
+func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
 		conf:        conf,
 		log:         log,
+		region:      region,
 		mon:         mon,
 		getIOClient: getIOClient,
 		activeCalls: make(map[LocalTag]*outboundCall),
@@ -169,24 +171,20 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
-	ioClient := c.getIOClient(req.ProjectId)
+	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req))
 
-	callInfo := c.createSIPCallInfo(req)
 	defer func() {
-		switch retErr {
-		case nil:
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
-		default:
-			callInfo.CallStatus = livekit.SIPCallStatus_SCS_ERROR
-			callInfo.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
-			callInfo.Error = retErr.Error()
-		}
+		state.Update(ctx, func(info *livekit.SIPCallInfo) {
 
-		if ioClient != nil {
-			ioClient.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
-				CallInfo: callInfo,
-			})
-		}
+			switch retErr {
+			case nil:
+				info.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED
+			default:
+				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+				info.DisconnectReason = livekit.DisconnectReason_UNKNOWN_REASON
+				info.Error = retErr.Error()
+			}
+		})
 	}()
 
 	roomConf := RoomConfig{
@@ -219,7 +217,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		enabledFeatures: req.EnabledFeatures,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, callInfo, ioClient)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state)
 	if err != nil {
 		return nil, err
 	}
@@ -251,14 +249,16 @@ func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest)
 	}
 
 	callInfo := &livekit.SIPCallInfo{
-		CallId:              req.SipCallId,
-		TrunkId:             req.SipTrunkId,
-		RoomName:            req.RoomName,
-		ParticipantIdentity: req.ParticipantIdentity,
-		CallDirection:       livekit.SIPCallDirection_SCD_OUTBOUND,
-		ToUri:               toUri.ToSIPUri(),
-		FromUri:             fromiUri.ToSIPUri(),
-		CreatedAt:           time.Now().UnixNano(),
+		CallId:                req.SipCallId,
+		Region:                c.region,
+		TrunkId:               req.SipTrunkId,
+		RoomName:              req.RoomName,
+		ParticipantIdentity:   req.ParticipantIdentity,
+		ParticipantAttributes: req.ParticipantAttributes,
+		CallDirection:         livekit.SIPCallDirection_SCD_OUTBOUND,
+		ToUri:                 toUri.ToSIPUri(),
+		FromUri:               fromiUri.ToSIPUri(),
+		CreatedAtNs:           time.Now().UnixNano(),
 	}
 
 	return callInfo

@@ -60,7 +60,7 @@ type transferKey struct {
 
 type GetIOInfoClient func(projectID string) rpc.IOInfoClient
 
-func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
+func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -68,8 +68,8 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, getI
 		conf:             conf,
 		log:              log,
 		mon:              mon,
-		cli:              NewClient(conf, log, mon, getIOClient),
-		srv:              NewServer(conf, log, mon, getIOClient),
+		cli:              NewClient(region, conf, log, mon, getIOClient),
+		srv:              NewServer(region, conf, log, mon, getIOClient),
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	var err error
