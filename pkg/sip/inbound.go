@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"github.com/livekit/protocol/rpc"
 	"math"
 	"net/netip"
 	"slices"
@@ -184,7 +185,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	from, to := cc.From(), cc.To()
 
-	cmon := s.mon.NewCall(stats.Inbound, from.Host, cc.To().Host)
+	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
 	cmon.InviteReq()
 	defer cmon.SessionDur()()
 	joinDur := cmon.JoinDur()
@@ -193,7 +194,25 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.Processing()
 	}
 
-	r, err := s.handler.GetAuthCredentials(ctx, callID, from.User, to.User, to.Host, src.Addr())
+	callInfo := &rpc.SIPCall{
+		LkCallId: callID,
+		SourceIp: src.Addr().String(),
+		Address:  ToSIPUri("", cc.Address()),
+		From:     ToSIPUri("", from),
+		To:       ToSIPUri("", to),
+	}
+	for _, h := range cc.RemoteHeaders() {
+		switch h := h.(type) {
+		case *sip.ViaHeader:
+			callInfo.Via = append(callInfo.Via, &livekit.SIPUri{
+				Host:      h.Host,
+				Port:      uint32(h.Port),
+				Transport: SIPTransportFrom(Transport(h.Transport)),
+			})
+		}
+	}
+
+	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
 	if err != nil {
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)
@@ -245,7 +264,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		// ok
 	}
 
-	call = s.newInboundCall(log, cmon, cc, src, state, nil)
+	call = s.newInboundCall(log, cmon, cc, callInfo, state, nil)
 	call.joinDur = joinDur
 	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 }
@@ -316,7 +335,7 @@ type inboundCall struct {
 	attrsToHdr  map[string]string
 	ctx         context.Context
 	cancel      func()
-	src         netip.AddrPort
+	call        *rpc.SIPCall
 	media       *MediaPort
 	dtmf        chan dtmf.Event // buffered
 	lkRoom      *Room           // LiveKit room; only active after correct pin is entered
@@ -331,7 +350,7 @@ func (s *Server) newInboundCall(
 	log logger.Logger,
 	mon *stats.CallMonitor,
 	cc *sipInbound,
-	src netip.AddrPort,
+	call *rpc.SIPCall,
 	state *CallState,
 	extra map[string]string,
 ) *inboundCall {
@@ -342,7 +361,7 @@ func (s *Server) newInboundCall(
 		log:        log,
 		mon:        mon,
 		cc:         cc,
-		src:        src,
+		call:       call,
 		state:      state,
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
@@ -366,14 +385,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
-		TrunkID:    trunkID,
-		ID:         string(c.cc.ID()),
-		FromUser:   c.cc.From().User,
-		ToUser:     c.cc.To().User,
-		ToHost:     c.cc.To().Host,
-		SrcAddress: c.src.Addr(),
-		Pin:        "",
-		NoPin:      false,
+		TrunkID: trunkID,
+		Call:    c.call,
+		Pin:     "",
+		NoPin:   false,
 	})
 	if disp.ProjectID != "" {
 		c.log = c.log.WithValues("projectID", disp.ProjectID)
@@ -659,14 +674,10 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 
 				c.log.Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
 				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
-					TrunkID:    trunkID,
-					ID:         string(c.cc.ID()),
-					FromUser:   c.cc.From().User,
-					ToUser:     c.cc.To().User,
-					ToHost:     c.cc.To().Host,
-					SrcAddress: c.src.Addr(),
-					Pin:        pin,
-					NoPin:      noPin,
+					TrunkID: trunkID,
+					Call:    c.call,
+					Pin:     pin,
+					NoPin:   noPin,
 				})
 				if disp.ProjectID != "" {
 					c.log = c.log.WithValues("projectID", disp.ProjectID)
@@ -1006,6 +1017,13 @@ func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
 	c.stopRinging()
 	c.respond(status, reason)
 	c.drop()
+}
+
+func (c *sipInbound) Address() sip.Uri {
+	if c.invite == nil {
+		return sip.Uri{}
+	}
+	return c.invite.Recipient
 }
 
 func (c *sipInbound) From() sip.Uri {
