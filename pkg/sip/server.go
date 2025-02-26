@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/livekit/protocol/rpc"
 	"io"
 	"log/slog"
 	"net"
@@ -50,14 +51,10 @@ var (
 )
 
 type CallInfo struct {
-	TrunkID    string
-	ID         string
-	FromUser   string
-	ToUser     string
-	ToHost     string
-	SrcAddress netip.Addr
-	Pin        string
-	NoPin      bool
+	TrunkID string
+	Call    *rpc.SIPCall
+	Pin     string
+	NoPin   bool
 }
 
 type AuthResult int
@@ -102,7 +99,7 @@ type CallDispatch struct {
 }
 
 type Handler interface {
-	GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error)
+	GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
 	GetMediaProcessor(features []livekit.SIPFeature) media.PCM16Processor
 
