@@ -2,6 +2,8 @@ module github.com/livekit/sip
 
 go 1.23
 
+replace github.com/livekit/protocol => ../protocol
+
 toolchain go1.23.1
 
 require (

@@ -162,7 +162,7 @@ func (c *Config) InitLogger(values ...interface{}) error {
 	values = append(c.GetLoggerValues(), values...)
 	l := zl.WithValues(values...)
 	logger.SetLogger(l, c.ServiceName)
-	lksdk.SetLogger(medialogutils.NewOverrideLogger())
+	lksdk.SetLogger(medialogutils.NewOverrideLogger(nil))
 
 	return nil
 }

@@ -25,6 +25,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/logger/medialogutils"
 	"github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
@@ -259,7 +260,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 		}
 	}
 	room := lksdk.NewRoom(roomCallback)
-	room.SetLogger(r.log)
+	room.SetLogger(medialogutils.NewOverrideLogger(r.log))
 	err := room.JoinWithToken(rconf.WsUrl, rconf.Token, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return err
