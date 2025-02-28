@@ -118,8 +118,8 @@ func (c *Client) SetHandler(handler Handler) {
 	c.handler = handler
 }
 
-func (c *Client) ContactURI(tr Transport) URI {
-	return getContactURI(c.conf, c.sconf.SignalingIP, tr)
+func (c *Client) ContactURI(tr Transport, user string) URI {
+	return getContactURI(c.conf, c.sconf.SignalingIP, tr, user)
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {

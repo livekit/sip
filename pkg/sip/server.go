@@ -159,8 +159,8 @@ func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
-func (s *Server) ContactURI(tr Transport) URI {
-	return getContactURI(s.conf, s.sconf.SignalingIP, tr)
+func (s *Server) ContactURI(tr Transport, user string) URI {
+	return getContactURI(s.conf, s.sconf.SignalingIP, tr, user)
 }
 
 func (s *Server) startUDP(addr netip.AddrPort) error {

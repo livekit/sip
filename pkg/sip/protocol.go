@@ -141,11 +141,21 @@ func transportPort(c *config.Config, t Transport) int {
 	return c.SIPPort
 }
 
-func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
+func toUserFromReq(req *sip.Request) string {
+	to := req.To()
+	if to == nil {
+		return ""
+	}
+
+	return to.Address.User
+}
+
+func getContactURI(c *config.Config, ip netip.Addr, t Transport, user string) URI {
 	return URI{
 		Host:      c.SIPHostname,
 		Addr:      netip.AddrPortFrom(ip, uint16(transportPort(c, t))),
 		Transport: t,
+		User:      user,
 	}
 }
 
