@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
-	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -171,8 +170,8 @@ func (s *Service) Run() error {
 	}
 }
 
-func (s *Service) GetAuthCredentials(ctx context.Context, callID, from, to, toHost string, srcAddress netip.Addr) (sip.AuthInfo, error) {
-	return GetAuthCredentials(ctx, s.psrpcClient, callID, from, to, toHost, srcAddress)
+func (s *Service) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (sip.AuthInfo, error) {
+	return GetAuthCredentials(ctx, s.psrpcClient, call)
 }
 
 func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.CallDispatch {

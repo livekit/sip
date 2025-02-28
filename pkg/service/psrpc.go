@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"net/netip"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -12,15 +11,18 @@ import (
 	"github.com/livekit/sip/pkg/sip"
 )
 
-func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, callID, from, to, toHost string, srcAddress netip.Addr) (sip.AuthInfo, error) {
+func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call *rpc.SIPCall) (sip.AuthInfo, error) {
 	ctx, span := tracer.Start(ctx, "service.GetAuthCredentials")
 	defer span.End()
 	resp, err := psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
-		SipCallId:  callID,
-		From:       from,
-		To:         to,
-		ToHost:     toHost,
-		SrcAddress: srcAddress.String(),
+		Call: call,
+
+		SipCallId:  call.LkCallId,
+		From:       call.From.User,
+		FromHost:   call.From.Host,
+		To:         call.To.User,
+		ToHost:     call.To.Host,
+		SrcAddress: call.SourceIp,
 	})
 
 	if err != nil {
@@ -52,14 +54,17 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 	ctx, span := tracer.Start(ctx, "service.DispatchCall")
 	defer span.End()
 	resp, err := psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{
-		SipCallId:     info.ID,
-		SipTrunkId:    info.TrunkID,
-		CallingNumber: info.FromUser,
-		CalledNumber:  info.ToUser,
-		CalledHost:    info.ToHost,
-		SrcAddress:    info.SrcAddress.String(),
-		Pin:           info.Pin,
-		NoPin:         info.NoPin,
+		SipTrunkId: info.TrunkID,
+		Call:       info.Call,
+		Pin:        info.Pin,
+		NoPin:      info.NoPin,
+
+		SipCallId:     info.Call.LkCallId,
+		CallingNumber: info.Call.From.User,
+		CallingHost:   info.Call.From.Host,
+		CalledNumber:  info.Call.To.User,
+		CalledHost:    info.Call.To.Host,
+		SrcAddress:    info.Call.SourceIp,
 	})
 
 	if err != nil {

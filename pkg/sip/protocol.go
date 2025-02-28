@@ -25,6 +25,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo/sip"
 
@@ -107,6 +108,7 @@ func statusName(status int) string {
 type setHeadersFunc func(headers map[string]string) map[string]string
 
 type Signaling interface {
+	Address() sip.Uri
 	From() sip.Uri
 	To() sip.Uri
 	ID() LocalTag
@@ -362,4 +364,16 @@ func setCSeq(req *sip.Request, cseq uint32) {
 
 	req.RemoveHeader(h.Name())
 	req.AppendHeader(h)
+}
+
+func ToSIPUri(ip string, u sip.Uri) *livekit.SIPUri {
+	tr, _ := u.UriParams.Get("transport")
+	url := &livekit.SIPUri{
+		User:      u.User,
+		Host:      u.Host,
+		Ip:        ip,
+		Port:      uint32(u.Port),
+		Transport: SIPTransportFrom(Transport(tr)),
+	}
+	return url
 }
