@@ -87,7 +87,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	}
 
 	tr := TransportFrom(sipConf.transport)
-	contact := c.ContactURI(tr)
+	contact := c.ContactURI(tr, sipConf.from)
 	if sipConf.host == "" {
 		sipConf.host = contact.GetHost()
 	}
