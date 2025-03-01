@@ -649,6 +649,15 @@ func (c *sipOutbound) To() sip.Uri {
 	return c.to.Address
 }
 
+func (c *sipOutbound) Address() sip.Uri {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.invite == nil {
+		return sip.Uri{}
+	}
+	return c.invite.Recipient
+}
+
 func (c *sipOutbound) ID() LocalTag {
 	return c.id
 }

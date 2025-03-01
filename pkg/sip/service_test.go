@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"net/netip"
 	"testing"
 	"time"
 
@@ -54,12 +53,12 @@ func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 }
 
 type TestHandler struct {
-	GetAuthCredentialsFunc func(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error)
+	GetAuthCredentialsFunc func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
 }
 
-func (h TestHandler) GetAuthCredentials(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error) {
-	return h.GetAuthCredentialsFunc(ctx, callID, fromUser, toUser, toHost, srcAddress)
+func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+	return h.GetAuthCredentialsFunc(ctx, call)
 }
 
 func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispatch {
@@ -132,9 +131,9 @@ func TestService_AuthFailure(t *testing.T) {
 		expectedToUser   = "bar"
 	)
 	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error) {
-			require.Equal(t, expectedFromUser, fromUser)
-			require.Equal(t, expectedToUser, toUser)
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			require.Equal(t, expectedFromUser, call.From.User)
+			require.Equal(t, expectedToUser, call.To.User)
 			return AuthInfo{}, fmt.Errorf("Auth Failure")
 		},
 	}
@@ -153,9 +152,9 @@ func TestService_AuthDrop(t *testing.T) {
 		expectedToUser   = "bar"
 	)
 	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, callID, fromUser, toUser, toHost string, srcAddress netip.Addr) (AuthInfo, error) {
-			require.Equal(t, expectedFromUser, fromUser)
-			require.Equal(t, expectedToUser, toUser)
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			require.Equal(t, expectedFromUser, call.From.User)
+			require.Equal(t, expectedToUser, call.To.User)
 			return AuthInfo{Result: AuthDrop}, nil
 		},
 	}
