@@ -207,7 +207,9 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer odec.Close()
 
 					var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
-					h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
+					if conf.EnableJitterBuffer {
+						h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
+					}
 					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)

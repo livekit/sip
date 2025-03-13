@@ -59,18 +59,19 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	local, err := config.GetLocalIP()
 	require.NoError(t, err)
 	conf := &config.Config{
-		NodeID:            utils.NewGuid("NS_"),
-		ApiKey:            lk.ApiKey,
-		ApiSecret:         lk.ApiSecret,
-		WsUrl:             lk.WsUrl,
-		Redis:             lk.Redis,
-		SIPPort:           sipPort,
-		SIPPortListen:     sipPort,
-		ListenIP:          local.String(),
-		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
-		UseExternalIP:     false,
-		MaxCpuUtilization: 0.9,
-		Logging:           logger.Config{Level: "debug"},
+		NodeID:             utils.NewGuid("NS_"),
+		ApiKey:             lk.ApiKey,
+		ApiSecret:          lk.ApiSecret,
+		WsUrl:              lk.WsUrl,
+		Redis:              lk.Redis,
+		SIPPort:            sipPort,
+		SIPPortListen:      sipPort,
+		ListenIP:           local.String(),
+		RTPPort:            rtcconfig.PortRange{Start: 20000, End: 20010},
+		UseExternalIP:      false,
+		MaxCpuUtilization:  0.9,
+		Logging:            logger.Config{Level: "debug"},
+		EnableJitterBuffer: true,
 	}
 	_ = conf.InitLogger()
 	log := logger.GetLogger()

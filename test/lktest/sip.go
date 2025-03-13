@@ -340,5 +340,8 @@ Check logs for call:
 	if !params.NoDMTF {
 		t.Log("testing dtmf")
 		CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
+
+		t.Log("retesting audio")
+		CheckAudioForParticipants(t, ctx, pOut, pIn)
 	}
 }

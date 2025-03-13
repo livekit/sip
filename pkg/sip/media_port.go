@@ -43,6 +43,7 @@ type MediaConfig struct {
 	Ports               rtcconfig.PortRange
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
+	EnableJitterBuffer  bool
 }
 
 func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
@@ -52,10 +53,11 @@ func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, conf *MediaConfig, 
 func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPConn, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
 	mediaTimeout := make(chan struct{})
 	p := &MediaPort{
-		log:          log,
-		mon:          mon,
-		externalIP:   conf.IP,
-		mediaTimeout: mediaTimeout,
+		log:           log,
+		mon:           mon,
+		externalIP:    conf.IP,
+		mediaTimeout:  mediaTimeout,
+		jitterEnabled: conf.EnableJitterBuffer,
 		conn: rtp.NewConnWith(conn, &rtp.ConnConfig{
 			MediaTimeoutInitial: conf.MediaTimeoutInitial,
 			MediaTimeout:        conf.MediaTimeout,
@@ -81,6 +83,7 @@ type MediaPort struct {
 	conn             *rtp.Conn
 	mediaTimeout     <-chan struct{}
 	dtmfAudioEnabled bool
+	jitterEnabled    bool
 	closed           atomic.Bool
 
 	mu           sync.Mutex
@@ -236,7 +239,9 @@ func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP -> LK)
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
-	audioHandler = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, audioHandler)
+	if p.jitterEnabled {
+		audioHandler = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, audioHandler)
+	}
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.mon, "", nil))
 	mux.Register(p.conf.Audio.Type, newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler))
