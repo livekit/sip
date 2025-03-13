@@ -1,8 +1,9 @@
-//go:build !darwin
+//go:build darwin
 
 package integration
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -16,7 +17,13 @@ const dockerBridgeIP = "172.17.0.1"
 var Docker *dockertest.Pool
 
 func TestMain(m *testing.M) {
-	pool, err := dockertest.NewPool("")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Could not get user home dir: %s", err)
+	}
+	endpoint := fmt.Sprintf("unix://%s/.docker/run/docker.sock", home)
+
+	pool, err := dockertest.NewPool(endpoint)
 	if err != nil {
 		log.Fatalf("Could not construct pool: %s", err)
 	}
