@@ -71,6 +71,10 @@ func Test() error {
 	return run("go test -v ./pkg/...")
 }
 
+func Integration() error {
+	return run("go test -v ./test/integration/...")
+}
+
 func BuildDocker() error {
 	return mageutil.Run(context.Background(),
 		fmt.Sprintf("docker pull golang:%s", goVersion),

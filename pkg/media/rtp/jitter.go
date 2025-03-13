@@ -17,8 +17,9 @@ package rtp
 import (
 	"time"
 
-	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 	"github.com/pion/rtp"
+
+	"github.com/livekit/server-sdk-go/v2/pkg/jitter"
 )
 
 const (
