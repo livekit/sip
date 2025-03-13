@@ -17,13 +17,14 @@ package sip
 import (
 	"context"
 	"fmt"
-	"github.com/livekit/protocol/rpc"
 	"math"
 	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/livekit/protocol/rpc"
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
@@ -544,6 +545,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,
+		EnableJitterBuffer:  c.s.conf.EnableJitterBuffer,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
