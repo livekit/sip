@@ -230,6 +230,8 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 		req.AppendHeader(sip.NewHeader(k, v))
 	}
 
+	req.SetBody(nil)
+
 	return req
 }
 
