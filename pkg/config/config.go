@@ -91,6 +91,8 @@ type Config struct {
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
 	// Doing so hides our SIP endpoint from (a low effort) port scanners.
 	HideInboundPort bool `yaml:"hide_inbound_port"`
+	// AddRecordRoute forces SIP to add Record-Route headers to the responses.
+	AddRecordRoute bool `yaml:"add_record_route"`
 
 	// AudioDTMF forces SIP to generate audio DTMF tones in addition to digital.
 	AudioDTMF              bool    `yaml:"audio_dtmf"`
