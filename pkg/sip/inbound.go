@@ -548,7 +548,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 		EnableJitterBuffer:  c.s.conf.EnableJitterBuffer,
 	}, RoomSampleRate)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot create media port: %w", err)
 	}
 	c.media = mp
 	c.media.EnableTimeout(false) // enabled once we accept the call
@@ -556,11 +556,11 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 
 	answer, mconf, err := mp.SetOffer(offerData)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot set offer: %w", err)
 	}
 	answerData, err = answer.SDP.Marshal()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cannot marshal sdp: %w", err)
 	}
 	c.mon.SDPSize(len(answerData), false)
 	c.log.Debugw("SDP answer", "sdp", string(answerData))
