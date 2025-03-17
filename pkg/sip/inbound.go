@@ -36,13 +36,13 @@ import (
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/res"
@@ -1047,10 +1047,10 @@ func (c *sipInbound) respond(status sip.StatusCode, reason string) {
 		return
 	}
 
-	resp := sip.NewResponseFromRequest(c.invite, status, reason, nil)
-	resp.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
-
-	_ = c.inviteTx.Respond(resp)
+	r := sip.NewResponseFromRequest(c.invite, status, reason, nil)
+	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	c.addExtraHeaders(r)
+	_ = c.inviteTx.Respond(r)
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -1176,6 +1176,20 @@ func (c *sipInbound) setDestFromVia(r *sip.Response) {
 	}
 }
 
+func (c *sipInbound) addExtraHeaders(r *sip.Response) {
+	if c.s.conf.AddRecordRoute {
+		// Other in-dialog requests should be sent to this instance as well.
+		recordRoute := c.contact.Address.Clone()
+		if recordRoute.UriParams == nil {
+			recordRoute.UriParams = sip.HeaderParams{}
+		}
+		recordRoute.UriParams.Add("lr", "")
+		r.PrependHeader(&sip.RecordRouteHeader{
+			Address: *recordRoute,
+		})
+	}
+}
+
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
 	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
 	defer span.End()
@@ -1188,6 +1202,8 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
 	r.AppendHeader(c.contact)
+
+	c.addExtraHeaders(r)
 
 	c.setDestFromVia(r)
 
