@@ -32,8 +32,11 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 		if s.SignalingIP, err = getPublicIP(); err != nil {
 			return nil, err
 		}
-		if s.SignalingIPLocal, err = getLocalIP(conf.LocalNet); err != nil {
-			return nil, err
+		s.SignalingIPLocal = conf.LocalIP
+		if !s.SignalingIPLocal.IsValid() {
+			if s.SignalingIPLocal, err = getLocalIP(conf.LocalNet); err != nil {
+				return nil, err
+			}
 		}
 	} else if conf.NAT1To1IP != "" {
 		ip, err := netip.ParseAddr(conf.NAT1To1IP)
@@ -43,8 +46,11 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 		s.SignalingIP = ip
 		s.SignalingIPLocal = s.SignalingIP
 	} else {
-		if s.SignalingIP, err = getLocalIP(conf.LocalNet); err != nil {
-			return nil, err
+		s.SignalingIP = conf.LocalIP
+		if !s.SignalingIP.IsValid() {
+			if s.SignalingIP, err = getLocalIP(conf.LocalNet); err != nil {
+				return nil, err
+			}
 		}
 		s.SignalingIPLocal = s.SignalingIP
 	}
@@ -77,18 +83,10 @@ func getPublicIP() (netip.Addr, error) {
 	return netip.ParseAddr(ip.Query)
 }
 
-func getLocalIP(localNet string) (netip.Addr, error) {
+func getLocalIP(mask netip.Prefix) (netip.Addr, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return netip.Addr{}, err
-	}
-	var netw *netip.Prefix
-	if localNet != "" {
-		nw, err := netip.ParsePrefix(localNet)
-		if err != nil {
-			return netip.Addr{}, err
-		}
-		netw = &nw
 	}
 	for _, i := range ifaces {
 		addrs, err := i.Addrs()
@@ -106,7 +104,7 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 				if !ok || ip.IsLoopback() {
 					continue
 				}
-				if netw != nil && !netw.Contains(ip) {
+				if mask.IsValid() && !mask.Contains(ip) {
 					continue
 				}
 				return ip, nil
@@ -118,7 +116,7 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 				if !ok || ip.IsLoopback() {
 					continue
 				}
-				if netw != nil && !netw.Contains(ip) {
+				if mask.IsValid() && !mask.Contains(ip) {
 					continue
 				}
 				return ip, nil
