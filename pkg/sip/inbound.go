@@ -1150,6 +1150,16 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
 	r.AppendHeader(c.contact)
 
+	// Other in-dialog requests should be sent to this instance as well.
+	recordRoute := c.contact.Address.Clone()
+	if recordRoute.UriParams == nil {
+		recordRoute.UriParams = sip.HeaderParams{}
+	}
+	recordRoute.UriParams.Add("lr", "")
+	r.PrependHeader(&sip.RecordRouteHeader{
+		Address: *recordRoute,
+	})
+
 	c.setDestFromVia(r)
 
 	r.AppendHeader(&contentTypeHeaderSDP)
