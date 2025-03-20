@@ -8,7 +8,7 @@ require (
 	github.com/at-wat/ebml-go v0.17.1
 	github.com/frostbyte73/core v0.1.1
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19
-	github.com/icholy/digest v0.1.23
+	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
@@ -20,6 +20,7 @@ require (
 	github.com/ory/dockertest/v3 v3.11.0
 	github.com/pion/interceptor v0.1.37
 	github.com/pion/rtp v1.8.11
+	github.com/pion/rtp/v2 v2.0.0
 	github.com/pion/sdp/v3 v3.0.10
 	github.com/pion/webrtc/v4 v4.0.9
 	github.com/pkg/errors v0.9.1
