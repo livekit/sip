@@ -66,6 +66,7 @@ type Config struct {
 	PProfPort         int                 `yaml:"pprof_port"`
 	SIPPort           int                 `yaml:"sip_port"`        // announced SIP signaling port
 	SIPPortListen     int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
+	SIPClientPort     int                 `yaml:"sip_client_port"`
 	SIPHostname       string              `yaml:"sip_hostname"`
 	TLS               *TLSConfig          `yaml:"tls"`
 	RTPPort           rtcconfig.PortRange `yaml:"rtp_port"`
@@ -73,10 +74,11 @@ type Config struct {
 	ClusterID         string              `yaml:"cluster_id"` // cluster this instance belongs to
 	MaxCpuUtilization float64             `yaml:"max_cpu_utilization"`
 
-	UseExternalIP bool   `yaml:"use_external_ip"`
-	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
-	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
-	ListenIP      string `yaml:"listen_ip"`
+	UseExternalIP bool         `yaml:"use_external_ip"`
+	LocalIP       netip.Addr   `yaml:"local_ip"`  // local IP
+	LocalNet      netip.Prefix `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
+	NAT1To1IP     string       `yaml:"nat_1_to_1_ip"`
+	ListenIP      string       `yaml:"listen_ip"`
 
 	MediaTimeout        time.Duration   `yaml:"media_timeout"`
 	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
