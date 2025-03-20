@@ -1,8 +1,8 @@
 module github.com/livekit/sip
 
-go 1.23
+go 1.24
 
-toolchain go1.23.1
+toolchain go1.24.1
 
 require (
 	github.com/at-wat/ebml-go v0.17.1
