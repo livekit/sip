@@ -32,7 +32,6 @@ var Default = Build
 
 const (
 	imageName = "livekit/sip"
-	goVersion = "1.21.4"
 )
 
 var packages = []string{"pkg-config", "opus", "opusfile"}
@@ -77,15 +76,13 @@ func Integration() error {
 
 func BuildDocker() error {
 	return mageutil.Run(context.Background(),
-		fmt.Sprintf("docker pull golang:%s", goVersion),
-		fmt.Sprintf("docker build -t %s:latest -f build/sip/Dockerfile --build-arg GOVERSION=%s .", imageName, goVersion),
+		fmt.Sprintf("docker build -t %s:latest -f build/sip/Dockerfile .", imageName),
 	)
 }
 
 func BuildDockerLinux() error {
 	return mageutil.Run(context.Background(),
-		fmt.Sprintf("docker pull golang:%s", goVersion),
-		fmt.Sprintf("docker build --platform linux/amd64 -t %s:latest -f build/sip/Dockerfile --build-arg GOVERSION=%s .", imageName, goVersion),
+		fmt.Sprintf("docker build --platform linux/amd64 -t %s:latest -f build/sip/Dockerfile .", imageName),
 	)
 }
 
