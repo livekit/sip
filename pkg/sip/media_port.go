@@ -92,8 +92,8 @@ type MediaPort struct {
 	dtmfOutAudio media.PCM16Writer
 
 	audioOutRTP    *rtp.Stream
-	audioOut       *media.SwitchWriter // SIP PCM -> LK RTP
-	audioIn        *media.SwitchWriter // LK RTP -> SIP PCM
+	audioOut       *media.SwitchWriter // LK PCM -> SIP RTP
+	audioIn        *media.SwitchWriter // SIP RTP -> LK PCM
 	audioInHandler rtp.Handler         // for debug only
 	dtmfIn         atomic.Pointer[func(ev dtmf.Event)]
 }
@@ -213,11 +213,8 @@ func (p *MediaPort) setupOutput() {
 	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", p.conn))
 	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, p.conf.Audio.Codec.Info().RTPClockRate)
 
-	// Encoding pipeline (LK -> SIP)
+	// Encoding pipeline (LK PCM -> SIP RTP)
 	audioOut := p.conf.Audio.Codec.EncodeRTP(p.audioOutRTP)
-	if processor := p.conf.Processor; processor != nil {
-		audioOut = processor(audioOut)
-	}
 
 	if p.conf.Audio.DTMFType != 0 {
 		p.dtmfOutRTP = s.NewStream(p.conf.Audio.DTMFType, dtmf.SampleRate)
@@ -236,8 +233,13 @@ func (p *MediaPort) setupOutput() {
 }
 
 func (p *MediaPort) setupInput() {
-	// Decoding pipeline (SIP -> LK)
-	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
+	// Decoding pipeline (SIP RTP -> LK PCM)
+	var audioIn media.Writer[media.PCM16Sample] = p.audioIn
+	if processor := p.conf.Processor; processor != nil {
+		audioIn = processor(audioIn)
+	}
+
+	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
 	if p.jitterEnabled {
 		audioHandler = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, audioHandler)
