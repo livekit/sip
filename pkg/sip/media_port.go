@@ -145,6 +145,9 @@ func (p *MediaPort) Config() *MediaConf {
 
 // WriteAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
 func (p *MediaPort) WriteAudioTo(w media.PCM16Writer) {
+	if processor := p.conf.Processor; processor != nil {
+		w = processor(w)
+	}
 	if pw := p.audioIn.Swap(w); pw != nil {
 		_ = pw.Close()
 	}
@@ -234,10 +237,6 @@ func (p *MediaPort) setupOutput() {
 
 func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
-	if processor := p.conf.Processor; processor != nil {
-		p.audioIn.Swap(processor(p.audioIn.Get()))
-	}
-
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
 	if p.jitterEnabled {
