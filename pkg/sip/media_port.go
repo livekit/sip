@@ -234,12 +234,11 @@ func (p *MediaPort) setupOutput() {
 
 func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
-	var audioIn media.Writer[media.PCM16Sample] = p.audioIn
 	if processor := p.conf.Processor; processor != nil {
-		audioIn = processor(audioIn)
+		p.audioIn.Swap(processor(p.audioIn.Get()))
 	}
 
-	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioIn, p.conf.Audio.Type)
+	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
 	if p.jitterEnabled {
 		audioHandler = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, audioHandler)
