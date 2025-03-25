@@ -15,6 +15,7 @@
 package sdp
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -29,6 +30,20 @@ import (
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/srtp"
+)
+
+var (
+	ErrNoCommonMedia  = errors.New("common audio codec not found")
+	ErrNoCommonCrypto = errors.New("no common encryption profiles")
+)
+
+type Encryption int
+
+const (
+	EncryptionNone Encryption = iota
+	EncryptionAllow
+	EncryptionRequire
 )
 
 type CodecInfo struct {
@@ -70,11 +85,27 @@ func OfferCodecs() []CodecInfo {
 }
 
 type MediaDesc struct {
-	Codecs   []CodecInfo
-	DTMFType byte // set to 0 if there's no DTMF
+	Codecs         []CodecInfo
+	DTMFType       byte // set to 0 if there's no DTMF
+	CryptoProfiles []srtp.Profile
 }
 
-func OfferMedia(rtpListenerPort int) (MediaDesc, *sdp.MediaDescription) {
+func appendCryptoProfiles(attrs []sdp.Attribute, profiles []srtp.Profile) []sdp.Attribute {
+	var buf []byte
+	for _, p := range profiles {
+		buf = buf[:0]
+		buf = append(buf, p.Key...)
+		buf = append(buf, p.Salt...)
+		skey := base64.StdEncoding.WithPadding(base64.StdPadding).EncodeToString(buf)
+		attrs = append(attrs, sdp.Attribute{
+			Key:   "crypto",
+			Value: fmt.Sprintf("%d %s inline:%s", p.Index, p.Profile, skey),
+		})
+	}
+	return attrs
+}
+
+func OfferMedia(rtpListenerPort int, encrypted Encryption) (MediaDesc, *sdp.MediaDescription, error) {
 	// Static compiler check for frame duration hardcoded below.
 	var _ = [1]struct{}{}[20*time.Millisecond-rtp.DefFrameDur]
 
@@ -98,26 +129,42 @@ func OfferMedia(rtpListenerPort int) (MediaDesc, *sdp.MediaDescription) {
 			Key: "fmtp", Value: fmt.Sprintf("%d 0-16", dtmfType),
 		})
 	}
+	var cryptoProfiles []srtp.Profile
+	if encrypted != EncryptionNone {
+		var err error
+		cryptoProfiles, err = srtp.DefaultProfiles()
+		if err != nil {
+			return MediaDesc{}, nil, err
+		}
+		attrs = appendCryptoProfiles(attrs, cryptoProfiles)
+	}
+
 	attrs = append(attrs, []sdp.Attribute{
 		{Key: "ptime", Value: "20"},
 		{Key: "sendrecv"},
 	}...)
 
+	proto := "AVP"
+	if encrypted != EncryptionNone {
+		proto = "SAVP"
+	}
+
 	return MediaDesc{
-			Codecs:   codecs,
-			DTMFType: dtmfType,
+			Codecs:         codecs,
+			DTMFType:       dtmfType,
+			CryptoProfiles: cryptoProfiles,
 		}, &sdp.MediaDescription{
 			MediaName: sdp.MediaName{
 				Media:   "audio",
 				Port:    sdp.RangedPort{Value: rtpListenerPort},
-				Protos:  []string{"RTP", "AVP"},
+				Protos:  []string{"RTP", proto},
 				Formats: formats,
 			},
 			Attributes: attrs,
-		}
+		}, nil
 }
 
-func AnswerMedia(rtpListenerPort int, audio *AudioConfig) *sdp.MediaDescription {
+func AnswerMedia(rtpListenerPort int, audio *AudioConfig, crypt *srtp.Profile) *sdp.MediaDescription {
 	// Static compiler check for frame duration hardcoded below.
 	var _ = [1]struct{}{}[20*time.Millisecond-rtp.DefFrameDur]
 
@@ -134,6 +181,11 @@ func AnswerMedia(rtpListenerPort int, audio *AudioConfig) *sdp.MediaDescription 
 			{Key: "fmtp", Value: fmt.Sprintf("%d 0-16", audio.DTMFType)},
 		}...)
 	}
+	proto := "AVP"
+	if crypt != nil {
+		proto = "SAVP"
+		attrs = appendCryptoProfiles(attrs, []srtp.Profile{*crypt})
+	}
 	attrs = append(attrs, []sdp.Attribute{
 		{Key: "ptime", Value: "20"},
 		{Key: "sendrecv"},
@@ -142,7 +194,7 @@ func AnswerMedia(rtpListenerPort int, audio *AudioConfig) *sdp.MediaDescription 
 		MediaName: sdp.MediaName{
 			Media:   "audio",
 			Port:    sdp.RangedPort{Value: rtpListenerPort},
-			Protos:  []string{"RTP", "AVP"},
+			Protos:  []string{"RTP", proto},
 			Formats: formats,
 		},
 		Attributes: attrs,
@@ -159,10 +211,13 @@ type Offer Description
 
 type Answer Description
 
-func NewOffer(publicIp netip.Addr, rtpListenerPort int) *Offer {
+func NewOffer(publicIp netip.Addr, rtpListenerPort int, encrypted Encryption) (*Offer, error) {
 	sessId := rand.Uint64() // TODO: do we need to track these?
 
-	m, mediaDesc := OfferMedia(rtpListenerPort)
+	m, mediaDesc, err := OfferMedia(rtpListenerPort, encrypted)
+	if err != nil {
+		return nil, err
+	}
 	offer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
@@ -193,16 +248,34 @@ func NewOffer(publicIp netip.Addr, rtpListenerPort int) *Offer {
 		SDP:       offer,
 		Addr:      netip.AddrPortFrom(publicIp, uint16(rtpListenerPort)),
 		MediaDesc: m,
-	}
+	}, nil
 }
 
-func (d *Offer) Answer(publicIp netip.Addr, rtpListenerPort int) (*Answer, *MediaConfig, error) {
+func (d *Offer) Answer(publicIp netip.Addr, rtpListenerPort int, enc Encryption) (*Answer, *MediaConfig, error) {
 	audio, err := SelectAudio(d.MediaDesc)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	mediaDesc := AnswerMedia(rtpListenerPort, audio)
+	var (
+		sconf *srtp.Config
+		sprof *srtp.Profile
+	)
+	if len(d.CryptoProfiles) != 0 && enc != EncryptionNone {
+		answer, err := srtp.DefaultProfiles()
+		if err != nil {
+			return nil, nil, err
+		}
+		sconf, sprof, err = SelectCrypto(d.CryptoProfiles, answer, true)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if sprof == nil && enc == EncryptionRequire {
+		return nil, nil, ErrNoCommonCrypto
+	}
+
+	mediaDesc := AnswerMedia(rtpListenerPort, audio, sprof)
 	answer := sdp.SessionDescription{
 		Version: 0,
 		Origin: sdp.Origin{
@@ -243,18 +316,30 @@ func (d *Offer) Answer(publicIp netip.Addr, rtpListenerPort int) (*Answer, *Medi
 			Local:  src,
 			Remote: d.Addr,
 			Audio:  *audio,
+			Crypto: sconf,
 		}, nil
 }
 
-func (d *Answer) Apply(offer *Offer) (*MediaConfig, error) {
+func (d *Answer) Apply(offer *Offer, enc Encryption) (*MediaConfig, error) {
 	audio, err := SelectAudio(d.MediaDesc)
 	if err != nil {
 		return nil, err
+	}
+	var sconf *srtp.Config
+	if len(d.CryptoProfiles) != 0 && enc != EncryptionNone {
+		sconf, _, err = SelectCrypto(offer.CryptoProfiles, d.CryptoProfiles, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if sconf == nil && enc == EncryptionRequire {
+		return nil, ErrNoCommonCrypto
 	}
 	return &MediaConfig{
 		Local:  offer.Addr,
 		Remote: d.Addr,
 		Audio:  *audio,
+		Crypto: sconf,
 	}, nil
 }
 
@@ -292,6 +377,42 @@ func ParseAnswer(data []byte) (*Answer, error) {
 	return (*Answer)(d), nil
 }
 
+func parseSRTPProfile(val string) (*srtp.Profile, error) {
+	val = strings.TrimSpace(val)
+	sub := strings.SplitN(val, " ", 3)
+	if len(sub) != 3 {
+		return nil, nil // ignore
+	}
+	sind, prof, skey := sub[0], srtp.ProtectionProfile(sub[1]), sub[2]
+	ind, err := strconv.Atoi(sind)
+	if err != nil {
+		return nil, err
+	}
+	var ok bool
+	skey, ok = strings.CutPrefix(skey, "inline:")
+	if !ok {
+		return nil, nil // ignore
+	}
+	keys, err := base64.StdEncoding.WithPadding(base64.StdPadding).DecodeString(skey)
+	if err != nil {
+		return nil, fmt.Errorf("cannot parse crypto key %q: %v", skey, err)
+	}
+	var salt []byte
+	if sp, err := prof.Parse(); err == nil {
+		keyLen, err := sp.KeyLen()
+		if err != nil {
+			return nil, err
+		}
+		keys, salt = keys[:keyLen], keys[keyLen:]
+	}
+	return &srtp.Profile{
+		Index:   ind,
+		Profile: prof,
+		Key:     keys,
+		Salt:    salt,
+	}, nil
+}
+
 func ParseMedia(d *sdp.MediaDescription) (*MediaDesc, error) {
 	var out MediaDesc
 	for _, m := range d.Attributes {
@@ -315,6 +436,14 @@ func ParseMedia(d *sdp.MediaDescription) (*MediaDesc, error) {
 				Type:  byte(typ),
 				Codec: codec,
 			})
+		case "crypto":
+			p, err := parseSRTPProfile(m.Value)
+			if err != nil {
+				return nil, fmt.Errorf("cannot parse srtp profile %q: %v", m.Value, err)
+			} else if p == nil {
+				continue
+			}
+			out.CryptoProfiles = append(out.CryptoProfiles, *p)
 		}
 	}
 	for _, f := range d.MediaName.Formats {
@@ -335,6 +464,7 @@ type MediaConfig struct {
 	Local  netip.AddrPort
 	Remote netip.AddrPort
 	Audio  AudioConfig
+	Crypto *srtp.Config
 }
 
 type AudioConfig struct {
@@ -361,11 +491,48 @@ func SelectAudio(desc MediaDesc) (*AudioConfig, error) {
 		}
 	}
 	if audioCodec == nil {
-		return nil, fmt.Errorf("common audio codec not found")
+		return nil, ErrNoCommonMedia
 	}
 	return &AudioConfig{
 		Codec:    audioCodec,
 		Type:     audioType,
 		DTMFType: desc.DTMFType,
 	}, nil
+}
+
+func SelectCrypto(offer, answer []srtp.Profile, swap bool) (*srtp.Config, *srtp.Profile, error) {
+	if len(offer) == 0 {
+		return nil, nil, nil
+	}
+	for _, ans := range answer {
+		sp, err := ans.Profile.Parse()
+		if err != nil {
+			continue
+		}
+		i := slices.IndexFunc(offer, func(off srtp.Profile) bool {
+			return off.Profile == ans.Profile
+		})
+		if i >= 0 {
+			off := offer[i]
+			c := &srtp.Config{
+				Keys: srtp.SessionKeys{
+					LocalMasterKey:   off.Key,
+					LocalMasterSalt:  off.Salt,
+					RemoteMasterKey:  ans.Key,
+					RemoteMasterSalt: ans.Salt,
+				},
+				Profile: sp,
+			}
+			if swap {
+				c.Keys.LocalMasterKey, c.Keys.RemoteMasterKey = c.Keys.RemoteMasterKey, c.Keys.LocalMasterKey
+				c.Keys.LocalMasterSalt, c.Keys.RemoteMasterSalt = c.Keys.RemoteMasterSalt, c.Keys.LocalMasterSalt
+			}
+			prof := &off
+			if swap {
+				prof = &ans
+			}
+			return c, prof, nil
+		}
+	}
+	return nil, nil, nil
 }

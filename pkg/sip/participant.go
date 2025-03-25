@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/sipgo/sip"
 )
 
 const (
@@ -80,6 +81,15 @@ func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
 	}
 }
 
+func (v CallStatus) SIPStatus() (sip.StatusCode, string) {
+	switch v {
+	default:
+		return sip.StatusBusyHere, "Rejected"
+	case callMediaFailed:
+		return sip.StatusNotAcceptableHere, "MediaFailed"
+	}
+}
+
 const (
 	callDropped = CallStatus(iota)
 	callFlood
@@ -90,4 +100,5 @@ const (
 	CallHangup
 	callUnavailable
 	callRejected
+	callMediaFailed
 )

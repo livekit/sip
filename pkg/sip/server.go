@@ -96,6 +96,7 @@ type CallDispatch struct {
 	EnabledFeatures     []livekit.SIPFeature
 	RingingTimeout      time.Duration
 	MaxCallDuration     time.Duration
+	MediaEncryption     livekit.SIPMediaEncryption
 }
 
 type Handler interface {
