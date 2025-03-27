@@ -20,7 +20,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"runtime"
 	"sync"
 
 	"github.com/zaf/resample"
@@ -81,9 +80,6 @@ func newResampleWriter(w WriteCloser[PCM16Sample], sampleRate int) WriteCloser[P
 	if err != nil {
 		panic(err)
 	}
-	runtime.AddCleanup(r, func(rr *resample.Resampler) {
-		_ = rr.Close()
-	}, r.r)
 	return r
 }
 
