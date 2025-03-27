@@ -200,10 +200,12 @@ func TestMediaPort(t *testing.T) {
 					require.Equal(t, info.SDPName, m2.Config().Audio.Codec.Info().SDPName)
 
 					var buf1 media.PCM16Sample
-					m1.WriteAudioTo(media.NewPCM16BufferWriter(&buf1, rate))
+					bw1 := media.NewPCM16BufferWriter(&buf1, rate)
+					m1.WriteAudioTo(bw1)
 
 					var buf2 media.PCM16Sample
-					m2.WriteAudioTo(media.NewPCM16BufferWriter(&buf2, rate))
+					bw2 := media.NewPCM16BufferWriter(&buf2, rate)
+					m2.WriteAudioTo(bw2)
 
 					w1 := m1.GetAudioWriter()
 					w2 := m2.GetAudioWriter()
@@ -234,7 +236,7 @@ func TestMediaPort(t *testing.T) {
 						require.Equal(t, expChain, PrintAudioInWriter(m1))
 						require.Equal(t, expChain, PrintAudioInWriter(m2))
 
-						writes = 2 // resampler will buffer a few frames
+						writes += 1 // resampler will buffer a few frames
 						if nativeRate == 8000 {
 							writes += 2 // a few more because of higher resample quality required
 						}
@@ -248,7 +250,12 @@ func TestMediaPort(t *testing.T) {
 						require.NoError(t, err)
 					}
 
-					time.Sleep(time.Second)
+					time.Sleep(time.Second / 4)
+
+					// Cut buffers earlier, otherwise we might get extra samples
+					// that we added to push resampler forward.
+					bw1.Close()
+					bw2.Close()
 
 					m1.Close()
 					m2.Close()

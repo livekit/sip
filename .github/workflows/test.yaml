@@ -37,8 +37,8 @@ jobs:
         with:
           go-version: ">=1.24.1"
 
-      - name: Set up gotestfmt
-        run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@v2.5.0
+      - name: Set up tparse
+        run: go install github.com/mfridman/tparse@v0.17.0
 
       - name: Static Check
         uses: dominikh/staticcheck-action@v1
@@ -50,7 +50,7 @@ jobs:
       - name: Test
         run: |
           set -euo pipefail
-          go test -coverpkg=./... -race -json -v -coverprofile=coverage.out -covermode=atomic ./pkg/... 2>&1 | tee /tmp/gotest.log | gotestfmt
+          go test -coverpkg=./... -race -json -v -coverprofile=coverage.out -covermode=atomic ./pkg/... 2>&1 | tee /tmp/gotest.log | tparse
 
       - name: Pull LiveKit Docker image
         run: |
@@ -60,7 +60,7 @@ jobs:
       - name: Test E2E
         run: |
           set -euo pipefail
-          go test -coverpkg=./... -json -v -coverprofile=coverage2.out -covermode=atomic ./test/integration/... 2>&1 | tee -a /tmp/gotest.log | gotestfmt
+          go test -coverpkg=./... -json -v -coverprofile=coverage2.out -covermode=atomic ./test/integration/... 2>&1 | tee -a /tmp/gotest.log | tparse
 
       - name: Upload test log
         uses: actions/upload-artifact@v4
