@@ -20,7 +20,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -85,8 +87,7 @@ func TestResample(t *testing.T) {
 		Buffer int
 		Bumps  []int
 	}{
-		{
-			Rate: 16000, Skip: 0},
+		{Rate: 16000, Skip: 0},
 		{
 			Rate: 8000, Skip: 2,
 			Buffer: 3,
@@ -173,5 +174,71 @@ func writePCM16sWebm(t testing.TB, path string, rate int, buf []media.PCM16Sampl
 	for _, frame := range buf {
 		err = w.WriteSample(frame)
 		require.NoError(t, err)
+	}
+}
+
+func memstats(pid int) int64 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", pid))
+	if err != nil {
+		panic(err)
+	}
+	fields := strings.Fields(string(data))
+	v, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+func TestResampleLeak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows is not supported for this test")
+	}
+	pid := os.Getpid()
+
+	const (
+		srcFile     = "resample.src.s16le"
+		srcFileWebm = "resample.src.mka"
+		srcRate     = res.SampleRate
+	)
+	srcFrames := res.ReadOggAudioFile(testdata.TestAudioOgg)
+	gotSrc := writePCM16s(t, srcFile, srcFrames)
+	writePCM16sWebm(t, srcFileWebm, srcRate, srcFrames)
+	require.True(t, gotSrc == "c774af95" || gotSrc == "b04a6a1f")
+
+	const (
+		runs           = 300
+		pagesThreshold = 100
+	)
+	startMem := memstats(pid)
+	captureStats := func(run int) {
+		if t.Failed() {
+			return
+		}
+		runtime.GC()
+
+		endMem := memstats(pid)
+		diff := endMem - startMem
+		if diff > pagesThreshold {
+			t.Fatalf("resampler memory leak detected (%d Kb / %d runs)", diff, run)
+		}
+	}
+	defer captureStats(runs)
+
+	for run := range runs {
+		func() {
+			defer captureStats(run + 1)
+			var dstFrames []media.PCM16Sample
+			dst := media.NewPCM16FrameWriter(&dstFrames, 16000)
+			r := media.ResampleWriter(dst, srcRate)
+			// This test the cleanup function, so intentionally avoid Close.
+			//defer r.Close()
+			totalSamples := 0
+			for _, src := range srcFrames {
+				err := r.WriteSample(src)
+				require.NoError(t, err)
+				totalSamples += len(src)
+			}
+		}()
 	}
 }

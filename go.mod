@@ -27,7 +27,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.10.0
 	github.com/urfave/cli/v2 v2.27.2
-	github.com/zaf/resample v1.5.0
 	golang.org/x/exp v0.0.0-20250207012021-f9890c6ad9f3
 	google.golang.org/protobuf v1.36.5
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
