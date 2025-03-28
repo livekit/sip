@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -180,7 +181,7 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte) (*MediaConf, 
 func (p *MediaPort) SetOffer(offerData []byte) (*sdp.Answer, *MediaConf, error) {
 	offer, err := sdp.ParseOffer(offerData)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("cannot parse sdp: %w", err)
 	}
 	answer, mc, err := offer.Answer(p.externalIP, p.Port())
 	if err != nil {

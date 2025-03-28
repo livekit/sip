@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"strings"
@@ -86,11 +87,16 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 		agent = ua
 	}
 
-	var err error
-	c.sipCli, err = sipgo.NewClient(agent,
+	opts := []sipgo.ClientOption{
 		sipgo.WithClientHostname(c.sconf.SignalingIP.String()),
 		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
-	)
+	}
+	if c.conf.SIPClientPort > 0 {
+		opts = append(opts, sipgo.WithClientAddr(fmt.Sprintf("%s:%d", c.sconf.SignalingIP, c.conf.SIPClientPort)))
+	}
+
+	var err error
+	c.sipCli, err = sipgo.NewClient(agent, opts...)
 	if err != nil {
 		return err
 	}
