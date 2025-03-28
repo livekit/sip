@@ -39,7 +39,7 @@ type jitterHandler struct {
 }
 
 func (h *jitterHandler) HandleRTP(p *rtp.Packet) error {
-	h.buf.Push(p)
+	h.buf.Push(p.Clone())
 	var last error
 	for _, p := range h.buf.Pop(false) {
 		if err := h.h.HandleRTP(p); err != nil {
