@@ -538,6 +538,7 @@ func (c *Client) createOffer() ([]byte, error) {
 	return offer.Marshal()
 }
 
+// Sends PCM audio from a webm file
 func (c *Client) SendAudio(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
