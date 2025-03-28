@@ -80,7 +80,7 @@ type Config struct {
 
 	// if different from signaling IP
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
-	MediaNAT1To1IP     string `yaml:"nat_1_to_1_ip"`
+	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
 	MediaTimeout        time.Duration   `yaml:"media_timeout"`
 	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
