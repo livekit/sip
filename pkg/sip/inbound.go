@@ -541,7 +541,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	c.log.Debugw("SDP offer", "sdp", string(offerData))
 
 	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
-		IP:                  c.s.sconf.SignalingIP,
+		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,
@@ -1088,8 +1088,8 @@ func (c *sipInbound) StartRinging() {
 	tx := c.inviteTx
 	cancels := tx.Cancels()
 	go func() {
-		// TODO: check spec for the exact interval
-		ticker := time.NewTicker(time.Second)
+		// minimum one per 60 seconds - for nat hairpin better more often like 15 sec
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
