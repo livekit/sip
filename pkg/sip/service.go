@@ -39,6 +39,7 @@ import (
 type ServiceConfig struct {
 	SignalingIP      netip.Addr
 	SignalingIPLocal netip.Addr
+	MediaIP          netip.Addr
 }
 
 type Service struct {
