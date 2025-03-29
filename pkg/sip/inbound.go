@@ -356,7 +356,7 @@ func (s *Server) newInboundCall(
 	extra map[string]string,
 ) *inboundCall {
 	// Map known headers immediately on join. The rest of the mapping will be available later.
-	extra = HeadersToAttrs(extra, nil, 0, cc)
+	extra = HeadersToAttrs(extra, nil, 0, cc, nil)
 	c := &inboundCall{
 		s:          s,
 		log:        log,
@@ -472,7 +472,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		}
 	}
 	p := &disp.Room.Participant
-	p.Attributes = HeadersToAttrs(p.Attributes, disp.HeadersToAttributes, disp.IncludeHeaders, c.cc)
+	p.Attributes = HeadersToAttrs(p.Attributes, disp.HeadersToAttributes, disp.IncludeHeaders, c.cc, nil)
 	if disp.MaxCallDuration <= 0 || disp.MaxCallDuration > maxCallDuration {
 		disp.MaxCallDuration = maxCallDuration
 	}

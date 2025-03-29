@@ -241,11 +241,13 @@ func LoggerWithHeaders(log logger.Logger, c Signaling) logger.Logger {
 	return log
 }
 
-func HeadersToAttrs(attrs, hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, c Signaling) map[string]string {
+func HeadersToAttrs(attrs, hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, c Signaling, headers Headers) map[string]string {
 	if attrs == nil {
 		attrs = make(map[string]string)
 	}
-	headers := c.RemoteHeaders()
+	if c != nil {
+		headers = c.RemoteHeaders()
+	}
 	// Map all headers, if requested
 	if opts != livekit.SIPHeaderOptions_SIP_NO_HEADERS {
 		for _, h := range headers {
@@ -277,12 +279,14 @@ func HeadersToAttrs(attrs, hdrToAttr map[string]string, opts livekit.SIPHeaderOp
 			attrs[name] = h.Value()
 		}
 	}
-	// Other metadata
-	if tag := c.Tag(); tag != "" {
-		attrs[AttrSIPCallTag] = string(tag)
-	}
-	if cid := c.CallID(); cid != "" {
-		attrs[AttrSIPCallIDFull] = cid
+	if c != nil {
+		// Other metadata
+		if tag := c.Tag(); tag != "" {
+			attrs[AttrSIPCallTag] = string(tag)
+		}
+		if cid := c.CallID(); cid != "" {
+			attrs[AttrSIPCallIDFull] = cid
+		}
 	}
 	return attrs
 }

@@ -397,7 +397,9 @@ func (c *outboundCall) connectMedia() {
 	c.media.HandleDTMF(c.handleDTMF)
 }
 
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState func(code sip.StatusCode)) (*sip.Response, error) {
+type sipRespFunc func(code sip.StatusCode, hdrs Headers)
+
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {
 	cnt := 0
 	for {
 		select {
@@ -411,11 +413,11 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
 		case res := <-tx.Responses():
 			status := res.StatusCode
+			if setState != nil {
+				setState(res.StatusCode, res.Headers())
+			}
 			if status/100 != 1 { // != 1xx
 				return res, nil
-			}
-			if setState != nil {
-				setState(res.StatusCode)
 			}
 			// continue
 			cnt++
@@ -440,6 +442,18 @@ func (c *outboundCall) setStatus(v CallStatus) {
 	r.LocalParticipant.SetAttributes(map[string]string{
 		livekit.AttrSIPCallStatus: attr,
 	})
+}
+
+func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, cc Signaling, hdrs Headers) {
+	extra := HeadersToAttrs(nil, hdrToAttr, opts, cc, hdrs)
+	if c.lkRoom != nil && len(extra) != 0 {
+		room := c.lkRoom.Room()
+		if room != nil {
+			room.LocalParticipant.SetAttributes(extra)
+		} else {
+			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
+		}
+	}
 }
 
 func (c *outboundCall) sipSignal(ctx context.Context) error {
@@ -479,11 +493,15 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
 	ringing := false
-	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode) {
-		if !ringing && code >= sip.StatusRinging {
+	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
+		if code == sip.StatusOK {
+			return // is set separately
+		}
+		if !ringing && code >= sip.StatusRinging && code < sip.StatusOK {
 			ringing = true
 			c.setStatus(CallRinging)
 		}
+		c.setExtraAttrs(nil, 0, nil, hdrs)
 	})
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
@@ -526,15 +544,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	}
 	joinDur()
 
-	extra := HeadersToAttrs(nil, c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc)
-	if c.lkRoom != nil && len(extra) != 0 {
-		room := c.lkRoom.Room()
-		if room != nil {
-			room.LocalParticipant.SetAttributes(extra)
-		} else {
-			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
-		}
-	}
+	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
 		if r := c.lkRoom.Room(); r != nil {
@@ -684,7 +694,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte, setState func(code sip.StatusCode)) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) ([]byte, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.Invite")
 	defer span.End()
 	c.mu.Lock()
@@ -814,7 +824,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState func(code sip.StatusCode)) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, to.Address)
