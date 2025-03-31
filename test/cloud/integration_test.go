@@ -45,7 +45,7 @@ func TestSIP(t *testing.T) {
 	defer cancel()
 	go b.SendSilence(ctx)
 
-	go a.SendAudio("audio-pcm.mkv")
+	go a.SendAudio("audio.mkv")
 
 	time.Sleep(time.Second * 5)
 	_ = a.SendDTMF("2345")
