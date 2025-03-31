@@ -239,9 +239,7 @@ func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
-	if p.jitterEnabled {
-		audioHandler = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, audioHandler)
-	}
+
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.mon, "", nil))
 	mux.Register(p.conf.Audio.Type, newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler))
@@ -258,7 +256,12 @@ func (p *MediaPort) setupInput() {
 			return nil
 		})))
 	}
-	p.conn.OnRTP(mux)
+
+	if p.jitterEnabled {
+		p.conn.OnRTP(rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, mux))
+	} else {
+		p.conn.OnRTP(mux)
+	}
 }
 
 // SetDTMFAudio forces SIP to generate audio dTMF tones in addition to digital signals.
