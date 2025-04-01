@@ -61,17 +61,18 @@ type Config struct {
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
-	HealthPort        int                 `yaml:"health_port"`
-	PrometheusPort    int                 `yaml:"prometheus_port"`
-	PProfPort         int                 `yaml:"pprof_port"`
-	SIPPort           int                 `yaml:"sip_port"`        // announced SIP signaling port
-	SIPPortListen     int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
-	SIPHostname       string              `yaml:"sip_hostname"`
-	TLS               *TLSConfig          `yaml:"tls"`
-	RTPPort           rtcconfig.PortRange `yaml:"rtp_port"`
-	Logging           logger.Config       `yaml:"logging"`
-	ClusterID         string              `yaml:"cluster_id"` // cluster this instance belongs to
-	MaxCpuUtilization float64             `yaml:"max_cpu_utilization"`
+	HealthPort         int                 `yaml:"health_port"`
+	PrometheusPort     int                 `yaml:"prometheus_port"`
+	PProfPort          int                 `yaml:"pprof_port"`
+	SIPPort            int                 `yaml:"sip_port"`        // announced SIP signaling port
+	SIPPortListen      int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
+	SIPHostname        string              `yaml:"sip_hostname"`
+	SIPRingingInterval int                 `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default 1)
+	TLS                *TLSConfig          `yaml:"tls"`
+	RTPPort            rtcconfig.PortRange `yaml:"rtp_port"`
+	Logging            logger.Config       `yaml:"logging"`
+	ClusterID          string              `yaml:"cluster_id"` // cluster this instance belongs to
+	MaxCpuUtilization  float64             `yaml:"max_cpu_utilization"`
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
