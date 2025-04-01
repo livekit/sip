@@ -541,7 +541,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	c.log.Debugw("SDP offer", "sdp", string(offerData))
 
 	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
-		IP:                  c.s.sconf.SignalingIP,
+		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,

@@ -78,6 +78,10 @@ type Config struct {
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 	ListenIP      string `yaml:"listen_ip"`
 
+	// if different from signaling IP
+	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
+	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
+
 	MediaTimeout        time.Duration   `yaml:"media_timeout"`
 	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
 	Codecs              map[string]bool `yaml:"codecs"`
@@ -149,6 +153,10 @@ func (c *Config) Init() error {
 
 	if c.UseExternalIP && c.NAT1To1IP != "" {
 		return fmt.Errorf("use_external_ip and nat_1_to_1_ip can not both be set")
+	}
+
+	if c.MediaUseExternalIP && c.MediaNAT1To1IP != "" {
+		return fmt.Errorf("media_use_external_ip and media_nat_1_to_1_ip can not both be set")
 	}
 
 	return nil
