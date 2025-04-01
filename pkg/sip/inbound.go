@@ -1088,8 +1088,8 @@ func (c *sipInbound) StartRinging() {
 	tx := c.inviteTx
 	cancels := tx.Cancels()
 	go func() {
-		// minimum one per 60 seconds - for nat hairpin better more often like 15 sec
-		ticker := time.NewTicker(15 * time.Second)
+		// TODO: check spec for the exact interval
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
