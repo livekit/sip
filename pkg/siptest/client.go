@@ -37,6 +37,7 @@ import (
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
 
+	"github.com/livekit/sip/pkg/mixer"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -106,7 +107,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
-	cli.audioOut = cli.audioCodec.EncodeRTP(cli.mediaAudio)
+	cli.audioOut = mixer.NewMixer(cli.audioCodec.EncodeRTP(cli.mediaAudio), rtp.DefFrameDur)
 
 	cli.setupRTPReceiver()
 
@@ -174,7 +175,7 @@ type Client struct {
 	media         *rtp.SeqWriter
 	mediaAudio    *rtp.Stream
 	mediaDTMF     *rtp.Stream
-	audioOut      media.PCM16Writer
+	audioOut      *mixer.Mixer
 	sipClient     *sipgo.Client
 	sipServer     *sipgo.Server
 	inviteReq     *sip.Request
@@ -399,7 +400,9 @@ func (c *Client) sendBye() {
 
 func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
-	return dtmf.Write(context.Background(), c.audioOut, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
+	w := c.audioOut.NewInput()
+	defer w.Close()
+	return dtmf.Write(context.Background(), w, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
 }
 
 func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
@@ -538,6 +541,7 @@ func (c *Client) createOffer() ([]byte, error) {
 	return offer.Marshal()
 }
 
+// Sends PCM audio from a webm file
 func (c *Client) SendAudio(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -567,7 +571,9 @@ func (c *Client) SendAudio(path string) error {
 	}
 
 	i := 0
-	w := c.audioOut
+	w := c.audioOut.NewInput()
+	defer w.Close()
+
 	for range time.NewTicker(rtp.DefFrameDur).C {
 		if i >= len(audioFrames) {
 			break
@@ -583,7 +589,8 @@ func (c *Client) SendAudio(path string) error {
 func (c *Client) SendSilence(ctx context.Context) error {
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
 	buf := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
-	wr := c.audioOut
+	wr := c.audioOut.NewInput()
+	defer wr.Close()
 
 	ticker := time.NewTicker(rtp.DefFrameDur)
 	defer ticker.Stop()
@@ -611,7 +618,9 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
 	signal := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
-	wr := c.audioOut
+	wr := c.audioOut.NewInput()
+	defer wr.Close()
+
 	c.log.Info("sending signal", "len", len(signal), "n", n, "sig", val)
 
 	ticker := time.NewTicker(rtp.DefFrameDur)
