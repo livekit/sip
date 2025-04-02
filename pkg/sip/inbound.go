@@ -1088,7 +1088,7 @@ func (c *sipInbound) StartRinging() {
 	tx := c.inviteTx
 	cancels := tx.Cancels()
 	go func() {
-		ticker := time.NewTicker(time.Duration(c.s.conf.SIPRingingInterval) * time.Second)
+		ticker := time.NewTicker(c.s.conf.SIPRingingInterval)
 		defer ticker.Stop()
 		for {
 			select {

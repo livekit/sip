@@ -93,8 +93,8 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if s.conf.SIPHostname != "" {
 		log.Infow("using hostname", "hostname", s.conf.SIPHostname)
 	}
-	if s.conf.SIPRingingInterval < 1 || s.conf.SIPRingingInterval > 60 {
-		s.conf.SIPRingingInterval = 1
+	if s.conf.SIPRingingInterval < 1*time.Second || s.conf.SIPRingingInterval > 60*time.Second {
+		s.conf.SIPRingingInterval = 1 * time.Second
 		log.Infow("ringing interval", "seconds", s.conf.SIPRingingInterval)
 	}
 	return s, nil
