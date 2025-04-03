@@ -1088,8 +1088,7 @@ func (c *sipInbound) StartRinging() {
 	tx := c.inviteTx
 	cancels := tx.Cancels()
 	go func() {
-		// TODO: check spec for the exact interval
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(c.s.conf.SIPRingingInterval)
 		defer ticker.Stop()
 		for {
 			select {
