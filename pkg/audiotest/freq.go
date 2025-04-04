@@ -32,6 +32,7 @@ type Wave struct {
 // GenSignal generates audio signals into dst.
 func GenSignal(dst media.PCM16Sample, waves []Wave) {
 	// Generate a sin wave for each signal. Index 0 fits one full period inside dst.
+	// 生成每个信号的正弦波。索引0适合一个完整的周期。
 	for i := range dst {
 		ifl := float64(i) / float64(len(dst))
 		var v float64

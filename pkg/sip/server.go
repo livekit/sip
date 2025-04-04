@@ -19,13 +19,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/livekit/protocol/rpc"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/livekit/protocol/rpc"
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
@@ -259,7 +260,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled Requ
 	s.sipSrv.OnNotify(s.onNotify)
 	s.sipUnhandled = unhandled
 
-	// Ignore ACKs
+	// Ignore ACKs 忽略 ACK
 	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
 	listenIP := s.conf.ListenIP
 	if listenIP == "" {

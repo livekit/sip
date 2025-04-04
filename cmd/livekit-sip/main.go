@@ -91,7 +91,8 @@ func runService(c *cli.Context) error {
 		return err
 	}
 
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string) rpc.IOInfoClient { return psrpcClient })
+	getIOClient := func(projectID string) rpc.IOInfoClient { return psrpcClient }
+	sipsrv, err := sip.NewService("", conf, mon, log, getIOClient)
 	if err != nil {
 		return err
 	}

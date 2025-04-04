@@ -95,7 +95,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	}
 	if s.conf.SIPRingingInterval < 1*time.Second || s.conf.SIPRingingInterval > 60*time.Second {
 		s.conf.SIPRingingInterval = 1 * time.Second
-		log.Infow("ringing interval", "seconds", s.conf.SIPRingingInterval)
+		log.Infow("ringing interval is out of range, setting to 1 second", "seconds", s.conf.SIPRingingInterval)
 	}
 	return s, nil
 }
@@ -138,10 +138,13 @@ func (s *Service) Start() error {
 		return err
 	}
 	// The UA must be shared between the client and the server.
+	// UA 必须由客户端和服务器共享。
 	// Otherwise, the client will have to listen on a random port, which must then be forwarded.
+	// 否则，客户端必须监听一个随机端口，然后必须转发。
 	//
 	// Routers are smart, they usually keep the UDP "session" open for a few moments, and may allow INVITE handshake
-	// to pass even without forwarding rules on the firewall. ut it will inevitably fail later on follow-up requests like BYE.
+	// to pass even without forwarding rules on the firewall. ut It will inevitably fail later on follow-up requests like BYE.
+	// 路由是聪明的，它们通常会保持UDP "会话" 打开几秒钟，并且可能会在没有防火墙转发规则的情况下允许 INVITE 握手。但是，它会在后续请求（如 BYE）上不可避免地失败。
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(UserAgent),
 	)
@@ -153,6 +156,8 @@ func (s *Service) Start() error {
 	}
 	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
 	// Thus, all unhandled transactions will be checked by the client.
+	// 服务器负责回答所有事务。然而，客户端也可能收到一些事务（例如 BYE）。
+	// 因此，所有未处理的事务都将由客户端检查。
 	if err := s.srv.Start(ua, s.sconf, s.cli.OnRequest); err != nil {
 		return err
 	}
