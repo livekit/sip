@@ -19,8 +19,8 @@ import (
 )
 
 var (
-	ErrNoConfig    = psrpc.NewErrorf(psrpc.InvalidArgument, "missing config")
-	ErrUnavailable = psrpc.NewErrorf(psrpc.Unavailable, "cpu exhausted")
+	ErrNoConfig    = psrpc.NewErrorf(psrpc.InvalidArgument, "missing config") // 缺少配置
+	ErrUnavailable = psrpc.NewErrorf(psrpc.Unavailable, "cpu exhausted")      // 资源不足
 )
 
 func ErrCouldNotParseConfig(err error) psrpc.Error {

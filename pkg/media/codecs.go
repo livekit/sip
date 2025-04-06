@@ -19,15 +19,16 @@ import (
 	"strings"
 )
 
+// CodecInfo 定义了编解码器的基本信息。
 type CodecInfo struct {
-	SDPName      string
-	SampleRate   int
-	RTPClockRate int
-	RTPDefType   byte
-	RTPIsStatic  bool
-	Priority     int
-	Disabled     bool
-	FileExt      string
+	SDPName      string // SDP名称
+	SampleRate   int    // 采样率
+	RTPClockRate int    // RTP时钟速率
+	RTPDefType   byte   // RTP默认类型
+	RTPIsStatic  bool   // RTP是否静态
+	Priority     int    // 优先级
+	Disabled     bool   // 是否禁用
+	FileExt      string // 文件扩展名
 }
 
 type Codec interface {
