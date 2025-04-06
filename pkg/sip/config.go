@@ -25,6 +25,7 @@ import (
 	"github.com/livekit/sip/pkg/config"
 )
 
+// GetServiceConfig 获取服务配置。
 func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 	s := new(ServiceConfig)
 	var err error

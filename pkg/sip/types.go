@@ -26,8 +26,10 @@ import (
 	"github.com/livekit/sipgo/sip"
 )
 
+// Headers 是一个包含sip.Header的切片。
 type Headers []sip.Header
 
+// GetHeader 获取指定名称的SIP头。
 func (h Headers) GetHeader(name string) sip.Header {
 	name = sip.HeaderToLower(name)
 	for _, kv := range h {
@@ -38,6 +40,7 @@ func (h Headers) GetHeader(name string) sip.Header {
 	return nil
 }
 
+// TransportFrom 将livekit.SIPTransport转换为Transport。
 func TransportFrom(t livekit.SIPTransport) Transport {
 	switch t {
 	case livekit.SIPTransport_SIP_TRANSPORT_UDP:
@@ -50,6 +53,7 @@ func TransportFrom(t livekit.SIPTransport) Transport {
 	return ""
 }
 
+// SIPTransportFrom 将Transport转换为livekit.SIPTransport。
 func SIPTransportFrom(t Transport) livekit.SIPTransport {
 	switch t {
 	case TransportUDP:
@@ -63,6 +67,7 @@ func SIPTransportFrom(t Transport) livekit.SIPTransport {
 	return livekit.SIPTransport_SIP_TRANSPORT_AUTO
 }
 
+// Transport 是一个表示传输协议的字符串。
 type Transport string
 
 const (
@@ -71,13 +76,21 @@ const (
 	TransportTLS = Transport("tls")
 )
 
+// URI 是一个表示SIP URI的结构体。
 type URI struct {
-	User      string
-	Host      string
-	Addr      netip.AddrPort
-	Transport Transport
+	User      string         // 用户名
+	Host      string         // 主机名
+	Addr      netip.AddrPort // 地址和端口
+	Transport Transport      // 传输协议
 }
 
+// CreateURIFromUserAndAddress 从用户名和地址创建URI。
+// 参数:
+// - user: 用户名
+// - address: 地址 结合Normalize函数看，address是host:port
+// - transport: 传输协议
+// 返回:
+// - URI: 创建的URI
 func CreateURIFromUserAndAddress(user string, address string, transport Transport) URI {
 	uri := URI{
 		User:      user,
@@ -90,11 +103,15 @@ func CreateURIFromUserAndAddress(user string, address string, transport Transpor
 	return uri
 }
 
+// Normalize 规范化URI。
+// todo u.Addr.Addr() 可能为空
 func (u URI) Normalize() URI {
 	if addr, sport, err := net.SplitHostPort(u.Host); err == nil {
 		if port, err := strconv.Atoi(sport); err == nil {
 			u.Host = addr
-			u.Addr = netip.AddrPortFrom(u.Addr.Addr(), uint16(port))
+			if u.Addr.Addr().IsValid() {
+				u.Addr = netip.AddrPortFrom(u.Addr.Addr(), uint16(port))
+			}
 		}
 	}
 	return u
@@ -108,6 +125,7 @@ func (u URI) GetHost() string {
 	return host
 }
 
+// GetPort 获取URI的端口号。
 func (u URI) GetPort() int {
 	port := int(u.Addr.Port())
 	if port == 0 {
@@ -116,6 +134,7 @@ func (u URI) GetPort() int {
 	return port
 }
 
+// GetPortOrNone 获取URI的端口号，如果端口为5060，则返回0，为何要这么做？
 func (u URI) GetPortOrNone() int {
 	port := u.GetPort()
 	if port == 5060 {
@@ -180,9 +199,14 @@ func (u URI) ToSIPUri() *livekit.SIPUri {
 	return url
 }
 
-type LocalTag string
-type RemoteTag string
+type LocalTag string  // 本地标签
+type RemoteTag string // 远程标签
 
+// getFromTag 从请求中获取远程标签。
+// 参数:
+// - r: 请求
+// 返回:
+// - 远程标签
 func getFromTag(r *sip.Request) (RemoteTag, error) {
 	from := r.From()
 	if from == nil {

@@ -42,6 +42,8 @@ var (
 )
 
 // TODO: Add String method to sipgo.StatusCode
+
+// statusNamesMap 是一个包含SIP状态码及其对应名称的映射。
 var statusNamesMap = map[int]string{
 	100: "Trying",
 	180: "Ringing",
@@ -98,6 +100,7 @@ var statusNamesMap = map[int]string{
 	606: "GlobalNotAcceptable",
 }
 
+// statusName 返回SIP状态码的名称。
 func statusName(status int) string {
 	if name := statusNamesMap[status]; name != "" {
 		return fmt.Sprintf("%d-%s", status, name)
@@ -105,8 +108,10 @@ func statusName(status int) string {
 	return fmt.Sprintf("status-%d", status)
 }
 
+// setHeadersFunc 是一个函数类型，用于设置SIP头。
 type setHeadersFunc func(headers map[string]string) map[string]string
 
+// Signaling 是一个SIP通信接口。
 type Signaling interface {
 	Address() sip.Uri
 	From() sip.Uri
@@ -122,6 +127,7 @@ type Signaling interface {
 	Drop()
 }
 
+// transportFromReq 从请求中获取传输协议。
 func transportFromReq(req *sip.Request) Transport {
 	if to := req.To(); to != nil {
 		if tr, _ := to.Params.Get("transport"); tr != "" {
@@ -134,6 +140,7 @@ func transportFromReq(req *sip.Request) Transport {
 	return ""
 }
 
+// transportPort 返回SIP端口号。
 func transportPort(c *config.Config, t Transport) int {
 	if t == TransportTLS {
 		if tc := c.TLS; tc != nil {
@@ -143,6 +150,7 @@ func transportPort(c *config.Config, t Transport) int {
 	return c.SIPPort
 }
 
+// getContactURI 返回SIP联系URI。
 func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 	return URI{
 		Host:      c.SIPHostname,
@@ -151,6 +159,7 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 	}
 }
 
+// sendAndACK 发送请求并ACK。
 func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
 	tx, err := c.Transaction(req)
 	if err != nil {
@@ -166,7 +175,15 @@ func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
 	}
 }
 
+// NewReferRequest 创建REFER请求（（呼叫转移）。
+// 参数:
+// - inviteRequest: 邀请请求
+// - inviteResponse: 邀请响应
+// - contactHeader: 联系头
+// - referToUrl: REFER目标URL
+// - headers: 头信息
 func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
+	// 创建REFER请求
 	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
@@ -235,6 +252,12 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	return req
 }
 
+// sendRefer 发送REFER请求。
+// 参数:
+// - ctx: 上下文
+// - c: Signaling接口
+// - req: 请求
+// - stop: 停止通道
 func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
@@ -251,13 +274,19 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	switch resp.StatusCode {
 	case sip.StatusOK, 202: // 202 is Accepted
 		return resp, nil
-	case sip.StatusForbidden:
+	case sip.StatusForbidden: // 禁止
 		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
 	default:
 		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code %d", resp.StatusCode)
 	}
 }
 
+// parseNotifyBody 解析NOTIFY请求体。
+// 参数:
+// - body: 请求体
+// 返回:
+// - 状态码
+// - 错误
 func parseNotifyBody(body string) (int, error) {
 	v := strings.Split(body, " ")
 
@@ -266,7 +295,7 @@ func parseNotifyBody(body string) (int, error) {
 	}
 
 	if strings.ToUpper(v[0]) != "SIP/2.0" {
-		return 0, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: wrong prefix or SIP version")
+		return 0, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: wrong prefix or SIP version: %s", v[0])
 	}
 
 	c, err := strconv.Atoi(v[1])
@@ -277,6 +306,14 @@ func parseNotifyBody(body string) (int, error) {
 	return c, nil
 }
 
+// handleNotify 处理NOTIFY请求。
+// 参数:
+// - req: 请求
+// 返回:
+// - 方法
+// - 序列号
+// - 状态码
+// - 错误
 func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, status int, err error) {
 	event := req.GetHeader("Event")
 	if event == nil {

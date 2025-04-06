@@ -108,23 +108,24 @@ type Handler interface {
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
 }
 
+// Server 服务器
 type Server struct {
-	log          logger.Logger
-	mon          *stats.Monitor
-	region       string
-	sipSrv       *sipgo.Server
-	getIOClient  GetIOInfoClient
-	sipListeners []io.Closer
-	sipUnhandled RequestHandler
+	log          logger.Logger   // 日志
+	mon          *stats.Monitor  // 监控
+	region       string          // 区域
+	sipSrv       *sipgo.Server   // SIP服务器
+	getIOClient  GetIOInfoClient // 获取IO信息客户端
+	sipListeners []io.Closer     // 监听器
+	sipUnhandled RequestHandler  // 未处理请求处理程序
 
-	inProgressInvites []*inProgressInvite
+	inProgressInvites []*inProgressInvite // 进行中的邀请
 
-	closing     core.Fuse
-	cmu         sync.RWMutex
-	activeCalls map[RemoteTag]*inboundCall
-	byLocal     map[LocalTag]*inboundCall
+	closing     core.Fuse                  // 关闭
+	cmu         sync.RWMutex               // 互斥锁
+	activeCalls map[RemoteTag]*inboundCall // 活动呼叫
+	byLocal     map[LocalTag]*inboundCall  // 本地呼叫
 
-	handler Handler
+	handler Handler // 处理程序
 	conf    *config.Config
 	sconf   *ServiceConfig
 

@@ -36,31 +36,36 @@ import (
 	"github.com/livekit/sip/version"
 )
 
+// ServiceConfig 服务配置
 type ServiceConfig struct {
 	SignalingIP      netip.Addr
 	SignalingIPLocal netip.Addr
 	MediaIP          netip.Addr
 }
 
+// Service 服务
 type Service struct {
-	conf  *config.Config
-	sconf *ServiceConfig
-	log   logger.Logger
-	mon   *stats.Monitor
-	cli   *Client
-	srv   *Server
+	conf  *config.Config // 配置
+	sconf *ServiceConfig // 服务配置
+	log   logger.Logger  // 日志
+	mon   *stats.Monitor // 监控
+	cli   *Client        // 客户端
+	srv   *Server        // 服务器
 
-	mu               sync.Mutex
-	pendingTransfers map[transferKey]chan struct{}
+	mu               sync.Mutex                    // 互斥锁
+	pendingTransfers map[transferKey]chan struct{} // 待处理转移
 }
 
+// transferKey 转移键
 type transferKey struct {
-	SipCallId  string
-	TransferTo string
+	SipCallId  string // SIP呼叫ID
+	TransferTo string // 转移目标
 }
 
+// GetIOInfoClient 获取IO信息客户端
 type GetIOInfoClient func(projectID string) rpc.IOInfoClient
 
+// NewService 创建服务
 func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
@@ -100,6 +105,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	return s, nil
 }
 
+// ActiveCalls 获取活动客户端和服务器呼叫的数量
 func (s *Service) ActiveCalls() int {
 	s.cli.cmu.Lock()
 	activeClientCalls := len(s.cli.activeCalls)
@@ -112,12 +118,14 @@ func (s *Service) ActiveCalls() int {
 	return activeClientCalls + activeServerCalls
 }
 
+// Stop 停止服务
 func (s *Service) Stop() {
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
 }
 
+// SetHandler 设置处理程序
 func (s *Service) SetHandler(handler Handler) {
 	s.srv.SetHandler(handler)
 	s.cli.SetHandler(handler)

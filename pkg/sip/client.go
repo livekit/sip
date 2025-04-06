@@ -38,24 +38,32 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+// Client 客户端
 type Client struct {
-	conf   *config.Config
-	sconf  *ServiceConfig
-	log    logger.Logger
-	region string
-	mon    *stats.Monitor
+	conf   *config.Config // 配置
+	sconf  *ServiceConfig // 服务配置
+	log    logger.Logger  // 日志
+	region string         // 区域
+	mon    *stats.Monitor // 监控
 
-	sipCli *sipgo.Client
+	sipCli *sipgo.Client // SIP客户端
 
-	closing     core.Fuse
-	cmu         sync.Mutex
-	activeCalls map[LocalTag]*outboundCall
-	byRemote    map[RemoteTag]*outboundCall
+	closing     core.Fuse                   // 关闭
+	cmu         sync.Mutex                  // 互	斥锁
+	activeCalls map[LocalTag]*outboundCall  // 活动呼叫
+	byRemote    map[RemoteTag]*outboundCall // 远程呼叫
 
-	handler     Handler
-	getIOClient GetIOInfoClient
+	handler     Handler         // 处理程序
+	getIOClient GetIOInfoClient // 获取IO信息客户端
 }
 
+// NewClient 创建客户端
+// 参数:
+// - region: 区域
+// - conf: 配置
+// - log: 日志
+// - mon: 监控
+// - getIOClient: 获取IO信息客户端
 func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
 	if log == nil {
 		log = logger.GetLogger()
