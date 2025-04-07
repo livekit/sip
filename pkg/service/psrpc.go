@@ -11,8 +11,9 @@ import (
 	"github.com/livekit/sip/pkg/sip"
 )
 
+// GetAuthCredentials 获取认证凭证
 func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call *rpc.SIPCall) (sip.AuthInfo, error) {
-	ctx, span := tracer.Start(ctx, "service.GetAuthCredentials")
+	ctx, span := tracer.Start(ctx, "service.GetAuthCredentials") // 启动span
 	defer span.End()
 	resp, err := psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
 		Call: call,

@@ -202,6 +202,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	log = LoggerWithHeaders(log, cc)
 	log.Infow("processing invite")
 
+	// 验证邀请 必需的头部：From, To, tag
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
 			cc.Drop()
@@ -213,17 +214,18 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	ctx, span := tracer.Start(ctx, "Server.onInvite")
 	defer span.End()
 
+	// 呼叫监控
 	from, to := cc.From(), cc.To()
-
 	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
-	cmon.InviteReq()
-	defer cmon.SessionDur()()
-	joinDur := cmon.JoinDur()
+	cmon.InviteReq()          // 记录呼叫请求
+	defer cmon.SessionDur()() // 会话持续时间
+	joinDur := cmon.JoinDur() // 加入持续时间
 
 	if !s.conf.HideInboundPort {
-		cc.Processing()
+		cc.Processing() // 处理呼叫
 	}
 
+	// 呼叫信息
 	callInfo := &rpc.SIPCall{
 		LkCallId: callID,
 		SourceIp: src.Addr().String(),
@@ -242,7 +244,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 	}
 
+	// 获取认证凭证
 	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
+	msg, _ = json.MarshalIndent(r, "", "  ")
+	fmt.Println("processInvite.GetAuthCredentials r:", string(msg), "err:", err)
 	if err != nil {
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)
@@ -267,6 +272,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		TrunkId:       r.TrunkID,
 	})
 	state.Flush(ctx)
+
+	msg, _ = json.MarshalIndent(state.info, "", "  ")
+	fmt.Println("processInvite.NewCallState.info:", string(msg))
+	fmt.Println("processInvite.r.Result", r.Result)
 
 	switch r.Result {
 	case AuthDrop:
@@ -411,9 +420,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	defer c.mon.CallEnd()
 	defer c.close(true, callDropped, "other")
 
+	// 发送铃声
 	c.cc.StartRinging()
+
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
+	// 发送初始请求。在最好的情况下，我们会立即得到一个要加入的房间名称。
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
+	// 否则，我们甚至可以了解到这个号码不允许，并拒绝呼叫，或者如果需要的话，请求pin。
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
 		TrunkID: trunkID,
 		Call:    c.call,
@@ -437,6 +450,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		info.ParticipantIdentity = disp.Room.Participant.Identity
 		info.ParticipantAttributes = disp.Room.Participant.Attributes
 	})
+
+	fmt.Println("handleInvite.disp========", disp)
+	fmt.Println("handleInvite.disp.Result========", disp.Result)
 
 	var pinPrompt bool
 	switch disp.Result {
@@ -527,6 +543,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	if !pinPrompt {
 		c.log.Infow("Waiting for track subscription(s)")
 		// For dispatches without pin, we first wait for LK participant to become available,
+		//
 		// and also for at least one track subscription. In the meantime we keep ringing.
 		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
@@ -980,27 +997,31 @@ func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, invit
 	return c
 }
 
+// sipInbound 结构体定义
+// 实现了Signaling接口
 type sipInbound struct {
-	s         *Server
-	id        LocalTag
-	tag       RemoteTag
-	callID    string
-	invite    *sip.Request
-	inviteTx  sip.ServerTransaction
-	contact   *sip.ContactHeader
-	cancelled chan struct{}
-	from      *sip.FromHeader
-	to        *sip.ToHeader
-	referDone chan error
+	s         *Server               // 服务器
+	id        LocalTag              // 本地标签
+	tag       RemoteTag             // 远程标签
+	callID    string                // 呼叫ID
+	invite    *sip.Request          // 邀请请求
+	inviteTx  sip.ServerTransaction // 邀请事务
+	contact   *sip.ContactHeader    // 联系头
+	cancelled chan struct{}         // 取消通道
+	from      *sip.FromHeader       // 从头
+	to        *sip.ToHeader         // 到头
+	referDone chan error            // 参考完成通道
 
-	mu              sync.RWMutex
-	inviteOk        *sip.Response
-	nextRequestCSeq uint32
-	referCseq       uint32
-	ringing         chan struct{}
-	setHeaders      setHeadersFunc
+	mu              sync.RWMutex   // 互斥锁
+	inviteOk        *sip.Response  // 邀请响应
+	nextRequestCSeq uint32         // 下一个请求CSeq
+	referCseq       uint32         // 参考CSeq
+	ringing         chan struct{}  // 铃声通道
+	setHeaders      setHeadersFunc // 设置头函数
 }
 
+// ValidateInvite 验证邀请
+// 必需的头部：From, To, tag
 func (c *sipInbound) ValidateInvite() error {
 	if c.from == nil {
 		return errors.New("no From header")
