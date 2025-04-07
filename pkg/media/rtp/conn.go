@@ -60,11 +60,13 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 	return c
 }
 
+// UDPConn 是一个UDP连接的接口，定义了UDP连接的本地地址、写入、读取和关闭方法
+// 这个接口简化了对UDP连接的抽象，只暴露了系统中最基本的方法
 type UDPConn interface {
-	LocalAddr() net.Addr
-	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
-	ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error)
-	Close() error
+	LocalAddr() net.Addr                                        // 获取本地地址
+	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)        // 写入数据到UDP连接
+	ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error) // 从UDP连接读取数据
+	Close() error                                               // 关闭UDP连接
 }
 
 type Conn struct {
@@ -98,6 +100,7 @@ func (c *Conn) SetDestAddr(addr *net.UDPAddr) {
 }
 
 // Received chan is closed once Conn receives at least one RTP packet.
+// 当Conn接收到至少一个RTP包时，Received chan会被关闭
 func (c *Conn) Received() <-chan struct{} {
 	return c.received
 }

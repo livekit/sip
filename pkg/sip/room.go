@@ -46,7 +46,7 @@ type ParticipantInfo struct {
 
 type Room struct {
 	log        logger.Logger
-	roomLog    logger.Logger // deferred logger
+	roomLog    logger.Logger // deferred logger 延迟日志
 	room       *lksdk.Room
 	mix        *mixer.Mixer
 	out        *media.SwitchWriter

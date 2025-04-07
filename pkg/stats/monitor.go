@@ -273,6 +273,7 @@ func (m *Monitor) IdleCPU() float64 {
 	return m.cpu.GetCPUIdle()
 }
 
+// InviteReqRaw 记录未验证的SIP INVITE请求
 func (m *Monitor) InviteReqRaw(dir CallDir) {
 	m.inviteReqRaw.Inc()
 }

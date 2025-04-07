@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/netip"
@@ -141,14 +142,38 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			info.EndedAtNs = time.Now().UnixNano()
 		})
 	}()
+
+	// 记录未验证的SIP INVITE请求 +1
 	s.mon.InviteReqRaw(stats.Inbound)
+
+	// 测试，打印req的json格式化的内容 样本：
+	// {
+	// 	"SipVersion": "SIP/2.0",
+	// 	"Method": "INVITE",
+	// 	"Recipient": {
+	// 	  "Scheme": "sip",
+	// 	  "Wildcard": false,
+	// 	  "HierarhicalSlashes": false,
+	// 	  "User": "1234",
+	// 	  "Password": "",
+	// 	  "Host": "192.168.50.11",
+	// 	  "Port": 5060,
+	// 	  "UriParams": null,
+	// 	  "Headers": null
+	// 	}
+	//   }
+	msg, _ := json.MarshalIndent(req, "", "  ")
+	fmt.Println("processInvite req:", req.Source())
+	fmt.Println(string(msg))
+
+	// 解析源IP
 	src, err := netip.ParseAddrPort(req.Source())
 	if err != nil {
 		tx.Terminate()
 		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
 		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
-	callID := lksip.NewCallID()
+	callID := lksip.NewCallID() // 生成一个唯一的呼叫ID
 	log := s.log.WithValues(
 		"callID", callID,
 		"fromIP", src.Addr(),
@@ -157,7 +182,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	var call *inboundCall
 
-	tr := transportFromReq(req)
+	tr := transportFromReq(req) // 从req中获取传输协议
+
+	// 测试，打印callID
+	fmt.Println("processInvite callID:", callID, "ContactURI:", s.ContactURI(tr).GetURI())
+
 	cc := s.newInbound(LocalTag(callID), s.ContactURI(tr), req, tx, func(headers map[string]string) map[string]string {
 		c := call
 		if c == nil || len(c.attrsToHdr) == 0 {

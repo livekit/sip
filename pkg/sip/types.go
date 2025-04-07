@@ -315,6 +315,13 @@ func HeadersToAttrs(attrs, hdrToAttr map[string]string, opts livekit.SIPHeaderOp
 	return attrs
 }
 
+// AttrsToHeaders 将属性转换为头。
+// 参数:
+// - attrs: 属性
+// - attrToHdr: 属性到头的映射
+// - headers: 头
+// 返回:
+// - 头
 func AttrsToHeaders(attrs, attrToHdr, headers map[string]string) map[string]string {
 	if len(attrToHdr) == 0 {
 		return headers

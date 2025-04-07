@@ -33,23 +33,38 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+// MediaConf 媒体处理配置
 type MediaConf struct {
-	sdp.MediaConfig
-	Processor media.PCM16Processor
+	sdp.MediaConfig                      // 媒体配置
+	Processor       media.PCM16Processor // 处理器
 }
 
+// MediaConfig 媒体配置
 type MediaConfig struct {
-	IP                  netip.Addr
-	Ports               rtcconfig.PortRange
-	MediaTimeoutInitial time.Duration
-	MediaTimeout        time.Duration
-	EnableJitterBuffer  bool
+	IP                  netip.Addr          // IP地址
+	Ports               rtcconfig.PortRange // 端口范围
+	MediaTimeoutInitial time.Duration       // 媒体超时初始时间
+	MediaTimeout        time.Duration       // 媒体超时时间
+	EnableJitterBuffer  bool                // 启用抖动缓冲区
 }
 
+// NewMediaPort 创建媒体端口
+// 参数:
+// - log: 日志记录器
+// - mon: 呼叫监控
+// - conf: 媒体配置
+// - sampleRate: 采样率
 func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
 	return NewMediaPortWith(log, mon, nil, conf, sampleRate)
 }
 
+// NewMediaPortWith 创建媒体端口（使用已有的RTP连接）
+// 参数:
+// - log: 日志记录器
+// - mon: 呼叫监控
+// - conn: RTP连接
+// - conf: 媒体配置
+// - sampleRate: 采样率
 func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPConn, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
 	mediaTimeout := make(chan struct{})
 	p := &MediaPort{
@@ -76,26 +91,27 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPCon
 }
 
 // MediaPort combines all functionality related to sending and accepting SIP media.
+// 媒体端口结合了所有与发送和接受SIP媒体相关的功能。
 type MediaPort struct {
-	log              logger.Logger
-	mon              *stats.CallMonitor
-	externalIP       netip.Addr
-	conn             *rtp.Conn
-	mediaTimeout     <-chan struct{}
-	dtmfAudioEnabled bool
-	jitterEnabled    bool
-	closed           atomic.Bool
+	log              logger.Logger      // 日志
+	mon              *stats.CallMonitor // 呼叫监控
+	externalIP       netip.Addr         // 外部IP
+	conn             *rtp.Conn          // 连接
+	mediaTimeout     <-chan struct{}    // 媒体超时
+	dtmfAudioEnabled bool               // DTMF音频启用
+	jitterEnabled    bool               // 抖动缓冲区启用
+	closed           atomic.Bool        // 关闭
 
-	mu           sync.Mutex
-	conf         *MediaConf
-	dtmfOutRTP   *rtp.Stream
-	dtmfOutAudio media.PCM16Writer
+	mu           sync.Mutex        // 互斥锁
+	conf         *MediaConf        // 媒体配置
+	dtmfOutRTP   *rtp.Stream       // DTMF输出RTP
+	dtmfOutAudio media.PCM16Writer // DTMF输出音频
 
-	audioOutRTP    *rtp.Stream
-	audioOut       *media.SwitchWriter // LK PCM -> SIP RTP
-	audioIn        *media.SwitchWriter // SIP RTP -> LK PCM
-	audioInHandler rtp.Handler         // for debug only
-	dtmfIn         atomic.Pointer[func(ev dtmf.Event)]
+	audioOutRTP    *rtp.Stream                         // 音频输出RTP
+	audioOut       *media.SwitchWriter                 // LK PCM -> SIP RTP // 音频输出
+	audioIn        *media.SwitchWriter                 // SIP RTP -> LK PCM // 音频输入
+	audioInHandler rtp.Handler                         // for debug only // 仅用于调试
+	dtmfIn         atomic.Pointer[func(ev dtmf.Event)] // DTMF输入
 }
 
 func (p *MediaPort) EnableTimeout(enabled bool) {
@@ -129,6 +145,7 @@ func (p *MediaPort) Port() int {
 	return p.conn.LocalAddr().Port
 }
 
+// Received 返回一个通道，当收到至少一个RTP包时，通道会被关闭
 func (p *MediaPort) Received() <-chan struct{} {
 	return p.conn.Received()
 }

@@ -22,7 +22,7 @@ var WrongPinOgg []byte
 const SampleRate = 48000
 
 func ReadOggAudioFile(data []byte) []media.PCM16Sample {
-	const perFrame = SampleRate / media.DefFramesPerSec
+	const perFrame = SampleRate / media.DefFramesPerSec // 每帧的样本数 960？
 	r, err := oggvorbis.NewReader(bytes.NewReader(data))
 	if err != nil {
 		panic(err)
@@ -35,6 +35,8 @@ func ReadOggAudioFile(data []byte) []media.PCM16Sample {
 	}
 	// Frames in the source file may be shorter,
 	// so we collect all samples and split them to frames again.
+	// 源文件中的帧可能较短，
+	// 所以我们收集所有样本并再次将它们分割为帧。
 	var samples media.PCM16Sample
 	buf := make([]float32, perFrame)
 	for {

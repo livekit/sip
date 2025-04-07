@@ -70,6 +70,11 @@ func NopCloser[T any](w Writer[T]) WriteCloser[T] {
 	return &writeCloser[T]{w}
 }
 
+// NewSwitchWriter 创建一个SwitchWriter
+// 参数:
+// - sampleRate: 采样率
+// 返回:
+// - *SwitchWriter: 返回一个SwitchWriter
 func NewSwitchWriter(sampleRate int) *SwitchWriter {
 	if sampleRate <= 0 {
 		panic("invalid sample rate")
@@ -79,6 +84,8 @@ func NewSwitchWriter(sampleRate int) *SwitchWriter {
 	}
 }
 
+// SwitchWriter 是一个可以切换底层写入器的结构体
+// 它包含一个采样率和一个指向PCM16Writer的指针
 type SwitchWriter struct {
 	sampleRate int
 	ptr        atomic.Pointer[PCM16Writer]
@@ -94,6 +101,8 @@ func (s *SwitchWriter) Get() PCM16Writer {
 
 // Swap sets an underlying writer and returns the old one.
 // Caller is responsible for closing the old writer.
+// 交换底层写入器并返回旧的写入器。
+// 调用者负责关闭旧的写入器。
 func (s *SwitchWriter) Swap(w PCM16Writer) PCM16Writer {
 	var old *PCM16Writer
 	if w == nil {

@@ -150,7 +150,10 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		activeCalls: make(map[RemoteTag]*inboundCall),
 		byLocal:     make(map[LocalTag]*inboundCall),
 	}
+
+	// 初始化媒体资源（加载音频文件）
 	s.initMediaRes()
+
 	return s
 }
 

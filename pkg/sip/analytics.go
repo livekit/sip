@@ -29,6 +29,7 @@ type StateUpdater interface {
 	UpdateSIPCallState(ctx context.Context, req *rpc.UpdateSIPCallStateRequest, opts ...psrpc.RequestOption) (*emptypb.Empty, error)
 }
 
+// NewCallState 创建呼叫状态
 func NewCallState(cli StateUpdater, initial *livekit.SIPCallInfo) *CallState {
 	if initial == nil {
 		initial = &livekit.SIPCallInfo{}
@@ -41,13 +42,15 @@ func NewCallState(cli StateUpdater, initial *livekit.SIPCallInfo) *CallState {
 	return s
 }
 
+// CallState 呼叫状态
 type CallState struct {
-	mu    sync.Mutex
-	cli   StateUpdater
-	info  *livekit.SIPCallInfo
-	dirty bool
+	mu    sync.Mutex           // 互斥锁
+	cli   StateUpdater         // 状态更新器
+	info  *livekit.SIPCallInfo // 呼叫信息
+	dirty bool                 // 是否需要更新
 }
 
+// DeferUpdate 延迟更新
 func (s *CallState) DeferUpdate(update func(info *livekit.SIPCallInfo)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -55,6 +58,7 @@ func (s *CallState) DeferUpdate(update func(info *livekit.SIPCallInfo)) {
 	update(s.info)
 }
 
+// Update 更新
 func (s *CallState) Update(ctx context.Context, update func(info *livekit.SIPCallInfo)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,6 +67,7 @@ func (s *CallState) Update(ctx context.Context, update func(info *livekit.SIPCal
 	s.flush(ctx)
 }
 
+// flush 刷新
 func (s *CallState) flush(ctx context.Context) {
 	if s.cli == nil {
 		s.dirty = false
@@ -76,6 +81,7 @@ func (s *CallState) flush(ctx context.Context) {
 	}
 }
 
+// Flush 刷新
 func (s *CallState) Flush(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
