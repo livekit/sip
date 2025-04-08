@@ -184,8 +184,13 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 		done = make(chan struct{})
 		s.pendingTransfers[k] = done
 
+		timeout := req.RingingTimeout.AsDuration()
+		if timeout <= 0 {
+			timeout = 80 * time.Second
+		}
+
 		go func() {
-			ctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			ctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 			defer cdone()
 
 			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, req.Headers, req.PlayDialtone)
