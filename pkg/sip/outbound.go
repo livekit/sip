@@ -33,6 +33,7 @@ import (
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -59,6 +60,7 @@ type sipOutboundConfig struct {
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
 	enabledFeatures []livekit.SIPFeature
+	mediaEncryption sdp.Encryption
 }
 
 type outboundCall struct {
@@ -117,7 +119,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
 
-	call.media, err = NewMediaPort(call.log, call.mon, &MediaConfig{
+	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
 		IP:                  c.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
@@ -479,7 +481,10 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		cancel()
 	}()
 
-	sdpOffer := c.media.NewOffer()
+	sdpOffer, err := c.media.NewOffer(c.sipConf.mediaEncryption)
+	if err != nil {
+		return err
+	}
 	sdpOfferData, err := sdpOffer.SDP.Marshal()
 	if err != nil {
 		return err
@@ -523,7 +528,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
-	mc, err := c.media.SetAnswer(sdpOffer, sdpResp)
+	mc, err := c.media.SetAnswer(sdpOffer, sdpResp, c.sipConf.mediaEncryption)
 	if err != nil {
 		return err
 	}
@@ -737,6 +742,7 @@ authLoop:
 		case sip.StatusBadRequest,
 			sip.StatusNotFound,
 			sip.StatusTemporarilyUnavailable,
+			sip.StatusNotAcceptableHere,
 			sip.StatusBusyHere:
 			err := &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
 			if body := resp.Body(); len(body) != 0 {

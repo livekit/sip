@@ -16,17 +16,21 @@ package rtp
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/rtp"
+
+	"github.com/livekit/protocol/logger"
 )
 
 var _ Writer = (*Conn)(nil)
 
 type ConnConfig struct {
+	Log                 logger.Logger
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
 	TimeoutCallback     func()
@@ -40,6 +44,9 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 	if conf == nil {
 		conf = &ConnConfig{}
 	}
+	if conf.Log == nil {
+		conf.Log = logger.GetLogger()
+	}
 	if conf.MediaTimeoutInitial <= 0 {
 		conf.MediaTimeoutInitial = 30 * time.Second
 	}
@@ -47,7 +54,8 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 		conf.MediaTimeout = 15 * time.Second
 	}
 	c := &Conn{
-		readBuf:        make([]byte, 1500), // MTU
+		log:            conf.Log,
+		readBuf:        make([]byte, MTUSize+1), // larger buffer to detect overflow
 		received:       make(chan struct{}),
 		conn:           conn,
 		timeout:        conf.MediaTimeout,
@@ -67,7 +75,9 @@ type UDPConn interface {
 	Close() error
 }
 
+// Deprecated: use MediaPort instead
 type Conn struct {
+	log            logger.Logger
 	wmu            sync.Mutex
 	conn           UDPConn
 	closed         core.Fuse
@@ -131,9 +141,11 @@ func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0"
 	}
-
-	var err error
-	c.conn, err = ListenUDPPortRange(portMin, portMax, net.ParseIP(listenAddr))
+	ip, err := netip.ParseAddr(listenAddr)
+	if err != nil {
+		return err
+	}
+	c.conn, err = ListenUDPPortRange(portMin, portMax, ip)
 	if err != nil {
 		return err
 	}
@@ -150,6 +162,7 @@ func (c *Conn) ListenAndServe(portMin, portMax int, listenAddr string) error {
 
 func (c *Conn) readLoop() {
 	conn, buf := c.conn, c.readBuf
+	overflow := false
 	var p rtp.Packet
 	for {
 		n, srcAddr, err := conn.ReadFromUDP(buf)
@@ -157,6 +170,13 @@ func (c *Conn) readLoop() {
 			return
 		}
 		c.dest.Store(srcAddr)
+		if n > MTUSize {
+			if !overflow {
+				overflow = true
+				c.log.Errorw("RTP packet is larger than MTU limit", nil)
+			}
+			continue // ignore partial messages
+		}
 
 		p = rtp.Packet{}
 		if err := p.Unmarshal(buf[:n]); err != nil {
@@ -167,24 +187,23 @@ func (c *Conn) readLoop() {
 			close(c.received)
 		}
 		if h := c.onRTP.Load(); h != nil {
-			_ = (*h).HandleRTP(&p)
+			_ = (*h).HandleRTP(&p.Header, p.Payload)
 		}
 	}
 }
 
-func (c *Conn) WriteRTP(p *rtp.Packet) error {
+func (c *Conn) WriteRTP(h *rtp.Header, payload []byte) (int, error) {
 	addr := c.dest.Load()
 	if addr == nil {
-		return nil
+		return 0, nil
 	}
-	data, err := p.Marshal()
+	data, err := (&rtp.Packet{Header: *h, Payload: payload}).Marshal()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	_, err = c.conn.WriteToUDP(data, addr)
-	return err
+	return c.conn.WriteToUDP(data, addr)
 }
 
 func (c *Conn) ReadRTP() (*rtp.Packet, *net.UDPAddr, error) {

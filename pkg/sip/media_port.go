@@ -16,11 +16,16 @@ package sip
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/frostbyte73/core"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
@@ -29,16 +34,62 @@ import (
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/sdp"
+	"github.com/livekit/sip/pkg/media/srtp"
 	"github.com/livekit/sip/pkg/mixer"
 	"github.com/livekit/sip/pkg/stats"
 )
+
+type UDPConn interface {
+	net.Conn
+	ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error)
+	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
+}
+
+func newUDPConn(conn UDPConn) *udpConn {
+	return &udpConn{UDPConn: conn}
+}
+
+type udpConn struct {
+	UDPConn
+	src atomic.Pointer[netip.AddrPort]
+	dst atomic.Pointer[netip.AddrPort]
+}
+
+func (c *udpConn) GetSrc() (netip.AddrPort, bool) {
+	ptr := c.src.Load()
+	if ptr == nil {
+		return netip.AddrPort{}, false
+	}
+	addr := *ptr
+	return addr, addr.IsValid()
+}
+
+func (c *udpConn) SetDst(addr netip.AddrPort) {
+	if addr.IsValid() {
+		c.dst.Store(&addr)
+	}
+}
+
+func (c *udpConn) Read(b []byte) (n int, err error) {
+	n, addr, err := c.ReadFromUDPAddrPort(b)
+	c.src.Store(&addr)
+	return n, err
+}
+
+func (c *udpConn) Write(b []byte) (n int, err error) {
+	dst := c.dst.Load()
+	if dst == nil {
+		return len(b), nil // ignore
+	}
+	return c.WriteToUDPAddrPort(b, *dst)
+}
 
 type MediaConf struct {
 	sdp.MediaConfig
 	Processor media.PCM16Processor
 }
 
-type MediaConfig struct {
+type MediaOptions struct {
 	IP                  netip.Addr
 	Ports               rtcconfig.PortRange
 	MediaTimeoutInitial time.Duration
@@ -46,31 +97,42 @@ type MediaConfig struct {
 	EnableJitterBuffer  bool
 }
 
-func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
-	return NewMediaPortWith(log, mon, nil, conf, sampleRate)
+func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+	return NewMediaPortWith(log, mon, nil, opts, sampleRate)
 }
 
-func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPConn, conf *MediaConfig, sampleRate int) (*MediaPort, error) {
+func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+	if opts == nil {
+		opts = &MediaOptions{}
+	}
+	if opts.MediaTimeoutInitial <= 0 {
+		opts.MediaTimeoutInitial = 30 * time.Second
+	}
+	if opts.MediaTimeout <= 0 {
+		opts.MediaTimeout = 15 * time.Second
+	}
+	if conn == nil {
+		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
+		if err != nil {
+			return nil, err
+		}
+		conn = c
+	}
 	mediaTimeout := make(chan struct{})
 	p := &MediaPort{
 		log:           log,
+		opts:          opts,
 		mon:           mon,
-		externalIP:    conf.IP,
+		externalIP:    opts.IP,
 		mediaTimeout:  mediaTimeout,
-		jitterEnabled: conf.EnableJitterBuffer,
-		conn: rtp.NewConnWith(conn, &rtp.ConnConfig{
-			MediaTimeoutInitial: conf.MediaTimeoutInitial,
-			MediaTimeout:        conf.MediaTimeout,
-			TimeoutCallback: func() {
-				close(mediaTimeout)
-			},
-		}),
-		audioOut: media.NewSwitchWriter(sampleRate),
-		audioIn:  media.NewSwitchWriter(sampleRate),
+		jitterEnabled: opts.EnableJitterBuffer,
+		port:          newUDPConn(conn),
+		audioOut:      media.NewSwitchWriter(sampleRate),
+		audioIn:       media.NewSwitchWriter(sampleRate),
 	}
-	if err := p.conn.ListenAndServe(conf.Ports.Start, conf.Ports.End, "0.0.0.0"); err != nil {
-		return nil, err
-	}
+	go p.timeoutLoop(func() {
+		close(mediaTimeout)
+	})
 	p.log.Debugw("listening for media on UDP", "port", p.Port())
 	return p, nil
 }
@@ -78,16 +140,22 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPCon
 // MediaPort combines all functionality related to sending and accepting SIP media.
 type MediaPort struct {
 	log              logger.Logger
+	opts             *MediaOptions
 	mon              *stats.CallMonitor
 	externalIP       netip.Addr
-	conn             *rtp.Conn
+	port             *udpConn
+	mediaReceived    core.Fuse
+	packetCount      atomic.Uint64
 	mediaTimeout     <-chan struct{}
+	timeoutStart     atomic.Pointer[time.Time]
+	closed           core.Fuse
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
-	closed           atomic.Bool
 
 	mu           sync.Mutex
 	conf         *MediaConf
+	sess         rtp.Session
+	hnd          atomic.Pointer[rtp.Handler]
 	dtmfOutRTP   *rtp.Stream
 	dtmfOutAudio media.PCM16Writer
 
@@ -99,38 +167,70 @@ type MediaPort struct {
 }
 
 func (p *MediaPort) EnableTimeout(enabled bool) {
-	p.conn.EnableTimeout(enabled)
+	if !enabled {
+		p.timeoutStart.Store(nil)
+		return
+	}
+	now := time.Now()
+	p.timeoutStart.Store(&now)
+}
+
+func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
+	ticker := time.NewTicker(p.opts.MediaTimeout)
+	defer ticker.Stop()
+
+	var lastPackets uint64
+	for {
+		select {
+		case <-p.closed.Watch():
+			return
+		case <-ticker.C:
+			curPackets := p.packetCount.Load()
+			if curPackets != lastPackets {
+				lastPackets = curPackets
+				continue
+			}
+			start := p.timeoutStart.Load()
+			if start == nil {
+				continue // temporary disabled
+			}
+			if lastPackets == 0 && time.Since(*start) < p.opts.MediaTimeoutInitial {
+				continue
+			}
+			timeoutCallback()
+			return
+		}
+	}
 }
 
 func (p *MediaPort) Close() {
-	if !p.closed.CompareAndSwap(false, true) {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if w := p.audioOut.Swap(nil); w != nil {
-		_ = w.Close()
-	}
-	if w := p.audioIn.Swap(nil); w != nil {
-		_ = w.Close()
-	}
-	p.audioOutRTP = nil
-	p.audioInHandler = nil
-	p.dtmfOutRTP = nil
-	if p.dtmfOutAudio != nil {
-		p.dtmfOutAudio.Close()
-		p.dtmfOutAudio = nil
-	}
-	p.dtmfIn.Store(nil)
-	_ = p.conn.Close()
+	p.closed.Once(func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if w := p.audioOut.Swap(nil); w != nil {
+			_ = w.Close()
+		}
+		if w := p.audioIn.Swap(nil); w != nil {
+			_ = w.Close()
+		}
+		p.audioOutRTP = nil
+		p.audioInHandler = nil
+		p.dtmfOutRTP = nil
+		if p.dtmfOutAudio != nil {
+			p.dtmfOutAudio.Close()
+			p.dtmfOutAudio = nil
+		}
+		p.dtmfIn.Store(nil)
+		_ = p.port.Close()
+	})
 }
 
 func (p *MediaPort) Port() int {
-	return p.conn.LocalAddr().Port
+	return p.port.LocalAddr().(*net.UDPAddr).Port
 }
 
 func (p *MediaPort) Received() <-chan struct{} {
-	return p.conn.Received()
+	return p.mediaReceived.Watch()
 }
 
 func (p *MediaPort) Timeout() <-chan struct{} {
@@ -159,17 +259,17 @@ func (p *MediaPort) GetAudioWriter() media.PCM16Writer {
 }
 
 // NewOffer generates an SDP offer for the media.
-func (p *MediaPort) NewOffer() *sdp.Offer {
-	return sdp.NewOffer(p.externalIP, p.Port())
+func (p *MediaPort) NewOffer(encrypted sdp.Encryption) (*sdp.Offer, error) {
+	return sdp.NewOffer(p.externalIP, p.Port(), encrypted)
 }
 
 // SetAnswer decodes and applies SDP answer for offer from NewOffer. SetConfig must be called with the decoded configuration.
-func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte) (*MediaConf, error) {
+func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encryption) (*MediaConf, error) {
 	answer, err := sdp.ParseAnswer(answerData)
 	if err != nil {
 		return nil, err
 	}
-	mc, err := answer.Apply(offer)
+	mc, err := answer.Apply(offer, enc)
 	if err != nil {
 		return nil, err
 	}
@@ -177,12 +277,12 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte) (*MediaConf, 
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
-func (p *MediaPort) SetOffer(offerData []byte) (*sdp.Answer, *MediaConf, error) {
+func (p *MediaPort) SetOffer(offerData []byte, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
 	offer, err := sdp.ParseOffer(offerData)
 	if err != nil {
 		return nil, nil, err
 	}
-	answer, mc, err := offer.Answer(p.externalIP, p.Port())
+	answer, mc, err := offer.Answer(p.externalIP, p.Port(), enc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -190,30 +290,106 @@ func (p *MediaPort) SetOffer(offerData []byte) (*sdp.Answer, *MediaConf, error) 
 }
 
 func (p *MediaPort) SetConfig(c *MediaConf) error {
+	var crypto string
+	if c.Crypto != nil {
+		crypto = c.Crypto.Profile.String()
+	}
 	p.log.Infow("using codecs",
 		"audio-codec", c.Audio.Codec.Info().SDPName, "audio-rtp", c.Audio.Type,
 		"dtmf-rtp", c.Audio.DTMFType,
+		"srtp", crypto,
 	)
+
+	p.port.SetDst(c.Remote)
+	var (
+		sess rtp.Session
+		err  error
+	)
+	if c.Crypto != nil {
+		sess, err = srtp.NewSession(p.log, p.port, c.Crypto)
+	} else {
+		sess = rtp.NewSession(p.log, p.port)
+	}
+	if err != nil {
+		return err
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if ip := c.Remote; ip.IsValid() {
-		p.conn.SetDestAddr(&net.UDPAddr{
-			IP:   ip.Addr().AsSlice(),
-			Port: int(ip.Port()),
-		})
-	}
+	p.port.SetDst(c.Remote)
 	p.conf = c
+	p.sess = sess
 
-	p.setupOutput()
+	if err = p.setupOutput(); err != nil {
+		return err
+	}
 	p.setupInput()
 	return nil
 }
 
+func (p *MediaPort) rtpLoop(sess rtp.Session) {
+	// Need a loop to process all incoming packets.
+	for {
+		r, _, err := sess.AcceptStream()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "closed") {
+				p.log.Errorw("cannot accept RTP stream", err)
+			}
+			return
+		}
+		p.mediaReceived.Break()
+		go p.rtpReadLoop(r)
+	}
+}
+
+func (p *MediaPort) rtpReadLoop(r rtp.ReadStream) {
+	buf := make([]byte, rtp.MTUSize+1)
+	overflow := false
+	var h rtp.Header
+	for {
+		h = rtp.Header{}
+		n, err := r.ReadRTP(&h, buf)
+		if err == io.EOF {
+			return
+		} else if err != nil {
+			p.log.Errorw("read RTP failed", err)
+			return
+		}
+		p.packetCount.Add(1)
+		if n > rtp.MTUSize {
+			overflow = true
+			if !overflow {
+				p.log.Errorw("RTP packet is larger than MTU limit", nil)
+			}
+			continue // ignore partial messages
+		}
+
+		ptr := p.hnd.Load()
+		if ptr == nil {
+			continue
+		}
+		hnd := *ptr
+		if hnd == nil {
+			continue
+		}
+		err = hnd.HandleRTP(&h, buf[:n])
+		if err != nil {
+			p.log.Errorw("handle RTP failed", err)
+			continue
+		}
+	}
+}
+
 // Must be called holding the lock
-func (p *MediaPort) setupOutput() {
+func (p *MediaPort) setupOutput() error {
+	go p.rtpLoop(p.sess)
+	w, err := p.sess.OpenWriteStream()
+	if err != nil {
+		return err
+	}
+
 	// TODO: this says "audio", but actually includes DTMF too
-	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", p.conn))
+	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", w))
 	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, p.conf.Audio.Codec.Info().RTPClockRate)
 
 	// Encoding pipeline (LK PCM -> SIP RTP)
@@ -233,6 +409,7 @@ func (p *MediaPort) setupOutput() {
 	if w := p.audioOut.Swap(audioOut); w != nil {
 		_ = w.Close()
 	}
+	return nil
 }
 
 func (p *MediaPort) setupInput() {
@@ -244,24 +421,23 @@ func (p *MediaPort) setupInput() {
 	mux.SetDefault(newRTPStatsHandler(p.mon, "", nil))
 	mux.Register(p.conf.Audio.Type, newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler))
 	if p.conf.Audio.DTMFType != 0 {
-		mux.Register(p.conf.Audio.DTMFType, newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(pck *rtp.Packet) error {
+		mux.Register(p.conf.Audio.DTMFType, newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
 			ptr := p.dtmfIn.Load()
 			if ptr == nil {
 				return nil
 			}
 			fnc := *ptr
-			if ev, ok := dtmf.DecodeRTP(pck); ok && fnc != nil {
+			if ev, ok := dtmf.DecodeRTP(h, payload); ok && fnc != nil {
 				fnc(ev)
 			}
 			return nil
 		})))
 	}
-
+	var hnd rtp.Handler = mux
 	if p.jitterEnabled {
-		p.conn.OnRTP(rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, mux))
-	} else {
-		p.conn.OnRTP(mux)
+		hnd = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, hnd)
 	}
+	p.hnd.Store(&hnd)
 }
 
 // SetDTMFAudio forces SIP to generate audio dTMF tones in addition to digital signals.

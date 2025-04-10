@@ -36,6 +36,7 @@ import (
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -433,22 +434,39 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		pinPrompt = true
 	}
 
-	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
-	answerData, err := c.runMediaConn(req.Body(), conf, disp.EnabledFeatures)
-	if err != nil {
-		c.log.Errorw("Cannot start media", err)
-		c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
-		c.close(true, callDropped, "media-failed")
-		return err
+	runMedia := func(enc livekit.SIPMediaEncryption) ([]byte, error) {
+		answerData, err := c.runMediaConn(req.Body(), enc, conf, disp.EnabledFeatures)
+		if err != nil {
+			isError := true
+			status, reason := callDropped, "media-failed"
+			if errors.Is(err, sdp.ErrNoCommonMedia) {
+				status, reason = callMediaFailed, "no-common-codec"
+				isError = false
+			} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
+				status, reason = callMediaFailed, "no-common-crypto"
+				isError = false
+			}
+			if isError {
+				c.log.Errorw("Cannot start media", err)
+			} else {
+				c.log.Warnw("Cannot start media", err)
+			}
+			c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
+			c.close(true, status, reason)
+			return nil, err
+		}
+		return answerData, nil
 	}
-	acceptCall := func() (bool, error) {
+
+	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
+	acceptCall := func(answerData []byte) (bool, error) {
 		headers := disp.Headers
 		c.attrsToHdr = disp.AttributesToHeaders
 		if r := c.lkRoom.Room(); r != nil {
 			headers = AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
 		}
 		c.log.Infow("Accepting the call", "headers", headers)
-		if err = c.cc.Accept(ctx, answerData, headers); err != nil {
+		if err := c.cc.Accept(ctx, answerData, headers); err != nil {
 			c.log.Errorw("Cannot respond to INVITE", err)
 			return false, err
 		}
@@ -461,14 +479,29 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	ok := false
+	var answerData []byte
 	if pinPrompt {
+		var err error
 		// Accept the call first on the SIP side, so that we can send audio prompts.
-		if ok, err = acceptCall(); !ok {
+		// This also means we have to pick encryption setting early, before room is selected.
+		// Backend must explicitly enable encryption for pin prompts.
+		answerData, err = runMedia(disp.MediaEncryption)
+		if err != nil {
+			return err // already sent a response
+		}
+		if ok, err = acceptCall(answerData); !ok {
 			return err // could be success if the caller hung up
 		}
 		disp, ok, err = c.pinPrompt(ctx, trunkID)
 		if !ok {
 			return err // already sent a response. Could be success if user hung up
+		}
+	} else {
+		// Start media with given encryption settings.
+		var err error
+		answerData, err = runMedia(disp.MediaEncryption)
+		if err != nil {
+			return err // already sent a response
 		}
 	}
 	p := &disp.Room.Participant
@@ -502,7 +535,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
-		if ok, err := acceptCall(); !ok {
+		if ok, err := acceptCall(answerData); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
 	}
@@ -536,11 +569,16 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 }
 
-func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log.Debugw("SDP offer", "sdp", string(offerData))
+	e, err := sdpEncryption(enc)
+	if err != nil {
+		c.log.Errorw("Cannot parse encryption", err)
+		return nil, err
+	}
 
-	mp, err := NewMediaPort(c.log, c.mon, &MediaConfig{
+	mp, err := NewMediaPort(c.log, c.mon, &MediaOptions{
 		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
@@ -554,7 +592,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, conf *config.Config, featur
 	c.media.EnableTimeout(false) // enabled once we accept the call
 	c.media.SetDTMFAudio(conf.AudioDTMF)
 
-	answer, mconf, err := mp.SetOffer(offerData)
+	answer, mconf, err := mp.SetOffer(offerData, e)
 	if err != nil {
 		return nil, err
 	}
@@ -717,17 +755,19 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	}
 	c.setStatus(status)
 	c.mon.CallTerminate(reason)
+	sipCode, sipStatus := status.SIPStatus()
+	log := c.log.WithValues("status", sipCode, "reason", reason)
 	if error {
-		c.log.Warnw("Closing inbound call with error", nil, "reason", reason)
+		log.Warnw("Closing inbound call with error", nil)
 	} else {
-		c.log.Infow("Closing inbound call", "reason", reason)
+		log.Infow("Closing inbound call")
 	}
 	if status != callFlood {
-		defer c.log.Infow("Inbound call closed", "reason", reason)
+		defer log.Infow("Inbound call closed")
 	}
 
 	c.closeMedia()
-	c.cc.Close()
+	c.cc.CloseWithStatus(sipCode, sipStatus)
 	if c.callDur != nil {
 		c.callDur()
 	}
@@ -1242,17 +1282,20 @@ func (c *sipInbound) sendBye() {
 	sendAndACK(ctx, c, r)
 }
 
-func (c *sipInbound) sendRejected() {
+func (c *sipInbound) sendStatus(code sip.StatusCode, status string) {
 	if c.inviteOk != nil {
 		return // call already established
 	}
 	if c.inviteTx == nil {
 		return // rejected or closed
 	}
-	_, span := tracer.Start(context.Background(), "sipInbound.sendRejected")
+	_, span := tracer.Start(context.Background(), "sipInbound.sendStatus")
 	defer span.End()
 
-	r := sip.NewResponseFromRequest(c.invite, sip.StatusBusyHere, "Rejected", nil)
+	if status == "" {
+		status = sipStatus(code)
+	}
+	r := sip.NewResponseFromRequest(c.invite, code, status, nil)
 	if c.setHeaders != nil {
 		for k, v := range c.setHeaders(nil) {
 			r.AppendHeader(sip.NewHeader(k, v))
@@ -1364,12 +1407,17 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 
 // Close the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with busy status.
 func (c *sipInbound) Close() {
+	c.CloseWithStatus(sip.StatusBusyHere, "Rejected")
+}
+
+// CloseWithStatus the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with a specified status.
+func (c *sipInbound) CloseWithStatus(code sip.StatusCode, status string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteOk != nil {
 		c.sendBye()
 	} else if c.inviteTx != nil {
-		c.sendRejected()
+		c.sendStatus(code, status)
 	} else {
 		c.drop()
 	}

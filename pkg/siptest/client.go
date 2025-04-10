@@ -218,31 +218,31 @@ func (c *Client) Close() {
 func (c *Client) setupRTPReceiver() {
 	var lastTs atomic.Uint32
 
-	c.mux = rtp.NewMux(rtp.HandlerFunc(func(pck *rtp.Packet) error {
-		lastTs.Store(pck.Timestamp)
+	c.mux = rtp.NewMux(rtp.HandlerFunc(func(hdr *rtp.Header, payload []byte) error {
+		lastTs.Store(hdr.Timestamp)
 
 		h := c.recordHandler.Load()
 		if h != nil {
-			return (*h).HandleRTP(pck)
+			return (*h).HandleRTP(hdr, payload)
 		}
 		return nil
 	}))
-	c.mux.Register(101, rtp.HandlerFunc(func(pck *rtp.Packet) error {
+	c.mux.Register(101, rtp.HandlerFunc(func(hdr *rtp.Header, payload []byte) error {
 		ts := lastTs.Load()
 		var diff int64
 		if ts > 0 {
-			diff = int64(pck.Timestamp) - int64(ts)
+			diff = int64(hdr.Timestamp) - int64(ts)
 		}
 
 		if diff > int64(c.audioCodec.Info().RTPClockRate) || diff < -int64(c.audioCodec.Info().RTPClockRate) {
-			c.log.Info("reveived out of sync DTMF message", "dtmfTs", pck.Timestamp, "lastTs", ts)
+			c.log.Info("reveived out of sync DTMF message", "dtmfTs", hdr.Timestamp, "lastTs", ts)
 			return nil
 		}
 
 		if c.conf.OnDTMF == nil {
 			return nil
 		}
-		if ev, ok := dtmf.DecodeRTP(pck); ok {
+		if ev, ok := dtmf.DecodeRTP(hdr, payload); ok {
 			c.conf.OnDTMF(ev)
 		}
 		return nil
@@ -664,7 +664,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	pkts := make(chan *rtp.Packet, 1)
 	done := make(chan struct{})
 
-	h := rtp.Handler(rtp.HandlerFunc(func(pkt *rtp.Packet) error {
+	h := rtp.Handler(rtp.HandlerFunc(func(hdr *rtp.Header, payload []byte) error {
 		// Make sure er do not send on a closed channel
 		select {
 		case <-done:
@@ -677,7 +677,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			close(pkts)
 			close(done)
 			return ctx.Err()
-		case pkts <- pkt:
+		case pkts <- &rtp.Packet{Header: *hdr, Payload: slices.Clone(payload)}:
 		}
 
 		return nil
@@ -696,7 +696,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			continue
 		}
 		decoded = decoded[:0]
-		if err := dec.HandleRTP(p); err != nil {
+		if err := dec.HandleRTP(&p.Header, p.Payload); err != nil {
 			return err
 		}
 		if ws != nil {

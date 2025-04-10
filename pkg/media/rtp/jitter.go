@@ -38,11 +38,11 @@ type jitterHandler struct {
 	buf *jitter.Buffer
 }
 
-func (h *jitterHandler) HandleRTP(p *rtp.Packet) error {
-	h.buf.Push(p.Clone())
+func (r *jitterHandler) HandleRTP(h *rtp.Header, payload []byte) error {
+	r.buf.Push(&rtp.Packet{Header: *h, Payload: payload})
 	var last error
-	for _, p := range h.buf.Pop(false) {
-		if err := h.h.HandleRTP(p); err != nil {
+	for _, p := range r.buf.Pop(false) {
+		if err := r.h.HandleRTP(&p.Header, p.Payload); err != nil {
 			last = err
 		}
 	}

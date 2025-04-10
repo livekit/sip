@@ -98,6 +98,13 @@ var statusNamesMap = map[int]string{
 	606: "GlobalNotAcceptable",
 }
 
+func sipStatus(code sip.StatusCode) string {
+	if name := statusNamesMap[int(code)]; name != "" {
+		return name
+	}
+	return fmt.Sprintf("Status%d", int(code))
+}
+
 func statusName(status int) string {
 	if name := statusNamesMap[status]; name != "" {
 		return fmt.Sprintf("%d-%s", status, name)
