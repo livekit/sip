@@ -168,7 +168,7 @@ func writePCM16sWebm(t testing.TB, path string, rate int, buf []media.PCM16Sampl
 	require.NoError(t, err)
 	defer f.Close()
 
-	w := webm.NewPCM16Writer(f, rate, media.DefFrameDur)
+	w := webm.NewPCM16Writer(f, rate, 1, media.DefFrameDur)
 	defer w.Close()
 
 	for _, frame := range buf {

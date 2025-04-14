@@ -335,7 +335,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	var ws media.PCM16Writer
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, RoomSampleRate, rtp.DefFrameDur)
+		ws = webmm.NewPCM16Writer(w, RoomSampleRate, 1, rtp.DefFrameDur)
 		defer ws.Close()
 	}
 	lastLog := time.Now()

@@ -52,7 +52,7 @@ func Decode(w media.PCM16Writer, channels int, logger logger.Logger) (Writer, er
 	return &decoder{
 		w:      w,
 		dec:    dec,
-		buf:    make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+		buf:    make([]int16, w.SampleRate()/rtp.DefFramesPerSec*channels),
 		logger: logger,
 	}, nil
 }
@@ -65,7 +65,7 @@ func Encode(w Writer, channels int, logger logger.Logger) (media.PCM16Writer, er
 	return &encoder{
 		w:      w,
 		enc:    enc,
-		buf:    make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+		buf:    make([]byte, w.SampleRate()/rtp.DefFramesPerSec*channels),
 		logger: logger,
 	}, nil
 }
