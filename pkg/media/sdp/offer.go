@@ -252,7 +252,7 @@ func NewOffer(publicIp netip.Addr, rtpListenerPort int, encrypted Encryption) (*
 }
 
 func (d *Offer) Answer(publicIp netip.Addr, rtpListenerPort int, enc Encryption) (*Answer, *MediaConfig, error) {
-	audio, err := SelectAudio(d.MediaDesc)
+	audio, err := SelectAudio(d.MediaDesc, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -321,7 +321,7 @@ func (d *Offer) Answer(publicIp netip.Addr, rtpListenerPort int, enc Encryption)
 }
 
 func (d *Answer) Apply(offer *Offer, enc Encryption) (*MediaConfig, error) {
-	audio, err := SelectAudio(d.MediaDesc)
+	audio, err := SelectAudio(d.MediaDesc, true)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +473,7 @@ type AudioConfig struct {
 	DTMFType byte
 }
 
-func SelectAudio(desc MediaDesc) (*AudioConfig, error) {
+func SelectAudio(desc MediaDesc, answer bool) (*AudioConfig, error) {
 	var (
 		priority   int
 		audioCodec rtp.AudioCodec
@@ -488,6 +488,9 @@ func SelectAudio(desc MediaDesc) (*AudioConfig, error) {
 			audioType = c.Type
 			audioCodec = codec
 			priority = codec.Info().Priority
+		}
+		if answer {
+			break
 		}
 	}
 	if audioCodec == nil {
