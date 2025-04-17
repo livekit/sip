@@ -127,11 +127,11 @@ func TestSDPMediaAnswer(t *testing.T) {
 			name: "default",
 			offer: sdp.MediaDescription{
 				MediaName: sdp.MediaName{
-					Formats: []string{"0", "9", "8", "101"},
+					Formats: []string{"9", "0", "8", "101"},
 				},
 				Attributes: []sdp.Attribute{
-					{Key: "rtpmap", Value: "0 PCMU/8000"},
 					{Key: "rtpmap", Value: "9 G722/8000"},
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
@@ -145,11 +145,11 @@ func TestSDPMediaAnswer(t *testing.T) {
 			name: "lowercase",
 			offer: sdp.MediaDescription{
 				MediaName: sdp.MediaName{
-					Formats: []string{"0", "9", "101"},
+					Formats: []string{"9", "0", "101"},
 				},
 				Attributes: []sdp.Attribute{
-					{Key: "rtpmap", Value: "0 pcmu/8000"},
 					{Key: "rtpmap", Value: "9 g722/8000"},
+					{Key: "rtpmap", Value: "0 pcmu/8000"},
 					{Key: "rtpmap", Value: "101 telephone-event/8000"},
 				},
 			},
@@ -163,11 +163,11 @@ func TestSDPMediaAnswer(t *testing.T) {
 			name: "no dtmf",
 			offer: sdp.MediaDescription{
 				MediaName: sdp.MediaName{
-					Formats: []string{"0", "9"},
+					Formats: []string{"9", "0"},
 				},
 				Attributes: []sdp.Attribute{
-					{Key: "rtpmap", Value: "0 PCMU/8000"},
 					{Key: "rtpmap", Value: "9 G722/8000"},
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
 				},
 			},
 			exp: &AudioConfig{
@@ -179,11 +179,11 @@ func TestSDPMediaAnswer(t *testing.T) {
 			name: "custom dtmf",
 			offer: sdp.MediaDescription{
 				MediaName: sdp.MediaName{
-					Formats: []string{"0", "9", "103"},
+					Formats: []string{"9", "0", "103"},
 				},
 				Attributes: []sdp.Attribute{
-					{Key: "rtpmap", Value: "0 PCMU/8000"},
 					{Key: "rtpmap", Value: "9 G722/8000"},
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
 					{Key: "rtpmap", Value: "103 telephone-event/8000"},
 				},
 			},
@@ -270,13 +270,45 @@ func TestSDPMediaAnswer(t *testing.T) {
 				DTMFType: 101,
 			},
 		},
+		{
+			name: "changed order",
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"0", "9"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
+					{Key: "rtpmap", Value: "9 G722/8000"},
+				},
+			},
+			exp: &AudioConfig{
+				Codec: getCodec(g711.ULawSDPName),
+				Type:  0,
+			},
+		},
+		{
+			name: "changed order g711",
+			offer: sdp.MediaDescription{
+				MediaName: sdp.MediaName{
+					Formats: []string{"8", "0"},
+				},
+				Attributes: []sdp.Attribute{
+					{Key: "rtpmap", Value: "8 PCMA/8000"},
+					{Key: "rtpmap", Value: "0 PCMU/8000"},
+				},
+			},
+			exp: &AudioConfig{
+				Codec: getCodec(g711.ALawSDPName),
+				Type:  8,
+			},
+		},
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			m, err := ParseMedia(&c.offer)
 			require.NoError(t, err)
-			got, err := SelectAudio(*m)
+			got, err := SelectAudio(*m, true)
 			if c.exp == nil {
 				require.Error(t, err)
 				return
