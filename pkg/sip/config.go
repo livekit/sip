@@ -15,14 +15,16 @@
 package sip
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"net/netip"
+	"time"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/config"
+	"github.com/pkg/errors"
 )
 
 func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
@@ -65,29 +67,18 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 }
 
 func getPublicIP() (netip.Addr, error) {
-	req, err := http.Get("http://ip-api.com/json/")
-	if err != nil {
-		return netip.Addr{}, err
+	var err error
+	for i := 0; i < 3; i++ {
+		var ip string
+		ip, err = rtcconfig.GetExternalIP(context.Background(), rtcconfig.DefaultStunServers, nil)
+		if err == nil {
+			return netip.ParseAddr(ip)
+		} else {
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
-	defer req.Body.Close()
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		return netip.Addr{}, err
-	}
-
-	ip := struct {
-		Query string
-	}{}
-	if err = json.Unmarshal(body, &ip); err != nil {
-		return netip.Addr{}, err
-	}
-
-	if ip.Query == "" {
-		return netip.Addr{}, fmt.Errorf("Query entry was not populated")
-	}
-
-	return netip.ParseAddr(ip.Query)
+	logger.Warnw("could not resolve external IP", err)
+	return netip.Addr{}, errors.Errorf("could not resolve external IP: %v", err)
 }
 
 func getLocalIP(localNet string) (netip.Addr, error) {
