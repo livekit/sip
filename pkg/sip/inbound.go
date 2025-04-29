@@ -36,13 +36,13 @@ import (
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/res"
@@ -54,6 +54,22 @@ const (
 	audioBridgeMaxDelay = 1 * time.Second
 )
 
+func (s *Server) getInvite(from string) *inProgressInvite {
+	s.imu.Lock()
+	defer s.imu.Unlock()
+	for i := range s.inProgressInvites {
+		if s.inProgressInvites[i].from == from {
+			return s.inProgressInvites[i]
+		}
+	}
+	if len(s.inProgressInvites) >= digestLimit {
+		s.inProgressInvites = s.inProgressInvites[1:]
+	}
+	is := &inProgressInvite{from: from}
+	s.inProgressInvites = append(s.inProgressInvites, is)
+	return is
+}
+
 func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
 	if username == "" || password == "" {
 		return true
@@ -63,21 +79,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
 
-	var inviteState *inProgressInvite
-	for i := range s.inProgressInvites {
-		if s.inProgressInvites[i].from == from {
-			inviteState = s.inProgressInvites[i]
-		}
-	}
-
-	if inviteState == nil {
-		if len(s.inProgressInvites) >= digestLimit {
-			s.inProgressInvites = s.inProgressInvites[1:]
-		}
-
-		inviteState = &inProgressInvite{from: from}
-		s.inProgressInvites = append(s.inProgressInvites, inviteState)
-	}
+	inviteState := s.getInvite(from)
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
