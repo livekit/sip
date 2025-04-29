@@ -44,7 +44,6 @@ func GetAudioDest(s *sdp.SessionDescription, audio *sdp.MediaDescription) netip.
 	if ci == nil || ci.NetworkType != "IN" {
 		return netip.AddrPort{}
 	}
-
 	ip, err := netip.ParseAddr(ci.Address.Address)
 	if err != nil {
 		return netip.AddrPort{}
