@@ -19,13 +19,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/livekit/protocol/rpc"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/livekit/protocol/rpc"
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
@@ -117,6 +118,7 @@ type Server struct {
 	sipListeners []io.Closer
 	sipUnhandled RequestHandler
 
+	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
 
 	closing     core.Fuse
