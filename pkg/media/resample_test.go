@@ -87,7 +87,10 @@ func TestResample(t *testing.T) {
 		Buffer int
 		Bumps  []int
 	}{
-		{Rate: 16000, Skip: 0},
+		{
+			Rate: 16000, Skip: 1,
+			Buffer: 1,
+		},
 		{
 			Rate: 8000, Skip: 2,
 			Buffer: 3,
@@ -123,6 +126,7 @@ func TestResample(t *testing.T) {
 			expSamples := totalSamples / (srcRate / c.Rate)
 			require.Equal(t, expSamples, pw.samples)
 			require.Equal(t, len(srcFrames), len(pw.frameT))
+			// Tick at which the first frame was received.
 			skipped := pw.frameT[0]
 			require.Equal(t, c.Skip, skipped)
 			corr := 0
@@ -140,7 +144,7 @@ func TestResample(t *testing.T) {
 				}
 				if exp != num {
 					corr = num - (skipped + i)
-					t.Errorf("skipped frame: exp %d, got %d", exp, num)
+					t.Errorf("skipped frame: exp %d, got %d\n%v", exp, num, pw.frameT)
 				}
 			}
 		})
