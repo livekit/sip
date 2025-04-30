@@ -98,6 +98,14 @@ type MediaPort struct {
 	dtmfIn         atomic.Pointer[func(ev dtmf.Event)]
 }
 
+func (p *MediaPort) DisableOut() {
+	p.audioOut.Disable()
+}
+
+func (p *MediaPort) EnableOut() {
+	p.audioOut.Enable()
+}
+
 func (p *MediaPort) EnableTimeout(enabled bool) {
 	p.conn.EnableTimeout(enabled)
 }
