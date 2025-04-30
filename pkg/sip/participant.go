@@ -40,11 +40,15 @@ const (
 var headerToLog = map[string]string{
 	"X-Twilio-AccountSid": "twilioAccSID",
 	"X-Twilio-CallSid":    "twilioCallSID",
+	"X-call_leg_id":       "telnyxCallLegID",
+	"X-call_session_id":   "telnyxCallSessionID",
 }
 
 var headerToAttr = map[string]string{
 	"X-Twilio-AccountSid": livekit.AttrSIPPrefix + "twilio.accountSid",
 	"X-Twilio-CallSid":    livekit.AttrSIPPrefix + "twilio.callSid",
+	"X-call_leg_id":       livekit.AttrSIPPrefix + "telnyx.callLegID",
+	"X-call_session_id":   livekit.AttrSIPPrefix + "telnyx.callSessionID",
 	"X-Lk-Test-Id":        "lktest.id",
 }
 
