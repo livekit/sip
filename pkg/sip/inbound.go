@@ -473,6 +473,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			return false, err
 		}
 		c.media.EnableTimeout(true)
+		c.media.EnableOut()
 		if ok, err := c.waitMedia(ctx); !ok {
 			return false, err
 		}
@@ -592,6 +593,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncrypt
 	}
 	c.media = mp
 	c.media.EnableTimeout(false) // enabled once we accept the call
+	c.media.DisableOut()         // disabled until we send 200
 	c.media.SetDTMFAudio(conf.AudioDTMF)
 
 	answer, mconf, err := mp.SetOffer(offerData, e)

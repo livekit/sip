@@ -82,6 +82,15 @@ func NewSwitchWriter(sampleRate int) *SwitchWriter {
 type SwitchWriter struct {
 	sampleRate int
 	ptr        atomic.Pointer[PCM16Writer]
+	disabled   atomic.Bool
+}
+
+func (s *SwitchWriter) Enable() {
+	s.disabled.Store(false)
+}
+
+func (s *SwitchWriter) Disable() {
+	s.disabled.Store(true)
 }
 
 func (s *SwitchWriter) Get() PCM16Writer {
@@ -131,6 +140,9 @@ func (s *SwitchWriter) Close() error {
 }
 
 func (s *SwitchWriter) WriteSample(sample PCM16Sample) error {
+	if s.disabled.Load() {
+		return nil
+	}
 	w := s.Get()
 	if w == nil {
 		return nil
