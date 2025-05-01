@@ -15,6 +15,8 @@
 package sdp
 
 import (
+	"errors"
+	"fmt"
 	"net/netip"
 
 	"github.com/pion/sdp/v3"
@@ -29,17 +31,30 @@ func GetAudio(s *sdp.SessionDescription) *sdp.MediaDescription {
 	return nil
 }
 
-func GetAudioDest(s *sdp.SessionDescription, audio *sdp.MediaDescription) netip.AddrPort {
+// GetAudioDest returns the RTP dst address:port for an audio m=
+// it first uses media-level c=, then session-level c=.
+func GetAudioDest(s *sdp.SessionDescription, audio *sdp.MediaDescription) (netip.AddrPort, error) {
 	if audio == nil || s == nil {
-		return netip.AddrPort{}
+		return netip.AddrPort{}, errors.New("no audio in sdp")
 	}
-	ci := s.ConnectionInformation
-	if ci == nil || ci.NetworkType != "IN" {
-		return netip.AddrPort{}
+
+	// pick media-level c=; if absent, fall back to session-level c=
+	ci := audio.ConnectionInformation
+	if ci == nil {
+		ci = s.ConnectionInformation
 	}
-	ip, err := netip.ParseAddr(ci.Address.Address)
+	var addr string
+	if ci != nil && ci.NetworkType == "IN" {
+		addr = ci.Address.Address
+	} else if s.Origin.NetworkType == "IN" {
+		addr = s.Origin.UnicastAddress
+	}
+	if addr == "" {
+		return netip.AddrPort{}, errors.New("no destination address in sdp")
+	}
+	ip, err := netip.ParseAddr(addr)
 	if err != nil {
-		return netip.AddrPort{}
+		return netip.AddrPort{}, fmt.Errorf("invalid destination address %q: %w", addr, err)
 	}
-	return netip.AddrPortFrom(ip, uint16(audio.MediaName.Port.Value))
+	return netip.AddrPortFrom(ip, uint16(audio.MediaName.Port.Value)), nil
 }
