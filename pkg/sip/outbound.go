@@ -129,6 +129,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		return nil, err
 	}
 	call.media.SetDTMFAudio(conf.AudioDTMF)
+	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room); err != nil {
 		call.close(errors.Wrap(err, "room join failed"), callDropped, "join-failed", livekit.DisconnectReason_UNKNOWN_REASON)
@@ -539,6 +540,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.mon.InviteAccept()
 	c.media.EnableOut()
+	c.media.EnableTimeout(true)
 	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
