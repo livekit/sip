@@ -684,11 +684,12 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	}))
 	c.recordHandler.Store(&h)
 
-	for p := range pkts {
+	for {
+		var p *rtp.Packet
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		default:
+		case p = <-pkts:
 		}
 
 		if p.PayloadType != c.audioType {
