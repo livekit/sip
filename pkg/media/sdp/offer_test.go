@@ -263,3 +263,75 @@ func TestSDPMediaAnswer(t *testing.T) {
 		},
 	}, offer)
 }
+
+func TestParseOffer(t *testing.T) {
+	tests := []struct {
+		name    string
+		sdp     string
+		wantErr bool
+	}{
+		{
+			name: "media level c= only",
+			sdp: `v=0
+o=Test 1 1 IN IP4 127.0.0.1
+s=Stream1
+t=0 0
+m=audio 59236 RTP/AVP 0 101
+c=IN IP4 127.0.0.1
+a=rtpmap:0 PCMU/8000
+a=rtpmap:101 telephone-event/8000
+a=sendrecv
+a=rtcp:59237
+a=ptime:20
+`,
+			wantErr: false,
+		},
+		{
+			name: "invalid network type",
+			sdp: `v=0
+o=- 1234567890 1234567890 IN IP4 1.2.3.4
+s=LiveKit
+c=FOO IP4 1.2.3.4
+t=0 0
+m=audio 1234 RTP/AVP 9 0 8 101
+a=rtpmap:9 G722/8000
+a=rtpmap:0 PCMU/8000
+a=rtpmap:8 PCMA/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=ptime:20
+a=sendrecv
+`,
+			wantErr: true,
+		},
+		{
+			name: "invalid ip address",
+			sdp: `v=0
+o=- 1234567890 1234567890 IN IP4 1.2.3.4
+s=LiveKit
+c=IN IP4 invalid.ip
+t=0 0
+m=audio 1234 RTP/AVP 9 0 8 101
+a=rtpmap:9 G722/8000
+a=rtpmap:0 PCMU/8000
+a=rtpmap:8 PCMA/8000
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=ptime:20
+a=sendrecv
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ParseOffer([]byte(test.sdp))
+			if test.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
