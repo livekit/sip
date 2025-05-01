@@ -352,8 +352,11 @@ func Parse(data []byte) (*Description, error) {
 	if audio == nil {
 		return nil, errors.New("no audio in sdp")
 	}
-	offer.Addr = GetAudioDest(&offer.SDP, audio)
-	if !offer.Addr.IsValid() {
+	var err error
+	offer.Addr, err = GetAudioDest(&offer.SDP, audio)
+	if err != nil {
+		return nil, err
+	} else if !offer.Addr.IsValid() || offer.Addr.Port() == 0 {
 		return nil, fmt.Errorf("invalid audio address %q", offer.Addr)
 	}
 	m, err := ParseMedia(audio)

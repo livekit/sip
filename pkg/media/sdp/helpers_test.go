@@ -28,6 +28,7 @@ func TestGetAudioDest(t *testing.T) {
 		session  *sdp.SessionDescription
 		audio    *sdp.MediaDescription
 		expected netip.AddrPort
+		error    bool
 	}{
 		{
 			name: "media level connection info",
@@ -37,11 +38,6 @@ func TestGetAudioDest(t *testing.T) {
 						MediaName: sdp.MediaName{
 							Media: "audio",
 							Port:  sdp.RangedPort{Value: 1234},
-						},
-						ConnectionInformation: &sdp.ConnectionInformation{
-							NetworkType: "IN",
-							AddressType: "IP4",
-							Address:     &sdp.Address{Address: "1.2.3.4"},
 						},
 					},
 				},
@@ -89,18 +85,25 @@ func TestGetAudioDest(t *testing.T) {
 			session:  nil,
 			audio:    &sdp.MediaDescription{},
 			expected: netip.AddrPort{},
+			error:    true,
 		},
 		{
 			name:     "nil audio",
 			session:  &sdp.SessionDescription{},
 			audio:    nil,
 			expected: netip.AddrPort{},
+			error:    true,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := GetAudioDest(test.session, test.audio)
+			got, err := GetAudioDest(test.session, test.audio)
+			if test.error {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
 			require.Equal(t, test.expected, got)
 		})
 	}
