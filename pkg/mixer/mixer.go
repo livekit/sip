@@ -55,9 +55,9 @@ type Mixer struct {
 	mixBuf    []int32           // mix result buffer
 	mixTmp    media.PCM16Sample // temp buffer for reading input buffers
 
-	lastMix time.Time
-	stopped core.Fuse
-	mixCnt  uint
+	lastMixEndTs time.Time
+	stopped      core.Fuse
+	mixCnt       uint
 }
 
 func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mixer {
@@ -108,7 +108,12 @@ func (m *Mixer) reset() {
 func (m *Mixer) mixOnce() {
 	m.mixCnt++
 	m.reset()
+	now := time.Now()
 	m.mixInputs()
+
+	if time.Now().Sub(now) > 5*time.Millisecond {
+		fmt.Println("SOURCE WAIT")
+	}
 
 	// TODO: if we can guarantee that WriteSample won't store the sample, we can avoid allocation
 	out := make(media.PCM16Sample, len(m.mixBuf))
@@ -121,27 +126,42 @@ func (m *Mixer) mixOnce() {
 		}
 		out[i] = int16(v)
 	}
+	now = time.Now()
 	_ = m.out.WriteSample(out)
+
+	if time.Now().Sub(now) > 30*time.Millisecond {
+		fmt.Println("DEST WAIT")
+	}
+
 }
 
 func (m *Mixer) mixUpdate() {
 	n := 1
-	if !m.lastMix.IsZero() {
+	now := time.Now()
+
+	if m.lastMixEndTs.IsZero() {
+		m.lastMixEndTs = now
+	} else {
 		// In case scheduler stops us for too long, we will detect it and run mix multiple times.
 		// This happens if we get scheduled by OS/K8S on a lot of CPUs, but for a very short time.
-		if dt := time.Since(m.lastMix); dt > 0 {
+		if dt := now.Sub(m.lastMixEndTs); dt > 0 {
 			n = int(dt / m.tickerDur)
+			m.lastMixEndTs = m.lastMixEndTs.Add(time.Duration(n) * m.tickerDur)
 		}
 	}
-	if n == 0 {
-		n = 1
-	} else if n > inputBufferFrames {
+	if n > inputBufferFrames {
 		n = inputBufferFrames
+		// reset
+		m.lastMixEndTs = now
 	}
+
+	if n > 2 {
+		fmt.Println("N", n, time.Now())
+	}
+
 	for i := 0; i < n; i++ {
 		m.mixOnce()
 	}
-	m.lastMix = time.Now()
 }
 
 func (m *Mixer) start() {
@@ -209,6 +229,7 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 	defer i.mu.Unlock()
 	if i.buffering {
 		if i.buf.Len() < bufMin {
+			fmt.Println("KEEP BUFFERING")
 			return 0, nil // keep buffering
 		}
 		// buffered enough data - start playing as usual
@@ -216,6 +237,7 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 	}
 	n, err := i.buf.Read(out)
 	if n == 0 {
+		fmt.Println("BUFFERING")
 		i.buffering = true // starving; pause the input and start buffering again
 	}
 	return n, err
