@@ -92,6 +92,14 @@ type Conn struct {
 	onRTP atomic.Pointer[Handler]
 }
 
+func (c *Conn) String() string {
+	p := c.onRTP.Load()
+	if p == nil || *p == nil {
+		return "Conn -> <nil>"
+	}
+	return "Conn -> " + (*p).String()
+}
+
 func (c *Conn) LocalAddr() *net.UDPAddr {
 	if c == nil || c.conn == nil {
 		return nil
