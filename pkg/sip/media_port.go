@@ -338,7 +338,7 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 func (p *MediaPort) rtpLoop(sess rtp.Session) {
 	// Need a loop to process all incoming packets.
 	for {
-		r, _, err := sess.AcceptStream()
+		r, ssrc, err := sess.AcceptStream()
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "closed") {
 				p.log.Errorw("cannot accept RTP stream", err)
@@ -346,28 +346,33 @@ func (p *MediaPort) rtpLoop(sess rtp.Session) {
 			return
 		}
 		p.mediaReceived.Break()
-		go p.rtpReadLoop(r)
+		log := p.log.WithValues("ssrc", ssrc)
+		log.Infow("accepting RTP stream")
+		go p.rtpReadLoop(log, r)
 	}
 }
 
-func (p *MediaPort) rtpReadLoop(r rtp.ReadStream) {
+func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 	buf := make([]byte, rtp.MTUSize+1)
 	overflow := false
-	var h rtp.Header
+	var (
+		h        rtp.Header
+		pipeline string
+	)
 	for {
 		h = rtp.Header{}
 		n, err := r.ReadRTP(&h, buf)
 		if err == io.EOF {
 			return
 		} else if err != nil {
-			p.log.Errorw("read RTP failed", err)
+			log.Errorw("read RTP failed", err)
 			return
 		}
 		p.packetCount.Add(1)
 		if n > rtp.MTUSize {
 			overflow = true
 			if !overflow {
-				p.log.Errorw("RTP packet is larger than MTU limit", nil)
+				log.Errorw("RTP packet is larger than MTU limit", nil, "payloadSize", n)
 			}
 			continue // ignore partial messages
 		}
@@ -382,9 +387,18 @@ func (p *MediaPort) rtpReadLoop(r rtp.ReadStream) {
 		}
 		err = hnd.HandleRTP(&h, buf[:n])
 		if err != nil {
-			p.log.Errorw("handle RTP failed", err)
+			if pipeline == "" {
+				pipeline = hnd.String()
+			}
+			log.Errorw("handle RTP failed", err,
+				"payloadType", h.PayloadType,
+				"payloadSize", n,
+				"rtpHeader", h,
+				"pipeline", pipeline,
+			)
 			continue
 		}
+		pipeline = ""
 	}
 }
 

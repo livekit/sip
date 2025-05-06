@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"fmt"
 	"strconv"
 
 	prtp "github.com/pion/rtp"
@@ -30,9 +31,7 @@ const (
 
 func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) rtp.Handler {
 	if r == nil {
-		r = rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
-			return nil
-		})
+		r = rtp.HandlerFunc(nil)
 	}
 	return &rtpStatsHandler{h: r, typ: typ, mon: mon}
 }
@@ -41,6 +40,10 @@ type rtpStatsHandler struct {
 	h   rtp.Handler
 	typ string
 	mon *stats.CallMonitor
+}
+
+func (r *rtpStatsHandler) String() string {
+	return fmt.Sprintf("StatsHandler(%s) -> %s", r.typ, r.h.String())
 }
 
 func (r *rtpStatsHandler) HandleRTP(h *rtp.Header, payload []byte) error {
@@ -62,6 +65,10 @@ type rtpStatsWriter struct {
 	w   rtp.WriteStream
 	typ string
 	mon *stats.CallMonitor
+}
+
+func (w *rtpStatsWriter) String() string {
+	return fmt.Sprintf("StatsWriter(%s) -> %s", w.typ, w.w.String())
 }
 
 func (w *rtpStatsWriter) WriteRTP(h *prtp.Header, payload []byte) (int, error) {

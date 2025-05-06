@@ -32,6 +32,7 @@ type BytesFrame interface {
 }
 
 type Writer interface {
+	String() string
 	WriteRTP(h *rtp.Header, payload []byte) (int, error)
 }
 
@@ -40,12 +41,20 @@ type Reader interface {
 }
 
 type Handler interface {
+	String() string
 	HandleRTP(h *rtp.Header, payload []byte) error
 }
 
 type HandlerFunc func(h *rtp.Header, payload []byte) error
 
+func (fnc HandlerFunc) String() string {
+	return "HandlerFunc"
+}
+
 func (fnc HandlerFunc) HandleRTP(h *rtp.Header, payload []byte) error {
+	if fnc == nil {
+		return nil
+	}
 	return fnc(h, payload)
 }
 
@@ -64,6 +73,10 @@ func HandleLoop(r Reader, h Handler) error {
 
 // Buffer is a Writer that clones and appends RTP packets into a slice.
 type Buffer []*Packet
+
+func (b *Buffer) String() string {
+	return "Buffer"
+}
 
 func (b *Buffer) WriteRTP(h *rtp.Header, payload []byte) (int, error) {
 	*b = append(*b, &rtp.Packet{
@@ -98,6 +111,10 @@ type SeqWriter struct {
 	mu sync.Mutex
 	w  Writer
 	h  Header
+}
+
+func (s *SeqWriter) String() string {
+	return s.w.String()
 }
 
 func (s *SeqWriter) WriteEvent(ev *Event) error {
