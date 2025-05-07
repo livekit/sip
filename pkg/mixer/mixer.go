@@ -130,6 +130,7 @@ func (m *Mixer) mixUpdate() {
 
 	if m.lastMixEndTs.IsZero() {
 		m.lastMixEndTs = now
+		n = 1
 	} else {
 		// In case scheduler stops us for too long, we will detect it and run mix multiple times.
 		// This happens if we get scheduled by OS/K8S on a lot of CPUs, but for a very short time.
