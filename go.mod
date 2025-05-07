@@ -20,6 +20,7 @@ require (
 	github.com/ory/dockertest/v3 v3.11.0
 	github.com/pion/interceptor v0.1.37
 	github.com/pion/rtp v1.8.11
+	github.com/pion/rtp/v2 v2.0.0
 	github.com/pion/sdp/v3 v3.0.10
 	github.com/pion/srtp/v3 v3.0.4
 	github.com/pion/webrtc/v4 v4.0.9
@@ -27,7 +28,8 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.10.0
-	github.com/urfave/cli/v2 v2.27.2
+	github.com/urfave/cli/v2 v2.27.6
+	github.com/urfave/cli/v3 v3.3.2
 	golang.org/x/exp v0.0.0-20250207012021-f9890c6ad9f3
 	google.golang.org/protobuf v1.36.5
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
@@ -50,7 +52,7 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/continuity v0.4.3 // indirect
-	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.5 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dennwc/iters v1.0.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
