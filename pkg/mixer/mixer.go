@@ -15,9 +15,7 @@
 package mixer
 
 import (
-	"encoding/binary"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -60,7 +58,6 @@ type Mixer struct {
 	lastMixEndTs time.Time
 	stopped      core.Fuse
 	mixCnt       uint
-	dump         *os.File
 }
 
 func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mixer {
@@ -75,14 +72,11 @@ func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mix
 }
 
 func newMixer(out media.Writer[media.PCM16Sample], mixSize int) *Mixer {
-	dump, _ := os.Create("mix.raw")
-
 	return &Mixer{
 		out:        out,
 		sampleRate: out.SampleRate(),
 		mixBuf:     make([]int32, mixSize),
 		mixTmp:     make(media.PCM16Sample, mixSize),
-		dump:       dump,
 	}
 }
 
@@ -95,11 +89,6 @@ func (m *Mixer) mixInputs() {
 		n, _ := inp.readSample(bufMin, m.mixTmp[:len(m.mixBuf)])
 		if n == 0 {
 			continue
-		}
-		// TODO do not shorten
-
-		if n < len(m.mixBuf) {
-			fmt.Println("SHORT READ", n, len(m.mixBuf))
 		}
 		m.mixTmp = m.mixTmp[:n]
 		for j, v := range m.mixTmp {
@@ -119,33 +108,20 @@ func (m *Mixer) reset() {
 func (m *Mixer) mixOnce() {
 	m.mixCnt++
 	m.reset()
-	now := time.Now()
 	m.mixInputs()
-
-	if time.Now().Sub(now) > 5*time.Millisecond {
-		fmt.Println("SOURCE WAIT")
-	}
 
 	// TODO: if we can guarantee that WriteSample won't store the sample, we can avoid allocation
 	out := make(media.PCM16Sample, len(m.mixBuf))
 	for i, v := range m.mixBuf {
 		if v > 0x7FFF {
 			v = 0x7FFF
-			fmt.Println("CLAMP +")
 		}
 		if v < -0x7FFF {
 			v = -0x7FFF
-			fmt.Println("CLAMP -")
 		}
 		out[i] = int16(v)
 	}
-	now = time.Now()
 	_ = m.out.WriteSample(out)
-
-	if time.Now().Sub(now) > 30*time.Millisecond {
-		fmt.Println("DEST WAIT")
-	}
-
 }
 
 func (m *Mixer) mixUpdate() {
@@ -160,15 +136,8 @@ func (m *Mixer) mixUpdate() {
 		if dt := now.Sub(m.lastMixEndTs); dt > 0 {
 			n = int(dt / m.tickerDur)
 			m.lastMixEndTs = m.lastMixEndTs.Add(time.Duration(n) * m.tickerDur)
-		} else {
-			fmt.Println("NO MIX")
 		}
 	}
-
-	if n > 1 {
-		fmt.Println("N", n, time.Now())
-	}
-
 	if n > inputBufferFrames {
 		n = inputBufferFrames
 		// reset
@@ -245,7 +214,6 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 	defer i.mu.Unlock()
 	if i.buffering {
 		if i.buf.Len() < bufMin {
-			fmt.Println("KEEP BUFFERING")
 			return 0, nil // keep buffering
 		}
 		// buffered enough data - start playing as usual
@@ -253,7 +221,6 @@ func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
 	}
 	n, err := i.buf.Read(out)
 	if n == 0 {
-		fmt.Println("BUFFERING")
 		i.buffering = true // starving; pause the input and start buffering again
 	}
 	return n, err
@@ -278,7 +245,6 @@ func (i *Input) Close() error {
 func (i *Input) WriteSample(sample media.PCM16Sample) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	binary.Write(i.m.dump, binary.LittleEndian, []int16(sample))
 	_, err := i.buf.Write(sample)
 	return err
 }

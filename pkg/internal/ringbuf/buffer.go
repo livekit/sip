@@ -1,7 +1,6 @@
 package ringbuf
 
 import (
-	"fmt"
 	"io"
 )
 
@@ -97,7 +96,6 @@ func (b *Buffer[T]) Read(p []T) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	} else if b.Len() == 0 {
-		fmt.Println("EMPTY")
 		return 0, io.EOF
 	}
 	b.full = false
@@ -136,7 +134,6 @@ func (b *Buffer[T]) Write(p []T) (int, error) {
 			b.read = 0
 			b.write = 0
 			b.full = true
-			fmt.Println("FULL")
 			return n, nil
 		}
 		b.read = (b.read + dn) % len(b.buf) // drop old
@@ -151,8 +148,5 @@ func (b *Buffer[T]) Write(p []T) (int, error) {
 		n += dn
 	}
 	b.full = b.write == b.read
-	if b.full {
-		fmt.Println("FULL")
-	}
 	return n, nil
 }
