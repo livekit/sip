@@ -100,16 +100,57 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	return s, nil
 }
 
-func (s *Service) ActiveCalls() int {
+type ActiveCalls struct {
+	Inbound   int
+	Outbound  int
+	SampleIDs []string
+}
+
+func (st ActiveCalls) Total() int {
+	return st.Outbound + st.Inbound
+}
+
+func sampleMap[K comparable, V any](limit int, m map[K]V, sample func(v V) string) ([]string, int) {
+	total := len(m)
+	var out []string
+	for _, v := range m {
+		if s := sample(v); s != "" {
+			out = append(out, s)
+		}
+		limit--
+		if limit <= 0 {
+			break
+		}
+	}
+	return out, total
+}
+
+func (s *Service) ActiveCalls() ActiveCalls {
+	st := ActiveCalls{}
+
 	s.cli.cmu.Lock()
-	activeClientCalls := len(s.cli.activeCalls)
+	samples, total := sampleMap(5, s.cli.activeCalls, func(v *outboundCall) string {
+		if v == nil || v.cc == nil {
+			return "<nil>"
+		}
+		return v.cc.callID
+	})
+	st.Outbound = total
+	st.SampleIDs = append(st.SampleIDs, samples...)
 	s.cli.cmu.Unlock()
 
 	s.srv.cmu.Lock()
-	activeServerCalls := len(s.srv.activeCalls)
+	samples, total = sampleMap(5, s.srv.activeCalls, func(v *inboundCall) string {
+		if v == nil || v.cc == nil {
+			return "<nil>"
+		}
+		return v.cc.callID
+	})
+	st.Inbound = total
+	st.SampleIDs = append(st.SampleIDs, samples...)
 	s.srv.cmu.Unlock()
 
-	return activeClientCalls + activeServerCalls
+	return st
 }
 
 func (s *Service) Stop() {

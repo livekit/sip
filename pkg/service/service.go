@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/pprof"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -40,7 +41,7 @@ import (
 )
 
 type sipServiceStopFunc func()
-type sipServiceActiveCallsFunc func() int
+type sipServiceActiveCallsFunc func() sip.ActiveCalls
 
 type Service struct {
 	conf *config.Config
@@ -152,14 +153,18 @@ func (s *Service) Run() error {
 			if !s.killed.Load() {
 				shutdownTicker := time.NewTicker(5 * time.Second)
 				defer shutdownTicker.Stop()
-				var activeCalls int
 
 				for !s.killed.Load() {
-					activeCalls = s.sipServiceActiveCalls()
-					if activeCalls == 0 {
+					st := s.sipServiceActiveCalls()
+					if st.Total() == 0 {
 						break
 					}
-					s.log.Infow("waiting for calls to finish", "calls", activeCalls)
+					slices.Sort(st.SampleIDs)
+					s.log.Infow("waiting for calls to finish",
+						"inbound", st.Inbound,
+						"outbound", st.Outbound,
+						"sample", st.SampleIDs,
+					)
 					<-shutdownTicker.C
 				}
 			}
