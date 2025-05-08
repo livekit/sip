@@ -59,6 +59,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn rtp.UDPCon
 		mediaTimeout:  mediaTimeout,
 		jitterEnabled: conf.EnableJitterBuffer,
 		conn: rtp.NewConnWith(conn, &rtp.ConnConfig{
+			Log:                 log,
 			MediaTimeoutInitial: conf.MediaTimeoutInitial,
 			MediaTimeout:        conf.MediaTimeout,
 			TimeoutCallback: func() {

@@ -22,11 +22,14 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/rtp"
+
+	"github.com/livekit/protocol/logger"
 )
 
 var _ Writer = (*Conn)(nil)
 
 type ConnConfig struct {
+	Log                 logger.Logger
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
 	TimeoutCallback     func()
@@ -46,12 +49,17 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 	if conf.MediaTimeout <= 0 {
 		conf.MediaTimeout = 15 * time.Second
 	}
+	if conf.Log == nil {
+		conf.Log = logger.GetLogger()
+	}
 	c := &Conn{
+		log:            conf.Log,
 		readBuf:        make([]byte, 1500), // MTU
 		received:       make(chan struct{}),
 		conn:           conn,
 		timeout:        conf.MediaTimeout,
 		timeoutInitial: conf.MediaTimeoutInitial,
+		timeoutReset:   make(chan struct{}, 1),
 	}
 	if conf.TimeoutCallback != nil {
 		c.EnableTimeout(true)
@@ -68,6 +76,7 @@ type UDPConn interface {
 }
 
 type Conn struct {
+	log            logger.Logger
 	wmu            sync.Mutex
 	conn           UDPConn
 	closed         core.Fuse
@@ -75,6 +84,7 @@ type Conn struct {
 	packetCount    atomic.Uint64
 	received       chan struct{}
 	timeoutStart   atomic.Pointer[time.Time]
+	timeoutReset   chan struct{}
 	timeoutInitial time.Duration
 	timeout        time.Duration
 
@@ -205,32 +215,66 @@ func (c *Conn) EnableTimeout(enabled bool) {
 		c.timeoutStart.Store(nil)
 		return
 	}
+	select {
+	case c.timeoutReset <- struct{}{}:
+	default:
+	}
 	now := time.Now()
 	c.timeoutStart.Store(&now)
+	c.log.Infow("media timeout enabled",
+		"packets", c.packetCount.Load(),
+	)
 }
 
 func (c *Conn) onTimeout(timeoutCallback func()) {
-	ticker := time.NewTicker(c.timeout)
+	tickInterval := c.timeout
+	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	var lastPackets uint64
+	var (
+		lastPackets  uint64
+		startPackets uint64
+		lastTime     time.Time
+	)
 	for {
 		select {
 		case <-c.closed.Watch():
 			return
+		case <-c.timeoutReset:
+			ticker.Reset(tickInterval)
+			startPackets = c.packetCount.Load()
+			lastTime = time.Now()
 		case <-ticker.C:
 			curPackets := c.packetCount.Load()
 			if curPackets != lastPackets {
 				lastPackets = curPackets
+				lastTime = time.Now()
+				continue // wait for the next tick
+			}
+			startPtr := c.timeoutStart.Load()
+			if startPtr == nil {
+				continue // timeout disabled
+			}
+
+			// First timeout is allowed to be longer. Skip ticks if it's too early.
+			sinceStart := time.Since(*startPtr)
+			if lastPackets == startPackets && sinceStart < c.timeoutInitial {
 				continue
 			}
-			start := c.timeoutStart.Load()
-			if start == nil {
-				continue // temporary disabled
-			}
-			if lastPackets == 0 && time.Since(*start) < c.timeoutInitial {
+
+			// Ticker is allowed to fire earlier than the full timeout interval. Skip if it's not a full timeout yet.
+			sinceLast := time.Since(lastTime)
+			if sinceLast < c.timeout {
 				continue
 			}
+			c.log.Infow("triggering media timeout",
+				"packets", lastPackets,
+				"startPackets", startPackets,
+				"sinceStart", sinceStart,
+				"sinceLast", sinceLast,
+				"initial", c.timeoutInitial,
+				"timeout", c.timeout,
+			)
 			timeoutCallback()
 			return
 		}
