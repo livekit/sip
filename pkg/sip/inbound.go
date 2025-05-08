@@ -273,6 +273,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 }
 
+func (s *Server) onOptions(req *sip.Request, tx sip.ServerTransaction) {
+	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+}
+
 func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := getFromTag(req)
 	if err != nil {
