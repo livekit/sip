@@ -1,6 +1,8 @@
 package ringbuf
 
-import "io"
+import (
+	"io"
+)
 
 // New creates a new ring buffer with s specified size.
 func New[T any](sz int) *Buffer[T] {

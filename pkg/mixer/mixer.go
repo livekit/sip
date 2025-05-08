@@ -55,9 +55,9 @@ type Mixer struct {
 	mixBuf    []int32           // mix result buffer
 	mixTmp    media.PCM16Sample // temp buffer for reading input buffers
 
-	lastMix time.Time
-	stopped core.Fuse
-	mixCnt  uint
+	lastMixEndTs time.Time
+	stopped      core.Fuse
+	mixCnt       uint
 }
 
 func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mixer {
@@ -125,23 +125,29 @@ func (m *Mixer) mixOnce() {
 }
 
 func (m *Mixer) mixUpdate() {
-	n := 1
-	if !m.lastMix.IsZero() {
+	n := 0
+	now := time.Now()
+
+	if m.lastMixEndTs.IsZero() {
+		m.lastMixEndTs = now
+		n = 1
+	} else {
 		// In case scheduler stops us for too long, we will detect it and run mix multiple times.
 		// This happens if we get scheduled by OS/K8S on a lot of CPUs, but for a very short time.
-		if dt := time.Since(m.lastMix); dt > 0 {
+		if dt := now.Sub(m.lastMixEndTs); dt > 0 {
 			n = int(dt / m.tickerDur)
+			m.lastMixEndTs = m.lastMixEndTs.Add(time.Duration(n) * m.tickerDur)
 		}
 	}
-	if n == 0 {
-		n = 1
-	} else if n > inputBufferFrames {
+	if n > inputBufferFrames {
 		n = inputBufferFrames
+		// reset
+		m.lastMixEndTs = now
 	}
+
 	for i := 0; i < n; i++ {
 		m.mixOnce()
 	}
-	m.lastMix = time.Now()
 }
 
 func (m *Mixer) start() {
