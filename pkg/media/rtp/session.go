@@ -15,6 +15,7 @@
 package rtp
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -38,6 +39,7 @@ type Session interface {
 }
 
 type WriteStream interface {
+	String() string
 	// WriteRTP writes RTP packet to the connection.
 	WriteRTP(h *rtp.Header, payload []byte) (int, error)
 }
@@ -129,6 +131,10 @@ type writeStream struct {
 	mu   sync.Mutex
 	buf  []byte
 	conn net.Conn
+}
+
+func (w *writeStream) String() string {
+	return fmt.Sprintf("RTPWriteStream(%s)", w.conn.RemoteAddr())
 }
 
 func (w *writeStream) WriteRTP(h *rtp.Header, payload []byte) (int, error) {

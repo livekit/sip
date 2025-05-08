@@ -134,6 +134,10 @@ type writeStream struct {
 	w *srtp.WriteStreamSRTP
 }
 
+func (w writeStream) String() string {
+	return "SRTPWriteStream"
+}
+
 func (w writeStream) WriteRTP(h *prtp.Header, payload []byte) (int, error) {
 	return w.w.WriteRTP(h, payload)
 }

@@ -15,9 +15,13 @@
 package rtp
 
 import (
+	"fmt"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/pion/rtp"
+	"golang.org/x/exp/maps"
 )
 
 // NewMux creates an RTP handler mux that selects a Handler based on RTP payload type.
@@ -31,6 +35,27 @@ type Mux struct {
 	static  [rtp.PayloadTypeFirstDynamic]Handler
 	dynamic map[byte]Handler
 	def     Handler
+}
+
+func (m *Mux) String() string {
+	var buf strings.Builder
+	buf.WriteString("Mux")
+	for t, h := range m.static {
+		if h == nil {
+			continue
+		}
+		fmt.Fprintf(&buf, " (T=%d -> %s)", t, h.String())
+	}
+	dkeys := maps.Keys(m.dynamic)
+	slices.Sort(dkeys)
+	for _, t := range dkeys {
+		h := m.dynamic[t]
+		fmt.Fprintf(&buf, " (T=%d -> %s)", t, h.String())
+	}
+	if m.def != nil {
+		fmt.Fprintf(&buf, " (Def -> %s)", m.def.String())
+	}
+	return buf.String()
 }
 
 // HandleRTP selects a Handler based on payload type.
