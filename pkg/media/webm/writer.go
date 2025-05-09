@@ -26,8 +26,8 @@ import (
 	"github.com/livekit/sip/pkg/media"
 )
 
-func NewPCM16Writer(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.PCM16Writer {
-	return NewWriter[media.PCM16Sample](w, "A_PCM/INT/LIT", 1, sampleRate, sampleDur)
+func NewPCM16Writer(w io.WriteCloser, sampleRate int, channels int, sampleDur time.Duration) media.PCM16Writer {
+	return NewWriter[media.PCM16Sample](w, "A_PCM/INT/LIT", channels, sampleRate, sampleDur)
 }
 
 func NewWriter[T media.Frame](w io.WriteCloser, codec string, channels, sampleRate int, sampleDur time.Duration) media.WriteCloser[T] {

@@ -252,7 +252,7 @@ func (c *Client) setupRTPReceiver() {
 }
 
 func (c *Client) Record(w io.WriteCloser) {
-	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
+	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, 1, rtp.DefFrameDur)
 	h := c.audioCodec.DecodeRTP(ws, c.audioType)
 	c.recordHandler.Store(&h)
 }
@@ -653,7 +653,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	sampleRate := c.audioCodec.Info().SampleRate
 	var ws media.PCM16Writer
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, sampleRate, rtp.DefFrameDur)
+		ws = webmm.NewPCM16Writer(w, sampleRate, 1, rtp.DefFrameDur)
 		defer ws.Close()
 	}
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
