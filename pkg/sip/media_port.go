@@ -125,6 +125,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		mon:           mon,
 		externalIP:    opts.IP,
 		mediaTimeout:  mediaTimeout,
+		timeoutReset:  make(chan struct{}, 1),
 		jitterEnabled: opts.EnableJitterBuffer,
 		port:          newUDPConn(conn),
 		audioOut:      media.NewSwitchWriter(sampleRate),
@@ -148,6 +149,7 @@ type MediaPort struct {
 	packetCount      atomic.Uint64
 	mediaTimeout     <-chan struct{}
 	timeoutStart     atomic.Pointer[time.Time]
+	timeoutReset     chan struct{}
 	closed           core.Fuse
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
@@ -179,32 +181,66 @@ func (p *MediaPort) EnableTimeout(enabled bool) {
 		p.timeoutStart.Store(nil)
 		return
 	}
+	select {
+	case p.timeoutReset <- struct{}{}:
+	default:
+	}
 	now := time.Now()
 	p.timeoutStart.Store(&now)
+	p.log.Infow("media timeout enabled",
+		"packets", p.packetCount.Load(),
+	)
 }
 
 func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
-	ticker := time.NewTicker(p.opts.MediaTimeout)
+	tickInterval := p.opts.MediaTimeout
+	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
-	var lastPackets uint64
+	var (
+		lastPackets  uint64
+		startPackets uint64
+		lastTime     time.Time
+	)
 	for {
 		select {
 		case <-p.closed.Watch():
 			return
+		case <-p.timeoutReset:
+			ticker.Reset(tickInterval)
+			startPackets = p.packetCount.Load()
+			lastTime = time.Now()
 		case <-ticker.C:
 			curPackets := p.packetCount.Load()
 			if curPackets != lastPackets {
 				lastPackets = curPackets
+				lastTime = time.Now()
+				continue // wait for the next tick
+			}
+			startPtr := p.timeoutStart.Load()
+			if startPtr == nil {
+				continue // timeout disabled
+			}
+
+			// First timeout is allowed to be longer. Skip ticks if it's too early.
+			sinceStart := time.Since(*startPtr)
+			if lastPackets == startPackets && sinceStart < p.opts.MediaTimeoutInitial {
 				continue
 			}
-			start := p.timeoutStart.Load()
-			if start == nil {
-				continue // temporary disabled
-			}
-			if lastPackets == 0 && time.Since(*start) < p.opts.MediaTimeoutInitial {
+
+			// Ticker is allowed to fire earlier than the full timeout interval. Skip if it's not a full timeout yet.
+			sinceLast := time.Since(lastTime)
+			if sinceLast < p.opts.MediaTimeout {
 				continue
 			}
+			p.log.Infow("triggering media timeout",
+				"packets", lastPackets,
+				"startPackets", startPackets,
+				"sinceStart", sinceStart,
+				"sinceLast", sinceLast,
+				"initial", p.opts.MediaTimeoutInitial,
+				"timeout", p.opts.MediaTimeout,
+			)
 			timeoutCallback()
 			return
 		}
