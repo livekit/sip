@@ -187,8 +187,8 @@ func (s *Service) GetMediaProcessor(_ []livekit.SIPFeature) media.PCM16Processor
 	return nil
 }
 
-func (s *Service) CanAccept() bool {
-	return s.mon.CanAccept()
+func (s *Service) Health() stats.HealthStatus {
+	return s.mon.Health()
 }
 
 func (s *Service) RegisterCreateSIPParticipantTopic() error {
