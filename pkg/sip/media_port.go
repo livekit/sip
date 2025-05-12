@@ -389,11 +389,13 @@ func (p *MediaPort) rtpLoop(sess rtp.Session) {
 }
 
 func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
+	const maxErrors = 50 // 1 sec, given 20 ms frames
 	buf := make([]byte, rtp.MTUSize+1)
 	overflow := false
 	var (
 		h        rtp.Header
 		pipeline string
+		errorCnt int
 	)
 	for {
 		h = rtp.Header{}
@@ -426,14 +428,21 @@ func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 			if pipeline == "" {
 				pipeline = hnd.String()
 			}
-			log.Errorw("handle RTP failed", err,
-				"payloadType", h.PayloadType,
+			log := log.WithValues(
 				"payloadSize", n,
 				"rtpHeader", h,
 				"pipeline", pipeline,
+				"errorCount", errorCnt,
 			)
+			log.Debugw("handle RTP failed", "error", err)
+			errorCnt++
+			if errorCnt >= maxErrors {
+				log.Errorw("killing RTP loop due to persisted errors", err)
+				return
+			}
 			continue
 		}
+		errorCnt = 0
 		pipeline = ""
 	}
 }

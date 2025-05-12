@@ -216,8 +216,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "Whether node can accept new requests",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, func() float64 {
-		c := m.CanAccept()
-		if c {
+		if m.Health() == HealthOK {
 			return 1
 		}
 		return 0
@@ -246,14 +245,29 @@ func (m *Monitor) Stop() {
 	m.metrics = nil
 }
 
-func (m *Monitor) CanAccept() bool {
-	if !m.started.IsBroken() ||
-		m.shutdown.IsBroken() ||
-		m.cpu.GetCPUIdle() < m.cpu.NumCPU()*(1-m.maxUtilization) {
-		return false
-	}
+//go:generate stringer -type HealthStatus -trimprefix Health
 
-	return true
+type HealthStatus int
+
+const (
+	HealthOK HealthStatus = iota
+	HealthNotStarted
+	HealthStopped
+	HealthUnderLoad
+	HealthDisabled
+)
+
+func (m *Monitor) Health() HealthStatus {
+	if !m.started.IsBroken() {
+		return HealthNotStarted
+	}
+	if m.shutdown.IsBroken() {
+		return HealthStopped
+	}
+	if m.cpu.GetCPUIdle() < m.cpu.NumCPU()*(1-m.maxUtilization) {
+		return HealthUnderLoad
+	}
+	return HealthOK
 }
 
 func (m *Monitor) IdleCPU() float64 {
