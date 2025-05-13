@@ -43,13 +43,12 @@ type ServiceConfig struct {
 }
 
 type Service struct {
-	conf        *config.Config
-	sconf       *ServiceConfig
-	log         logger.Logger
-	mon         *stats.Monitor
-	getIOClient GetIOInfoClient
-	cli         *Client
-	srv         *Server
+	conf  *config.Config
+	sconf *ServiceConfig
+	log   logger.Logger
+	mon   *stats.Monitor
+	cli   *Client
+	srv   *Server
 
 	mu               sync.Mutex
 	pendingTransfers map[transferKey]chan struct{}
@@ -72,7 +71,6 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 		mon:              mon,
 		cli:              NewClient(region, conf, log, mon, getIOClient),
 		srv:              NewServer(region, conf, log, mon, getIOClient),
-		getIOClient:      getIOClient,
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	var err error
