@@ -25,8 +25,11 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/utils"
+	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 
@@ -43,12 +46,13 @@ type ServiceConfig struct {
 }
 
 type Service struct {
-	conf  *config.Config
-	sconf *ServiceConfig
-	log   logger.Logger
-	mon   *stats.Monitor
-	cli   *Client
-	srv   *Server
+	conf        *config.Config
+	sconf       *ServiceConfig
+	log         logger.Logger
+	mon         *stats.Monitor
+	getIOClient GetIOInfoClient
+	cli         *Client
+	srv         *Server
 
 	mu               sync.Mutex
 	pendingTransfers map[transferKey]chan struct{}
@@ -71,6 +75,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 		mon:              mon,
 		cli:              NewClient(region, conf, log, mon, getIOClient),
 		srv:              NewServer(region, conf, log, mon, getIOClient),
+		getIOClient:      getIOClient,
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	var err error
@@ -213,7 +218,7 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	s.log.Infow("transfering SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
-	var transfetResult atomic.Pointer[error]
+	var transferResult atomic.Pointer[error]
 
 	s.mu.Lock()
 	k := transferKey{
@@ -235,7 +240,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			defer cdone()
 
 			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, req.Headers, req.PlayDialtone)
-			transfetResult.Store(&err)
+			transferResult.Store(&err)
 			close(done)
 
 			s.mu.Lock()
@@ -250,7 +255,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	select {
 	case <-done:
 		var err error
-		errPtr := transfetResult.Load()
+		errPtr := transferResult.Load()
 		if errPtr != nil {
 			err = *errPtr
 		}
@@ -260,14 +265,66 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	}
 }
 
+func (s *Service) handleTransferStartAnalytics(ctx context.Context, callID string, transferTo string) (*livekit.SIPTransferInfo, error) {
+	ti := &livekit.SIPTransferInfo{
+		TransferId:            guid.New(utils.SIPTrunkPrefix),
+		CallId:                callID,
+		TransferTo:            transferTo,
+		TransferInitiatedAtNs: time.Now(),
+		TransferStatus:        livekit.SIPTransferStatus_STS_TRANSFER_ONGOING,
+	}
+
+	req := &rpc.UpdateSIPCallStateRequest{
+		TransferInfo: ti,
+	}
+
+	_, err := s.getIOClient().UpdateSIPCallState(ctx, req)
+
+	return ti, err
+}
+
+func (s *Service) handleTransferEndAnalytics(ctx context.Context, ti *livekit.SIPTransferInfo, inErr error) error {
+	if ti == nil {
+		return nil
+	}
+
+	ti.TransferCompletedAtNs = time.Now()
+	if inErr != nil {
+		ti.Error = inErr.String()
+	}
+
+	req := &rpc.UpdateSIPCallStateRequest{
+		TransferInfo: ti,
+	}
+
+	_, err := s.getIOClient().UpdateSIPCallState(ctx, req)
+
+	return err
+}
+
 func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) error {
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
 	out := s.cli.activeCalls[LocalTag(callID)]
 	s.cli.cmu.Unlock()
 
+	var ti *livekit.SIPTransferInfo
+	var err error
+
 	if out != nil {
-		err := out.transferCall(ctx, transferTo, headers, dialtone)
+		ti, err = s.handleTransferStartAnalytics(ctx, callID, transferTo)
+		if err != nil {
+			logger.Infow("transfer info analytics update failed", "error", err)
+		}
+		defer func() {
+			lerr := s.handleTransferEndAnalytics(ctx, ti, err)
+			if lerr != nil {
+				logger.Infow("transfer info analytics update failed", "error", err)
+
+			}
+		}()
+
+		err = out.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
 			return err
 		}
@@ -280,10 +337,23 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	s.srv.cmu.Unlock()
 
 	if in != nil {
+		ti, err = s.handleTransferStartAnalytics(ctx, callID, transferTo)
+		if err != nil {
+			logger.Infow("transfer info analytics update failed", "error", err)
+		}
+
 		err := in.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
 			return err
 		}
+
+		defer func() {
+			lerr := s.handleTransferEndAnalytics(ctx, ti, err)
+			if lerr != nil {
+				logger.Infow("transfer info analytics update failed", "error", err)
+
+			}
+		}()
 
 		return nil
 	}
