@@ -258,10 +258,8 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	switch resp.StatusCode {
 	case sip.StatusOK, 202: // 202 is Accepted
 		return resp, nil
-	case sip.StatusForbidden:
-		return resp, psrpc.NewErrorf(psrpc.PermissionDenied, "SIP REFER was denied")
 	default:
-		return resp, psrpc.NewErrorf(psrpc.Internal, "SIP REFER failed with code %d", resp.StatusCode)
+		return resp, &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
 	}
 }
 

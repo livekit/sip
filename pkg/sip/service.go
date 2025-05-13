@@ -32,6 +32,7 @@ import (
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
+	"github.com/pkg/errors"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media"
@@ -270,7 +271,7 @@ func (s *Service) handleTransferStartAnalytics(ctx context.Context, callID strin
 		TransferId:            guid.New(utils.SIPTrunkPrefix),
 		CallId:                callID,
 		TransferTo:            transferTo,
-		TransferInitiatedAtNs: time.Now(),
+		TransferInitiatedAtNs: time.Now().UnixNano(),
 		TransferStatus:        livekit.SIPTransferStatus_STS_TRANSFER_ONGOING,
 	}
 
@@ -288,9 +289,14 @@ func (s *Service) handleTransferEndAnalytics(ctx context.Context, ti *livekit.SI
 		return nil
 	}
 
-	ti.TransferCompletedAtNs = time.Now()
+	ti.TransferCompletedAtNs = time.Now().UnixNano()
 	if inErr != nil {
 		ti.Error = inErr.String()
+	}
+
+	var sipStatus *livekit.SIPStatus
+	if errors.As(inErr, &sipStatus) {
+		ti.TransferStatusCode = sipStatus
 	}
 
 	req := &rpc.UpdateSIPCallStateRequest{
@@ -320,7 +326,6 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 			lerr := s.handleTransferEndAnalytics(ctx, ti, err)
 			if lerr != nil {
 				logger.Infow("transfer info analytics update failed", "error", err)
-
 			}
 		}()
 
@@ -351,7 +356,6 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 			lerr := s.handleTransferEndAnalytics(ctx, ti, err)
 			if lerr != nil {
 				logger.Infow("transfer info analytics update failed", "error", err)
-
 			}
 		}()
 
