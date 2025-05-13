@@ -71,7 +71,7 @@ func (s *CallState) Update(ctx context.Context, update func(info *livekit.SIPCal
 
 func (s *CallState) StartTransfer(ctx context.Context, transferTo string) string {
 	ti := &livekit.SIPTransferInfo{
-		TransferId:            guid.New(utils.SIPTrunkPrefix),
+		TransferId:            guid.New(utils.SIPTransferPrefix),
 		CallId:                s.callInfo.CallId,
 		TransferTo:            transferTo,
 		TransferInitiatedAtNs: time.Now().UnixNano(),
@@ -105,6 +105,9 @@ func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr er
 	ti.TransferCompletedAtNs = time.Now().UnixNano()
 	if inErr != nil {
 		ti.Error = inErr.Error()
+		ti.TransferStatus = livekit.SIPTransferStatus_STS_TRANSFER_FAILED
+	} else {
+		ti.TransferStatus = livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL
 	}
 
 	var sipStatus *livekit.SIPStatus
