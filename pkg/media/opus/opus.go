@@ -23,6 +23,7 @@ import (
 	"gopkg.in/hraban/opus.v2"
 
 	"github.com/livekit/protocol/logger"
+
 	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/media/webm"
@@ -44,37 +45,53 @@ func (s Sample) CopyTo(dst []byte) (int, error) {
 
 type Writer = media.WriteCloser[Sample]
 
-func Decode(w media.PCM16Writer, channels int, logger logger.Logger) (Writer, error) {
-	dec, err := opus.NewDecoder(w.SampleRate(), channels)
+type params struct {
+	SampleRate int
+	Channels   int
+}
+
+func Decode(w media.PCM16Writer, channels int, log logger.Logger) (Writer, error) {
+	rate := w.SampleRate()
+	p := params{SampleRate: rate, Channels: channels}
+	log = log.WithValues("params", p)
+	dec, err := opus.NewDecoder(rate, channels)
 	if err != nil {
+		log.Errorw("cannot initialize opus decoder", err)
 		return nil, err
 	}
 	return &decoder{
-		w:      w,
-		dec:    dec,
-		buf:    make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
-		logger: logger,
+		w:   w,
+		p:   p,
+		dec: dec,
+		buf: make([]int16, w.SampleRate()/rtp.DefFramesPerSec),
+		log: log,
 	}, nil
 }
 
-func Encode(w Writer, channels int, logger logger.Logger) (media.PCM16Writer, error) {
-	enc, err := opus.NewEncoder(w.SampleRate(), channels, opus.AppVoIP)
+func Encode(w Writer, channels int, log logger.Logger) (media.PCM16Writer, error) {
+	rate := w.SampleRate()
+	p := params{SampleRate: rate, Channels: channels}
+	log = log.WithValues("params", p)
+	enc, err := opus.NewEncoder(rate, channels, opus.AppVoIP)
 	if err != nil {
+		log.Errorw("cannot initialize opus encoder", err)
 		return nil, err
 	}
 	return &encoder{
-		w:      w,
-		enc:    enc,
-		buf:    make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
-		logger: logger,
+		w:   w,
+		p:   p,
+		enc: enc,
+		buf: make([]byte, w.SampleRate()/rtp.DefFramesPerSec),
+		log: log,
 	}, nil
 }
 
 type decoder struct {
-	w      media.PCM16Writer
-	dec    *opus.Decoder
-	buf    media.PCM16Sample
-	logger logger.Logger
+	w   media.PCM16Writer
+	p   params
+	dec *opus.Decoder
+	buf media.PCM16Sample
+	log logger.Logger
 
 	successiveErrorCount int
 }
@@ -92,9 +109,10 @@ func (d *decoder) WriteSample(in Sample) error {
 	if err != nil {
 		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore small amount of corruption errors
 		if !errors.Is(err, opus.ErrInvalidPacket) || d.successiveErrorCount >= 5 {
+			d.log.Warnw("error decoding opus sample", err)
 			return err
 		}
-		d.logger.Debugw("opus decoder failed decoding a sample")
+		d.log.Debugw("opus decoder failed decoding a sample", "error", err)
 		d.successiveErrorCount++
 		return nil
 	}
@@ -107,10 +125,13 @@ func (d *decoder) Close() error {
 }
 
 type encoder struct {
-	w      Writer
-	enc    *opus.Encoder
-	buf    Sample
-	logger logger.Logger
+	w   Writer
+	p   params
+	enc *opus.Encoder
+	buf Sample
+	log logger.Logger
+
+	successiveErrorCount int
 }
 
 func (e *encoder) String() string {
@@ -124,8 +145,13 @@ func (e *encoder) SampleRate() int {
 func (e *encoder) WriteSample(in media.PCM16Sample) error {
 	n, err := e.enc.Encode(in, e.buf)
 	if err != nil {
+		if e.successiveErrorCount < 5 {
+			e.log.Errorw("error encoding opus sample", err, "len", len(in), "n", n)
+			e.successiveErrorCount++
+		}
 		return err
 	}
+	e.successiveErrorCount = 0
 	return e.w.WriteSample(e.buf[:n])
 }
 
