@@ -10,10 +10,10 @@ require (
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
-	github.com/livekit/mageutil v0.0.0-20230125210925-54e8a70427c1
+	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/mediatransportutil v0.0.0-20241220010243-a2bdee945564
-	github.com/livekit/protocol v1.36.2-0.20250408143132-c193b8d080da
-	github.com/livekit/psrpc v0.6.1-0.20250205181828-a0beed2e4126
+	github.com/livekit/protocol v1.38.1-0.20250514155317-3ee266441614
+	github.com/livekit/psrpc v0.6.1-0.20250511053145-465289d72c3c
 	github.com/livekit/server-sdk-go/v2 v2.5.0
 	github.com/livekit/sipgo v0.13.2-0.20250410120437-ca5b8ca7b53d
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -124,7 +124,8 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
-	golang.org/x/crypto v0.33.0 // indirect
+	golang.org/x/crypto v0.35.0 // indirect
+	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sync v0.14.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect

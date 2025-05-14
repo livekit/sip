@@ -213,7 +213,7 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	s.log.Infow("transfering SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
-	var transfetResult atomic.Pointer[error]
+	var transferResult atomic.Pointer[error]
 
 	s.mu.Lock()
 	k := transferKey{
@@ -235,7 +235,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			defer cdone()
 
 			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, req.Headers, req.PlayDialtone)
-			transfetResult.Store(&err)
+			transferResult.Store(&err)
 			close(done)
 
 			s.mu.Lock()
@@ -250,7 +250,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	select {
 	case <-done:
 		var err error
-		errPtr := transfetResult.Load()
+		errPtr := transferResult.Load()
 		if errPtr != nil {
 			err = *errPtr
 		}

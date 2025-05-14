@@ -573,6 +573,11 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
 	var err error
 
+	tID := c.state.StartTransfer(ctx, transferTo)
+	defer func() {
+		c.state.EndTransfer(ctx, tID, retErr)
+	}()
+
 	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
