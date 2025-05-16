@@ -133,7 +133,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
-		return v.cc.callID
+		return string(v.cc.id)
 	})
 	st.Outbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
@@ -144,7 +144,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
-		return v.cc.callID
+		return string(v.cc.id)
 	})
 	st.Inbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
