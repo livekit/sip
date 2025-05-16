@@ -242,6 +242,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled Requ
 	if agent == nil {
 		ua, err := sipgo.NewUA(
 			sipgo.WithUserAgent(UserAgent),
+			sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
 		)
 		if err != nil {
 			return err
@@ -264,7 +265,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled Requ
 	s.sipUnhandled = unhandled
 
 	// Ignore ACKs
-	s.sipSrv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
+	s.sipSrv.OnAck(func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {})
 	listenIP := s.conf.ListenIP
 	if listenIP == "" {
 		listenIP = "0.0.0.0"
