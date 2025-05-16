@@ -265,6 +265,9 @@ func (p *MediaPort) Close() {
 			p.dtmfOutAudio = nil
 		}
 		p.dtmfIn.Store(nil)
+		if p.sess != nil {
+			_ = p.sess.Close()
+		}
 		_ = p.port.Close()
 	})
 }
@@ -334,6 +337,9 @@ func (p *MediaPort) SetOffer(offerData []byte, enc sdp.Encryption) (*sdp.Answer,
 }
 
 func (p *MediaPort) SetConfig(c *MediaConf) error {
+	if p.closed.IsBroken() {
+		return errors.New("media is already closed")
+	}
 	var crypto string
 	if c.Crypto != nil {
 		crypto = c.Crypto.Profile.String()
@@ -449,6 +455,9 @@ func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 
 // Must be called holding the lock
 func (p *MediaPort) setupOutput() error {
+	if p.closed.IsBroken() {
+		return errors.New("media is already closed")
+	}
 	go p.rtpLoop(p.sess)
 	w, err := p.sess.OpenWriteStream()
 	if err != nil {
