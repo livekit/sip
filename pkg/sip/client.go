@@ -309,7 +309,7 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	if call == nil {
 		return false
 	}
-	call.log.Infow("NOTIFY")
+
 	go func() {
 		err := call.cc.handleNotify(req, tx)
 
