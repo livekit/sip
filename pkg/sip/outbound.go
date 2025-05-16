@@ -974,6 +974,8 @@ func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) e
 		return err
 	}
 
+	c.log.Infow("handling NOTIFY", "method", method, "status", status, "cseq", cseq)
+
 	switch method {
 	case sip.REFER:
 		c.mu.RLock()
