@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"sync"
@@ -133,7 +134,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
-		return v.cc.callID
+		return string(v.cc.id)
 	})
 	st.Outbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
@@ -144,7 +145,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
-		return v.cc.callID
+		return string(v.cc.id)
 	})
 	st.Inbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
@@ -185,6 +186,7 @@ func (s *Service) Start() error {
 	// to pass even without forwarding rules on the firewall. ut it will inevitably fail later on follow-up requests like BYE.
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(UserAgent),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
 	)
 	if err != nil {
 		return err

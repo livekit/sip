@@ -37,7 +37,6 @@ import (
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
 
-	"github.com/livekit/sip/pkg/mixer"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -49,6 +48,7 @@ import (
 	"github.com/livekit/sip/pkg/media/rtp"
 	lksdp "github.com/livekit/sip/pkg/media/sdp"
 	webmm "github.com/livekit/sip/pkg/media/webm"
+	"github.com/livekit/sip/pkg/mixer"
 )
 
 type ClientConfig struct {
@@ -120,6 +120,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 
 	ua, err := sipgo.NewUA(
 		sipgo.WithUserAgent(conf.Number),
+		sipgo.WithUserAgentLogger(cli.log),
 	)
 	if err != nil {
 		cli.Close()
@@ -138,20 +139,20 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		return nil, err
 	}
 
-	cli.sipServer.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+	cli.sipServer.OnBye(func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 		tx.Terminate()
 		if conf.OnBye != nil {
 			conf.OnBye()
 		}
 	})
-	cli.sipServer.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+	cli.sipServer.OnAck(func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 		select {
 		case cli.ack <- struct{}{}:
 		default:
 		}
 	})
-	cli.sipServer.OnRefer(func(req *sip.Request, tx sip.ServerTransaction) {
+	cli.sipServer.OnRefer(func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 		if conf.OnRefer != nil {
 			conf.OnRefer(req)
 		}

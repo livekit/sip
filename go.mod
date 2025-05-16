@@ -15,7 +15,7 @@ require (
 	github.com/livekit/protocol v1.38.1-0.20250514155317-3ee266441614
 	github.com/livekit/psrpc v0.6.1-0.20250511053145-465289d72c3c
 	github.com/livekit/server-sdk-go/v2 v2.5.0
-	github.com/livekit/sipgo v0.13.2-0.20250410120437-ca5b8ca7b53d
+	github.com/livekit/sipgo v0.13.2-0.20250516144641-135461905e37
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/interceptor v0.1.37
@@ -125,7 +125,6 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
 	golang.org/x/crypto v0.35.0 // indirect
-	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sync v0.14.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect

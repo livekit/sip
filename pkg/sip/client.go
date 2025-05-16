@@ -79,6 +79,7 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 	if agent == nil {
 		ua, err := sipgo.NewUA(
 			sipgo.WithUserAgent(UserAgent),
+			sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(c.log))),
 		)
 		if err != nil {
 			return err

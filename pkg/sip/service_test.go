@@ -3,6 +3,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"testing"
 	"time"
@@ -88,12 +89,13 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
+	log := logger.NewTestLogger(t)
 	s, err := NewService("", &config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, logger.GetLogger(), func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -102,7 +104,10 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 
 	require.NoError(t, s.Start())
 
-	sipUserAgent, err := sipgo.NewUA(sipgo.WithUserAgent(from))
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(from),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	)
 	require.NoError(t, err)
 
 	sipClient, err := sipgo.NewClient(sipUserAgent)

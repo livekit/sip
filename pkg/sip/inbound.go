@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/netip"
 	"slices"
@@ -122,7 +123,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	return true
 }
 
-func (s *Server) onInvite(req *sip.Request, tx sip.ServerTransaction) {
+func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
 	_ = s.processInvite(req, tx)
 }
@@ -273,11 +274,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 }
 
-func (s *Server) onOptions(req *sip.Request, tx sip.ServerTransaction) {
+func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
 }
 
-func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
+func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := getFromTag(req)
 	if err != nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
@@ -303,7 +304,7 @@ func (s *Server) onBye(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
-func (s *Server) onNotify(req *sip.Request, tx sip.ServerTransaction) {
+func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := getFromTag(req)
 	if err != nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
