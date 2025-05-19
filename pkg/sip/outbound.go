@@ -24,22 +24,22 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
+	msdk "github.com/livekit/media-sdk"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
-	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/dtmf"
-	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -76,7 +76,7 @@ type outboundCall struct {
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
 	lkRoom   *Room
-	lkRoomIn media.PCM16Writer // output to room; OPUS at 48k
+	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
 	sipConf  sipOutboundConfig
 }
 

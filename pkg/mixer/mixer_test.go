@@ -19,12 +19,11 @@ import (
 	"testing"
 	"time"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/stretchr/testify/require"
-
-	"github.com/livekit/sip/pkg/media"
 )
 
-func newTestWriter(buf *media.PCM16Sample, sampleRate int) media.PCM16Writer {
+func newTestWriter(buf *msdk.PCM16Sample, sampleRate int) msdk.PCM16Writer {
 	return &testWriter{
 		buf:        buf,
 		sampleRate: sampleRate,
@@ -32,7 +31,7 @@ func newTestWriter(buf *media.PCM16Sample, sampleRate int) media.PCM16Writer {
 }
 
 type testWriter struct {
-	buf        *media.PCM16Sample
+	buf        *msdk.PCM16Sample
 	sampleRate int
 }
 
@@ -48,14 +47,14 @@ func (b *testWriter) Close() error {
 	return nil
 }
 
-func (b *testWriter) WriteSample(data media.PCM16Sample) error {
+func (b *testWriter) WriteSample(data msdk.PCM16Sample) error {
 	*b.buf = data
 	return nil
 }
 
 type testMixer struct {
 	t      testing.TB
-	sample media.PCM16Sample
+	sample msdk.PCM16Sample
 	*Mixer
 }
 
@@ -66,7 +65,7 @@ func newTestMixer(t testing.TB) *testMixer {
 	return m
 }
 
-func (m *testMixer) Expect(exp media.PCM16Sample, msgAndArgs ...any) {
+func (m *testMixer) Expect(exp msdk.PCM16Sample, msgAndArgs ...any) {
 	m.t.Helper()
 	m.mixOnce()
 	require.Equal(m.t, exp, m.sample, msgAndArgs...)
@@ -74,7 +73,7 @@ func (m *testMixer) Expect(exp media.PCM16Sample, msgAndArgs ...any) {
 
 func WriteSampleN(inp *Input, i int) {
 	v := int16(i) * 5
-	inp.WriteSample(media.PCM16Sample{v + 0, v + 1, v + 2, v + 3, v + 4})
+	inp.WriteSample(msdk.PCM16Sample{v + 0, v + 1, v + 2, v + 3, v + 4})
 }
 
 func (m *testMixer) ExpectSampleN(i int, msgAndArgs ...any) {
@@ -86,14 +85,14 @@ func (m *testMixer) ExpectSampleN(i int, msgAndArgs ...any) {
 func (m *testMixer) CheckSampleN(i int, msgAndArgs ...any) {
 	m.t.Helper()
 	v := int16(i) * 5
-	require.Equal(m.t, media.PCM16Sample{v + 0, v + 1, v + 2, v + 3, v + 4}, m.sample, msgAndArgs...)
+	require.Equal(m.t, msdk.PCM16Sample{v + 0, v + 1, v + 2, v + 3, v + 4}, m.sample, msgAndArgs...)
 }
 
 func TestMixer(t *testing.T) {
 	t.Run("no input produces silence", func(t *testing.T) {
 		m := newTestMixer(t)
 		m.mixOnce()
-		m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+		m.Expect(msdk.PCM16Sample{0, 0, 0, 0, 0})
 	})
 
 	t.Run("one input mixing correctly", func(t *testing.T) {
@@ -118,12 +117,12 @@ func TestMixer(t *testing.T) {
 		two.buffering = false
 		two.WriteSample([]int16{0xA, 0xB, 0xC, 0xD, 0xE})
 
-		m.Expect(media.PCM16Sample{24, 24, 24, 24, 24})
+		m.Expect(msdk.PCM16Sample{24, 24, 24, 24, 24})
 
 		one.WriteSample([]int16{0x7FFF, 0x1, -0x7FFF, -0x1, 0x0})
 		two.WriteSample([]int16{0x1, 0x7FFF, -0x1, -0x7FFF, 0x0})
 
-		m.Expect(media.PCM16Sample{0x7FFF, 0x7FFF, -0x7FFF, -0x7FFF, 0x0})
+		m.Expect(msdk.PCM16Sample{0x7FFF, 0x7FFF, -0x7FFF, -0x7FFF, 0x0})
 	})
 
 	t.Run("draining produces silence afterwards", func(t *testing.T) {
@@ -136,9 +135,9 @@ func TestMixer(t *testing.T) {
 		}
 
 		for i := 0; i < inputBufferFrames+3; i++ {
-			expected := media.PCM16Sample{0, 1, 2, 3, 4}
+			expected := msdk.PCM16Sample{0, 1, 2, 3, 4}
 			if i >= inputBufferFrames {
-				expected = media.PCM16Sample{0, 0, 0, 0, 0}
+				expected = msdk.PCM16Sample{0, 0, 0, 0, 0}
 			}
 			m.Expect(expected, "i=%d", i)
 		}
@@ -166,20 +165,20 @@ func TestMixer(t *testing.T) {
 
 		for i := 0; i < inputBufferMin-1; i++ {
 			// Mixing produces nothing, because we are buffering the input initially.
-			m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+			m.Expect(msdk.PCM16Sample{0, 0, 0, 0, 0})
 			WriteSampleN(inp, i)
 		}
 
 		// Now we should finally receive all our samples, even if no new data is available.
-		m.Expect(media.PCM16Sample{10, 11, 12, 13, 14})
+		m.Expect(msdk.PCM16Sample{10, 11, 12, 13, 14})
 		for i := 0; i < inputBufferMin-1; i++ {
 			m.ExpectSampleN(i)
 		}
 
 		// Input is starving, should produce silence again until we buffer enough samples.
-		m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+		m.Expect(msdk.PCM16Sample{0, 0, 0, 0, 0})
 		for i := 0; i < inputBufferMin; i++ {
-			m.Expect(media.PCM16Sample{0, 0, 0, 0, 0})
+			m.Expect(msdk.PCM16Sample{0, 0, 0, 0, 0})
 			WriteSampleN(inp, i)
 		}
 		// Data is flowing again after we buffered enough.

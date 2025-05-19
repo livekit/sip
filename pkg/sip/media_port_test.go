@@ -27,14 +27,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/rtp"
+	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/sip/pkg/media/sdp"
-
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/stretchr/testify/require"
 )
 
 type testUDPConn struct {
@@ -155,23 +153,23 @@ func newIP(v string) netip.Addr {
 }
 
 func TestMediaPort(t *testing.T) {
-	codecs := media.Codecs()
+	codecs := msdk.Codecs()
 	disableAll := func() {
 		for _, codec := range codecs {
-			media.CodecSetEnabled(codec.Info().SDPName, false)
+			msdk.CodecSetEnabled(codec.Info().SDPName, false)
 		}
 	}
 	defer func() {
 		for _, codec := range codecs {
 			info := codec.Info()
-			media.CodecSetEnabled(info.SDPName, !info.Disabled)
+			msdk.CodecSetEnabled(info.SDPName, !info.Disabled)
 		}
 	}()
 	for _, codec := range codecs {
 		info := codec.Info()
 		t.Run(info.SDPName, func(t *testing.T) {
 			disableAll()
-			media.CodecSetEnabled(info.SDPName, true)
+			msdk.CodecSetEnabled(info.SDPName, true)
 
 			sub := strings.SplitN(info.SDPName, "/", 2)
 			name := sub[0]
@@ -240,20 +238,20 @@ func TestMediaPort(t *testing.T) {
 					require.Equal(t, info.SDPName, m1.Config().Audio.Codec.Info().SDPName)
 					require.Equal(t, info.SDPName, m2.Config().Audio.Codec.Info().SDPName)
 
-					var buf1 media.PCM16Sample
-					bw1 := media.NewPCM16BufferWriter(&buf1, tconf.Rate)
+					var buf1 msdk.PCM16Sample
+					bw1 := msdk.NewPCM16BufferWriter(&buf1, tconf.Rate)
 					m1.WriteAudioTo(bw1)
 
-					var buf2 media.PCM16Sample
-					bw2 := media.NewPCM16BufferWriter(&buf2, tconf.Rate)
+					var buf2 msdk.PCM16Sample
+					bw2 := msdk.NewPCM16BufferWriter(&buf2, tconf.Rate)
 					m2.WriteAudioTo(bw2)
 
 					w1 := m1.GetAudioWriter()
 					w2 := m2.GetAudioWriter()
 
 					packetSize := uint32(tconf.Rate / int(time.Second/rtp.DefFrameDur))
-					sample1 := make(media.PCM16Sample, packetSize)
-					sample2 := make(media.PCM16Sample, packetSize)
+					sample1 := make(msdk.PCM16Sample, packetSize)
+					sample2 := make(msdk.PCM16Sample, packetSize)
 					for i := range packetSize {
 						sample1[i] = +5116
 						sample2[i] = -5116
@@ -310,7 +308,7 @@ func TestMediaPort(t *testing.T) {
 
 }
 
-func checkPCM(t testing.TB, exp, got media.PCM16Sample) {
+func checkPCM(t testing.TB, exp, got msdk.PCM16Sample) {
 	require.Equal(t, len(exp), len(got))
 	expSamples := slices.Clone(exp)
 	slices.Sort(expSamples)

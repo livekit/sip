@@ -22,11 +22,10 @@ import (
 
 	"gopkg.in/hraban/opus.v2"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/rtp"
+	"github.com/livekit/media-sdk/webm"
 	"github.com/livekit/protocol/logger"
-
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/rtp"
-	"github.com/livekit/sip/pkg/media/webm"
 )
 
 type Sample []byte
@@ -43,14 +42,14 @@ func (s Sample) CopyTo(dst []byte) (int, error) {
 	return n, nil
 }
 
-type Writer = media.WriteCloser[Sample]
+type Writer = msdk.WriteCloser[Sample]
 
 type params struct {
 	SampleRate int
 	Channels   int
 }
 
-func Decode(w media.PCM16Writer, channels int, log logger.Logger) (Writer, error) {
+func Decode(w msdk.PCM16Writer, channels int, log logger.Logger) (Writer, error) {
 	rate := w.SampleRate()
 	p := params{SampleRate: rate, Channels: channels}
 	log = log.WithValues("params", p)
@@ -68,7 +67,7 @@ func Decode(w media.PCM16Writer, channels int, log logger.Logger) (Writer, error
 	}, nil
 }
 
-func Encode(w Writer, channels int, log logger.Logger) (media.PCM16Writer, error) {
+func Encode(w Writer, channels int, log logger.Logger) (msdk.PCM16Writer, error) {
 	rate := w.SampleRate()
 	p := params{SampleRate: rate, Channels: channels}
 	log = log.WithValues("params", p)
@@ -87,10 +86,10 @@ func Encode(w Writer, channels int, log logger.Logger) (media.PCM16Writer, error
 }
 
 type decoder struct {
-	w   media.PCM16Writer
+	w   msdk.PCM16Writer
 	p   params
 	dec *opus.Decoder
-	buf media.PCM16Sample
+	buf msdk.PCM16Sample
 	log logger.Logger
 
 	successiveErrorCount int
@@ -142,7 +141,7 @@ func (e *encoder) SampleRate() int {
 	return e.w.SampleRate()
 }
 
-func (e *encoder) WriteSample(in media.PCM16Sample) error {
+func (e *encoder) WriteSample(in msdk.PCM16Sample) error {
 	n, err := e.enc.Encode(in, e.buf)
 	if err != nil {
 		if e.successiveErrorCount < 5 {
@@ -159,6 +158,6 @@ func (e *encoder) Close() error {
 	return e.w.Close()
 }
 
-func NewWebmWriter(w io.WriteCloser, sampleRate int, sampleDur time.Duration) media.WriteCloser[Sample] {
+func NewWebmWriter(w io.WriteCloser, sampleRate int, sampleDur time.Duration) msdk.WriteCloser[Sample] {
 	return webm.NewWriter[Sample](w, "A_OPUS", 2, sampleRate, sampleDur)
 }

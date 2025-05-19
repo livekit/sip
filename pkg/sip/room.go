@@ -21,8 +21,11 @@ import (
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
+	msdk "github.com/livekit/media-sdk"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/logger/medialogutils"
@@ -30,10 +33,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/dtmf"
 	"github.com/livekit/sip/pkg/media/opus"
-	"github.com/livekit/sip/pkg/media/rtp"
 	"github.com/livekit/sip/pkg/mixer"
 )
 
@@ -49,7 +49,7 @@ type Room struct {
 	roomLog    logger.Logger // deferred logger
 	room       *lksdk.Room
 	mix        *mixer.Mixer
-	out        *media.SwitchWriter
+	out        *msdk.SwitchWriter
 	outDtmf    atomic.Pointer[dtmf.Writer]
 	p          ParticipantInfo
 	ready      core.Fuse
@@ -76,7 +76,7 @@ type RoomConfig struct {
 }
 
 func NewRoom(log logger.Logger) *Room {
-	r := &Room{log: log, out: media.NewSwitchWriter(RoomSampleRate)}
+	r := &Room{log: log, out: msdk.NewSwitchWriter(RoomSampleRate)}
 	r.mix = mixer.NewMixer(r.out, rtp.DefFrameDur)
 
 	roomLog, resolve := log.WithDeferredValues()
@@ -208,7 +208,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 					var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
 					if conf.EnableJitterBuffer {
-						h = rtp.HandleJitter(int(track.Codec().ClockRate), h)
+						h = rtp.HandleJitter(h)
 					}
 					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
@@ -295,20 +295,20 @@ func (r *Room) Subscribe() {
 	}
 }
 
-func (r *Room) Output() media.Writer[media.PCM16Sample] {
+func (r *Room) Output() msdk.Writer[msdk.PCM16Sample] {
 	return r.out.Get()
 }
 
 // SwapOutput sets room audio output and returns the old one.
 // Caller is responsible for closing the old writer.
-func (r *Room) SwapOutput(out media.PCM16Writer) media.PCM16Writer {
+func (r *Room) SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer {
 	if r == nil {
 		return nil
 	}
 	if out == nil {
 		return r.out.Swap(nil)
 	}
-	return r.out.Swap(media.ResampleWriter(out, r.mix.SampleRate()))
+	return r.out.Swap(msdk.ResampleWriter(out, r.mix.SampleRate()))
 }
 
 func (r *Room) CloseOutput() error {
@@ -373,7 +373,7 @@ func (r *Room) Participant() ParticipantInfo {
 	return r.p
 }
 
-func (r *Room) NewParticipantTrack(sampleRate int) (media.WriteCloser[media.PCM16Sample], error) {
+func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		return nil, err
@@ -384,7 +384,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (media.WriteCloser[media.PCM1
 	}); err != nil {
 		return nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
+	ow := msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, channels, r.log)
 	if err != nil {
 		return nil, err

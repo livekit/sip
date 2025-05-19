@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rtp
+package rtpconn
 
 import (
 	"net"
@@ -24,10 +24,11 @@ import (
 	"github.com/frostbyte73/core"
 	"github.com/pion/rtp"
 
+	mrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/logger"
 )
 
-var _ Writer = (*Conn)(nil)
+var _ mrtp.Writer = (*Conn)(nil)
 
 type ConnConfig struct {
 	Log                 logger.Logger
@@ -55,7 +56,7 @@ func NewConnWith(conn UDPConn, conf *ConnConfig) *Conn {
 	}
 	c := &Conn{
 		log:            conf.Log,
-		readBuf:        make([]byte, MTUSize+1), // larger buffer to detect overflow
+		readBuf:        make([]byte, mrtp.MTUSize+1), // larger buffer to detect overflow
 		received:       make(chan struct{}),
 		conn:           conn,
 		timeout:        conf.MediaTimeout,
@@ -89,7 +90,7 @@ type Conn struct {
 	timeout        time.Duration
 
 	dest  atomic.Pointer[net.UDPAddr]
-	onRTP atomic.Pointer[Handler]
+	onRTP atomic.Pointer[mrtp.Handler]
 }
 
 func (c *Conn) String() string {
@@ -120,7 +121,7 @@ func (c *Conn) Received() <-chan struct{} {
 	return c.received
 }
 
-func (c *Conn) OnRTP(h Handler) {
+func (c *Conn) OnRTP(h mrtp.Handler) {
 	if c == nil {
 		return
 	}
@@ -153,7 +154,7 @@ func (c *Conn) Listen(portMin, portMax int, listenAddr string) error {
 	if err != nil {
 		return err
 	}
-	c.conn, err = ListenUDPPortRange(portMin, portMax, ip)
+	c.conn, err = mrtp.ListenUDPPortRange(portMin, portMax, ip)
 	if err != nil {
 		return err
 	}
@@ -178,7 +179,7 @@ func (c *Conn) readLoop() {
 			return
 		}
 		c.dest.Store(srcAddr)
-		if n > MTUSize {
+		if n > mrtp.MTUSize {
 			if !overflow {
 				overflow = true
 				c.log.Errorw("RTP packet is larger than MTU limit", nil)
