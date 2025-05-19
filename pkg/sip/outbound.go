@@ -971,8 +971,12 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
 	method, cseq, status, err := handleNotify(req)
 	if err != nil {
+		c.log.Infow("error parsing NOTIFY request", "error", err)
+
 		return err
 	}
+
+	c.log.Infow("handling NOTIFY", "method", method, "status", status, "cseq", cseq)
 
 	switch method {
 	case sip.REFER:
