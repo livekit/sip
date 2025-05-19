@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	msdk "github.com/livekit/media-sdk"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/logger"
@@ -32,7 +33,6 @@ import (
 	"github.com/livekit/sipgo"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
@@ -174,7 +174,7 @@ func (s *Service) Start() error {
 			s.log.Warnw("codec disabled", nil, "name", name)
 		}
 	}
-	media.CodecsSetEnabled(s.conf.Codecs)
+	msdk.CodecsSetEnabled(s.conf.Codecs)
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err

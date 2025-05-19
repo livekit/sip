@@ -15,14 +15,15 @@
 package sip
 
 import (
-	"github.com/livekit/sip/pkg/media"
+	msdk "github.com/livekit/media-sdk"
+
 	"github.com/livekit/sip/res"
 )
 
 type mediaRes struct {
-	enterPin []media.PCM16Sample
-	roomJoin []media.PCM16Sample
-	wrongPin []media.PCM16Sample
+	enterPin []msdk.PCM16Sample
+	roomJoin []msdk.PCM16Sample
+	wrongPin []msdk.PCM16Sample
 }
 
 func (s *Server) initMediaRes() {

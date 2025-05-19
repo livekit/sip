@@ -20,7 +20,8 @@ import (
 
 	prtp "github.com/pion/rtp"
 
-	"github.com/livekit/sip/pkg/media/rtp"
+	"github.com/livekit/media-sdk/rtp"
+
 	"github.com/livekit/sip/pkg/stats"
 )
 

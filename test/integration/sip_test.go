@@ -13,6 +13,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/g711"
+	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -24,9 +27,6 @@ import (
 	sipgo "github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media/dtmf"
-	"github.com/livekit/sip/pkg/media/g711"
-	"github.com/livekit/sip/pkg/media/g722"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"

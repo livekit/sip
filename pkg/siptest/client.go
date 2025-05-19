@@ -37,17 +37,18 @@ import (
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/g711"
+	"github.com/livekit/media-sdk/rtp"
+	lksdp "github.com/livekit/media-sdk/sdp"
+	webmm "github.com/livekit/media-sdk/webm"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/dtmf"
-	"github.com/livekit/sip/pkg/media/g711"
-	"github.com/livekit/sip/pkg/media/rtp"
-	lksdp "github.com/livekit/sip/pkg/media/sdp"
-	webmm "github.com/livekit/sip/pkg/media/webm"
+	"github.com/livekit/sip/pkg/media/rtpconn"
 	"github.com/livekit/sip/pkg/mixer"
 )
 
@@ -102,7 +103,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if !codec.Info().RTPIsStatic {
 		cli.audioType = 102
 	}
-	cli.mediaConn = rtp.NewConn(&rtp.ConnConfig{TimeoutCallback: conf.OnMediaTimeout})
+	cli.mediaConn = rtpconn.NewConn(&rtpconn.ConnConfig{TimeoutCallback: conf.OnMediaTimeout})
 	cli.mediaConn.EnableTimeout(false) // enabled later
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
@@ -171,7 +172,7 @@ type Client struct {
 	ack           chan struct{}
 	audioCodec    rtp.AudioCodec
 	audioType     byte
-	mediaConn     *rtp.Conn
+	mediaConn     *rtpconn.Conn
 	mux           *rtp.Mux
 	media         *rtp.SeqWriter
 	mediaAudio    *rtp.Stream
@@ -253,7 +254,7 @@ func (c *Client) setupRTPReceiver() {
 }
 
 func (c *Client) Record(w io.WriteCloser) {
-	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, rtp.DefFrameDur)
+	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, 1, rtp.DefFrameDur)
 	h := c.audioCodec.DecodeRTP(ws, c.audioType)
 	c.recordHandler.Store(&h)
 }
@@ -558,11 +559,11 @@ func (c *Client) SendAudio(path string) error {
 		return err
 	}
 
-	var audioFrames []media.PCM16Sample
+	var audioFrames []msdk.PCM16Sample
 	for _, cluster := range ret.Segment.Cluster {
 		for _, block := range cluster.SimpleBlock {
 			for _, frame := range block.Data {
-				data := make(media.PCM16Sample, len(frame)/2)
+				data := make(msdk.PCM16Sample, len(frame)/2)
 				for i := 0; i < len(frame); i += 2 {
 					data[i/2] = int16(binary.LittleEndian.Uint16(frame[i:]))
 				}
@@ -589,7 +590,7 @@ func (c *Client) SendAudio(path string) error {
 
 func (c *Client) SendSilence(ctx context.Context) error {
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	buf := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
+	buf := make(msdk.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
 	wr := c.audioOut.NewInput()
 	defer wr.Close()
 
@@ -617,7 +618,7 @@ const (
 // If n <= 0, it will send the signal until the context is cancelled.
 func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	signal := make(media.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
+	signal := make(msdk.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	wr := c.audioOut.NewInput()
 	defer wr.Close()
@@ -652,14 +653,14 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 // WaitSignals waits for an audio frame to contain all signals.
 func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
 	sampleRate := c.audioCodec.Info().SampleRate
-	var ws media.PCM16Writer
+	var ws msdk.PCM16Writer
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, sampleRate, rtp.DefFrameDur)
+		ws = webmm.NewPCM16Writer(w, sampleRate, 1, rtp.DefFrameDur)
 		defer ws.Close()
 	}
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	decoded := make(media.PCM16Sample, sampleRate/framesPerSec)
-	dec := c.audioCodec.DecodeRTP(media.NewPCM16BufferWriter(&decoded, sampleRate), c.audioType)
+	decoded := make(msdk.PCM16Sample, sampleRate/framesPerSec)
+	dec := c.audioCodec.DecodeRTP(msdk.NewPCM16BufferWriter(&decoded, sampleRate), c.audioType)
 	lastLog := time.Now()
 
 	pkts := make(chan *rtp.Packet, 1)

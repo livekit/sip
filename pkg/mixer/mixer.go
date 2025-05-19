@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	msdk "github.com/livekit/media-sdk"
 
 	"github.com/livekit/sip/pkg/internal/ringbuf"
-	"github.com/livekit/sip/pkg/media"
 )
 
 const (
@@ -44,7 +44,7 @@ type Input struct {
 }
 
 type Mixer struct {
-	out        media.Writer[media.PCM16Sample]
+	out        msdk.Writer[msdk.PCM16Sample]
 	sampleRate int
 
 	mu     sync.Mutex
@@ -52,15 +52,15 @@ type Mixer struct {
 
 	tickerDur time.Duration
 	ticker    *time.Ticker
-	mixBuf    []int32           // mix result buffer
-	mixTmp    media.PCM16Sample // temp buffer for reading input buffers
+	mixBuf    []int32          // mix result buffer
+	mixTmp    msdk.PCM16Sample // temp buffer for reading input buffers
 
 	lastMixEndTs time.Time
 	stopped      core.Fuse
 	mixCnt       uint
 }
 
-func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mixer {
+func NewMixer(out msdk.Writer[msdk.PCM16Sample], bufferDur time.Duration) *Mixer {
 	mixSize := int(time.Duration(out.SampleRate()) * bufferDur / time.Second)
 	m := newMixer(out, mixSize)
 	m.tickerDur = bufferDur
@@ -71,12 +71,12 @@ func NewMixer(out media.Writer[media.PCM16Sample], bufferDur time.Duration) *Mix
 	return m
 }
 
-func newMixer(out media.Writer[media.PCM16Sample], mixSize int) *Mixer {
+func newMixer(out msdk.Writer[msdk.PCM16Sample], mixSize int) *Mixer {
 	return &Mixer{
 		out:        out,
 		sampleRate: out.SampleRate(),
 		mixBuf:     make([]int32, mixSize),
-		mixTmp:     make(media.PCM16Sample, mixSize),
+		mixTmp:     make(msdk.PCM16Sample, mixSize),
 	}
 }
 
@@ -111,7 +111,7 @@ func (m *Mixer) mixOnce() {
 	m.mixInputs()
 
 	// TODO: if we can guarantee that WriteSample won't store the sample, we can avoid allocation
-	out := make(media.PCM16Sample, len(m.mixBuf))
+	out := make(msdk.PCM16Sample, len(m.mixBuf))
 	for i, v := range m.mixBuf {
 		if v > 0x7FFF {
 			v = 0x7FFF
@@ -210,7 +210,7 @@ func (m *Mixer) SampleRate() int {
 	return m.sampleRate
 }
 
-func (i *Input) readSample(bufMin int, out media.PCM16Sample) (int, error) {
+func (i *Input) readSample(bufMin int, out msdk.PCM16Sample) (int, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.buffering {
@@ -243,7 +243,7 @@ func (i *Input) Close() error {
 	return nil
 }
 
-func (i *Input) WriteSample(sample media.PCM16Sample) error {
+func (i *Input) WriteSample(sample msdk.PCM16Sample) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	_, err := i.buf.Write(sample)

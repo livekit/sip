@@ -16,7 +16,7 @@ package sip
 
 // Register supported audio codecs
 import (
-	_ "github.com/livekit/sip/pkg/media/dtmf"
-	_ "github.com/livekit/sip/pkg/media/g711"
-	_ "github.com/livekit/sip/pkg/media/g722"
+	_ "github.com/livekit/media-sdk/dtmf"
+	_ "github.com/livekit/media-sdk/g711"
+	_ "github.com/livekit/media-sdk/g722"
 )

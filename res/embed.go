@@ -6,8 +6,7 @@ import (
 	"io"
 
 	"github.com/jfreymuth/oggvorbis"
-
-	"github.com/livekit/sip/pkg/media"
+	msdk "github.com/livekit/media-sdk"
 )
 
 //go:embed enter_pin.ogg
@@ -21,8 +20,8 @@ var WrongPinOgg []byte
 
 const SampleRate = 48000
 
-func ReadOggAudioFile(data []byte) []media.PCM16Sample {
-	const perFrame = SampleRate / media.DefFramesPerSec
+func ReadOggAudioFile(data []byte) []msdk.PCM16Sample {
+	const perFrame = SampleRate / msdk.DefFramesPerSec
 	r, err := oggvorbis.NewReader(bytes.NewReader(data))
 	if err != nil {
 		panic(err)
@@ -35,12 +34,12 @@ func ReadOggAudioFile(data []byte) []media.PCM16Sample {
 	}
 	// Frames in the source file may be shorter,
 	// so we collect all samples and split them to frames again.
-	var samples media.PCM16Sample
+	var samples msdk.PCM16Sample
 	buf := make([]float32, perFrame)
 	for {
 		n, err := r.Read(buf)
 		if n != 0 {
-			frame := make(media.PCM16Sample, n)
+			frame := make(msdk.PCM16Sample, n)
 			for i := range frame {
 				frame[i] = int16(buf[i] * 0x7fff)
 			}
@@ -52,7 +51,7 @@ func ReadOggAudioFile(data []byte) []media.PCM16Sample {
 			panic(err)
 		}
 	}
-	var frames []media.PCM16Sample
+	var frames []msdk.PCM16Sample
 	for len(samples) > 0 {
 		cur := samples
 		if len(cur) > perFrame {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -17,9 +18,9 @@ import (
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
+	"github.com/livekit/media-sdk/sdp"
+
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -66,7 +67,7 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 	return h.DispatchCallFunc(ctx, info)
 }
 
-func (h TestHandler) GetMediaProcessor(_ []livekit.SIPFeature) media.PCM16Processor {
+func (h TestHandler) GetMediaProcessor(_ []livekit.SIPFeature) msdk.PCM16Processor {
 	return nil
 }
 

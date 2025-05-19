@@ -25,13 +25,13 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	msdk "github.com/livekit/media-sdk"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
-	"github.com/livekit/sip/pkg/media"
 
 	"github.com/livekit/sip/pkg/stats"
 
@@ -183,7 +183,7 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 	return DispatchCall(ctx, s.psrpcClient, s.log, info)
 }
 
-func (s *Service) GetMediaProcessor(_ []livekit.SIPFeature) media.PCM16Processor {
+func (s *Service) GetMediaProcessor(_ []livekit.SIPFeature) msdk.PCM16Processor {
 	return nil
 }
 

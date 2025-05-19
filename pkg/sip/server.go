@@ -26,19 +26,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/livekit/protocol/rpc"
-
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -103,7 +102,7 @@ type CallDispatch struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
-	GetMediaProcessor(features []livekit.SIPFeature) media.PCM16Processor
+	GetMediaProcessor(features []livekit.SIPFeature) msdk.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)

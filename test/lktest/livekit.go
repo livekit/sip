@@ -28,15 +28,15 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/rtp"
+	webmm "github.com/livekit/media-sdk/webm"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/audiotest"
-	"github.com/livekit/sip/pkg/media"
 	"github.com/livekit/sip/pkg/media/opus"
-	"github.com/livekit/sip/pkg/media/rtp"
-	webmm "github.com/livekit/sip/pkg/media/webm"
 	"github.com/livekit/sip/pkg/mixer"
 )
 
@@ -146,7 +146,7 @@ func (lk *LiveKit) ConnectWithAudio(t TB, room, identity string, cb *lksdk.RoomC
 	})
 	// We don't care about real audio, just let SIP subscribe to something.
 	go func() {
-		ticker := time.NewTicker(media.DefFrameDur)
+		ticker := time.NewTicker(msdk.DefFrameDur)
 		defer ticker.Stop()
 		for {
 			select {
@@ -173,7 +173,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *RoomParti
 		origCB = cb.RoomCallback
 	}
 	p := &Participant{t: t}
-	pr, pw := media.Pipe[media.PCM16Sample](RoomSampleRate)
+	pr, pw := msdk.Pipe[msdk.PCM16Sample](RoomSampleRate)
 	t.Cleanup(func() {
 		pw.Close()
 		pr.Close()
@@ -268,11 +268,11 @@ type Participant struct {
 	mixOut *mixer.Mixer
 
 	Room     *lksdk.Room
-	AudioOut media.Writer[media.PCM16Sample]
-	AudioIn  media.Reader[media.PCM16Sample]
+	AudioOut msdk.Writer[msdk.PCM16Sample]
+	AudioIn  msdk.Reader[msdk.PCM16Sample]
 }
 
-func (p *Participant) newAudioTrack() (media.Writer[media.PCM16Sample], error) {
+func (p *Participant) newAudioTrack() (msdk.Writer[msdk.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
 		return nil, err
@@ -283,7 +283,7 @@ func (p *Participant) newAudioTrack() (media.Writer[media.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := media.FromSampleWriter[opus.Sample](track, RoomSampleRate, rtp.DefFrameDur)
+	ow := msdk.FromSampleWriter[opus.Sample](track, RoomSampleRate, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, channels, logger.GetLogger())
 	if err != nil {
 		return nil, err
@@ -302,7 +302,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 	var _ = [1]struct{}{}[time.Second%rtp.DefFrameDur]
 
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	signal := make(media.PCM16Sample, RoomSampleRate/framesPerSec)
+	signal := make(msdk.PCM16Sample, RoomSampleRate/framesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	sid, id := p.Room.LocalParticipant.SID(), p.Room.LocalParticipant.Identity()
 	p.t.Log("sending signal", "sid", sid, "id", id, "len", len(signal), "n", n, "sig", val)
@@ -333,9 +333,9 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 }
 
 func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) error {
-	var ws media.PCM16Writer
+	var ws msdk.PCM16Writer
 	if w != nil {
-		ws = webmm.NewPCM16Writer(w, RoomSampleRate, rtp.DefFrameDur)
+		ws = webmm.NewPCM16Writer(w, RoomSampleRate, 1, rtp.DefFrameDur)
 		defer ws.Close()
 	}
 	lastLog := time.Now()
@@ -344,7 +344,7 @@ func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 	var _ = [1]struct{}{}[time.Second%rtp.DefFrameDur]
 
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	buf := make(media.PCM16Sample, RoomSampleRate/framesPerSec)
+	buf := make(msdk.PCM16Sample, RoomSampleRate/framesPerSec)
 	sid, id := p.Room.LocalParticipant.SID(), p.Room.LocalParticipant.Identity()
 	for {
 		n, err := p.AudioIn.ReadSample(buf)

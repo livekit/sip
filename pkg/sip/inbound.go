@@ -25,12 +25,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/rpc"
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pkg/errors"
 
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/rtp"
+	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksip "github.com/livekit/protocol/sip"
@@ -40,11 +45,6 @@ import (
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/dtmf"
-	"github.com/livekit/sip/pkg/media/rtp"
-	"github.com/livekit/sip/pkg/media/sdp"
-	"github.com/livekit/sip/pkg/media/tones"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/res"
 )
@@ -897,7 +897,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status Cal
 	return nil
 }
 
-func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample) {
+func (c *inboundCall) playAudio(ctx context.Context, frames []msdk.PCM16Sample) {
 	t := c.lkRoom.NewTrack()
 	if t == nil {
 		return // closed
@@ -908,10 +908,10 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []media.PCM16Sample)
 	if t.SampleRate() != sampleRate {
 		frames = slices.Clone(frames)
 		for i := range frames {
-			frames[i] = media.Resample(nil, t.SampleRate(), frames[i], sampleRate)
+			frames[i] = msdk.Resample(nil, t.SampleRate(), frames[i], sampleRate)
 		}
 	}
-	_ = media.PlayAudio[media.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
+	_ = msdk.PlayAudio[msdk.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
 }
 
 func (c *inboundCall) handleDTMF(tone dtmf.Event) {

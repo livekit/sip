@@ -21,9 +21,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/sip/pkg/media/sdp"
 	"github.com/livekit/sipgo/sip"
 )
 

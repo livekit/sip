@@ -17,13 +17,12 @@ package audiotest
 import (
 	"testing"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/stretchr/testify/require"
-
-	"github.com/livekit/sip/pkg/media"
 )
 
 func TestFreq(t *testing.T) {
-	sig := make(media.PCM16Sample, 160)
+	sig := make(msdk.PCM16Sample, 160)
 	const amp = 100
 	inp := []Wave{
 		{0, amp},

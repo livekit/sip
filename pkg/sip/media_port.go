@@ -26,15 +26,15 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	msdk "github.com/livekit/media-sdk"
 
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/rtp"
+	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 
-	"github.com/livekit/sip/pkg/media"
-	"github.com/livekit/sip/pkg/media/dtmf"
-	"github.com/livekit/sip/pkg/media/rtp"
-	"github.com/livekit/sip/pkg/media/sdp"
-	"github.com/livekit/sip/pkg/media/srtp"
 	"github.com/livekit/sip/pkg/mixer"
 	"github.com/livekit/sip/pkg/stats"
 )
@@ -86,7 +86,7 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 
 type MediaConf struct {
 	sdp.MediaConfig
-	Processor media.PCM16Processor
+	Processor msdk.PCM16Processor
 }
 
 type MediaOptions struct {
@@ -128,8 +128,8 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		timeoutReset:  make(chan struct{}, 1),
 		jitterEnabled: opts.EnableJitterBuffer,
 		port:          newUDPConn(conn),
-		audioOut:      media.NewSwitchWriter(sampleRate),
-		audioIn:       media.NewSwitchWriter(sampleRate),
+		audioOut:      msdk.NewSwitchWriter(sampleRate),
+		audioIn:       msdk.NewSwitchWriter(sampleRate),
 	}
 	go p.timeoutLoop(func() {
 		close(mediaTimeout)
@@ -159,12 +159,12 @@ type MediaPort struct {
 	sess         rtp.Session
 	hnd          atomic.Pointer[rtp.Handler]
 	dtmfOutRTP   *rtp.Stream
-	dtmfOutAudio media.PCM16Writer
+	dtmfOutAudio msdk.PCM16Writer
 
 	audioOutRTP    *rtp.Stream
-	audioOut       *media.SwitchWriter // LK PCM -> SIP RTP
-	audioIn        *media.SwitchWriter // SIP RTP -> LK PCM
-	audioInHandler rtp.Handler         // for debug only
+	audioOut       *msdk.SwitchWriter // LK PCM -> SIP RTP
+	audioIn        *msdk.SwitchWriter // SIP RTP -> LK PCM
+	audioInHandler rtp.Handler        // for debug only
 	dtmfIn         atomic.Pointer[func(ev dtmf.Event)]
 }
 
@@ -291,7 +291,7 @@ func (p *MediaPort) Config() *MediaConf {
 }
 
 // WriteAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
-func (p *MediaPort) WriteAudioTo(w media.PCM16Writer) {
+func (p *MediaPort) WriteAudioTo(w msdk.PCM16Writer) {
 	if processor := p.conf.Processor; processor != nil {
 		w = processor(w)
 	}
@@ -301,7 +301,7 @@ func (p *MediaPort) WriteAudioTo(w media.PCM16Writer) {
 }
 
 // GetAudioWriter returns audio writer that will send PCM to the destination via RTP.
-func (p *MediaPort) GetAudioWriter() media.PCM16Writer {
+func (p *MediaPort) GetAudioWriter() msdk.PCM16Writer {
 	return p.audioOut
 }
 
@@ -511,7 +511,7 @@ func (p *MediaPort) setupInput() {
 	}
 	var hnd rtp.Handler = mux
 	if p.jitterEnabled {
-		hnd = rtp.HandleJitter(p.conf.Audio.Codec.Info().RTPClockRate, hnd)
+		hnd = rtp.HandleJitter(hnd)
 	}
 	p.hnd.Store(&hnd)
 }
