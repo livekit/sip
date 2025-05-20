@@ -427,7 +427,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		return psrpc.NewError(psrpc.Unimplemented, err)
 	case DispatchNoRuleDrop:
 		c.log.Debugw("Rejecting inbound flood")
-		c.cc.Drop()
+		c.cc.RespondAndDrop(sip.StatusNotImplemented, "")  // <---- whithout this caller will never receive SIP code about rejection replaced 'c.cc.Drop()'
 		c.close(false, callFlood, "flood")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case DispatchNoRuleReject:
