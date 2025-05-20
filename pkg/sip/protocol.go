@@ -151,8 +151,12 @@ func transportPort(c *config.Config, t Transport) int {
 }
 
 func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
+	hostname := "" // use signaling IP by default, it's more robust
+	if t == TransportTLS {
+		hostname = c.SIPHostname
+	}
 	return URI{
-		Host:      c.SIPHostname,
+		Host:      hostname,
 		Addr:      netip.AddrPortFrom(ip, uint16(transportPort(c, t))),
 		Transport: t,
 	}
