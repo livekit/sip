@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"strings"
 	"sync"
@@ -80,14 +81,23 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 		return nil, err
 	}
 
-	s.conf.SIPHostname = strings.ReplaceAll(
-		s.conf.SIPHostname,
-		"${IP}",
-		strings.NewReplacer(
-			".", "-", // IPv4
-			"[", "", "]", "", ":", "-", // IPv6
-		).Replace(s.sconf.SignalingIP.String()),
-	)
+	const placeholder = "${IP}"
+	if strings.Contains(s.conf.SIPHostname, placeholder) {
+		s.conf.SIPHostname = strings.ReplaceAll(
+			s.conf.SIPHostname,
+			placeholder,
+			strings.NewReplacer(
+				".", "-", // IPv4
+				"[", "", "]", "", ":", "-", // IPv6
+			).Replace(s.sconf.SignalingIP.String()),
+		)
+		addr, err := net.ResolveTCPAddr("tcp4", s.conf.SIPHostname)
+		if err != nil {
+			log.Errorw("cannot resolve node hostname", err, "hostname", s.conf.SIPHostname)
+		} else {
+			log.Infow("resolved node hostname", "hostname", s.conf.SIPHostname, "ip", addr.IP.String())
+		}
+	}
 	if strings.ContainsAny(s.conf.SIPHostname, "$%{}[]:/| ") {
 		return nil, fmt.Errorf("invalid hostname: %q", s.conf.SIPHostname)
 	}
