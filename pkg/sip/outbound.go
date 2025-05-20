@@ -24,9 +24,10 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	msdk "github.com/livekit/media-sdk"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
+
+	msdk "github.com/livekit/media-sdk"
 
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/sdp"
@@ -64,14 +65,15 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c       *Client
-	log     logger.Logger
-	state   *CallState
-	cc      *sipOutbound
-	media   *MediaPort
-	started core.Fuse
-	stopped core.Fuse
-	closing core.Fuse
+	c         *Client
+	log       logger.Logger
+	state     *CallState
+	cc        *sipOutbound
+	media     *MediaPort
+	started   core.Fuse
+	stopped   core.Fuse
+	closing   core.Fuse
+	jitterBuf bool
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
@@ -87,6 +89,8 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	if sipConf.ringingTimeout <= 0 {
 		sipConf.ringingTimeout = defaultRingingTimeout
 	}
+	jitterBuf := SelectValueBool(conf.EnableJitterBuffer, conf.EnableJitterBufferProb)
+	room.JitterBuf = jitterBuf
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
@@ -94,11 +98,13 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf.host = contact.GetHost()
 	}
 	call := &outboundCall{
-		c:       c,
-		log:     log,
-		sipConf: sipConf,
-		state:   state,
+		c:         c,
+		log:       log,
+		sipConf:   sipConf,
+		state:     state,
+		jitterBuf: jitterBuf,
 	}
+	c.log = c.log.WithValues("jitterBuf", call.jitterBuf)
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
 		Host:      sipConf.host,
@@ -124,7 +130,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
-		EnableJitterBuffer:  c.conf.EnableJitterBuffer,
+		EnableJitterBuffer:  call.jitterBuf,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(errors.Wrap(err, "media failed"), callDropped, "media-failed", livekit.DisconnectReason_UNKNOWN_REASON)

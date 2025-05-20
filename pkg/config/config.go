@@ -93,8 +93,9 @@ type Config struct {
 	HideInboundPort bool `yaml:"hide_inbound_port"`
 
 	// AudioDTMF forces SIP to generate audio DTMF tones in addition to digital.
-	AudioDTMF          bool `yaml:"audio_dtmf"`
-	EnableJitterBuffer bool `yaml:"enable_jitter_buffer"`
+	AudioDTMF              bool    `yaml:"audio_dtmf"`
+	EnableJitterBuffer     bool    `yaml:"enable_jitter_buffer"`
+	EnableJitterBufferProb float64 `yaml:"enable_jitter_buffer_prob"`
 
 	// internal
 	ServiceName string `yaml:"-"`

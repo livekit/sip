@@ -21,9 +21,9 @@ import (
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
-	msdk "github.com/livekit/media-sdk"
 	"github.com/pion/webrtc/v4"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
@@ -73,6 +73,7 @@ type RoomConfig struct {
 	Participant ParticipantConfig
 	RoomPreset  string
 	RoomConfig  *livekit.RoomConfiguration
+	JitterBuf   bool
 }
 
 func NewRoom(log logger.Logger) *Room {

@@ -353,6 +353,7 @@ type inboundCall struct {
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
 	started     core.Fuse
+	jitterBuf   bool
 }
 
 func (s *Server) newInboundCall(
@@ -375,7 +376,9 @@ func (s *Server) newInboundCall(
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
+		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
 	}
+	c.log = c.log.WithValues("jitterBuf", c.jitterBuf)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
 	s.activeCalls[cc.Tag()] = c
@@ -520,6 +523,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	if disp.RingingTimeout <= 0 {
 		disp.RingingTimeout = defaultRingingTimeout
 	}
+	disp.Room.JitterBuf = c.jitterBuf
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
 	status := CallRinging
@@ -591,7 +595,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncrypt
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,
-		EnableJitterBuffer:  c.s.conf.EnableJitterBuffer,
+		EnableJitterBuffer:  c.jitterBuf,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
