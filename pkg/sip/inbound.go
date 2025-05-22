@@ -1161,9 +1161,7 @@ func (c *sipInbound) StartRinging() {
 			case r := <-cancels:
 				close(c.cancelled)
 				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
-				c.mu.Lock()
-				c.drop()
-				c.mu.Unlock()
+				c.RespondAndDrop(sip.StatusRequestTerminated, "Request Terminated")
 				return
 			case <-ticker.C:
 			}
