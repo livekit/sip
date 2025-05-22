@@ -1151,6 +1151,8 @@ func (c *sipInbound) StartRinging() {
 			case r := <-cancels:
 				close(c.cancelled)
 				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
+
+				c.mu.Lock()
 				if c.inviteTx != nil {
 					_ = c.inviteTx.Respond(sip.NewResponseFromRequest(
 						c.invite,
@@ -1159,7 +1161,6 @@ func (c *sipInbound) StartRinging() {
 						nil,
 					))
 				}
-				c.mu.Lock()
 				c.drop()
 				c.mu.Unlock()
 				return
