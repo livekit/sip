@@ -836,6 +836,9 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.invite == nil || c.inviteOk == nil {
+		return errors.New("call already closed")
+	}
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
