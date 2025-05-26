@@ -16,6 +16,7 @@ package sip
 
 import (
 	"errors"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"strconv"
@@ -323,4 +324,18 @@ func sdpEncryption(e livekit.SIPMediaEncryption) (sdp.Encryption, error) {
 		return sdp.EncryptionRequire, nil
 	}
 	return sdp.EncryptionAllow, errors.New("invalid SIP media encryption type")
+}
+
+func SelectValue[T any](then, els T, probElse float64) T {
+	if probElse <= 0 {
+		return then
+	}
+	if rand.Float64() < probElse {
+		return then
+	}
+	return els
+}
+
+func SelectValueBool(then bool, probElse float64) bool {
+	return SelectValue(then, !then, probElse)
 }
