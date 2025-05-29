@@ -73,6 +73,7 @@ type outboundCall struct {
 	started   core.Fuse
 	stopped   core.Fuse
 	closing   core.Fuse
+	stats     Stats
 	jitterBuf bool
 
 	mu       sync.RWMutex
@@ -131,6 +132,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
 		EnableJitterBuffer:  call.jitterBuf,
+		Stats:               &call.stats.Port,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(errors.Wrap(err, "media failed"), callDropped, "media-failed", livekit.DisconnectReason_UNKNOWN_REASON)
@@ -278,6 +280,8 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 
 		c.stopSIP(description)
 
+		c.log.Infow("call statistics", "stats", c.stats.Load())
+
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())
 		if tag := c.cc.Tag(); tag != "" {
@@ -341,7 +345,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
-	r := NewRoom(c.log)
+	r := NewRoom(c.log, &c.stats.Room)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}

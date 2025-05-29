@@ -108,7 +108,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
-	cli.audioOut = mixer.NewMixer(cli.audioCodec.EncodeRTP(cli.mediaAudio), rtp.DefFrameDur)
+	cli.audioOut = mixer.NewMixer(cli.audioCodec.EncodeRTP(cli.mediaAudio), rtp.DefFrameDur, nil)
 
 	cli.setupRTPReceiver()
 
