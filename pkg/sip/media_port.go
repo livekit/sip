@@ -39,6 +39,18 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+type PortStats struct {
+	Packets        atomic.Uint64
+	IgnoredPackets atomic.Uint64
+	InputPackets   atomic.Uint64
+
+	MuxPackets atomic.Uint64
+	MuxBytes   atomic.Uint64
+
+	AudioPackets atomic.Uint64
+	AudioBytes   atomic.Uint64
+}
+
 type UDPConn interface {
 	net.Conn
 	ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error)
@@ -94,6 +106,7 @@ type MediaOptions struct {
 	Ports               rtcconfig.PortRange
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
+	Stats               *PortStats
 	EnableJitterBuffer  bool
 }
 
@@ -110,6 +123,9 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	}
 	if opts.MediaTimeout <= 0 {
 		opts.MediaTimeout = 15 * time.Second
+	}
+	if opts.Stats == nil {
+		opts.Stats = &PortStats{}
 	}
 	if conn == nil {
 		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
@@ -130,6 +146,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		port:          newUDPConn(conn),
 		audioOut:      msdk.NewSwitchWriter(sampleRate),
 		audioIn:       msdk.NewSwitchWriter(sampleRate),
+		stats:         opts.Stats,
 	}
 	go p.timeoutLoop(func() {
 		close(mediaTimeout)
@@ -151,6 +168,7 @@ type MediaPort struct {
 	timeoutStart     atomic.Pointer[time.Time]
 	timeoutReset     chan struct{}
 	closed           core.Fuse
+	stats            *PortStats
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
 
@@ -413,22 +431,27 @@ func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 			return
 		}
 		p.packetCount.Add(1)
+		p.stats.Packets.Add(1)
 		if n > rtp.MTUSize {
 			overflow = true
 			if !overflow {
 				log.Errorw("RTP packet is larger than MTU limit", nil, "payloadSize", n)
 			}
+			p.stats.IgnoredPackets.Add(1)
 			continue // ignore partial messages
 		}
 
 		ptr := p.hnd.Load()
 		if ptr == nil {
+			p.stats.IgnoredPackets.Add(1)
 			continue
 		}
 		hnd := *ptr
 		if hnd == nil {
+			p.stats.IgnoredPackets.Add(1)
 			continue
 		}
+		p.stats.InputPackets.Add(1)
 		err = hnd.HandleRTP(&h, buf[:n])
 		if err != nil {
 			if pipeline == "" {
@@ -476,7 +499,7 @@ func (p *MediaPort) setupOutput() error {
 		if p.dtmfAudioEnabled {
 			// Add separate mixer for DTMF audio.
 			// TODO: optimize, if we'll ever need this code path
-			mix := mixer.NewMixer(audioOut, rtp.DefFrameDur)
+			mix := mixer.NewMixer(audioOut, rtp.DefFrameDur, nil)
 			audioOut = mix.NewInput()
 			p.dtmfOutAudio = mix.NewInput()
 		}
@@ -495,7 +518,11 @@ func (p *MediaPort) setupInput() {
 
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.mon, "", nil))
-	mux.Register(p.conf.Audio.Type, newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler))
+	mux.Register(
+		p.conf.Audio.Type, newRTPHandlerCount(
+			newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler),
+			&p.stats.AudioPackets, &p.stats.AudioBytes),
+	)
 	if p.conf.Audio.DTMFType != 0 {
 		mux.Register(p.conf.Audio.DTMFType, newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
 			ptr := p.dtmfIn.Load()
@@ -509,7 +536,7 @@ func (p *MediaPort) setupInput() {
 			return nil
 		})))
 	}
-	var hnd rtp.Handler = mux
+	var hnd rtp.Handler = newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes)
 	if p.jitterEnabled {
 		hnd = rtp.HandleJitter(hnd)
 	}
