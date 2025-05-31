@@ -18,15 +18,16 @@ require (
 	github.com/livekit/sipgo v0.13.2-0.20250516144641-135461905e37
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
-	github.com/pion/rtp v1.8.15
-	github.com/pion/sdp/v3 v3.0.11
-	github.com/pion/webrtc/v4 v4.1.0
+	github.com/pion/interceptor v0.1.37
+	github.com/pion/rtp v1.8.16
+	github.com/pion/sdp/v3 v3.0.13
+	github.com/pion/webrtc/v4 v4.1.1
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.22.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.10.0
 	github.com/urfave/cli/v2 v2.27.6
-	golang.org/x/exp v0.0.0-20250506013437-ce4c2cf36ca6
+	golang.org/x/exp v0.0.0-20250531010427-b6e5de432a8b
 	google.golang.org/protobuf v1.36.6
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
@@ -94,7 +95,6 @@ require (
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.6 // indirect
 	github.com/pion/ice/v4 v4.0.10 // indirect
-	github.com/pion/interceptor v0.1.37 // indirect
 	github.com/pion/logging v0.2.3 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
