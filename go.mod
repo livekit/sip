@@ -15,9 +15,10 @@ require (
 	github.com/livekit/protocol v1.38.1-0.20250514155317-3ee266441614
 	github.com/livekit/psrpc v0.6.1-0.20250511053145-465289d72c3c
 	github.com/livekit/server-sdk-go/v2 v2.8.2
-	github.com/livekit/sipgo v0.13.2-0.20250516144641-135461905e37
+	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
+	github.com/pion/interceptor v0.1.37
 	github.com/pion/rtp v1.8.15
 	github.com/pion/sdp/v3 v3.0.11
 	github.com/pion/webrtc/v4 v4.1.0
@@ -94,7 +95,6 @@ require (
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.6 // indirect
 	github.com/pion/ice/v4 v4.0.10 // indirect
-	github.com/pion/interceptor v0.1.37 // indirect
 	github.com/pion/logging v0.2.3 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
