@@ -948,7 +948,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer func() {
 			if retErr != nil && !c.done.Load() {
 				c.lkRoom.SwapOutput(w)
-			} else {
+			} else if w != nil {
 				w.Close()
 			}
 		}()
