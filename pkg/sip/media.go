@@ -43,6 +43,7 @@ type StatsSnapshot struct {
 }
 
 type PortStatsSnapshot struct {
+	Streams        uint64 `json:"streams"`
 	Packets        uint64 `json:"packets"`
 	IgnoredPackets uint64 `json:"packets_ignored"`
 	InputPackets   uint64 `json:"packets_input"`
@@ -52,6 +53,9 @@ type PortStatsSnapshot struct {
 
 	AudioPackets uint64 `json:"audio_packets"`
 	AudioBytes   uint64 `json:"audio_bytes"`
+
+	DTMFPackets uint64 `json:"dtmf_packets"`
+	DTMFBytes   uint64 `json:"dtmf_bytes"`
 }
 
 type RoomStatsSnapshot struct {
@@ -91,6 +95,7 @@ func (s *Stats) Load() StatsSnapshot {
 	m := &r.Mixer
 	return StatsSnapshot{
 		Port: PortStatsSnapshot{
+			Streams:        p.Streams.Load(),
 			Packets:        p.Packets.Load(),
 			IgnoredPackets: p.IgnoredPackets.Load(),
 			InputPackets:   p.InputPackets.Load(),
@@ -98,6 +103,8 @@ func (s *Stats) Load() StatsSnapshot {
 			MuxBytes:       p.MuxBytes.Load(),
 			AudioPackets:   p.AudioPackets.Load(),
 			AudioBytes:     p.AudioBytes.Load(),
+			DTMFPackets:    p.DTMFPackets.Load(),
+			DTMFBytes:      p.DTMFBytes.Load(),
 		},
 		Room: RoomStatsSnapshot{
 			InputPackets:  r.InputPackets.Load(),
@@ -237,7 +244,7 @@ func (r *rtpReaderCount) ReadRTP() (*prtp.Packet, interceptor.Attributes, error)
 	p, in, err := r.r.ReadRTP()
 	if p != nil {
 		r.packets.Add(1)
-		r.packets.Add(uint64(len(p.Payload)))
+		r.bytes.Add(uint64(len(p.Payload)))
 	}
 	return p, in, err
 }

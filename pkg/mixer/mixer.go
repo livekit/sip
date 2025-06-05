@@ -175,7 +175,11 @@ func (m *Mixer) mixUpdate() {
 		if dt := now.Sub(m.lastMixEndTs); dt > 0 {
 			n = int(dt / m.tickerDur)
 			m.lastMixEndTs = m.lastMixEndTs.Add(time.Duration(n) * m.tickerDur)
-			m.stats.JumpMixes.Add(uint64(n))
+			if n == 1 {
+				m.stats.TimedMixes.Add(1)
+			} else if n != 0 {
+				m.stats.JumpMixes.Add(uint64(n))
+			}
 		}
 	}
 	if n == 0 {
