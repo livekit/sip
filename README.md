@@ -7,6 +7,7 @@
 </picture>
 
 <!--END_BANNER_IMAGE-->
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/livekit/sip)
 
 # LiveKit SIP Service
 
