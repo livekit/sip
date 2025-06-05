@@ -40,6 +40,7 @@ import (
 )
 
 type PortStats struct {
+	Streams        atomic.Uint64
 	Packets        atomic.Uint64
 	IgnoredPackets atomic.Uint64
 	InputPackets   atomic.Uint64
@@ -49,6 +50,9 @@ type PortStats struct {
 
 	AudioPackets atomic.Uint64
 	AudioBytes   atomic.Uint64
+
+	DTMFPackets atomic.Uint64
+	DTMFBytes   atomic.Uint64
 }
 
 type UDPConn interface {
@@ -405,6 +409,7 @@ func (p *MediaPort) rtpLoop(sess rtp.Session) {
 			}
 			return
 		}
+		p.stats.Streams.Add(1)
 		p.mediaReceived.Break()
 		log := p.log.WithValues("ssrc", ssrc)
 		log.Infow("accepting RTP stream")
@@ -521,20 +526,26 @@ func (p *MediaPort) setupInput() {
 	mux.Register(
 		p.conf.Audio.Type, newRTPHandlerCount(
 			newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler),
-			&p.stats.AudioPackets, &p.stats.AudioBytes),
+			&p.stats.AudioPackets, &p.stats.AudioBytes,
+		),
 	)
 	if p.conf.Audio.DTMFType != 0 {
-		mux.Register(p.conf.Audio.DTMFType, newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
-			ptr := p.dtmfIn.Load()
-			if ptr == nil {
-				return nil
-			}
-			fnc := *ptr
-			if ev, ok := dtmf.DecodeRTP(h, payload); ok && fnc != nil {
-				fnc(ev)
-			}
-			return nil
-		})))
+		mux.Register(
+			p.conf.Audio.DTMFType, newRTPHandlerCount(
+				newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
+					ptr := p.dtmfIn.Load()
+					if ptr == nil {
+						return nil
+					}
+					fnc := *ptr
+					if ev, ok := dtmf.DecodeRTP(h, payload); ok && fnc != nil {
+						fnc(ev)
+					}
+					return nil
+				})),
+				&p.stats.DTMFPackets, &p.stats.DTMFBytes,
+			),
+		)
 	}
 	var hnd rtp.Handler = newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes)
 	if p.jitterEnabled {
