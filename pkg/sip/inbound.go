@@ -173,6 +173,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
 	})
+	fromUserAddress := cc.From()
+	fromUserAddress.User = lksip.NormalizeNumber(fromUserAddress.User)
+	cc.SetFromUser(fromUserAddress.User)
+
+	toUserAddress := cc.To()
+	toUserAddress.User = lksip.NormalizeNumber(toUserAddress.User)
+	cc.SetToUser(toUserAddress.User)
+
 	log = LoggerWithParams(log, cc)
 	log = LoggerWithHeaders(log, cc)
 	log.Infow("processing invite")
@@ -1104,6 +1112,18 @@ func (c *sipInbound) To() sip.Uri {
 		return sip.Uri{}
 	}
 	return c.to.Address
+}
+
+func (c *sipInbound) SetFromUser(user string) {
+	if c.from != nil {
+		c.from.Address.User = user
+	}
+}
+
+func (c *sipInbound) SetToUser(user string) {
+	if c.to != nil {
+		c.to.Address.User = user
+	}
 }
 
 func (c *sipInbound) ID() LocalTag {
