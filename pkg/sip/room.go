@@ -285,7 +285,10 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	room := lksdk.NewRoom(roomCallback)
 	room.SetLogger(medialogutils.NewOverrideLogger(r.log))
-	err := room.JoinWithToken(rconf.WsUrl, rconf.Token, lksdk.WithAutoSubscribe(false))
+	err := room.JoinWithToken(rconf.WsUrl, rconf.Token,
+		lksdk.WithAutoSubscribe(false),
+		lksdk.WithExtraAttributes(partConf.Attributes),
+	)
 	if err != nil {
 		return err
 	}
