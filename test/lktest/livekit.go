@@ -179,7 +179,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *RoomParti
 		pr.Close()
 	})
 	p.AudioIn = pr
-	p.mixIn = mixer.NewMixer(pw, rtp.DefFrameDur)
+	p.mixIn = mixer.NewMixer(pw, rtp.DefFrameDur, nil)
 	cb.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if pub.Kind() == lksdk.TrackKindAudio {
 			if err := pub.SetSubscribed(true); err != nil {
@@ -257,7 +257,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *RoomParti
 		t.Fatal(err)
 	}
 	// This allows us to send silence when there's no audio generated from the test.
-	p.mixOut = mixer.NewMixer(track, rtp.DefFrameDur)
+	p.mixOut = mixer.NewMixer(track, rtp.DefFrameDur, nil)
 	p.AudioOut = p.mixOut.NewInput()
 	return p
 }

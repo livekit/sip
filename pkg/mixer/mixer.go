@@ -16,7 +16,9 @@ package mixer
 
 import (
 	"fmt"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -34,6 +36,26 @@ const (
 	// It affects inputs initially, or after they start to starve.
 	inputBufferMin = inputBufferFrames/2 + 1
 )
+
+type Stats struct {
+	Tracks      atomic.Int64
+	TracksTotal atomic.Uint64
+	Restarts    atomic.Uint64
+
+	Mixes      atomic.Uint64
+	TimedMixes atomic.Uint64
+	JumpMixes  atomic.Uint64
+	ZeroMixes  atomic.Uint64
+
+	InputSamples atomic.Uint64
+	InputFrames  atomic.Uint64
+
+	MixedSamples atomic.Uint64
+	MixedFrames  atomic.Uint64
+
+	OutputSamples atomic.Uint64
+	OutputFrames  atomic.Uint64
+}
 
 type Input struct {
 	m          *Mixer
@@ -58,11 +80,13 @@ type Mixer struct {
 	lastMixEndTs time.Time
 	stopped      core.Fuse
 	mixCnt       uint
+
+	stats *Stats
 }
 
-func NewMixer(out msdk.Writer[msdk.PCM16Sample], bufferDur time.Duration) *Mixer {
+func NewMixer(out msdk.Writer[msdk.PCM16Sample], bufferDur time.Duration, st *Stats) *Mixer {
 	mixSize := int(time.Duration(out.SampleRate()) * bufferDur / time.Second)
-	m := newMixer(out, mixSize)
+	m := newMixer(out, mixSize, st)
 	m.tickerDur = bufferDur
 	m.ticker = time.NewTicker(bufferDur)
 
@@ -71,12 +95,16 @@ func NewMixer(out msdk.Writer[msdk.PCM16Sample], bufferDur time.Duration) *Mixer
 	return m
 }
 
-func newMixer(out msdk.Writer[msdk.PCM16Sample], mixSize int) *Mixer {
+func newMixer(out msdk.Writer[msdk.PCM16Sample], mixSize int, st *Stats) *Mixer {
+	if st == nil {
+		st = new(Stats)
+	}
 	return &Mixer{
 		out:        out,
 		sampleRate: out.SampleRate(),
 		mixBuf:     make([]int32, mixSize),
 		mixTmp:     make(msdk.PCM16Sample, mixSize),
+		stats:      st,
 	}
 }
 
@@ -90,6 +118,10 @@ func (m *Mixer) mixInputs() {
 		if n == 0 {
 			continue
 		}
+
+		m.stats.MixedFrames.Add(1)
+		m.stats.MixedSamples.Add(uint64(n))
+
 		m.mixTmp = m.mixTmp[:n]
 		for j, v := range m.mixTmp {
 			// Add the samples. This can potentially lead to overflow, but is unlikely and dividing by the source
@@ -106,6 +138,7 @@ func (m *Mixer) reset() {
 }
 
 func (m *Mixer) mixOnce() {
+	m.stats.Mixes.Add(1)
 	m.mixCnt++
 	m.reset()
 	m.mixInputs()
@@ -121,6 +154,10 @@ func (m *Mixer) mixOnce() {
 		}
 		out[i] = int16(v)
 	}
+
+	m.stats.OutputFrames.Add(1)
+	m.stats.OutputSamples.Add(uint64(len(out)))
+
 	_ = m.out.WriteSample(out)
 }
 
@@ -129,6 +166,7 @@ func (m *Mixer) mixUpdate() {
 	now := time.Now()
 
 	if m.lastMixEndTs.IsZero() {
+		m.stats.TimedMixes.Add(1)
 		m.lastMixEndTs = now
 		n = 1
 	} else {
@@ -137,7 +175,15 @@ func (m *Mixer) mixUpdate() {
 		if dt := now.Sub(m.lastMixEndTs); dt > 0 {
 			n = int(dt / m.tickerDur)
 			m.lastMixEndTs = m.lastMixEndTs.Add(time.Duration(n) * m.tickerDur)
+			if n == 1 {
+				m.stats.TimedMixes.Add(1)
+			} else if n != 0 {
+				m.stats.JumpMixes.Add(uint64(n))
+			}
 		}
+	}
+	if n == 0 {
+		m.stats.ZeroMixes.Add(1)
 	}
 	if n > inputBufferFrames {
 		n = inputBufferFrames
@@ -178,6 +224,9 @@ func (m *Mixer) NewInput() *Input {
 		return nil
 	}
 
+	m.stats.Tracks.Add(1)
+	m.stats.TracksTotal.Add(1)
+
 	inp := &Input{
 		m:          m,
 		sampleRate: m.sampleRate,
@@ -194,12 +243,12 @@ func (m *Mixer) RemoveInput(inp *Input) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for i, cur := range m.inputs {
-		if cur == inp {
-			m.inputs = append(m.inputs[:i], m.inputs[i+1:]...)
-			break
-		}
+	i := slices.Index(m.inputs, inp)
+	if i < 0 {
+		return
 	}
+	m.inputs = slices.Delete(m.inputs, i, i+1)
+	m.stats.Tracks.Add(-1)
 }
 
 func (m *Mixer) String() string {
@@ -223,6 +272,7 @@ func (i *Input) readSample(bufMin int, out msdk.PCM16Sample) (int, error) {
 	n, err := i.buf.Read(out)
 	if n == 0 {
 		i.buffering = true // starving; pause the input and start buffering again
+		i.m.stats.Restarts.Add(1)
 	}
 	return n, err
 }
@@ -246,6 +296,10 @@ func (i *Input) Close() error {
 func (i *Input) WriteSample(sample msdk.PCM16Sample) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+
+	i.m.stats.InputFrames.Add(1)
+	i.m.stats.InputSamples.Add(uint64(len(sample)))
+
 	_, err := i.buf.Write(sample)
 	return err
 }

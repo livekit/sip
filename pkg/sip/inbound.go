@@ -353,6 +353,8 @@ type inboundCall struct {
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
 	started     core.Fuse
+	stats       Stats
+	jitterBuf   bool
 }
 
 func (s *Server) newInboundCall(
@@ -374,8 +376,11 @@ func (s *Server) newInboundCall(
 		state:      state,
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
-		lkRoom:     NewRoom(log), // we need it created earlier so that the audio mixer is available for pin prompts
+		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
 	}
+	// we need it created earlier so that the audio mixer is available for pin prompts
+	c.lkRoom = NewRoom(log, &c.stats.Room)
+	c.log = c.log.WithValues("jitterBuf", c.jitterBuf)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
 	s.activeCalls[cc.Tag()] = c
@@ -520,6 +525,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	if disp.RingingTimeout <= 0 {
 		disp.RingingTimeout = defaultRingingTimeout
 	}
+	disp.Room.JitterBuf = c.jitterBuf
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
 	status := CallRinging
@@ -597,7 +603,8 @@ func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncrypt
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,
-		EnableJitterBuffer:  c.s.conf.EnableJitterBuffer,
+		EnableJitterBuffer:  c.jitterBuf,
+		Stats:               &c.stats.Port,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
@@ -772,6 +779,9 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	c.mon.CallTerminate(reason)
 	sipCode, sipStatus := status.SIPStatus()
 	log := c.log.WithValues("status", sipCode, "reason", reason)
+	defer func() {
+		log.Infow("call statistics", "stats", c.stats.Load())
+	}()
 	if error {
 		log.Warnw("Closing inbound call with error", nil)
 	} else {
@@ -954,7 +964,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer func() {
 			if retErr != nil && !c.done.Load() {
 				c.lkRoom.SwapOutput(w)
-			} else {
+			} else if w != nil {
 				w.Close()
 			}
 		}()
@@ -1157,9 +1167,7 @@ func (c *sipInbound) StartRinging() {
 			case r := <-cancels:
 				close(c.cancelled)
 				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
-				c.mu.Lock()
-				c.drop()
-				c.mu.Unlock()
+				c.RespondAndDrop(sip.StatusRequestTerminated, "Request Terminated")
 				return
 			case <-ticker.C:
 			}

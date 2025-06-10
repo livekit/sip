@@ -24,9 +24,10 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	msdk "github.com/livekit/media-sdk"
 	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
+
+	msdk "github.com/livekit/media-sdk"
 
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/sdp"
@@ -64,14 +65,16 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c       *Client
-	log     logger.Logger
-	state   *CallState
-	cc      *sipOutbound
-	media   *MediaPort
-	started core.Fuse
-	stopped core.Fuse
-	closing core.Fuse
+	c         *Client
+	log       logger.Logger
+	state     *CallState
+	cc        *sipOutbound
+	media     *MediaPort
+	started   core.Fuse
+	stopped   core.Fuse
+	closing   core.Fuse
+	stats     Stats
+	jitterBuf bool
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
@@ -87,6 +90,8 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	if sipConf.ringingTimeout <= 0 {
 		sipConf.ringingTimeout = defaultRingingTimeout
 	}
+	jitterBuf := SelectValueBool(conf.EnableJitterBuffer, conf.EnableJitterBufferProb)
+	room.JitterBuf = jitterBuf
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
@@ -94,11 +99,13 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf.host = contact.GetHost()
 	}
 	call := &outboundCall{
-		c:       c,
-		log:     log,
-		sipConf: sipConf,
-		state:   state,
+		c:         c,
+		log:       log,
+		sipConf:   sipConf,
+		state:     state,
+		jitterBuf: jitterBuf,
 	}
+	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
 		Host:      sipConf.host,
@@ -124,7 +131,8 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
-		EnableJitterBuffer:  c.conf.EnableJitterBuffer,
+		EnableJitterBuffer:  call.jitterBuf,
+		Stats:               &call.stats.Port,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(errors.Wrap(err, "media failed"), callDropped, "media-failed", livekit.DisconnectReason_UNKNOWN_REASON)
@@ -280,6 +288,8 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 
 		c.stopSIP(description)
 
+		c.log.Infow("call statistics", "stats", c.stats.Load())
+
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())
 		if tag := c.cc.Tag(); tag != "" {
@@ -343,7 +353,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
-	r := NewRoom(c.log)
+	r := NewRoom(c.log, &c.stats.Room)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}
@@ -844,6 +854,9 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.invite == nil || c.inviteOk == nil {
+		return errors.New("call already closed")
+	}
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 

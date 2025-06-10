@@ -21,9 +21,9 @@ import (
 	"sync/atomic"
 
 	"github.com/frostbyte73/core"
-	msdk "github.com/livekit/media-sdk"
 	"github.com/pion/webrtc/v4"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
@@ -36,6 +36,19 @@ import (
 	"github.com/livekit/sip/pkg/media/opus"
 	"github.com/livekit/sip/pkg/mixer"
 )
+
+type RoomStats struct {
+	InputPackets atomic.Uint64
+	InputBytes   atomic.Uint64
+
+	MixerFrames  atomic.Uint64
+	MixerSamples atomic.Uint64
+
+	Mixer mixer.Stats
+
+	OutputFrames  atomic.Uint64
+	OutputSamples atomic.Uint64
+}
 
 type ParticipantInfo struct {
 	ID       string
@@ -57,6 +70,7 @@ type Room struct {
 	subscribed core.Fuse
 	stopped    core.Fuse
 	closed     core.Fuse
+	stats      *RoomStats
 }
 
 type ParticipantConfig struct {
@@ -73,11 +87,16 @@ type RoomConfig struct {
 	Participant ParticipantConfig
 	RoomPreset  string
 	RoomConfig  *livekit.RoomConfiguration
+	JitterBuf   bool
 }
 
-func NewRoom(log logger.Logger) *Room {
-	r := &Room{log: log, out: msdk.NewSwitchWriter(RoomSampleRate)}
-	r.mix = mixer.NewMixer(r.out, rtp.DefFrameDur)
+func NewRoom(log logger.Logger, st *RoomStats) *Room {
+	if st == nil {
+		st = &RoomStats{}
+	}
+	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
+	out := newMediaWriterCount(r.out, &st.OutputFrames, &st.OutputSamples)
+	r.mix = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer)
 
 	roomLog, resolve := log.WithDeferredValues()
 	r.roomLog = roomLog
@@ -199,7 +218,10 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					}
 					defer mTrack.Close()
 
-					odec, err := opus.Decode(mTrack, channels, log)
+					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)
+					out := newMediaWriterCount(mTrack, &r.stats.MixerFrames, &r.stats.MixerSamples)
+
+					odec, err := opus.Decode(out, channels, log)
 					if err != nil {
 						log.Errorw("cannot create opus decoder", err)
 						return
@@ -210,7 +232,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h)
 					}
-					err = rtp.HandleLoop(track, h)
+					err = rtp.HandleLoop(in, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
 					}
@@ -263,7 +285,10 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	room := lksdk.NewRoom(roomCallback)
 	room.SetLogger(medialogutils.NewOverrideLogger(r.log))
-	err := room.JoinWithToken(rconf.WsUrl, rconf.Token, lksdk.WithAutoSubscribe(false))
+	err := room.JoinWithToken(rconf.WsUrl, rconf.Token,
+		lksdk.WithAutoSubscribe(false),
+		lksdk.WithExtraAttributes(partConf.Attributes),
+	)
 	if err != nil {
 		return err
 	}
