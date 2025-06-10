@@ -105,7 +105,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		state:     state,
 		jitterBuf: jitterBuf,
 	}
-	c.log = c.log.WithValues("jitterBuf", call.jitterBuf)
+	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
 		Host:      sipConf.host,
