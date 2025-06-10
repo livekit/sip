@@ -197,17 +197,25 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 func (c *outboundCall) WaitClose(ctx context.Context) error {
 	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
-	select {
-	case <-c.Disconnected():
-		c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
-		return nil
-	case <-c.media.Timeout():
-		c.closeWithTimeout()
-		err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
-		c.setErrStatus(ctx, err)
-		return err
-	case <-c.Closed():
-		return nil
+
+	ticker := time.NewTicker(10 * time.Minute)
+
+	for {
+		select {
+		case <-ticker.C:
+			c.log.Debugw("sending keep-alive")
+			c.state.ForceFlush(ctx)
+		case <-c.Disconnected():
+			c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
+			return nil
+		case <-c.media.Timeout():
+			c.closeWithTimeout()
+			err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
+			c.setErrStatus(ctx, err)
+			return err
+		case <-c.Closed():
+			return nil
+		}
 	}
 }
 
