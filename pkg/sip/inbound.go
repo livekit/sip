@@ -304,6 +304,27 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	}
 }
 
+func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	callID := ""
+	if h := req.CallID(); h != nil {
+		callID = h.Value()
+	}
+	from := ""
+	if h := req.From(); h != nil {
+		from = h.Address.String()
+	}
+	to := ""
+	if h := req.To(); h != nil {
+		to = h.Address.String()
+	}
+	s.log.Infow("Inbound SIP request not handled",
+		"method", req.Method.String(),
+		"callID", callID,
+		"from", from,
+		"to", to)
+	tx.Respond(sip.NewResponseFromRequest(req, 405, "Method Not Allowed", nil))
+}
+
 func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := getFromTag(req)
 	if err != nil {

@@ -261,6 +261,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled Requ
 	s.sipSrv.OnInvite(s.onInvite)
 	s.sipSrv.OnBye(s.onBye)
 	s.sipSrv.OnNotify(s.onNotify)
+	s.sipSrv.OnNoRoute(s.OnNoRoute)
 	s.sipUnhandled = unhandled
 
 	// Ignore ACKs
