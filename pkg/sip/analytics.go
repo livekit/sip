@@ -145,3 +145,9 @@ func (s *CallState) Flush(ctx context.Context) {
 	}
 	s.flush(ctx)
 }
+
+func (s *CallState) ForceFlush(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flush(ctx)
+}

@@ -566,20 +566,27 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.started.Break()
 
-	// Wait for the caller to terminate the call.
-	select {
-	case <-ctx.Done():
-		c.closeWithHangup()
-		return nil
-	case <-c.lkRoom.Closed():
-		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-			info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
-		})
-		c.close(false, callDropped, "removed")
-		return nil
-	case <-c.media.Timeout():
-		c.closeWithTimeout()
-		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	// Wait for the caller to terminate the call. Send regular keep alives
+	for {
+		select {
+		case <-ticker.C:
+			c.log.Debugw("sending keep-alive")
+			c.state.ForceFlush(ctx)
+		case <-ctx.Done():
+			c.closeWithHangup()
+			return nil
+		case <-c.lkRoom.Closed():
+			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+				info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+			})
+			c.close(false, callDropped, "removed")
+			return nil
+		case <-c.media.Timeout():
+			c.closeWithTimeout()
+			return psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
+		}
 	}
 }
 
