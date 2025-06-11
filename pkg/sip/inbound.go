@@ -567,6 +567,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	c.started.Break()
 
 	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
 	// Wait for the caller to terminate the call. Send regular keep alives
 	for {
 		select {
