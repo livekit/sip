@@ -298,6 +298,11 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 		c.c.cmu.Unlock()
 
 		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
+
+		// Call the handler asynchronously to avoid blocking
+		if c.c.handler != nil {
+			go c.c.handler.OnCallEnd(context.Background(), c.state.callInfo, description)
+		}
 	})
 }
 

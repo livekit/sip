@@ -57,6 +57,7 @@ func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 type TestHandler struct {
 	GetAuthCredentialsFunc func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
+	OnCallEndFunc          func(ctx context.Context, callInfo *livekit.SIPCallInfo, reason string)
 }
 
 func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
@@ -78,6 +79,12 @@ func (h TestHandler) RegisterTransferSIPParticipantTopic(sipCallId string) error
 
 func (h TestHandler) DeregisterTransferSIPParticipantTopic(sipCallId string) {
 	// no-op
+}
+
+func (h TestHandler) OnCallEnd(ctx context.Context, callInfo *livekit.SIPCallInfo, reason string) {
+	if h.OnCallEndFunc != nil {
+		h.OnCallEndFunc(ctx, callInfo, reason)
+	}
 }
 
 func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction)) {
@@ -168,4 +175,74 @@ func TestService_AuthDrop(t *testing.T) {
 	testInvite(t, h, true, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
 		expectNoResponse(t, tx)
 	})
+}
+
+func TestService_OnCallEnd(t *testing.T) {
+	const (
+		expectedCallID = "test-call-id"
+		expectedReason = "test-reason"
+	)
+
+	callEnded := make(chan struct{})
+	var receivedCallInfo *livekit.SIPCallInfo
+	var receivedReason string
+
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthAccept}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{
+				Result: DispatchAccept,
+				Room: RoomConfig{
+					RoomName: "test-room",
+					Participant: ParticipantConfig{
+						Identity: "test-participant",
+					},
+				},
+			}
+		},
+		OnCallEndFunc: func(ctx context.Context, callInfo *livekit.SIPCallInfo, reason string) {
+			receivedCallInfo = callInfo
+			receivedReason = reason
+			close(callEnded)
+		},
+	}
+
+	// Create a new service
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	log := logger.NewTestLogger(t)
+	s, err := NewService("", &config.Config{
+		SIPPort:       sipPort,
+		SIPPortListen: sipPort,
+		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
+
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+
+	// Call OnCallEnd directly
+	h.OnCallEnd(context.Background(), &livekit.SIPCallInfo{
+		CallId: expectedCallID,
+	}, expectedReason)
+
+	// Wait for OnCallEnd to be called
+	select {
+	case <-callEnded:
+		// Success
+	case <-time.After(time.Second):
+		t.Fatal("OnCallEnd was not called")
+	}
+
+	// Verify the parameters passed to OnCallEnd
+	require.NotNil(t, receivedCallInfo, "CallInfo should not be nil")
+	require.Equal(t, expectedCallID, receivedCallInfo.CallId, "CallInfo.CallId should match")
+	require.Equal(t, expectedReason, receivedReason, "Reason should match")
 }

@@ -825,6 +825,11 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
 
+	// Call the handler asynchronously to avoid blocking
+	if c.s.handler != nil {
+		go c.s.handler.OnCallEnd(context.Background(), c.state.callInfo, reason)
+	}
+
 	c.cancel()
 }
 
