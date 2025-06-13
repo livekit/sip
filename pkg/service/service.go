@@ -53,6 +53,7 @@ type Service struct {
 
 	promServer   *http.Server
 	pprofServer  *http.Server
+	healthServer *http.Server
 	rpcSIPServer rpc.SIPInternalServer
 
 	sipServiceStop        sipServiceStopFunc
@@ -98,6 +99,29 @@ func NewService(
 			Handler: mux,
 		}
 	}
+	if conf.HealthPort > 0 {
+		mux := http.NewServeMux()
+		s.healthServer = &http.Server{
+			Addr:    fmt.Sprintf(":%d", conf.HealthPort),
+			Handler: mux,
+		}
+
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			st := s.Health()
+			var code int
+			switch st {
+			case stats.HealthOK:
+				code = http.StatusOK
+			case stats.HealthUnderLoad:
+				code = http.StatusTooManyRequests
+			default:
+				code = http.StatusServiceUnavailable
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(st.String()))
+		})
+	}
 	return s
 }
 
@@ -122,6 +146,17 @@ func (s *Service) Run() error {
 	}
 
 	if srv := s.pprofServer; srv != nil {
+		l, err := net.Listen("tcp", srv.Addr)
+		if err != nil {
+			return err
+		}
+		defer l.Close()
+		go func() {
+			_ = srv.Serve(l)
+		}()
+	}
+
+	if srv := s.healthServer; srv != nil {
 		l, err := net.Listen("tcp", srv.Addr)
 		if err != nil {
 			return err
