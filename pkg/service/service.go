@@ -219,6 +219,6 @@ func (s *Service) DeregisterTransferSIPParticipantTopic(sipCallId string) {
 	}
 }
 
-func (s *Service) OnCallEnd(ctx context.Context, callID string, reason string) {
-	s.log.Infow("SIP call ended", "callID", callID, "reason", reason)
+func (s *Service) OnCallEnd(ctx context.Context, callInfo *livekit.SIPCallInfo, reason string) {
+	s.log.Infow("SIP call ended", "callID", callInfo.CallId, "reason", reason)
 }
