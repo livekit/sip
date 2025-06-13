@@ -218,3 +218,7 @@ func (s *Service) DeregisterTransferSIPParticipantTopic(sipCallId string) {
 		s.rpcSIPServer.DeregisterTransferSIPParticipantTopic(sipCallId)
 	}
 }
+
+func (s *Service) OnCallEnd(ctx context.Context, callID string, reason string) {
+	s.log.Infow("SIP call ended", "callID", callID, "reason", reason)
+}
