@@ -1044,5 +1044,4 @@ func (c *sipOutbound) Close() {
 	} else {
 		c.drop()
 	}
-
 }
