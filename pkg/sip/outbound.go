@@ -165,6 +165,7 @@ func (c *outboundCall) ensureClosed(ctx context.Context) {
 				info.ParticipantAttributes = p.Attributes()
 			}
 		}
+		info.EndedAtNs = time.Now().UnixNano()
 	})
 }
 
@@ -1043,4 +1044,5 @@ func (c *sipOutbound) Close() {
 	} else {
 		c.drop()
 	}
+
 }
