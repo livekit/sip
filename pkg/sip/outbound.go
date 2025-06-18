@@ -302,7 +302,11 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
-			go c.c.handler.OnCallEnd(context.Background(), c.state.callInfo, description)
+			go c.c.handler.OnCallEnd(context.Background(), &CallIdentifier{
+				ProjectID: c.state.callInfo.ParticipantAttributes["projectID"],
+				CallID:    c.state.callInfo.ParticipantAttributes["sip.callID"],
+				SipCallID: c.state.callInfo.CallId,
+			}, c.state.callInfo, description)
 		}
 	})
 }

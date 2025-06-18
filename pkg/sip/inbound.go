@@ -827,7 +827,11 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
-		go c.s.handler.OnCallEnd(context.Background(), c.state.callInfo, reason)
+		go c.s.handler.OnCallEnd(context.Background(), &CallIdentifier{
+			ProjectID: c.state.callInfo.ParticipantAttributes["projectID"],
+			CallID:    c.state.callInfo.ParticipantAttributes["sip.callID"],
+			SipCallID: c.state.callInfo.CallId,
+		}, c.state.callInfo, reason)
 	}
 
 	c.cancel()
