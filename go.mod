@@ -1,5 +1,7 @@
 module github.com/livekit/sip
 
+replace github.com/livekit/media-sdk => ../media-sdk
+
 go 1.24.2
 
 toolchain go1.24.3

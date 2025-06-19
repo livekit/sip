@@ -228,7 +228,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					}
 					defer odec.Close()
 
-					var h rtp.Handler = rtp.NewMediaStreamIn[opus.Sample](odec)
+					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](odec))
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h)
 					}

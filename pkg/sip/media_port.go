@@ -179,7 +179,7 @@ type MediaPort struct {
 	mu           sync.Mutex
 	conf         *MediaConf
 	sess         rtp.Session
-	hnd          atomic.Pointer[rtp.Handler]
+	hnd          atomic.Pointer[rtp.HandlerCloser]
 	dtmfOutRTP   *rtp.Stream
 	dtmfOutAudio msdk.PCM16Writer
 
@@ -291,6 +291,11 @@ func (p *MediaPort) Close() {
 			_ = p.sess.Close()
 		}
 		_ = p.port.Close()
+
+		hnd := p.hnd.Load()
+		if hnd != nil {
+			(*hnd).Close()
+		}
 	})
 }
 
@@ -547,7 +552,7 @@ func (p *MediaPort) setupInput() {
 			),
 		)
 	}
-	var hnd rtp.Handler = newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes)
+	var hnd rtp.HandlerCloser = rtp.NewNopCloser(newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes))
 	if p.jitterEnabled {
 		hnd = rtp.HandleJitter(hnd)
 	}
