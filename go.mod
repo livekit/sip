@@ -1,7 +1,5 @@
 module github.com/livekit/sip
 
-replace github.com/livekit/media-sdk => ../media-sdk
-
 go 1.24.2
 
 toolchain go1.24.3
@@ -12,7 +10,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20250518151703-b07af88637c5
+	github.com/livekit/media-sdk v0.0.0-20250620175140-c86da91c22a2
 	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
 	github.com/livekit/protocol v1.39.0
 	github.com/livekit/psrpc v0.6.1-0.20250511053145-465289d72c3c
