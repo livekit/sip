@@ -15,12 +15,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/urfave/cli/v2"
+	"github.com/urfave/cli/v3"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
@@ -37,7 +38,7 @@ import (
 )
 
 func main() {
-	app := &cli.App{
+	cmd := &cli.Command{
 		Name:        "SIP",
 		Usage:       "LiveKit SIP",
 		Version:     version.Version,
@@ -46,23 +47,23 @@ func main() {
 			&cli.StringFlag{
 				Name:    "config",
 				Usage:   "LiveKit SIP yaml config file",
-				EnvVars: []string{"SIP_CONFIG_FILE"},
+				Sources: cli.EnvVars("SIP_CONFIG_FILE"),
 			},
 			&cli.StringFlag{
 				Name:    "config-body",
 				Usage:   "LiveKit SIP yaml config body",
-				EnvVars: []string{"SIP_CONFIG_BODY"},
+				Sources: cli.EnvVars("SIP_CONFIG_BODY"),
 			},
 		},
 		Action: runService,
 	}
 
-	if err := app.Run(os.Args); err != nil {
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
 		fmt.Println(err)
 	}
 }
 
-func runService(c *cli.Context) error {
+func runService(_ context.Context, c *cli.Command) error {
 	conf, err := getConfig(c, true)
 	if err != nil {
 		return err
@@ -116,7 +117,7 @@ func runService(c *cli.Context) error {
 	return svc.Run()
 }
 
-func getConfig(c *cli.Context, initialize bool) (*config.Config, error) {
+func getConfig(c *cli.Command, initialize bool) (*config.Config, error) {
 	configFile := c.String("config")
 	configBody := c.String("config-body")
 	if configBody == "" {
