@@ -200,7 +200,7 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *RoomParti
 		}
 		defer odec.Close()
 
-		h := rtp.NewMediaStreamIn[opus.Sample](odec)
+		h := rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](odec))
 		_ = rtp.HandleLoop(track, h)
 	}
 	cb.OnParticipantConnected = func(p *lksdk.RemoteParticipant) {
