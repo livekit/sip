@@ -829,8 +829,8 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	if c.s.handler != nil {
 		go c.s.handler.OnCallEnd(context.Background(), &CallIdentifier{
 			ProjectID: c.state.callInfo.ParticipantAttributes["projectID"],
-			CallID:    c.state.callInfo.ParticipantAttributes["sip.callID"],
-			SipCallID: c.state.callInfo.CallId,
+			CallID:    c.state.callInfo.CallId,
+			SipCallID: c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull],
 		}, c.state.callInfo, reason)
 	}
 

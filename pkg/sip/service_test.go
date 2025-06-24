@@ -236,7 +236,8 @@ func TestService_OnCallEnd(t *testing.T) {
 	}, &livekit.SIPCallInfo{
 		CallId: "test-call-id",
 		ParticipantAttributes: map[string]string{
-			"projectID": "test-project",
+			"projectID":       "test-project",
+			AttrSIPCallIDFull: "test-sip-call-id",
 		},
 	}, expectedReason)
 
