@@ -179,11 +179,14 @@ func TestService_AuthDrop(t *testing.T) {
 
 func TestService_OnCallEnd(t *testing.T) {
 	const (
-		expectedCallID = "test-call-id"
-		expectedReason = "test-reason"
+		expectedCallID    = "test-call-id"
+		expectedSipCallID = "test-sip-call-id"
+		expectedProjectID = "test-project"
+		expectedReason    = "test-reason"
 	)
 
 	callEnded := make(chan struct{})
+	var receivedCallIdentifier *CallIdentifier
 	var receivedCallInfo *livekit.SIPCallInfo
 	var receivedReason string
 
@@ -203,6 +206,7 @@ func TestService_OnCallEnd(t *testing.T) {
 			}
 		},
 		OnCallEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			receivedCallIdentifier = callIdentifier
 			receivedCallInfo = callInfo
 			receivedReason = reason
 			close(callEnded)
@@ -228,16 +232,16 @@ func TestService_OnCallEnd(t *testing.T) {
 	s.SetHandler(h)
 	require.NoError(t, s.Start())
 
-	// Call OnCallEnd directly
+	// Call OnCallEnd directly with test data
 	h.OnCallEnd(context.Background(), &CallIdentifier{
-		ProjectID: "test-project",
-		CallID:    "test-call-id",
-		SipCallID: "test-sip-call-id",
+		ProjectID: expectedProjectID,
+		CallID:    expectedCallID,
+		SipCallID: expectedSipCallID,
 	}, &livekit.SIPCallInfo{
-		CallId: "test-call-id",
+		CallId: expectedCallID,
 		ParticipantAttributes: map[string]string{
-			"projectID":       "test-project",
-			AttrSIPCallIDFull: "test-sip-call-id",
+			"projectID":       expectedProjectID,
+			AttrSIPCallIDFull: expectedSipCallID,
 		},
 	}, expectedReason)
 
@@ -249,9 +253,16 @@ func TestService_OnCallEnd(t *testing.T) {
 		t.Fatal("OnCallEnd was not called")
 	}
 
-	// Verify the parameters passed to OnCallEnd
+	// Verify the CallIdentifier fields are correctly populated
+	require.NotNil(t, receivedCallIdentifier, "CallIdentifier should not be nil")
+	require.Equal(t, expectedProjectID, receivedCallIdentifier.ProjectID, "CallIdentifier.ProjectID should match")
+	require.Equal(t, expectedCallID, receivedCallIdentifier.CallID, "CallIdentifier.CallID should match")
+	require.Equal(t, expectedSipCallID, receivedCallIdentifier.SipCallID, "CallIdentifier.SipCallID should match")
+
+	// Verify the CallInfo fields
 	require.NotNil(t, receivedCallInfo, "CallInfo should not be nil")
-	require.Equal(t, "test-project", receivedCallInfo.ParticipantAttributes["projectID"], "CallInfo.ParticipantAttributes[projectID] should match")
+	require.Equal(t, expectedProjectID, receivedCallInfo.ParticipantAttributes["projectID"], "CallInfo.ParticipantAttributes[projectID] should match")
 	require.Equal(t, expectedCallID, receivedCallInfo.CallId, "CallInfo.CallId should match")
+	require.Equal(t, expectedSipCallID, receivedCallInfo.ParticipantAttributes[AttrSIPCallIDFull], "CallInfo.ParticipantAttributes[sip.callIDFull] should match")
 	require.Equal(t, expectedReason, receivedReason, "Reason should match")
 }
