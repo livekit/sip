@@ -223,7 +223,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		mediaEncryption: enc,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state)
+	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
 	if err != nil {
 		return nil, err
 	}

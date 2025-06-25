@@ -75,6 +75,7 @@ type outboundCall struct {
 	closing   core.Fuse
 	stats     Stats
 	jitterBuf bool
+	projectID string
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
@@ -83,7 +84,7 @@ type outboundCall struct {
 	sipConf  sipOutboundConfig
 }
 
-func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState) (*outboundCall, error) {
+func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -104,6 +105,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		sipConf:   sipConf,
 		state:     state,
 		jitterBuf: jitterBuf,
+		projectID: projectID,
 	}
 	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
 	call.cc = c.newOutbound(log, id, URI{
@@ -303,7 +305,7 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
 			go c.c.handler.OnCallEnd(context.Background(), &CallIdentifier{
-				ProjectID: c.state.callInfo.ParticipantAttributes["projectID"],
+				ProjectID: c.projectID,
 				CallID:    c.state.callInfo.CallId,
 				SipCallID: c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull],
 			}, c.state.callInfo, description)

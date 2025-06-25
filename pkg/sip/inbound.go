@@ -376,6 +376,7 @@ type inboundCall struct {
 	started     core.Fuse
 	stats       Stats
 	jitterBuf   bool
+	projectID   string
 }
 
 func (s *Server) newInboundCall(
@@ -398,6 +399,7 @@ func (s *Server) newInboundCall(
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
+		projectID:  "", // Will be set in handleInvite when available
 	}
 	// we need it created earlier so that the audio mixer is available for pin prompts
 	c.lkRoom = NewRoom(log, &c.stats.Room)
@@ -427,6 +429,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	})
 	if disp.ProjectID != "" {
 		c.log = c.log.WithValues("projectID", disp.ProjectID)
+		c.projectID = disp.ProjectID
 	}
 	if disp.TrunkID != "" {
 		c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
@@ -765,6 +768,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				})
 				if disp.ProjectID != "" {
 					c.log = c.log.WithValues("projectID", disp.ProjectID)
+					c.projectID = disp.ProjectID
 				}
 				if disp.TrunkID != "" {
 					c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
@@ -828,7 +832,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
 		go c.s.handler.OnCallEnd(context.Background(), &CallIdentifier{
-			ProjectID: c.state.callInfo.ParticipantAttributes["projectID"],
+			ProjectID: c.projectID,
 			CallID:    c.state.callInfo.CallId,
 			SipCallID: c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull],
 		}, c.state.callInfo, reason)
