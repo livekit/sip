@@ -113,7 +113,7 @@ type Handler interface {
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
 
-	OnCallEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
+	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
 type Server struct {

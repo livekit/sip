@@ -57,7 +57,7 @@ func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 type TestHandler struct {
 	GetAuthCredentialsFunc func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
-	OnCallEndFunc          func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
+	OnSessionEndFunc       func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
 func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
@@ -81,9 +81,9 @@ func (h TestHandler) DeregisterTransferSIPParticipantTopic(sipCallId string) {
 	// no-op
 }
 
-func (h TestHandler) OnCallEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
-	if h.OnCallEndFunc != nil {
-		h.OnCallEndFunc(ctx, callIdentifier, callInfo, reason)
+func (h TestHandler) OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+	if h.OnSessionEndFunc != nil {
+		h.OnSessionEndFunc(ctx, callIdentifier, callInfo, reason)
 	}
 }
 
@@ -177,7 +177,7 @@ func TestService_AuthDrop(t *testing.T) {
 	})
 }
 
-func TestService_OnCallEnd(t *testing.T) {
+func TestService_OnSessionEnd(t *testing.T) {
 	const (
 		expectedCallID    = "test-call-id"
 		expectedSipCallID = "test-sip-call-id"
@@ -205,7 +205,7 @@ func TestService_OnCallEnd(t *testing.T) {
 				},
 			}
 		},
-		OnCallEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
 			receivedCallIdentifier = callIdentifier
 			receivedCallInfo = callInfo
 			receivedReason = reason
@@ -232,8 +232,8 @@ func TestService_OnCallEnd(t *testing.T) {
 	s.SetHandler(h)
 	require.NoError(t, s.Start())
 
-	// Call OnCallEnd directly with test data
-	h.OnCallEnd(context.Background(), &CallIdentifier{
+	// Call OnSessionEnd directly with test data
+	h.OnSessionEnd(context.Background(), &CallIdentifier{
 		ProjectID: expectedProjectID,
 		CallID:    expectedCallID,
 		SipCallID: expectedSipCallID,
@@ -245,12 +245,12 @@ func TestService_OnCallEnd(t *testing.T) {
 		},
 	}, expectedReason)
 
-	// Wait for OnCallEnd to be called
+	// Wait for OnSessionEnd to be called
 	select {
 	case <-callEnded:
 		// Success
 	case <-time.After(time.Second):
-		t.Fatal("OnCallEnd was not called")
+		t.Fatal("OnSessionEnd was not called")
 	}
 
 	// Verify the CallIdentifier fields are correctly populated
