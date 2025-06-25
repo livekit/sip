@@ -128,10 +128,10 @@ func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 	_ = s.processInvite(req, tx)
 }
 
-func (s *Server) handleSessionEnd(ctx context.Context, callInfo *rpc.SIPCall, state *CallState, sipCallID string, reason string) {
+func (s *Server) handleSessionEnd(ctx context.Context, callInfo *rpc.SIPCall, state *CallState, sipCallID string, reason string, projectID string) {
 	if s.handler != nil {
 		go s.handler.OnSessionEnd(context.Background(), &CallIdentifier{
-			ProjectID: "", // Will be set if available
+			ProjectID: projectID,
 			CallID:    callInfo.LkCallId,
 			SipCallID: sipCallID,
 		}, state.callInfo, reason)
@@ -261,7 +261,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if h := req.CallID(); h != nil {
 			sipCallID = h.Value()
 		}
-		s.handleSessionEnd(ctx, callInfo, state, sipCallID, "flood")
+		s.handleSessionEnd(ctx, callInfo, state, sipCallID, "flood", r.ProjectID)
 		cc.Drop()
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case AuthNotFound:
@@ -271,7 +271,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if h := req.CallID(); h != nil {
 			sipCallID = h.Value()
 		}
-		s.handleSessionEnd(ctx, callInfo, state, sipCallID, "no-trunk")
+		s.handleSessionEnd(ctx, callInfo, state, sipCallID, "no-trunk", r.ProjectID)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case AuthPassword:
@@ -851,7 +851,7 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
-		c.s.handleSessionEnd(context.Background(), c.call, c.state, c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull], reason)
+		c.s.handleSessionEnd(context.Background(), c.call, c.state, c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull], reason, c.projectID)
 	}
 
 	c.cancel()
