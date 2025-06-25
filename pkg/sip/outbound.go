@@ -307,7 +307,7 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 			go c.c.handler.OnSessionEnd(context.Background(), &CallIdentifier{
 				ProjectID: c.projectID,
 				CallID:    c.state.callInfo.CallId,
-				SipCallID: c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull],
+				SipCallID: c.cc.CallID(),
 			}, c.state.callInfo, description)
 		}
 	})

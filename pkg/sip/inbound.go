@@ -128,16 +128,6 @@ func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 	_ = s.processInvite(req, tx)
 }
 
-func (s *Server) handleSessionEnd(ctx context.Context, callInfo *rpc.SIPCall, state *CallState, sipCallID string, reason string, projectID string) {
-	if s.handler != nil {
-		go s.handler.OnSessionEnd(context.Background(), &CallIdentifier{
-			ProjectID: projectID,
-			CallID:    callInfo.LkCallId,
-			SipCallID: sipCallID,
-		}, state.callInfo, reason)
-	}
-}
-
 func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
 	var state *CallState
 	ctx := context.Background()
@@ -257,21 +247,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	case AuthDrop:
 		cmon.InviteErrorShort("flood")
 		log.Debugw("Dropping inbound flood")
-		sipCallID := ""
-		if h := req.CallID(); h != nil {
-			sipCallID = h.Value()
-		}
-		s.handleSessionEnd(ctx, callInfo, state, sipCallID, "flood", r.ProjectID)
 		cc.Drop()
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case AuthNotFound:
 		cmon.InviteErrorShort("no-rule")
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", nil)
-		sipCallID := ""
-		if h := req.CallID(); h != nil {
-			sipCallID = h.Value()
-		}
-		s.handleSessionEnd(ctx, callInfo, state, sipCallID, "no-trunk", r.ProjectID)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case AuthPassword:
@@ -437,6 +417,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 	defer c.close(true, callDropped, "other")
+
+	// Extract and store the SIP call ID from the request
+	if h := req.CallID(); h != nil {
+		c.call.SipCallId = h.Value()
+	}
 
 	c.cc.StartRinging()
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
@@ -851,7 +836,11 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
-		c.s.handleSessionEnd(context.Background(), c.call, c.state, c.state.callInfo.ParticipantAttributes[AttrSIPCallIDFull], reason, c.projectID)
+		go c.s.handler.OnSessionEnd(context.Background(), &CallIdentifier{
+			ProjectID: c.projectID,
+			CallID:    c.call.LkCallId,
+			SipCallID: c.call.SipCallId,
+		}, c.state.callInfo, reason)
 	}
 
 	c.cancel()
