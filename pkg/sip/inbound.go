@@ -376,6 +376,7 @@ type inboundCall struct {
 	started     core.Fuse
 	stats       Stats
 	jitterBuf   bool
+	projectID   string
 }
 
 func (s *Server) newInboundCall(
@@ -398,6 +399,7 @@ func (s *Server) newInboundCall(
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
+		projectID:  "", // Will be set in handleInvite when available
 	}
 	// we need it created earlier so that the audio mixer is available for pin prompts
 	c.lkRoom = NewRoom(log, &c.stats.Room)
@@ -416,6 +418,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	defer c.mon.CallEnd()
 	defer c.close(true, callDropped, "other")
 
+	// Extract and store the SIP call ID from the request
+	if h := req.CallID(); h != nil {
+		c.call.SipCallId = h.Value()
+	}
+
 	c.cc.StartRinging()
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
@@ -427,6 +434,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	})
 	if disp.ProjectID != "" {
 		c.log = c.log.WithValues("projectID", disp.ProjectID)
+		c.projectID = disp.ProjectID
 	}
 	if disp.TrunkID != "" {
 		c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
@@ -765,6 +773,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				})
 				if disp.ProjectID != "" {
 					c.log = c.log.WithValues("projectID", disp.ProjectID)
+					c.projectID = disp.ProjectID
 				}
 				if disp.TrunkID != "" {
 					c.log = c.log.WithValues("sipTrunk", disp.TrunkID)
@@ -827,7 +836,11 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
-		go c.s.handler.OnCallEnd(context.Background(), c.state.callInfo, reason)
+		go c.s.handler.OnSessionEnd(context.Background(), &CallIdentifier{
+			ProjectID: c.projectID,
+			CallID:    c.call.LkCallId,
+			SipCallID: c.call.SipCallId,
+		}, c.state.callInfo, reason)
 	}
 
 	c.cancel()

@@ -99,6 +99,12 @@ type CallDispatch struct {
 	MediaEncryption     livekit.SIPMediaEncryption
 }
 
+type CallIdentifier struct {
+	ProjectID string
+	CallID    string
+	SipCallID string
+}
+
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
@@ -107,7 +113,7 @@ type Handler interface {
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
 
-	OnCallEnd(ctx context.Context, callInfo *livekit.SIPCallInfo, reason string)
+	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
 type Server struct {
