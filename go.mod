@@ -12,16 +12,16 @@ require (
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/media-sdk v0.0.0-20250620175140-c86da91c22a2
 	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
-	github.com/livekit/protocol v1.39.4-0.20250626001605-256d96948009
+	github.com/livekit/protocol v1.39.4-0.20250703020302-4aaee1f6c648
 	github.com/livekit/psrpc v0.6.1-0.20250511053145-465289d72c3c
-	github.com/livekit/server-sdk-go/v2 v2.9.2-0.20250606164215-22b67ed30bd9
-	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
+	github.com/livekit/server-sdk-go/v2 v2.9.2-0.20250702022851-7a095e7425b5
+	github.com/livekit/sipgo v0.13.2-0.20250410120437-ca5b8ca7b53d
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
-	github.com/pion/interceptor v0.1.37
-	github.com/pion/rtp v1.8.15
-	github.com/pion/sdp/v3 v3.0.11
-	github.com/pion/webrtc/v4 v4.1.1
+	github.com/pion/interceptor v0.1.40
+	github.com/pion/rtp v1.8.20
+	github.com/pion/sdp/v3 v3.0.14
+	github.com/pion/webrtc/v4 v4.1.3
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.22.0
 	github.com/sirupsen/logrus v1.9.3
@@ -93,12 +93,12 @@ require (
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.6 // indirect
 	github.com/pion/ice/v4 v4.0.10 // indirect
-	github.com/pion/logging v0.2.3 // indirect
+	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.15 // indirect
 	github.com/pion/sctp v1.8.39 // indirect
-	github.com/pion/srtp/v3 v3.0.4 // indirect
+	github.com/pion/srtp/v3 v3.0.6 // indirect
 	github.com/pion/stun/v3 v3.0.0 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/pion/turn/v4 v4.0.2 // indirect
