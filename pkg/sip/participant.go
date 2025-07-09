@@ -68,6 +68,8 @@ func (v CallStatus) Attribute() string {
 		return "active"
 	case CallHangup:
 		return "hangup"
+	case CallCancelled:
+		return "cancelled"
 	}
 }
 
@@ -89,6 +91,8 @@ func (v CallStatus) SIPStatus() (sip.StatusCode, string) {
 	switch v {
 	default:
 		return sip.StatusBusyHere, "Rejected"
+	case CallCancelled:
+		return sip.StatusRequestTerminated, "RequestTerminated"
 	case callMediaFailed:
 		return sip.StatusNotAcceptableHere, "MediaFailed"
 	}
@@ -101,6 +105,7 @@ const (
 	CallRinging
 	CallAutomation
 	CallActive
+	CallCancelled
 	CallHangup
 	callUnavailable
 	callRejected

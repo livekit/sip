@@ -960,7 +960,7 @@ func (c *inboundCall) closeWithCancelled() {
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
 	})
-	c.close(false, CallHangup, "cancelled")
+	c.close(false, CallCancelled, "cancelled")
 }
 
 func (c *inboundCall) closeWithHangup() {
@@ -1317,7 +1317,6 @@ func (c *sipInbound) StartRinging() {
 			case r := <-cancels:
 				close(c.cancelled)
 				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
-				c.RespondAndDrop(sip.StatusRequestTerminated, "Request Terminated")
 				return
 			case <-ticker.C:
 			}
