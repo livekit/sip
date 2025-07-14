@@ -1286,6 +1286,7 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 		req.Recipient = c.from.Address
 	}
 	req.SetSource(c.inviteOk.Source())
+	c.s.log.Infow("swapSrcDst", "source", c.inviteOk.Source(), "destination", c.inviteOk.Destination())
 	req.SetDestination(c.inviteOk.Destination())
 	req.RemoveHeader("From")
 	req.AppendHeader((*sip.FromHeader)(c.to))
