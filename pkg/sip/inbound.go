@@ -84,10 +84,8 @@ func (s *Server) getInvite(from string) *inProgressInvite {
 
 func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
 	log = log.WithValues(
-		"from", from,
 		"username", username,
 		"passwordHash", hashPassword(password),
-		"hasPassword", password != "",
 		"method", req.Method.String(),
 		"uri", req.Recipient.String(),
 	)
@@ -95,7 +93,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	log.Infow("Starting SIP invite authentication")
 
 	if username == "" || password == "" {
-		log.Infow("Skipping authentication - no credentials provided")
+		log.Debugw("Skipping authentication - no credentials provided")
 		return true
 	}
 
@@ -110,7 +108,6 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
-		log.Infow("Requesting inbound auth - no Proxy-Authorization header found")
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
 			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
@@ -126,34 +123,28 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		res := sip.NewResponseFromRequest(req, 407, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
 		_ = tx.Respond(res)
-		log.Infow("Sent 407 Unauthorized response with Proxy-Authenticate header")
+		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
 		return false
 	}
 
 	log.Debugw("Found Proxy-Authorization header, parsing credentials")
 	cred, err := digest.ParseCredentials(h.Value())
 	if err != nil {
-		log.Errorw("Failed to parse Proxy-Authorization credentials", err,
+		log.Warnw("Failed to parse Proxy-Authorization credentials", err,
 			"headerValue", h.Value(),
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
 		return false
 	}
 
-	log.Debugw("Parsed credentials successfully",
-		"credUsername", cred.Username,
-		"credURI", cred.URI,
-		"credRealm", cred.Realm,
-		"credNonce", cred.Nonce,
-		"credQOP", cred.QOP,
-		"credNc", cred.Nc,
-		"credCnonce", cred.Cnonce,
-		"hasResponse", cred.Response != "",
-	)
+	// Set credURI and credUsername in logger early to avoid repetitive logging
+	log = log.WithValues("credURI", cred.URI, "credUsername", cred.Username)
+
+	log.Debugw("Parsed credentials successfully", "cred", cred)
 
 	// Check if we have a valid challenge state
 	if inviteState.challenge.Realm == "" {
-		log.Errorw("No challenge state found for authentication attempt", nil,
+		log.Warnw("No challenge state found for authentication attempt", nil,
 			"from", from,
 			"expectedRealm", UserAgent,
 		)
@@ -162,9 +153,6 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	}
 
 	log.Debugw("Computing digest response",
-		"method", req.Method.String(),
-		"uri", cred.URI,
-		"username", cred.Username,
 		"challengeRealm", inviteState.challenge.Realm,
 		"challengeNonce", inviteState.challenge.Nonce,
 		"challengeAlgorithm", inviteState.challenge.Algorithm,
@@ -178,11 +166,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	})
 
 	if err != nil {
-		log.Errorw("Failed to compute digest response", err,
-			"method", req.Method.String(),
-			"uri", cred.URI,
-			"username", cred.Username,
-		)
+		log.Warnw("Failed to compute digest response", err)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
 		return false
 	}
@@ -197,17 +181,12 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		log.Warnw("Authentication failed - response mismatch", nil,
 			"expectedResponse", digCred.Response,
 			"receivedResponse", cred.Response,
-			"username", cred.Username,
-			"uri", cred.URI,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
 		return false
 	}
 
-	log.Infow("SIP invite authentication successful",
-		"username", cred.Username,
-		"uri", cred.URI,
-	)
+	log.Infow("SIP invite authentication successful")
 	return true
 }
 
