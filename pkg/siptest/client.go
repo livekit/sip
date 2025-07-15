@@ -54,6 +54,7 @@ import (
 
 type ClientConfig struct {
 	IP             netip.Addr
+	ContactIP      netip.Addr
 	Number         string
 	AuthUser       string
 	AuthPass       string
@@ -84,6 +85,10 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		}
 		conf.IP = localIP
 		conf.Log.Debug("setting local address", "ip", localIP)
+	}
+	if !conf.ContactIP.IsValid() {
+		conf.ContactIP = conf.IP
+		conf.Log.Debug("setting contact address", "ip", conf.ContactIP)
 	}
 	if conf.Number == "" {
 		conf.Number = "1000"
@@ -352,7 +357,7 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	req.SetDestination(ip)
 	req.SetBody(offer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.IP)))
+	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.ContactIP)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 	if c.id != "" {
 		req.AppendHeader(sip.NewHeader("X-Lk-Test-Id", c.id))
