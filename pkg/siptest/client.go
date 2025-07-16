@@ -33,6 +33,7 @@ import (
 
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
+	sip2 "github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
@@ -359,18 +360,22 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.ContactIP)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
-	if v, _ := req.GetHeader("Via").(*sip.ViaHeader); v != nil && c.conf.IP != c.conf.ContactIP {
-		if false {
-			// TODO: check if we need to remove old one
-			req.RemoveHeader("Via")
-		}
-		v2 := *v
-		v2.Host = c.conf.ContactIP.String()
+	if c.conf.IP != c.conf.ContactIP {
+		p := make(sip2.HeaderParams)
+		p.Add("alias", "")
+		p.Add("branch", sip2.GenerateBranch())
 		if false {
 			// TODO: check if it matters
-			v2.Params.Add("rport", "")
+			p.Add("rport", "")
 		}
-		req.PrependHeader(&v2)
+		req.PrependHeader(&sip.ViaHeader{
+			ProtocolName:    "SIP",
+			ProtocolVersion: "2.0",
+			Transport:       "UDP", // TODO
+			Host:            c.conf.ContactIP.String(),
+			Port:            5060,
+			Params:          p,
+		})
 	}
 	if c.id != "" {
 		req.AppendHeader(sip.NewHeader("X-Lk-Test-Id", c.id))
