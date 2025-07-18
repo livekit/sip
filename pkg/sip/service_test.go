@@ -382,11 +382,15 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(tx2.Terminate)
 
-	// Both should receive 407 Unauthorized with different challenges
+	// Both should receive 100 Trying first, then 407 Unauthorized with different challenges
 	res1 := getResponseOrFail(t, tx1)
+	require.Equal(t, sip.StatusCode(100), res1.StatusCode, "First call should receive 100 Trying")
+	res1 = getResponseOrFail(t, tx1)
 	require.Equal(t, sip.StatusCode(407), res1.StatusCode, "First call should receive 407 Unauthorized")
 
 	res2 := getResponseOrFail(t, tx2)
+	require.Equal(t, sip.StatusCode(100), res2.StatusCode, "Second call should receive 100 Trying")
+	res2 = getResponseOrFail(t, tx2)
 	require.Equal(t, sip.StatusCode(407), res2.StatusCode, "Second call should receive 407 Unauthorized")
 
 	// Verify both calls have different Proxy-Authenticate headers (different nonces)
@@ -406,80 +410,6 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 	require.Equal(t, 1, authAttempts["call1-123@test.com"], "First call should be tracked once")
 	require.Equal(t, 1, authAttempts["call2-456@test.com"], "Second call should be tracked once")
 	authMutex.Unlock()
-}
-
-// TestDigestAuthMissingCallID tests that requests without Call-ID header are properly rejected
-func TestDigestAuthMissingCallID(t *testing.T) {
-	const (
-		fromUser = "test@example.com"
-		toUser   = "agent@example.com"
-		username = "testuser"
-		password = "testpass"
-	)
-
-	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
-			return AuthInfo{
-				Result:   AuthPassword,
-				Username: username,
-				Password: password,
-			}, nil
-		},
-	}
-
-	// Create service with authentication enabled
-	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
-	localIP, err := config.GetLocalIP()
-	require.NoError(t, err)
-
-	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
-
-	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
-	require.NoError(t, err)
-
-	log := logger.NewTestLogger(t)
-	s, err := NewService("", &config.Config{
-		HideInboundPort: false, // Enable authentication
-		SIPPort:         sipPort,
-		SIPPortListen:   sipPort,
-		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
-	require.NoError(t, err)
-	require.NotNil(t, s)
-	t.Cleanup(s.Stop)
-
-	s.SetHandler(h)
-	require.NoError(t, s.Start())
-
-	sipUserAgent, err := sipgo.NewUA(
-		sipgo.WithUserAgent(fromUser),
-		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
-	)
-	require.NoError(t, err)
-
-	sipClient, err := sipgo.NewClient(sipUserAgent)
-	require.NoError(t, err)
-
-	offer, err := sdp.NewOffer(localIP, 0xB0B, sdp.EncryptionNone)
-	require.NoError(t, err)
-	offerData, err := offer.SDP.Marshal()
-	require.NoError(t, err)
-
-	// Create INVITE request WITHOUT Call-ID header
-	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
-	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipient)
-	inviteRequest.SetDestination(sipServerAddress)
-	inviteRequest.SetBody(offerData)
-	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	// Deliberately NOT adding Call-ID header
-
-	tx, err := sipClient.TransactionRequest(inviteRequest)
-	require.NoError(t, err)
-	t.Cleanup(tx.Terminate)
-
-	// Should receive 400 Bad Request due to missing Call-ID
-	res := getResponseOrFail(t, tx)
-	require.Equal(t, sip.StatusCode(400), res.StatusCode, "Should receive 400 Bad Request for missing Call-ID")
 }
 
 // TestDigestAuthStandardFlow tests the standard authentication flow where the same Call-ID gets the same challenge state
@@ -552,8 +482,10 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(tx1.Terminate)
 
-	// Should receive 407 Unauthorized
+	// Should receive 100 Trying first, then 407 Unauthorized
 	res1 := getResponseOrFail(t, tx1)
+	require.Equal(t, sip.StatusCode(100), res1.StatusCode, "First request should receive 100 Trying")
+	res1 = getResponseOrFail(t, tx1)
 	require.Equal(t, sip.StatusCode(407), res1.StatusCode, "First request should receive 407 Unauthorized")
 
 	// Get the challenge from first response
@@ -572,8 +504,10 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(tx2.Terminate)
 
-	// Should receive 407 Unauthorized with the SAME challenge
+	// Should receive 100 Trying first, then 407 Unauthorized with the SAME challenge
 	res2 := getResponseOrFail(t, tx2)
+	require.Equal(t, sip.StatusCode(100), res2.StatusCode, "Second request should receive 100 Trying")
+	res2 = getResponseOrFail(t, tx2)
 	require.Equal(t, sip.StatusCode(407), res2.StatusCode, "Second request should receive 407 Unauthorized")
 
 	authHeader2 := res2.GetHeader("Proxy-Authenticate")

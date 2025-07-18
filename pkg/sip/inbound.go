@@ -108,12 +108,6 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	if sipCallID == "" {
-		log.Warnw("No Call-ID header found, cannot track invite state", errors.New("missing Call-ID header"))
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "Bad Request - Missing Call-ID", nil))
-		return false
-	}
-
 	inviteState := s.getInvite(sipCallID)
 	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
@@ -277,12 +271,19 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.Processing()
 	}
 
+	// Extract SIP Call ID directly from the request
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+
 	callInfo := &rpc.SIPCall{
-		LkCallId: callID,
-		SourceIp: src.Addr().String(),
-		Address:  ToSIPUri("", cc.Address()),
-		From:     ToSIPUri("", from),
-		To:       ToSIPUri("", to),
+		LkCallId:  callID,
+		SipCallId: sipCallID,
+		SourceIp:  src.Addr().String(),
+		Address:   ToSIPUri("", cc.Address()),
+		From:      ToSIPUri("", from),
+		To:        ToSIPUri("", to),
 	}
 	for _, h := range cc.RemoteHeaders() {
 		switch h := h.(type) {
