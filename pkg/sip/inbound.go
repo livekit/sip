@@ -66,18 +66,18 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
-func (s *Server) getInvite(from string) *inProgressInvite {
+func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	s.imu.Lock()
 	defer s.imu.Unlock()
 	for i := range s.inProgressInvites {
-		if s.inProgressInvites[i].from == from {
+		if s.inProgressInvites[i].sipCallID == sipCallID {
 			return s.inProgressInvites[i]
 		}
 	}
 	if len(s.inProgressInvites) >= digestLimit {
 		s.inProgressInvites = s.inProgressInvites[1:]
 	}
-	is := &inProgressInvite{from: from}
+	is := &inProgressInvite{sipCallID: sipCallID}
 	s.inProgressInvites = append(s.inProgressInvites, is)
 	return is
 }
@@ -103,8 +103,19 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
 
-	inviteState := s.getInvite(from)
-	log = log.WithValues("inviteStateFrom", from)
+	// Extract SIP Call ID for tracking in-progress invites
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+	if sipCallID == "" {
+		log.Warnw("No Call-ID header found, cannot track invite state", errors.New("missing Call-ID header"))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "Bad Request - Missing Call-ID", nil))
+		return false
+	}
+
+	inviteState := s.getInvite(sipCallID)
+	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
@@ -144,8 +155,8 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 
 	// Check if we have a valid challenge state
 	if inviteState.challenge.Realm == "" {
-		log.Warnw("No challenge state found for authentication attempt", nil,
-			"from", from,
+		log.Warnw("No challenge state found for authentication attempt", errors.New("missing challenge state"),
+			"sipCallID", sipCallID,
 			"expectedRealm", UserAgent,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
@@ -178,7 +189,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	)
 
 	if cred.Response != digCred.Response {
-		log.Warnw("Authentication failed - response mismatch", nil,
+		log.Warnw("Authentication failed - response mismatch", errors.New("response mismatch"),
 			"expectedResponse", digCred.Response,
 			"receivedResponse", cred.Response,
 		)
