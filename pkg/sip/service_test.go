@@ -303,14 +303,12 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
 			return CallDispatch{
-				Result: DispatchAccept,
-				Room: RoomConfig{
-					RoomName: "test-room",
-					Participant: ParticipantConfig{
-						Identity: "test-participant",
-					},
-				},
+				Result: DispatchNoRuleDrop,
+				// No room config needed for drop
 			}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// No-op for tests to avoid async logging issues
 		},
 	}
 
@@ -509,14 +507,12 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
 			return CallDispatch{
-				Result: DispatchAccept,
-				Room: RoomConfig{
-					RoomName: "test-room",
-					Participant: ParticipantConfig{
-						Identity: "test-participant",
-					},
-				},
+				Result: DispatchNoRuleDrop,
+				// No room config needed for drop
 			}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// No-op for tests to avoid async logging issues
 		},
 	}
 
