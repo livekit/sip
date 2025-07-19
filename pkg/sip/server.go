@@ -141,7 +141,7 @@ type Server struct {
 }
 
 type inProgressInvite struct {
-	from      string
+	sipCallID string
 	challenge digest.Challenge
 }
 
