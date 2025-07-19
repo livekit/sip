@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/icholy/digest"
 	msdk "github.com/livekit/media-sdk"
 	"github.com/stretchr/testify/require"
@@ -100,7 +101,8 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
-	log := logger.NewTestLogger(t)
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
 	s, err := NewService("", &config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
@@ -222,7 +224,8 @@ func TestService_OnSessionEnd(t *testing.T) {
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
-	log := logger.NewTestLogger(t)
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
 	s, err := NewService("", &config.Config{
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
@@ -303,8 +306,8 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
 			return CallDispatch{
-				Result: DispatchNoRuleDrop,
-				// No room config needed for drop
+				Result: DispatchNoRuleReject,
+				// No room config needed for reject
 			}
 		},
 		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
@@ -322,7 +325,8 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
-	log := logger.NewTestLogger(t)
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
 	s, err := NewService("", &config.Config{
 		HideInboundPort: false, // Enable authentication
 		SIPPort:         sipPort,
@@ -507,8 +511,8 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
 			return CallDispatch{
-				Result: DispatchNoRuleDrop,
-				// No room config needed for drop
+				Result: DispatchNoRuleReject,
+				// No room config needed for reject
 			}
 		},
 		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
@@ -526,7 +530,8 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
 
-	log := logger.NewTestLogger(t)
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
 	s, err := NewService("", &config.Config{
 		HideInboundPort: false, // Enable authentication
 		SIPPort:         sipPort,
