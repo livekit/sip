@@ -66,18 +66,18 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
-func (s *Server) getInvite(from string) *inProgressInvite {
+func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	s.imu.Lock()
 	defer s.imu.Unlock()
 	for i := range s.inProgressInvites {
-		if s.inProgressInvites[i].from == from {
+		if s.inProgressInvites[i].sipCallID == sipCallID {
 			return s.inProgressInvites[i]
 		}
 	}
 	if len(s.inProgressInvites) >= digestLimit {
 		s.inProgressInvites = s.inProgressInvites[1:]
 	}
-	is := &inProgressInvite{from: from}
+	is := &inProgressInvite{sipCallID: sipCallID}
 	s.inProgressInvites = append(s.inProgressInvites, is)
 	return is
 }
@@ -103,8 +103,13 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
 
-	inviteState := s.getInvite(from)
-	log = log.WithValues("inviteStateFrom", from)
+	// Extract SIP Call ID for tracking in-progress invites
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+	inviteState := s.getInvite(sipCallID)
+	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
@@ -144,8 +149,8 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 
 	// Check if we have a valid challenge state
 	if inviteState.challenge.Realm == "" {
-		log.Warnw("No challenge state found for authentication attempt", nil,
-			"from", from,
+		log.Warnw("No challenge state found for authentication attempt", errors.New("missing challenge state"),
+			"sipCallID", sipCallID,
 			"expectedRealm", UserAgent,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
@@ -178,7 +183,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	)
 
 	if cred.Response != digCred.Response {
-		log.Warnw("Authentication failed - response mismatch", nil,
+		log.Warnw("Authentication failed - response mismatch", errors.New("response mismatch"),
 			"expectedResponse", digCred.Response,
 			"receivedResponse", cred.Response,
 		)
@@ -266,12 +271,19 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.Processing()
 	}
 
+	// Extract SIP Call ID directly from the request
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+
 	callInfo := &rpc.SIPCall{
-		LkCallId: callID,
-		SourceIp: src.Addr().String(),
-		Address:  ToSIPUri("", cc.Address()),
-		From:     ToSIPUri("", from),
-		To:       ToSIPUri("", to),
+		LkCallId:  callID,
+		SipCallId: sipCallID,
+		SourceIp:  src.Addr().String(),
+		Address:   ToSIPUri("", cc.Address()),
+		From:      ToSIPUri("", from),
+		To:        ToSIPUri("", to),
 	}
 	for _, h := range cc.RemoteHeaders() {
 		switch h := h.(type) {
@@ -1150,14 +1162,17 @@ type sipInbound struct {
 }
 
 func (c *sipInbound) ValidateInvite() error {
+	if c.callID == "" {
+		return errors.New("no Call-ID header in INVITE")
+	}
 	if c.from == nil {
-		return errors.New("no From header")
+		return errors.New("no From header in INVITE")
 	}
 	if c.to == nil {
-		return errors.New("no To header")
+		return errors.New("no To header in INVITE")
 	}
 	if c.tag == "" {
-		return errors.New("no tag in From")
+		return errors.New("no tag in From in INVITE")
 	}
 	return nil
 }
