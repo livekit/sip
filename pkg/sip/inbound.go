@@ -1162,14 +1162,17 @@ type sipInbound struct {
 }
 
 func (c *sipInbound) ValidateInvite() error {
+	if c.callID == "" {
+		return errors.New("no Call-ID header in INVITE")
+	}
 	if c.from == nil {
-		return errors.New("no From header")
+		return errors.New("no From header in INVITE")
 	}
 	if c.to == nil {
-		return errors.New("no To header")
+		return errors.New("no To header in INVITE")
 	}
 	if c.tag == "" {
-		return errors.New("no tag in From")
+		return errors.New("no tag in From in INVITE")
 	}
 	return nil
 }
