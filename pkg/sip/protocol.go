@@ -263,7 +263,10 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	case sip.StatusOK, 202: // 202 is Accepted
 		return resp, nil
 	default:
-		return resp, &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
+		return resp, &livekit.SIPStatus{
+			Code:   livekit.SIPStatusCode(resp.StatusCode),
+			Status: resp.Reason,
+		}
 	}
 }
 
