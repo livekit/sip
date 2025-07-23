@@ -990,13 +990,23 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, err := sendRefer(ctx, c, req, c.c.closing.Watch())
+	_, tx, err := sendReferWithTransaction(ctx, c, req, c.c.closing.Watch())
 	if err != nil {
 		return err
 	}
 
+	// If we got a transaction, we need to handle cancellation
+	if tx != nil {
+		defer tx.Terminate()
+	}
+
 	select {
 	case <-ctx.Done():
+		// Send CANCEL request to peer if we have a transaction
+		if tx != nil {
+			c.log.Infow("cancelling REFER request", "cseq", c.referCseq)
+			_ = tx.Cancel()
+		}
 		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
 	case err := <-c.referDone:
 		if err != nil {

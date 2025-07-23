@@ -247,23 +247,29 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 }
 
 func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
+	resp, _, err := sendReferWithTransaction(ctx, c, req, stop)
+	return resp, err
+}
+
+func sendReferWithTransaction(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, sip.ClientTransaction, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer tx.Terminate()
 
 	ctx = context.WithoutCancel(ctx)
 	resp, err := sipResponse(ctx, tx, stop, nil)
 	if err != nil {
-		return nil, err
+		tx.Terminate()
+		return nil, nil, err
 	}
 
 	switch resp.StatusCode {
 	case sip.StatusOK, 202: // 202 is Accepted
-		return resp, nil
+		return resp, tx, nil
 	default:
-		return resp, &livekit.SIPStatus{
+		tx.Terminate()
+		return resp, nil, &livekit.SIPStatus{
 			Code:   livekit.SIPStatusCode(resp.StatusCode),
 			Status: resp.Reason,
 		}
