@@ -1007,7 +1007,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 			c.log.Infow("cancelling REFER request", "cseq", c.referCseq)
 			_ = tx.Cancel()
 		}
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer canceled")
 	case err := <-c.referDone:
 		if err != nil {
 			return err
