@@ -283,7 +283,7 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	}
 	defer tx.Terminate()
 
-	ctx = context.WithoutCancel(ctx)
+	// Log the context deadline for debugging
 	if deadline, ok := ctx.Deadline(); ok {
 		logger.Debugw("SIP transaction context deadline", "deadline", deadline, "timeUntilDeadline", time.Until(deadline))
 	}
