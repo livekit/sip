@@ -431,34 +431,6 @@ func (c *outboundCall) connectMedia() {
 	c.media.HandleDTMF(c.handleDTMF)
 }
 
-type sipRespFunc func(code sip.StatusCode, hdrs Headers)
-
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {
-	cnt := 0
-	for {
-		select {
-		case <-ctx.Done():
-			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
-		case <-stop:
-			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
-		case <-tx.Done():
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
-		case res := <-tx.Responses():
-			status := res.StatusCode
-			if setState != nil {
-				setState(res.StatusCode, res.Headers())
-			}
-			if status/100 != 1 { // != 1xx
-				return res, nil
-			}
-			// continue
-			cnt++
-		}
-	}
-}
-
 func (c *outboundCall) stopSIP(reason string) {
 	c.mon.CallTerminate(reason)
 	c.cc.Close()
@@ -990,31 +962,15 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, tx, err := sendReferWithTransaction(ctx, c, req, c.c.closing.Watch())
+	_, err := sendRefer(ctx, c, req, c.c.closing.Watch())
 	if err != nil {
 		return err
 	}
 
-	// If we got a transaction, we need to handle cancellation
-	if tx != nil {
-		defer tx.Terminate()
-	}
-
 	select {
-	case <-ctx.Done():
-		// Send CANCEL request to peer if we have a transaction
-		if tx != nil {
-			c.log.Infow("cancelling REFER request", "cseq", c.referCseq)
-			_ = tx.Cancel()
-		}
-		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer canceled")
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
+	case transferErr := <-c.referDone:
+		return transferErr
 	}
-
-	return nil
 }
 
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {

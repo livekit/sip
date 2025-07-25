@@ -246,30 +246,52 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	return req
 }
 
-func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
-	resp, _, err := sendReferWithTransaction(ctx, c, req, stop)
-	return resp, err
+type sipRespFunc func(code sip.StatusCode, hdrs Headers)
+
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {
+	cnt := 0
+	for {
+		select {
+		case <-ctx.Done():
+			_ = tx.Cancel()
+			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "timed out")
+		case <-stop:
+			_ = tx.Cancel()
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
+		case <-tx.Done():
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
+		case res := <-tx.Responses():
+			status := res.StatusCode
+			if setState != nil {
+				setState(res.StatusCode, res.Headers())
+			}
+			if status/100 != 1 { // != 1xx
+				return res, nil
+			}
+			// continue
+			cnt++
+		}
+	}
 }
 
-func sendReferWithTransaction(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, sip.ClientTransaction, error) {
+func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	defer tx.Terminate()
 
 	ctx = context.WithoutCancel(ctx)
 	resp, err := sipResponse(ctx, tx, stop, nil)
 	if err != nil {
-		tx.Terminate()
-		return nil, nil, err
+		return nil, err
 	}
 
 	switch resp.StatusCode {
 	case sip.StatusOK, 202: // 202 is Accepted
-		return resp, tx, nil
+		return resp, nil
 	default:
-		tx.Terminate()
-		return resp, nil, &livekit.SIPStatus{
+		return resp, &livekit.SIPStatus{
 			Code:   livekit.SIPStatusCode(resp.StatusCode),
 			Status: resp.Reason,
 		}

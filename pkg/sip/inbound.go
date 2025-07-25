@@ -1515,31 +1515,16 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 		return err
 	}
 
-	_, tx, err := sendReferWithTransaction(ctx, c, req, c.s.closing.Watch())
+	_, err = sendRefer(ctx, c, req, c.s.closing.Watch())
 	if err != nil {
 		return err
 	}
 
-	// If we got a transaction, we need to handle cancellation
-	if tx != nil {
-		defer tx.Terminate()
-	}
-
+	// Wait for the refer to complete
 	select {
-	case <-ctx.Done():
-		// Send CANCEL request to peer if we have a transaction
-		if tx != nil {
-			c.s.log.Infow("cancelling REFER request", "cseq", c.referCseq)
-			_ = tx.Cancel()
-		}
-		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer canceled")
 	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
+		return err
 	}
-
-	return nil
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
