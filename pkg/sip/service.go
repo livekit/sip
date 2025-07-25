@@ -241,6 +241,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 		if timeout <= 0 {
 			timeout = 80 * time.Second
 		}
+		s.log.Debugw("setting ringing timeout for transfer", "callID", req.SipCallId, "transferTo", req.TransferTo, "timeout", timeout)
 
 		go func() {
 			ctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), timeout)

@@ -26,6 +26,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo/sip"
 
@@ -254,6 +255,7 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
+			logger.Infow("SIP transaction timed out", "context", ctx.Err())
 			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "timed out")
 		case <-stop:
 			_ = tx.Cancel()
@@ -282,6 +284,9 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	defer tx.Terminate()
 
 	ctx = context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		logger.Debugw("SIP transaction context deadline", "deadline", deadline, "timeUntilDeadline", time.Until(deadline))
+	}
 	resp, err := sipResponse(ctx, tx, stop, nil)
 	if err != nil {
 		return nil, err
