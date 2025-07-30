@@ -1355,7 +1355,7 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 
 	c.addExtraHeaders(r)
 
-	c.setDestFromVia(r)
+	// c.setDestFromVia(r)
 
 	r.AppendHeader(&contentTypeHeaderSDP)
 	for k, v := range headers {
