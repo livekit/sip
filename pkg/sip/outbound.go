@@ -792,7 +792,7 @@ authLoop:
 			}
 			if body := resp.Body(); len(body) != 0 {
 				err.Status = string(body)
-			} else if s := resp.GetHeader("X-Twillio-Error"); s != nil {
+			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
 				err.Status = s.Value()
 			}
 			return nil, fmt.Errorf("INVITE failed: %w", err)
