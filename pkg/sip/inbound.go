@@ -341,7 +341,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if !s.handleInviteAuth(log, req, tx, from.User, r.Username, r.Password) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
-			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid crendentials were provided")
+			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
 		fallthrough
 	case AuthAccept:
