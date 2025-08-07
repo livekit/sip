@@ -1127,7 +1127,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	c.log.Infow("inbound call transferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
-	time.AfterFunc(referByeTimeout, func() { c.Close() })
+	// time.AfterFunc(referByeTimeout, func() { c.Close() })
 
 	return nil
 
