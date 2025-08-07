@@ -1098,10 +1098,30 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		}()
 	}
 
-	err = c.cc.TransferCall(ctx, transferTo, headers)
+	_, tx, err := c.cc.TransferCall(ctx, transferTo, headers)
 	if err != nil {
 		c.log.Infow("inbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
+	}
+	defer tx.Terminate()
+
+	// Set up a timer to cancel the transaction after ringing timeout
+	ringingTimer := time.AfterFunc(defaultRingingTimeout, func() {
+		c.log.Infow("ringing timeout reached, canceling transfer transaction", "transferTo", transferTo)
+		tx.Cancel()
+	})
+	defer ringingTimer.Stop()
+
+	// Wait for transfer completion or timeout
+	select {
+	case <-ctx.Done():
+		tx.Cancel()
+		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
+	case err := <-c.cc.referDone:
+		if err != nil {
+			c.log.Infow("transfer failed", "error", err, "transferTo", transferTo)
+			return err
+		}
 	}
 
 	c.log.Infow("inbound call transferred", "transferTo", transferTo)
@@ -1509,29 +1529,19 @@ func (c *sipInbound) newReferReq(transferTo string, headers map[string]string) (
 	return req, nil
 }
 
-func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, headers map[string]string) error {
+func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, headers map[string]string) (*sip.Response, sip.ClientTransaction, error) {
 	req, err := c.newReferReq(transferTo, headers)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	_, tx, err := sendRefer(ctx, c, req, c.s.closing.Watch())
+	resp, tx, err := sendRefer(ctx, c, req, c.s.closing.Watch())
 	if err != nil {
-		return err
-	}
-	defer tx.Terminate()
-
-	select {
-	case <-ctx.Done():
-		tx.Cancel()
-		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
+		return resp, tx, err
 	}
 
-	return nil
+	// Don't defer tx.Terminate() here - let the caller manage it
+	return resp, tx, nil
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
