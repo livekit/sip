@@ -1515,14 +1515,16 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 		return err
 	}
 
-	_, err = sendRefer(ctx, c, req, c.s.closing.Watch())
+	_, tx, err := sendRefer(ctx, c, req, c.s.closing.Watch())
 	if err != nil {
 		return err
 	}
+	defer tx.Terminate()
 
 	select {
 	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+		tx.Cancel()
+		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
 	case err := <-c.referDone:
 		if err != nil {
 			return err

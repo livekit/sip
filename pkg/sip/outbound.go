@@ -990,14 +990,16 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, err := sendRefer(ctx, c, req, c.c.closing.Watch())
+	_, tx, err := sendRefer(ctx, c, req, c.c.closing.Watch())
 	if err != nil {
 		return err
 	}
+	defer tx.Terminate()
 
 	select {
 	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+		tx.Cancel()
+		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
 	case err := <-c.referDone:
 		if err != nil {
 			return err
