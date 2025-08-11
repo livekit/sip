@@ -27,7 +27,7 @@ jobs:
     runs-on: buildjet-8vcpu-ubuntu-2204
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Opus dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libsoxr-dev
