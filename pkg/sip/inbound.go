@@ -1068,7 +1068,14 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	c.log.Debugw("transferCall started",
 		"transferTo", transferTo,
 		"dialtone", dialtone,
-		"timeout", timeout)
+		"timeout", timeout,
+		"ctxErr", ctx.Err(),
+		"ctxDeadline", func() interface{} {
+			if deadline, ok := ctx.Deadline(); ok {
+				return deadline
+			}
+			return "no deadline"
+		}())
 
 	var err error
 
@@ -1118,10 +1125,40 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		tx.Terminate()
 	}()
 
+	// Check for context cancellation before setting up timeout
+	select {
+	case <-ctx.Done():
+		c.log.Debugw("transferCall context cancelled before timeout setup",
+			"transferTo", transferTo,
+			"ctxErr", ctx.Err())
+		tx.Cancel()
+		return psrpc.NewErrorf(psrpc.Canceled, "transfer cancelled: %v", ctx.Err())
+	default:
+		// Continue with timeout setup
+	}
+
 	// Set up a timer to cancel the transaction after ringing timeout
 	c.log.Debugw("transferCall setting up ringing timeout",
 		"transferTo", transferTo,
 		"timeout", timeout)
+
+	// Create a new context without deadline to ensure our timeout logic works independently
+	// This prevents any external context cancellation from interfering with our timeout
+	timeoutCtx := context.WithoutCancel(ctx)
+	c.log.Debugw("transferCall created timeout context without deadline",
+		"transferTo", transferTo,
+		"originalCtxDeadline", func() interface{} {
+			if deadline, ok := ctx.Deadline(); ok {
+				return deadline
+			}
+			return "no deadline"
+		}(),
+		"timeoutCtxDeadline", func() interface{} {
+			if deadline, ok := timeoutCtx.Deadline(); ok {
+				return deadline
+			}
+			return "no deadline"
+		}())
 
 	ringingTimer := time.AfterFunc(timeout, func() {
 		c.log.Infow("ringing timeout reached, canceling transfer transaction", "transferTo", transferTo)
@@ -1139,10 +1176,11 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	// Wait for transfer completion or timeout
 	c.log.Debugw("transferCall waiting for completion or timeout", "transferTo", transferTo)
 	select {
-	case <-ctx.Done():
-		c.log.Debugw("transferCall context cancelled",
+	case <-timeoutCtx.Done():
+		c.log.Debugw("transferCall transfer context cancelled",
 			"transferTo", transferTo,
-			"ctxErr", ctx.Err())
+			"transferCtxErr", timeoutCtx.Err(),
+			"timeout", timeout)
 		tx.Cancel()
 		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
 	case err := <-c.cc.referDone:

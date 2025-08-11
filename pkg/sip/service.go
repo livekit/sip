@@ -270,6 +270,18 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 }
 
 func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool, timeout time.Duration) error {
+	s.log.Debugw("processParticipantTransfer started",
+		"callID", callID,
+		"transferTo", transferTo,
+		"timeout", timeout,
+		"ctxErr", ctx.Err(),
+		"ctxDeadline", func() interface{} {
+			if deadline, ok := ctx.Deadline(); ok {
+				return deadline
+			}
+			return "no deadline"
+		}())
+
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
 	out := s.cli.activeCalls[LocalTag(callID)]
