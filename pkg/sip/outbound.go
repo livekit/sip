@@ -600,7 +600,7 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool, timeout time.Duration) (retErr error) {
 	var err error
 
 	tID := c.state.StartTransfer(ctx, transferTo)

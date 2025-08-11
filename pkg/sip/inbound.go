@@ -1064,11 +1064,11 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool, timeout time.Duration) (retErr error) {
 	c.log.Debugw("transferCall started",
 		"transferTo", transferTo,
 		"dialtone", dialtone,
-		"defaultRingingTimeout", defaultRingingTimeout)
+		"timeout", timeout)
 
 	var err error
 
@@ -1121,13 +1121,13 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	// Set up a timer to cancel the transaction after ringing timeout
 	c.log.Debugw("transferCall setting up ringing timeout",
 		"transferTo", transferTo,
-		"timeout", defaultRingingTimeout)
+		"timeout", timeout)
 
-	ringingTimer := time.AfterFunc(defaultRingingTimeout, func() {
+	ringingTimer := time.AfterFunc(timeout, func() {
 		c.log.Infow("ringing timeout reached, canceling transfer transaction", "transferTo", transferTo)
 		c.log.Debugw("transferCall timeout callback executing",
 			"transferTo", transferTo,
-			"timeout", defaultRingingTimeout)
+			"timeout", timeout)
 		tx.Cancel()
 		c.log.Debugw("transferCall timeout callback completed", "transferTo", transferTo)
 	})
