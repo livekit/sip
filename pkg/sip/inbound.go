@@ -1065,10 +1065,18 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 }
 
 func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+	c.log.Debugw("transferCall started",
+		"transferTo", transferTo,
+		"dialtone", dialtone,
+		"defaultRingingTimeout", defaultRingingTimeout)
+
 	var err error
 
 	tID := c.state.StartTransfer(ctx, transferTo)
 	defer func() {
+		c.log.Debugw("transferCall ending",
+			"transferTo", transferTo,
+			"retErr", retErr)
 		c.state.EndTransfer(ctx, tID, retErr)
 	}()
 
@@ -1098,30 +1106,55 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		}()
 	}
 
+	c.log.Debugw("transferCall calling TransferCall", "transferTo", transferTo)
 	_, tx, err := c.cc.TransferCall(ctx, transferTo, headers)
 	if err != nil {
 		c.log.Infow("inbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
 	}
-	defer tx.Terminate()
+	c.log.Debugw("transferCall TransferCall completed successfully", "transferTo", transferTo)
+	defer func() {
+		c.log.Debugw("transferCall terminating transaction", "transferTo", transferTo)
+		tx.Terminate()
+	}()
 
 	// Set up a timer to cancel the transaction after ringing timeout
+	c.log.Debugw("transferCall setting up ringing timeout",
+		"transferTo", transferTo,
+		"timeout", defaultRingingTimeout)
+
 	ringingTimer := time.AfterFunc(defaultRingingTimeout, func() {
 		c.log.Infow("ringing timeout reached, canceling transfer transaction", "transferTo", transferTo)
+		c.log.Debugw("transferCall timeout callback executing",
+			"transferTo", transferTo,
+			"timeout", defaultRingingTimeout)
 		tx.Cancel()
+		c.log.Debugw("transferCall timeout callback completed", "transferTo", transferTo)
 	})
-	defer ringingTimer.Stop()
+	defer func() {
+		c.log.Debugw("transferCall stopping ringing timer", "transferTo", transferTo)
+		ringingTimer.Stop()
+	}()
 
 	// Wait for transfer completion or timeout
+	c.log.Debugw("transferCall waiting for completion or timeout", "transferTo", transferTo)
 	select {
 	case <-ctx.Done():
+		c.log.Debugw("transferCall context cancelled",
+			"transferTo", transferTo,
+			"ctxErr", ctx.Err())
 		tx.Cancel()
 		return psrpc.NewErrorf(psrpc.DeadlineExceeded, "refer timed out")
 	case err := <-c.cc.referDone:
+		c.log.Debugw("transferCall received result from referDone",
+			"transferTo", transferTo,
+			"err", err,
+			"errType", fmt.Sprintf("%T", err))
 		if err != nil {
 			c.log.Infow("transfer failed", "error", err, "transferTo", transferTo)
 			return err
 		}
+		c.log.Debugw("transferCall transfer completed successfully", "transferTo", transferTo)
 	}
 
 	c.log.Infow("inbound call transferred", "transferTo", transferTo)
@@ -1661,7 +1694,8 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 
 		c.s.log.Debugw("handleNotify sending result to referDone channel",
 			"callID", c.callID,
-			"result", result)
+			"result", result,
+			"notifyAckTimeout", notifyAckTimeout)
 
 		select {
 		case c.referDone <- result:
@@ -1670,7 +1704,8 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 		case <-time.After(notifyAckTimeout):
 			c.s.log.Debugw("handleNotify timeout sending result",
 				"callID", c.callID,
-				"timeout", notifyAckTimeout)
+				"timeout", notifyAckTimeout,
+				"referDoneChannelBlocked", true)
 		}
 		return nil
 	}

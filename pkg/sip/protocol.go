@@ -253,9 +253,9 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	if inbound, ok := c.(*sipInbound); ok {
 		log = inbound.s.log
 	}
-	
+
 	if log != nil {
-		log.Debugw("sendRefer started", 
+		log.Debugw("sendRefer started",
 			"callID", req.CallID().Value(),
 			"cseq", req.CSeq().SeqNo,
 			"request", req.String())
