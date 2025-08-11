@@ -80,6 +80,20 @@ type URI struct {
 	Transport Transport
 }
 
+func ConvertURI(u *sip.Uri) URI {
+	uri := URI{
+		User:      u.User,
+		Host:      u.Host,
+		Addr:      netip.AddrPortFrom(netip.Addr{}, uint16(u.Port)),
+		Transport: TransportUDP,
+	}
+	if tr := transportFromURI(u); tr != "" {
+		uri.Transport = tr
+	}
+	uri = uri.Normalize()
+	return uri
+}
+
 func CreateURIFromUserAndAddress(user string, address string, transport Transport) URI {
 	uri := URI{
 		User:      user,
