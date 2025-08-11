@@ -24,10 +24,10 @@ on:
 
 jobs:
   test:
-    runs-on: buildjet-8vcpu-ubuntu-2204
+    runs-on: namespace-profile-8vcpu-cache
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Opus dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libsoxr-dev
