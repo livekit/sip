@@ -1501,19 +1501,33 @@ func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error
 }
 
 func (c *sipInbound) newReferReq(transferTo string, headers map[string]string) (*sip.Request, error) {
+	c.s.log.Debugw("newReferReq started",
+		"callID", c.callID,
+		"transferTo", transferTo,
+		"headers", headers,
+		"currentReferCseq", c.referCseq)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.invite == nil || c.inviteOk == nil {
+		c.s.log.Debugw("newReferReq failed - call not established",
+			"callID", c.callID,
+			"invite", c.invite != nil,
+			"inviteOk", c.inviteOk != nil)
 		return nil, psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
 	from := c.invite.From()
 	if from == nil {
+		c.s.log.Debugw("newReferReq failed - no From URI", "callID", c.callID)
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
 	}
 	if c.setHeaders != nil {
 		headers = c.setHeaders(headers)
+		c.s.log.Debugw("newReferReq headers modified by setHeaders",
+			"callID", c.callID,
+			"modifiedHeaders", headers)
 	}
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
@@ -1523,42 +1537,102 @@ func (c *sipInbound) newReferReq(transferTo string, headers map[string]string) (
 
 	cseq := req.CSeq()
 	if cseq == nil {
+		c.s.log.Debugw("newReferReq failed - missing CSeq header", "callID", c.callID)
 		return nil, psrpc.NewErrorf(psrpc.Internal, "missing CSeq header in REFER request")
 	}
+
+	oldReferCseq := c.referCseq
 	c.referCseq = cseq.SeqNo
+
+	c.s.log.Debugw("newReferReq completed",
+		"callID", c.callID,
+		"oldReferCseq", oldReferCseq,
+		"newReferCseq", c.referCseq,
+		"cseqSeqNo", cseq.SeqNo)
+
 	return req, nil
 }
 
 func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, headers map[string]string) (*sip.Response, sip.ClientTransaction, error) {
+	c.s.log.Debugw("TransferCall started",
+		"callID", c.callID,
+		"transferTo", transferTo,
+		"headers", headers,
+		"referCseq", c.referCseq)
+
 	req, err := c.newReferReq(transferTo, headers)
 	if err != nil {
+		c.s.log.Debugw("TransferCall failed to create REFER request",
+			"callID", c.callID,
+			"error", err)
 		return nil, nil, err
 	}
 
+	c.s.log.Debugw("TransferCall sending REFER request",
+		"callID", c.callID,
+		"referCseq", c.referCseq,
+		"request", req.String())
+
 	resp, tx, err := sendRefer(ctx, c, req, c.s.closing.Watch())
 	if err != nil {
+		c.s.log.Debugw("TransferCall sendRefer failed",
+			"callID", c.callID,
+			"referCseq", c.referCseq,
+			"error", err)
 		return resp, tx, err
 	}
+
+	c.s.log.Debugw("TransferCall sendRefer completed",
+		"callID", c.callID,
+		"referCseq", c.referCseq,
+		"responseStatus", resp.StatusCode,
+		"responseReason", resp.Reason)
 
 	// Don't defer tx.Terminate() here - let the caller manage it
 	return resp, tx, nil
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	c.s.log.Debugw("handleNotify started",
+		"callID", c.callID,
+		"request", req.String())
+
 	method, cseq, status, err := handleNotify(req)
 	if err != nil {
+		c.s.log.Debugw("handleNotify failed to parse NOTIFY",
+			"callID", c.callID,
+			"error", err)
 		return err
 	}
 
+	c.s.log.Debugw("handleNotify parsed NOTIFY",
+		"callID", c.callID,
+		"method", method,
+		"cseq", cseq,
+		"status", status)
+
 	switch method {
 	default:
+		c.s.log.Debugw("handleNotify ignoring non-REFER method",
+			"callID", c.callID,
+			"method", method)
 		return nil
 	case sip.REFER:
 		c.mu.RLock()
 		defer c.mu.RUnlock()
 
+		c.s.log.Debugw("handleNotify processing REFER NOTIFY",
+			"callID", c.callID,
+			"notifyCseq", cseq,
+			"currentReferCseq", c.referCseq,
+			"status", status)
+
 		if cseq != 0 && cseq != uint32(c.referCseq) {
 			// NOTIFY for a different REFER, skip
+			c.s.log.Debugw("handleNotify skipping NOTIFY for different REFER",
+				"callID", c.callID,
+				"notifyCseq", cseq,
+				"currentReferCseq", c.referCseq)
 			return nil
 		}
 
@@ -1566,18 +1640,37 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 		switch {
 		case status >= 100 && status < 200:
 			// still trying
+			c.s.log.Debugw("handleNotify transfer still in progress",
+				"callID", c.callID,
+				"status", status)
 			return nil
 		case status == 200:
 			// Success
+			c.s.log.Debugw("handleNotify transfer succeeded",
+				"callID", c.callID,
+				"status", status)
 			result = nil
 		default:
 			// Failure
+			c.s.log.Debugw("handleNotify transfer failed",
+				"callID", c.callID,
+				"status", status)
 			// TODO be more specific in the reported error
 			result = psrpc.NewErrorf(psrpc.Canceled, "call transfer failed")
 		}
+
+		c.s.log.Debugw("handleNotify sending result to referDone channel",
+			"callID", c.callID,
+			"result", result)
+
 		select {
 		case c.referDone <- result:
+			c.s.log.Debugw("handleNotify result sent successfully",
+				"callID", c.callID)
 		case <-time.After(notifyAckTimeout):
+			c.s.log.Debugw("handleNotify timeout sending result",
+				"callID", c.callID,
+				"timeout", notifyAckTimeout)
 		}
 		return nil
 	}

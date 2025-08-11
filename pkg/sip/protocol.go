@@ -29,6 +29,7 @@ import (
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo/sip"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/config"
 )
 
@@ -247,21 +248,72 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 }
 
 func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, sip.ClientTransaction, error) {
+	// Get logger from the server if available
+	var log logger.Logger
+	if inbound, ok := c.(*sipInbound); ok {
+		log = inbound.s.log
+	}
+	
+	if log != nil {
+		log.Debugw("sendRefer started", 
+			"callID", req.CallID().Value(),
+			"cseq", req.CSeq().SeqNo,
+			"request", req.String())
+	}
+
 	tx, err := c.Transaction(req)
 	if err != nil {
+		if log != nil {
+			log.Debugw("sendRefer failed to create transaction",
+				"callID", req.CallID().Value(),
+				"error", err)
+		}
 		return nil, nil, err
+	}
+
+	if log != nil {
+		log.Debugw("sendRefer transaction created",
+			"callID", req.CallID().Value(),
+			"cseq", req.CSeq().SeqNo)
 	}
 
 	ctx = context.WithoutCancel(ctx)
 	resp, err := sipResponse(ctx, tx, stop, nil)
 	if err != nil {
+		if log != nil {
+			log.Debugw("sendRefer sipResponse failed",
+				"callID", req.CallID().Value(),
+				"cseq", req.CSeq().SeqNo,
+				"error", err)
+		}
 		return nil, tx, err
+	}
+
+	if log != nil {
+		log.Debugw("sendRefer received response",
+			"callID", req.CallID().Value(),
+			"cseq", req.CSeq().SeqNo,
+			"statusCode", resp.StatusCode,
+			"reason", resp.Reason)
 	}
 
 	switch resp.StatusCode {
 	case sip.StatusOK, 202: // 202 is Accepted
+		if log != nil {
+			log.Debugw("sendRefer successful",
+				"callID", req.CallID().Value(),
+				"cseq", req.CSeq().SeqNo,
+				"statusCode", resp.StatusCode)
+		}
 		return resp, tx, nil
 	default:
+		if log != nil {
+			log.Debugw("sendRefer failed with error status",
+				"callID", req.CallID().Value(),
+				"cseq", req.CSeq().SeqNo,
+				"statusCode", resp.StatusCode,
+				"reason", resp.Reason)
+		}
 		return resp, tx, &livekit.SIPStatus{
 			Code:   livekit.SIPStatusCode(resp.StatusCode),
 			Status: resp.Reason,
