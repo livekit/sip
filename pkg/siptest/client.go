@@ -54,6 +54,7 @@ import (
 
 type ClientConfig struct {
 	IP             netip.Addr
+	Port           uint16
 	Number         string
 	AuthUser       string
 	AuthPass       string
@@ -84,6 +85,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		}
 		conf.IP = localIP
 		conf.Log.Debug("setting local address", "ip", localIP)
+	}
+	if conf.Port == 0 {
+		conf.Port = 5060 + uint16(rand.Intn(100))
 	}
 	if conf.Number == "" {
 		conf.Number = "1000"
@@ -127,6 +131,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		cli.Close()
 		return nil, err
 	}
+	cli.sipUA = ua
 
 	cli.sipClient, err = sipgo.NewClient(ua, sipgo.WithClientHostname(conf.IP.String()))
 	if err != nil {
@@ -161,6 +166,14 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		err = tx.Respond(sip.NewResponseFromRequest(req, 202, "Accepted", nil))
 		tx.Terminate()
 	})
+	l, err := net.ListenTCP("tcp4", &net.TCPAddr{Port: int(conf.Port)})
+	if err != nil {
+		cli.Close()
+		return nil, err
+	}
+	cli.sipLis = l
+
+	go cli.sipServer.ServeTCP(l)
 
 	return cli, nil
 }
@@ -178,8 +191,10 @@ type Client struct {
 	mediaAudio    *rtp.Stream
 	mediaDTMF     *rtp.Stream
 	audioOut      *mixer.Mixer
+	sipUA         *sipgo.UserAgent
 	sipClient     *sipgo.Client
 	sipServer     *sipgo.Server
+	sipLis        net.Listener
 	inviteReq     *sip.Request
 	inviteResp    *sip.Response
 	recordHandler atomic.Pointer[rtp.Handler]
@@ -213,6 +228,9 @@ func (c *Client) Close() {
 		}
 		if c.sipServer != nil {
 			c.sipServer.Close()
+		}
+		if c.sipLis != nil {
+			c.sipLis.Close()
 		}
 	})
 }
@@ -259,8 +277,8 @@ func (c *Client) Record(w io.WriteCloser) {
 	c.recordHandler.Store(&h)
 }
 
-func (c *Client) Dial(ip string, uri string, number string, headers map[string]string) error {
-	c.log.Debug("dialing SIP server", "ip", ip, "uri", uri, "number", number)
+func (c *Client) Dial(ip string, host string, number string, headers map[string]string) error {
+	c.log.Debug("dialing SIP server", "ip", ip, "host", host, "number", number)
 	offer, err := c.createOffer()
 	if err != nil {
 		return err
@@ -274,7 +292,7 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 	)
 
 	for {
-		req, resp, err = c.attemptInvite(ip, uri, number, offer, authHeaderVal, headers, callID)
+		req, resp, err = c.attemptInvite(ip, host, number, offer, authHeaderVal, headers, callID)
 		if err != nil {
 			return err
 		}
@@ -354,8 +372,10 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 	return nil
 }
 
-func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader string, headers map[string]string, callID string) (*sip.Request, *sip.Response, error) {
-	req := sip.NewRequest(sip.INVITE, sip.Uri{User: number, Host: uri})
+func (c *Client) attemptInvite(ip, host, number string, offer []byte, authHeader string, headers map[string]string, callID string) (*sip.Request, *sip.Response, error) {
+	uri := sip.Uri{User: number, Host: host, UriParams: make(sip.HeaderParams)}
+	uri.UriParams.Add("transport", "tcp")
+	req := sip.NewRequest(sip.INVITE, uri)
 
 	// reuse CallID if not empty
 	if callID != "" {
@@ -365,7 +385,7 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	req.SetDestination(ip)
 	req.SetBody(offer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.IP)))
+	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:%d>", c.conf.IP, c.conf.Port)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 	if c.id != "" {
 		req.AppendHeader(sip.NewHeader("X-Lk-Test-Id", c.id))
