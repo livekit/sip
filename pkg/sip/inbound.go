@@ -1311,21 +1311,6 @@ func (c *sipInbound) Cancelled() <-chan struct{} {
 	return c.cancelled
 }
 
-func (c *sipInbound) setDestFromVia(r *sip.Response) {
-	// When behind LB, the source IP may be incorrect and/or the UDP "session" timeout may expire.
-	// This is critical for sending new requests like BYE.
-	//
-	// Thus, instead of relying on LB, we will contact the source IP directly (should be the first Via).
-	// BYE will also copy the same destination address from our response to INVITE.
-	if h := c.invite.Via(); h != nil && h.Host != "" {
-		port := 5060
-		if h.Port != 0 {
-			port = h.Port
-		}
-		r.SetDestination(fmt.Sprintf("%s:%d", h.Host, port))
-	}
-}
-
 func (c *sipInbound) addExtraHeaders(r *sip.Response) {
 	if c.s.conf.AddRecordRoute {
 		// Other in-dialog requests should be sent to this instance as well.
@@ -1355,8 +1340,6 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 
 	c.addExtraHeaders(r)
 
-	c.setDestFromVia(r)
-
 	r.AppendHeader(&contentTypeHeaderSDP)
 	for k, v := range headers {
 		r.AppendHeader(sip.NewHeader(k, v))
@@ -1378,13 +1361,18 @@ func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 func (c *sipInbound) swapSrcDst(req *sip.Request) {
+	dest := c.inviteOk.Destination()
 	if contact := c.invite.Contact(); contact != nil {
 		req.Recipient = contact.Address
+		dest = ConvertURI(&contact.Address).GetDest()
 	} else {
 		req.Recipient = c.from.Address
 	}
+	if route := c.invite.RecordRoute(); route != nil {
+		dest = ConvertURI(&route.Address).GetDest()
+	}
 	req.SetSource(c.inviteOk.Source())
-	req.SetDestination(c.inviteOk.Destination())
+	req.SetDestination(dest)
 	req.RemoveHeader("From")
 	req.AppendHeader((*sip.FromHeader)(c.to))
 	req.RemoveHeader("To")
@@ -1467,7 +1455,6 @@ func (c *sipInbound) sendStatus(code sip.StatusCode, status string) {
 			r.AppendHeader(sip.NewHeader(k, v))
 		}
 	}
-	c.setDestFromVia(r)
 	_ = c.inviteTx.Respond(r)
 	c.drop()
 }
