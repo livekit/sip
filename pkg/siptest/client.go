@@ -33,6 +33,7 @@ import (
 
 	"github.com/at-wat/ebml-go"
 	"github.com/at-wat/ebml-go/webm"
+	sip2 "github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pion/sdp/v3"
@@ -54,6 +55,7 @@ import (
 
 type ClientConfig struct {
 	IP             netip.Addr
+	ContactIP      netip.Addr
 	Number         string
 	AuthUser       string
 	AuthPass       string
@@ -84,6 +86,10 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		}
 		conf.IP = localIP
 		conf.Log.Debug("setting local address", "ip", localIP)
+	}
+	if !conf.ContactIP.IsValid() {
+		conf.ContactIP = conf.IP
+		conf.Log.Debug("setting contact address", "ip", conf.ContactIP)
 	}
 	if conf.Number == "" {
 		conf.Number = "1000"
@@ -365,8 +371,25 @@ func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader 
 	req.SetDestination(ip)
 	req.SetBody(offer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.IP)))
+	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:5060>", c.conf.ContactIP)))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	if c.conf.IP != c.conf.ContactIP {
+		p := make(sip2.HeaderParams)
+		p.Add("alias", "")
+		p.Add("branch", sip2.GenerateBranch())
+		if false {
+			// TODO: check if it matters
+			p.Add("rport", "")
+		}
+		req.PrependHeader(&sip.ViaHeader{
+			ProtocolName:    "SIP",
+			ProtocolVersion: "2.0",
+			Transport:       "UDP", // TODO
+			Host:            c.conf.ContactIP.String(),
+			Port:            5060,
+			Params:          p,
+		})
+	}
 	if c.id != "" {
 		req.AppendHeader(sip.NewHeader("X-Lk-Test-Id", c.id))
 	}
