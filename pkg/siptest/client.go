@@ -270,12 +270,19 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 		authHeaderVal = ""
 		req           *sip.Request
 		resp          *sip.Response
+		callID        string
 	)
 
 	for {
-		req, resp, err = c.attemptInvite(ip, uri, number, offer, authHeaderVal, headers)
+		req, resp, err = c.attemptInvite(ip, uri, number, offer, authHeaderVal, headers, callID)
 		if err != nil {
 			return err
+		}
+
+		if callID == "" {
+			if callIDHeader := req.CallID(); callIDHeader != nil {
+				callID = callIDHeader.Value()
+			}
 		}
 
 		if resp.StatusCode == 407 {
@@ -347,8 +354,14 @@ func (c *Client) Dial(ip string, uri string, number string, headers map[string]s
 	return nil
 }
 
-func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader string, headers map[string]string) (*sip.Request, *sip.Response, error) {
+func (c *Client) attemptInvite(ip, uri, number string, offer []byte, authHeader string, headers map[string]string, callID string) (*sip.Request, *sip.Response, error) {
 	req := sip.NewRequest(sip.INVITE, sip.Uri{User: number, Host: uri})
+
+	// reuse CallID if not empty
+	if callID != "" {
+		req.AppendHeader(sip.NewHeader("Call-ID", callID))
+	}
+
 	req.SetDestination(ip)
 	req.SetBody(offer)
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
