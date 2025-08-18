@@ -129,9 +129,19 @@ type Signaling interface {
 	Drop()
 }
 
+func transportFromURI(u *sip.Uri) Transport {
+	if tr, _ := u.UriParams.Get("transport"); tr != "" {
+		return Transport(strings.ToLower(tr))
+	}
+	return ""
+}
+
 func transportFromReq(req *sip.Request) Transport {
 	if to := req.To(); to != nil {
 		if tr, _ := to.Params.Get("transport"); tr != "" {
+			return Transport(strings.ToLower(tr))
+		}
+		if tr, _ := to.Address.UriParams.Get("transport"); tr != "" {
 			return Transport(strings.ToLower(tr))
 		}
 	}

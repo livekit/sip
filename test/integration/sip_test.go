@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/netip"
 	"os"
 	"strconv"
 	"sync"
@@ -37,8 +38,9 @@ import (
 type SIPServer struct {
 	LiveKit *LiveKit
 	Client  *lksdk.SIPClient
+	IP      netip.Addr
 	Address string
-	URI     string
+	Host    string
 }
 
 func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
@@ -67,6 +69,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		SIPPort:            sipPort,
 		SIPPortListen:      sipPort,
 		ListenIP:           local.String(),
+		LocalNet:           local.String() + "/24",
 		RTPPort:            rtcconfig.PortRange{Start: 20000, End: 20010},
 		UseExternalIP:      false,
 		MaxCpuUtilization:  0.9,
@@ -110,8 +113,9 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	return &SIPServer{
 		LiveKit: lk,
 		Client:  lksdk.NewSIPClient(lk.WsUrl, lk.ApiKey, lk.ApiSecret),
+		IP:      addr,
 		Address: fmt.Sprintf("%s:%d", addr, conf.SIPPort),
-		URI:     "sip.local",
+		Host:    "sip.local",
 	}
 }
 
@@ -230,13 +234,14 @@ func (s *SIPServer) DeleteDispatch(t testing.TB, id string) {
 	}
 }
 
-func runClient(t testing.TB, conf *NumberConfig, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
-	return runClientWithCodec(t, conf, id, number, "", forcePin, headers, onDTMF, onBye, onRefer)
+func runClient(t testing.TB, conf *NumberConfig, ip netip.Addr, id string, number string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
+	return runClientWithCodec(t, conf, ip, id, number, "", forcePin, headers, onDTMF, onBye, onRefer)
 }
 
-func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
+func runClientWithCodec(t testing.TB, conf *NumberConfig, ip netip.Addr, id, number string, codec string, forcePin bool, headers map[string]string, onDTMF func(ev dtmf.Event), onBye func(), onRefer func(req *sipgo.Request)) *siptest.Client {
 	cconf := siptest.ClientConfig{
 		// IP: dockerBridgeIP,
+		IP:       ip,
 		Number:   number,
 		AuthUser: conf.AuthUser,
 		AuthPass: conf.AuthPass,
@@ -256,7 +261,7 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, id string, number stri
 	}
 	t.Cleanup(cli.Close)
 
-	err = cli.Dial(conf.SIP.Address, conf.SIP.URI, conf.Number, headers)
+	err = cli.Dial(conf.SIP.Address, conf.SIP.Host, conf.Number, headers)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +329,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 	transferDone := make(chan struct{})
 	byeReceived := make(chan struct{})
 
-	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
+	cli := runClient(t, nc, srv.IP, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
 	}, func(ev dtmf.Event) {
 		dmu.Lock()
@@ -489,7 +494,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	transferDone := make(chan struct{})
 
-	cli := runClient(t, nc, clientID, clientNumber, false, map[string]string{
+	cli := runClient(t, nc, srv.IP, clientID, clientNumber, false, map[string]string{
 		"X-LK-Inbound": "1",
 	}, nil, nil, func(req *sipgo.Request) {
 		dmu.Lock()
@@ -634,7 +639,7 @@ func TestSIPJoinOpenRoomWithPin(t *testing.T) {
 	})
 	srv.CreateDirectDispatch(t, "test-priv", "1234", "", nil)
 
-	cli := runClient(t, nc, clientID, clientNumber, true, nil, nil, nil, nil)
+	cli := runClient(t, nc, srv.IP, clientID, clientNumber, true, nil, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -696,7 +701,7 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 		rch <- room
 	}()
 
-	cli := runClient(t, nc, clientID, clientNumber, false, nil, nil, nil, nil)
+	cli := runClient(t, nc, srv.IP, clientID, clientNumber, false, nil, nil, nil, nil)
 
 	// Send audio, so that we don't trigger media timeout.
 	mctx, mcancel := context.WithCancel(context.Background())
@@ -776,7 +781,7 @@ func TestSIPAudio(t *testing.T) {
 						wg.Add(1)
 						go func() {
 							defer wg.Done()
-							cli := runClientWithCodec(t, nc, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil, nil, nil)
+							cli := runClientWithCodec(t, nc, srv.IP, strconv.Itoa(i+1), fmt.Sprintf("+%d", 111111111*(i+1)), codec, false, nil, nil, nil, nil)
 							mu.Lock()
 							clients[i] = cli
 							audios[i] = cli
