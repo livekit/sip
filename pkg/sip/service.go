@@ -16,10 +16,14 @@ package sip
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,12 +49,13 @@ type ServiceConfig struct {
 }
 
 type Service struct {
-	conf  *config.Config
-	sconf *ServiceConfig
-	log   logger.Logger
-	mon   *stats.Monitor
-	cli   *Client
-	srv   *Server
+	conf    *config.Config
+	sconf   *ServiceConfig
+	log     logger.Logger
+	mon     *stats.Monitor
+	cli     *Client
+	srv     *Server
+	closers []io.Closer
 
 	mu               sync.Mutex
 	pendingTransfers map[transferKey]chan struct{}
@@ -168,6 +173,9 @@ func (s *Service) Stop() {
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
+	for _, c := range s.closers {
+		_ = c.Close()
+	}
 }
 
 func (s *Service) SetHandler(handler Handler) {
@@ -194,10 +202,47 @@ func (s *Service) Start() error {
 	//
 	// Routers are smart, they usually keep the UDP "session" open for a few moments, and may allow INVITE handshake
 	// to pass even without forwarding rules on the firewall. ut it will inevitably fail later on follow-up requests like BYE.
-	ua, err := sipgo.NewUA(
+	var opts = []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(UserAgent),
 		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
-	)
+	}
+	var tlsConf *tls.Config
+	if tconf := s.conf.TLS; tconf != nil {
+		if len(tconf.Certs) == 0 {
+			return errors.New("TLS certificate required")
+		}
+		var certs []tls.Certificate
+		for _, c := range tconf.Certs {
+			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			if err != nil {
+				return err
+			}
+			certs = append(certs, cert)
+		}
+		var keyLog io.Writer
+		if tconf.KeyLog != "" {
+			f, err := os.OpenFile(tconf.KeyLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if err != nil {
+				return err
+			}
+			s.closers = append(s.closers, f)
+			keyLog = f
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					f.Sync()
+				}
+			}()
+		}
+		tlsConf = &tls.Config{
+			NextProtos:   []string{"sip"},
+			Certificates: certs,
+			KeyLogWriter: keyLog,
+		}
+		opts = append(opts, sipgo.WithUserAgenTLSConfig(tlsConf))
+	}
+	ua, err := sipgo.NewUA(opts...)
 	if err != nil {
 		return err
 	}
@@ -206,7 +251,7 @@ func (s *Service) Start() error {
 	}
 	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
 	// Thus, all unhandled transactions will be checked by the client.
-	if err := s.srv.Start(ua, s.sconf, s.cli.OnRequest); err != nil {
+	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
 		return err
 	}
 	s.log.Debugw("sip service ready")
@@ -223,7 +268,7 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
-	s.log.Infow("transfering SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
+	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	var transferResult atomic.Pointer[error]
 

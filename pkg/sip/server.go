@@ -242,7 +242,7 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 
 type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
 
-func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled RequestHandler) error {
+func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
 	s.sconf = sc
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
@@ -289,22 +289,8 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, unhandled Requ
 	if err := s.startTCP(addr); err != nil {
 		return err
 	}
-	if tconf := s.conf.TLS; tconf != nil {
-		if len(tconf.Certs) == 0 {
-			return errors.New("TLS certificate required")
-		}
-		var certs []tls.Certificate
-		for _, c := range tconf.Certs {
-			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
-			if err != nil {
-				return err
-			}
-			certs = append(certs, cert)
-		}
-		tlsConf := &tls.Config{
-			NextProtos:   []string{"sip"},
-			Certificates: certs,
-		}
+	if tlsConf != nil && s.conf.TLS != nil {
+		tconf := s.conf.TLS
 		addrTLS := netip.AddrPortFrom(ip, uint16(tconf.ListenPort))
 		if err := s.startTLS(addrTLS, tlsConf); err != nil {
 			return err
