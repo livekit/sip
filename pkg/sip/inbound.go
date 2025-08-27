@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -912,6 +913,8 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	c.s.cmu.Unlock()
 
 	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
+	c.s.DeregisterHoldSIPParticipant(c.cc.ID())
+	c.s.DeregisterUnholdSIPParticipant(c.cc.ID())
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
@@ -992,6 +995,16 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	}
 
 	err := c.s.RegisterTransferSIPParticipant(LocalTag(c.cc.ID()), c)
+	if err != nil {
+		return err
+	}
+
+	err = c.s.RegisterHoldSIPParticipant(LocalTag(c.cc.ID()), c)
+	if err != nil {
+		return err
+	}
+
+	err = c.s.RegisterUnholdSIPParticipant(LocalTag(c.cc.ID()), c)
 	if err != nil {
 		return err
 	}
@@ -1111,6 +1124,48 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 	return nil
 
+}
+
+func (c *inboundCall) holdCall(ctx context.Context) error {
+	c.log.Infow("holding inbound call")
+
+	// Disable media timeout during hold to prevent call termination
+	if c.media != nil {
+		c.media.EnableTimeout(false)
+		c.log.Infow("media timeout disabled for hold")
+	}
+
+	err := c.cc.holdCall(ctx)
+	if err != nil {
+		c.log.Infow("inbound call failed to hold", "error", err)
+		// Re-enable timeout if hold failed
+		if c.media != nil {
+			c.media.EnableTimeout(true)
+		}
+		return err
+	}
+
+	c.log.Infow("inbound call held")
+	return nil
+}
+
+func (c *inboundCall) unholdCall(ctx context.Context) error {
+	c.log.Infow("unholding inbound call")
+
+	err := c.cc.unholdCall(ctx)
+	if err != nil {
+		c.log.Infow("inbound call failed to unhold", "error", err)
+		return err
+	}
+
+	// Re-enable media timeout after unhold
+	if c.media != nil {
+		c.media.EnableTimeout(true)
+		c.log.Infow("media timeout re-enabled after unhold")
+	}
+
+	c.log.Infow("inbound call unheld")
+	return nil
 }
 
 func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, inviteTx sip.ServerTransaction, getHeaders setHeadersFunc) *sipInbound {
@@ -1574,4 +1629,148 @@ func (c *sipInbound) CloseWithStatus(code sip.StatusCode, status string) {
 	} else {
 		c.drop()
 	}
+}
+
+func (c *sipInbound) holdCall(ctx context.Context) error {
+	c.mu.Lock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't hold non established call")
+	}
+
+	// Create INVITE with SDP modified for hold (a=sendonly)
+	req := sip.NewRequest(sip.INVITE, c.invite.Recipient)
+	c.setCSeq(req)
+
+	// Copy headers from original INVITE
+	req.AppendHeader(c.invite.From())
+	req.AppendHeader(c.invite.To())
+	req.AppendHeader(c.invite.CallID())
+	req.AppendHeader(c.contact)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	// Copy Route headers from original INVITE or Record-Route from response
+	if len(c.invite.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", c.invite, req)
+	} else {
+		hdrs := c.inviteOk.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	// Modify SDP to set direction to sendonly (hold)
+	sdpOffer := c.invite.Body()
+	if len(sdpOffer) > 0 {
+		// Replace a=sendrecv with a=sendonly for hold
+		sdpOffer = bytes.ReplaceAll(sdpOffer, []byte("a=sendrecv"), []byte("a=sendonly"))
+		req.SetBody(sdpOffer)
+	}
+
+	c.swapSrcDst(req)
+	c.mu.Unlock()
+
+	// Send the INVITE request
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return err
+	}
+	defer tx.Terminate()
+
+	resp, err := sipResponse(ctx, tx, c.s.closing.Watch(), nil)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
+	}
+
+	// Send ACK for the hold INVITE
+	ack := sip.NewAckRequest(req, resp, nil)
+	if err := c.WriteRequest(ack); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *sipInbound) unholdCall(ctx context.Context) error {
+	c.mu.Lock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't unhold non established call")
+	}
+
+	// Create INVITE with SDP modified for unhold (a=sendrecv)
+	req := sip.NewRequest(sip.INVITE, c.invite.Recipient)
+	c.setCSeq(req)
+
+	// Copy headers from original INVITE
+	req.AppendHeader(c.invite.From())
+	req.AppendHeader(c.invite.To())
+	req.AppendHeader(c.invite.CallID())
+	req.AppendHeader(c.contact)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	// Copy Route headers from original INVITE or Record-Route from response
+	if len(c.invite.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", c.invite, req)
+	} else {
+		hdrs := c.inviteOk.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	// Modify SDP to set direction to sendrecv (unhold)
+	sdpOffer := c.invite.Body()
+	if len(sdpOffer) > 0 {
+		// Replace a=sendonly with a=sendrecv for unhold
+		sdpOffer = bytes.ReplaceAll(sdpOffer, []byte("a=sendonly"), []byte("a=sendrecv"))
+		req.SetBody(sdpOffer)
+	}
+
+	c.swapSrcDst(req)
+	c.mu.Unlock()
+
+	// Send the INVITE request
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return err
+	}
+	defer tx.Terminate()
+
+	resp, err := sipResponse(ctx, tx, c.s.closing.Watch(), nil)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
+	}
+
+	// Send ACK for the unhold INVITE
+	ack := sip.NewAckRequest(req, resp, nil)
+	if err := c.WriteRequest(ack); err != nil {
+		return err
+	}
+
+	return nil
 }

@@ -112,6 +112,10 @@ type Handler interface {
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
+	RegisterHoldSIPParticipantTopic(sipCallId string) error
+	DeregisterHoldSIPParticipantTopic(sipCallId string)
+	RegisterUnholdSIPParticipantTopic(sipCallId string) error
+	DeregisterUnholdSIPParticipantTopic(sipCallId string)
 
 	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
@@ -337,4 +341,20 @@ func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCa
 
 func (s *Server) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
 	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
+}
+
+func (s *Server) RegisterHoldSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
+	return s.handler.RegisterHoldSIPParticipantTopic(string(sipCallID))
+}
+
+func (s *Server) DeregisterHoldSIPParticipant(sipCallID LocalTag) {
+	s.handler.DeregisterHoldSIPParticipantTopic(string(sipCallID))
+}
+
+func (s *Server) RegisterUnholdSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
+	return s.handler.RegisterUnholdSIPParticipantTopic(string(sipCallID))
+}
+
+func (s *Server) DeregisterUnholdSIPParticipant(sipCallID LocalTag) {
+	s.handler.DeregisterUnholdSIPParticipantTopic(string(sipCallID))
 }

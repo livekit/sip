@@ -302,3 +302,65 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 }
+
+func (s *Service) HoldSIPParticipant(ctx context.Context, req *rpc.InternalHoldSIPParticipantRequest) (*emptypb.Empty, error) {
+	s.log.Infow("holding SIP call", "callID", req.SipCallId)
+
+	// Look for call both in client (outbound) and server (inbound)
+	s.cli.cmu.Lock()
+	out := s.cli.activeCalls[LocalTag(req.SipCallId)]
+	s.cli.cmu.Unlock()
+
+	if out != nil {
+		err := out.holdCall(ctx)
+		if err != nil {
+			return &emptypb.Empty{}, err
+		}
+		return &emptypb.Empty{}, nil
+	}
+
+	s.srv.cmu.Lock()
+	in := s.srv.byLocal[LocalTag(req.SipCallId)]
+	s.srv.cmu.Unlock()
+
+	if in != nil {
+		err := in.holdCall(ctx)
+		if err != nil {
+			return &emptypb.Empty{}, err
+		}
+		return &emptypb.Empty{}, nil
+	}
+
+	return &emptypb.Empty{}, psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+}
+
+func (s *Service) UnholdSIPParticipant(ctx context.Context, req *rpc.InternalUnholdSIPParticipantRequest) (*emptypb.Empty, error) {
+	s.log.Infow("unholding SIP call", "callID", req.SipCallId)
+
+	// Look for call both in client (outbound) and server (inbound)
+	s.cli.cmu.Lock()
+	out := s.cli.activeCalls[LocalTag(req.SipCallId)]
+	s.cli.cmu.Unlock()
+
+	if out != nil {
+		err := out.unholdCall(ctx)
+		if err != nil {
+			return &emptypb.Empty{}, err
+		}
+		return &emptypb.Empty{}, nil
+	}
+
+	s.srv.cmu.Lock()
+	in := s.srv.byLocal[LocalTag(req.SipCallId)]
+	s.srv.cmu.Unlock()
+
+	if in != nil {
+		err := in.unholdCall(ctx)
+		if err != nil {
+			return &emptypb.Empty{}, err
+		}
+		return &emptypb.Empty{}, nil
+	}
+
+	return &emptypb.Empty{}, psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+}
