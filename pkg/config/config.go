@@ -53,6 +53,7 @@ type TLSConfig struct {
 	Port       int       `yaml:"port"`        // announced SIP signaling port
 	ListenPort int       `yaml:"port_listen"` // SIP signaling port to listen on
 	Certs      []TLSCert `yaml:"certs"`
+	KeyLog     string    `yaml:"key_log"`
 }
 
 type Config struct {
