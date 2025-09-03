@@ -87,7 +87,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.Log.Debug("setting local address", "ip", localIP)
 	}
 	if conf.Port == 0 {
-		conf.Port = 5060 + uint16(rand.Intn(100))
+		conf.Port = 5060 + uint16(rand.Intn(1000))
 	}
 	if conf.Number == "" {
 		conf.Number = "1000"
