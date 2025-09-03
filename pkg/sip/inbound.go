@@ -55,6 +55,8 @@ const (
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
+
+	inviteOkAckTimeout = 5 * time.Second
 )
 
 // hashPassword creates a SHA256 hash of the password for logging purposes
@@ -354,13 +356,28 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 }
 
 func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+}
+
+func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	tag, err := getFromTag(req)
+	if err != nil {
+		return
+	}
+	s.cmu.RLock()
+	c := s.activeCalls[tag]
+	s.cmu.RUnlock()
+	if c == nil {
+		return
+	}
+	c.log.Infow("ACK from remote")
+	c.cc.AcceptAck(req, tx)
 }
 
 func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := getFromTag(req)
 	if err != nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
@@ -368,7 +385,7 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	c := s.activeCalls[tag]
 	s.cmu.RUnlock()
 	if c != nil {
-		c.log.Infow("BYE")
+		c.log.Infow("BYE from remote")
 		c.cc.AcceptBye(req, tx)
 		_ = c.Close()
 		return
@@ -407,7 +424,7 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := getFromTag(req)
 	if err != nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "", nil))
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
@@ -587,7 +604,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		}
 		c.log.Infow("Accepting the call", "headers", headers)
 		if err := c.cc.Accept(ctx, answerData, headers); err != nil {
-			c.log.Errorw("Cannot respond to INVITE", err)
+			c.log.Errorw("Cannot accept the call", err)
 			return false, err
 		}
 		c.media.EnableTimeout(true)
@@ -1158,6 +1175,7 @@ type sipInbound struct {
 	nextRequestCSeq uint32
 	referCseq       uint32
 	ringing         chan struct{}
+	acked           core.Fuse
 	setHeaders      setHeadersFunc
 }
 
@@ -1333,7 +1351,7 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	if c.inviteTx == nil {
 		return errors.New("call already rejected")
 	}
-	r := sip.NewResponseFromRequest(c.invite, 200, "OK", sdpData)
+	r := sip.NewResponseFromRequest(c.invite, sip.StatusOK, "OK", sdpData)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
 	r.AppendHeader(c.contact)
@@ -1348,9 +1366,21 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	if err := c.inviteTx.Respond(r); err != nil {
 		return err
 	}
+	ackCtx, ackCancel := context.WithTimeout(ctx, inviteOkAckTimeout)
+	defer ackCancel()
+	select {
+	case <-ackCtx.Done():
+		return errors.New("no ACK received for 200 OK")
+	case <-c.inviteTx.Acks():
+	case <-c.acked.Watch():
+	}
 	c.inviteOk = r
 	c.inviteTx = nil // accepted
 	return nil
+}
+
+func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
+	c.acked.Break()
 }
 
 func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {

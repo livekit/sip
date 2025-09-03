@@ -267,13 +267,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 
 	s.sipSrv.OnOptions(s.onOptions)
 	s.sipSrv.OnInvite(s.onInvite)
+	s.sipSrv.OnAck(s.onAck)
 	s.sipSrv.OnBye(s.onBye)
 	s.sipSrv.OnNotify(s.onNotify)
 	s.sipSrv.OnNoRoute(s.OnNoRoute)
 	s.sipUnhandled = unhandled
 
-	// Ignore ACKs
-	s.sipSrv.OnAck(func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {})
 	listenIP := s.conf.ListenIP
 	if listenIP == "" {
 		listenIP = "0.0.0.0"
