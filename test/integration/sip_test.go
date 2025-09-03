@@ -57,7 +57,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sipPort := 5060 + rand.Intn(100)
+	sipPort := 5060 + rand.Intn(1000)
 	local, err := config.GetLocalIP()
 	require.NoError(t, err)
 	conf := &config.Config{
