@@ -201,6 +201,7 @@ func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 }
 
 func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
+	start := time.Now()
 	var state *CallState
 	ctx := context.Background()
 	defer func() {
@@ -265,6 +266,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
 	cmon.InviteReq()
 	defer cmon.SessionDur()()
+	var checkDurOnce sync.Once
+	checkDur := cmon.CheckDur()
+	checked := func() {
+		checkDurOnce.Do(func() {
+			checkDur.Observe(time.Since(start).Seconds())
+		})
+	}
+	defer checked()
 	joinDur := cmon.JoinDur()
 
 	if !s.conf.HideInboundPort {
@@ -297,6 +306,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 
 	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
+	checked()
 	if err != nil {
 		cmon.InviteErrorShort("auth-error")
 		log.Warnw("Rejecting inbound, auth check failed", err)

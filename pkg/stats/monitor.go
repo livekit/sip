@@ -70,6 +70,7 @@ type Monitor struct {
 	durSession      *prometheus.HistogramVec
 	durCall         *prometheus.HistogramVec
 	durJoin         *prometheus.HistogramVec
+	durCheck        *prometheus.HistogramVec
 	cpuLoad         prometheus.Gauge
 	sdpSize         *prometheus.HistogramVec
 	nodeAvailable   prometheus.GaugeFunc
@@ -189,6 +190,15 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SIP call duration (from successful pin to closed)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsLong,
+	}, []string{"dir"}))
+
+	m.durCheck = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "dur_check_sec",
+		Help:        "SIP call check duration (from INVITE to an initial dispatch response)",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
 
 	m.durJoin = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -363,6 +373,10 @@ func (c *CallMonitor) SessionDur() func() time.Duration {
 
 func (c *CallMonitor) CallDur() func() time.Duration {
 	return prometheus.NewTimer(c.m.durCall.With(c.labelsShort(nil))).ObserveDuration
+}
+
+func (c *CallMonitor) CheckDur() prometheus.Observer {
+	return c.m.durCheck.With(c.labelsShort(nil))
 }
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
