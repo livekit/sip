@@ -344,8 +344,8 @@ func (c *Client) Dial(ip string, host string, number string, headers map[string]
 		}
 	}
 
-	if recordRouteHeader := resp.RecordRoute(); recordRouteHeader != nil {
-		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
+	for _, hdr := range resp.GetHeaders("Record-Route") {
+		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}
 
 	c.mediaConn.EnableTimeout(true)

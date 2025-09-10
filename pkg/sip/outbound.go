@@ -853,8 +853,8 @@ authLoop:
 		}
 	}
 
-	if recordRouteHeader := resp.RecordRoute(); recordRouteHeader != nil {
-		req.AppendHeader(&sip.RouteHeader{Address: recordRouteHeader.Address})
+	for _, hdr := range resp.GetHeaders("Record-Route") {
+		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}
 
 	return c.inviteOk.Body(), nil
