@@ -136,17 +136,39 @@ func transportFromURI(u *sip.Uri) Transport {
 	return ""
 }
 
-func transportFromReq(req *sip.Request) Transport {
+// callTransportFromReq returns the SIP transport used between LK SIP and the provider.
+// For the actual transport used between SIP server and the edge, see legTransportFromReq.
+func callTransportFromReq(req *sip.Request) Transport {
 	if to := req.To(); to != nil {
-		if tr, _ := to.Params.Get("transport"); tr != "" {
-			return Transport(strings.ToLower(tr))
+		if tr := transportFromURI(&to.Address); tr != "" {
+			return tr
 		}
-		if tr, _ := to.Address.UriParams.Get("transport"); tr != "" {
+		if tr, _ := to.Params.Get("transport"); tr != "" {
 			return Transport(strings.ToLower(tr))
 		}
 	}
 	if via := req.Via(); via != nil {
 		return Transport(strings.ToLower(via.Transport))
+	}
+	return ""
+}
+
+// legTransportFromReq returns the SIP transport used between SIP server and LK SIP edge.
+// For the transport used between LK SIP and the provider, see callTransportFromReq.
+func legTransportFromReq(req *sip.Request) Transport {
+	if via := req.Via(); via != nil {
+		return Transport(strings.ToLower(via.Transport))
+	}
+	if tr := transportFromURI(&req.Recipient); tr != "" {
+		return tr
+	}
+	if to := req.To(); to != nil {
+		if tr := transportFromURI(&to.Address); tr != "" {
+			return tr
+		}
+		if tr, _ := to.Params.Get("transport"); tr != "" {
+			return Transport(strings.ToLower(tr))
+		}
 	}
 	return ""
 }

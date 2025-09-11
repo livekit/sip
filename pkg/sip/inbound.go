@@ -235,9 +235,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	)
 
 	var call *inboundCall
-
-	tr := transportFromReq(req)
-	cc := s.newInbound(LocalTag(callID), s.ContactURI(tr), req, tx, func(headers map[string]string) map[string]string {
+	tr := callTransportFromReq(req)
+	legTr := legTransportFromReq(req)
+	cc := s.newInbound(LocalTag(callID), s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
 		c := call
 		if c == nil || len(c.attrsToHdr) == 0 {
 			return headers
