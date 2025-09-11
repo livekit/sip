@@ -240,7 +240,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	)
 
 	var call *inboundCall
-	cc := s.newInbound(LocalTag(callID), s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
+	cc := s.newInbound(log, LocalTag(callID), s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
 		c := call
 		if c == nil || len(c.attrsToHdr) == 0 {
 			return headers
@@ -253,6 +253,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	})
 	log = LoggerWithParams(log, cc)
 	log = LoggerWithHeaders(log, cc)
+	cc.log = log
 	log.Infow("processing invite")
 
 	if err := cc.ValidateInvite(); err != nil {
@@ -1149,8 +1150,9 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 }
 
-func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, inviteTx sip.ServerTransaction, getHeaders setHeadersFunc) *sipInbound {
+func (s *Server) newInbound(log logger.Logger, id LocalTag, contact URI, invite *sip.Request, inviteTx sip.ServerTransaction, getHeaders setHeadersFunc) *sipInbound {
 	c := &sipInbound{
+		log:      log,
 		s:        s,
 		id:       id,
 		invite:   invite,
@@ -1177,6 +1179,7 @@ func (s *Server) newInbound(id LocalTag, contact URI, invite *sip.Request, invit
 }
 
 type sipInbound struct {
+	log       logger.Logger
 	s         *Server
 	id        LocalTag
 	tag       RemoteTag
@@ -1572,10 +1575,11 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
-	method, cseq, status, err := handleNotify(req)
+	method, cseq, status, reason, err := handleNotify(req)
 	if err != nil {
 		return err
 	}
+	c.log.Infow("handling NOTIFY", "method", method, "status", status, "reason", reason, "cseq", cseq)
 
 	switch method {
 	default:
@@ -1583,29 +1587,7 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 	case sip.REFER:
 		c.mu.RLock()
 		defer c.mu.RUnlock()
-
-		if cseq != 0 && cseq != uint32(c.referCseq) {
-			// NOTIFY for a different REFER, skip
-			return nil
-		}
-
-		var result error
-		switch {
-		case status >= 100 && status < 200:
-			// still trying
-			return nil
-		case status == 200:
-			// Success
-			result = nil
-		default:
-			// Failure
-			// TODO be more specific in the reported error
-			result = psrpc.NewErrorf(psrpc.Canceled, "call transfer failed")
-		}
-		select {
-		case c.referDone <- result:
-		case <-time.After(notifyAckTimeout):
-		}
+		handleReferNotify(cseq, status, reason, c.referCseq, c.referDone)
 		return nil
 	}
 }
