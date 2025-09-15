@@ -33,10 +33,7 @@ require (
 )
 
 require (
-	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
-	go.opentelemetry.io/otel v1.37.0 // indirect
-	go.opentelemetry.io/otel/metric v1.37.0 // indirect
-	go.opentelemetry.io/otel/trace v1.37.0 // indirect
+	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	golang.org/x/mod v0.26.0 // indirect
 )
 
@@ -140,3 +137,6 @@ require (
 	google.golang.org/grpc v1.74.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
+
+// Temporary dependency for building until additional pull requests are submitted
+replace github.com/livekit/protocol => github.com/irontec-comms/livekit-protocol v0.0.0-20250827100227-c66498bdda14

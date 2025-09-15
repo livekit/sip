@@ -327,3 +327,19 @@ func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCal
 func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
 	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }
+
+func (c *Client) RegisterHoldSIPParticipant(sipCallID string, o *outboundCall) error {
+	return c.handler.RegisterHoldSIPParticipantTopic(sipCallID)
+}
+
+func (c *Client) DeregisterHoldSIPParticipant(sipCallID string) {
+	c.handler.DeregisterHoldSIPParticipantTopic(sipCallID)
+}
+
+func (c *Client) RegisterUnholdSIPParticipant(sipCallID string, o *outboundCall) error {
+	return c.handler.RegisterUnholdSIPParticipantTopic(sipCallID)
+}
+
+func (c *Client) DeregisterUnholdSIPParticipant(sipCallID string) {
+	c.handler.DeregisterUnholdSIPParticipantTopic(sipCallID)
+}

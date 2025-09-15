@@ -254,6 +254,34 @@ func (s *Service) DeregisterTransferSIPParticipantTopic(sipCallId string) {
 	}
 }
 
+func (s *Service) RegisterHoldSIPParticipantTopic(sipCallId string) error {
+	if s.rpcSIPServer != nil {
+		return s.rpcSIPServer.RegisterHoldSIPParticipantTopic(sipCallId)
+	}
+
+	return psrpc.NewErrorf(psrpc.Internal, "RPC server not started")
+}
+
+func (s *Service) DeregisterHoldSIPParticipantTopic(sipCallId string) {
+	if s.rpcSIPServer != nil {
+		s.rpcSIPServer.DeregisterHoldSIPParticipantTopic(sipCallId)
+	}
+}
+
+func (s *Service) RegisterUnholdSIPParticipantTopic(sipCallId string) error {
+	if s.rpcSIPServer != nil {
+		return s.rpcSIPServer.RegisterUnholdSIPParticipantTopic(sipCallId)
+	}
+
+	return psrpc.NewErrorf(psrpc.Internal, "RPC server not started")
+}
+
+func (s *Service) DeregisterUnholdSIPParticipantTopic(sipCallId string) {
+	if s.rpcSIPServer != nil {
+		s.rpcSIPServer.DeregisterUnholdSIPParticipantTopic(sipCallId)
+	}
+}
+
 func (s *Service) OnSessionEnd(ctx context.Context, callIdentifier *sip.CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
 	s.log.Infow("SIP call ended", "callID", callInfo.CallId, "reason", reason)
 }

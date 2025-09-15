@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -301,6 +302,8 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 		c.c.cmu.Unlock()
 
 		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
+		c.c.DeregisterHoldSIPParticipant(string(c.cc.ID()))
+		c.c.DeregisterUnholdSIPParticipant(string(c.cc.ID()))
 
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
@@ -361,6 +364,8 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 	sipCallID := attrs[livekit.AttrSIPCallID]
 	if sipCallID != "" {
 		c.c.RegisterTransferSIPParticipant(sipCallID, c)
+		c.c.RegisterHoldSIPParticipant(sipCallID, c)
+		c.c.RegisterUnholdSIPParticipant(sipCallID, c)
 	}
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
@@ -645,6 +650,48 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() { c.CloseWithReason(CallHangup, "call transferred", livekit.DisconnectReason_CLIENT_INITIATED) })
 
+	return nil
+}
+
+func (c *outboundCall) holdCall(ctx context.Context) error {
+	c.log.Infow("holding outbound call")
+
+	// Disable media timeout during hold to prevent call termination
+	if c.media != nil {
+		c.media.EnableTimeout(false)
+		c.log.Infow("media timeout disabled for hold")
+	}
+
+	err := c.cc.holdCall(ctx)
+	if err != nil {
+		c.log.Infow("outbound call failed to hold", "error", err)
+		// Re-enable timeout if hold failed
+		if c.media != nil {
+			c.media.EnableTimeout(true)
+		}
+		return err
+	}
+
+	c.log.Infow("outbound call held")
+	return nil
+}
+
+func (c *outboundCall) unholdCall(ctx context.Context) error {
+	c.log.Infow("unholding outbound call")
+
+	err := c.cc.unholdCall(ctx)
+	if err != nil {
+		c.log.Infow("outbound call failed to unhold", "error", err)
+		return err
+	}
+
+	// Re-enable media timeout after unhold
+	if c.media != nil {
+		c.media.EnableTimeout(true)
+		c.log.Infow("media timeout re-enabled after unhold")
+	}
+
+	c.log.Infow("outbound call unheld")
 	return nil
 }
 
@@ -1002,6 +1049,158 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		if err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (c *sipOutbound) holdCall(ctx context.Context) error {
+	c.mu.Lock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't hold non established call")
+	}
+
+	if c.c.closing.IsBroken() {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't hold hung up call")
+	}
+
+	// Create INVITE with SDP modified for hold (a=sendonly)
+	req := sip.NewRequest(sip.INVITE, c.invite.Recipient)
+	c.setCSeq(req)
+
+	// Copy headers from original INVITE
+	req.AppendHeader(c.invite.From())
+	req.AppendHeader(c.invite.To())
+	req.AppendHeader(c.invite.CallID())
+	req.AppendHeader(c.contact)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	// Copy Route headers from original INVITE or Record-Route from response
+	if len(c.invite.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", c.invite, req)
+	} else {
+		hdrs := c.inviteOk.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	// Modify SDP to set direction to sendonly (hold)
+	sdpOffer := c.invite.Body()
+	if len(sdpOffer) > 0 {
+		// Replace a=sendrecv with a=sendonly for hold
+		sdpOffer = bytes.ReplaceAll(sdpOffer, []byte("a=sendrecv"), []byte("a=sendonly"))
+		req.SetBody(sdpOffer)
+	}
+
+	c.mu.Unlock()
+
+	// Send the INVITE request
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return err
+	}
+	defer tx.Terminate()
+
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), nil)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
+	}
+
+	// Send ACK for the hold INVITE
+	ack := sip.NewAckRequest(req, resp, nil)
+	if err := c.WriteRequest(ack); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *sipOutbound) unholdCall(ctx context.Context) error {
+	c.mu.Lock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't unhold non established call")
+	}
+
+	if c.c.closing.IsBroken() {
+		c.mu.Unlock()
+		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't unhold hung up call")
+	}
+
+	// Create INVITE with SDP modified for unhold (a=sendrecv)
+	req := sip.NewRequest(sip.INVITE, c.invite.Recipient)
+	c.setCSeq(req)
+
+	// Copy headers from original INVITE
+	req.AppendHeader(c.invite.From())
+	req.AppendHeader(c.invite.To())
+	req.AppendHeader(c.invite.CallID())
+	req.AppendHeader(c.contact)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
+	// Copy Route headers from original INVITE or Record-Route from response
+	if len(c.invite.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", c.invite, req)
+	} else {
+		hdrs := c.inviteOk.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
+
+	// Modify SDP to set direction to sendrecv (unhold)
+	sdpOffer := c.invite.Body()
+	if len(sdpOffer) > 0 {
+		// Replace a=sendonly with a=sendrecv for unhold
+		sdpOffer = bytes.ReplaceAll(sdpOffer, []byte("a=sendonly"), []byte("a=sendrecv"))
+		req.SetBody(sdpOffer)
+	}
+
+	c.mu.Unlock()
+
+	// Send the INVITE request
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return err
+	}
+	defer tx.Terminate()
+
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), nil)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return &livekit.SIPStatus{Code: livekit.SIPStatusCode(resp.StatusCode)}
+	}
+
+	// Send ACK for the unhold INVITE
+	ack := sip.NewAckRequest(req, resp, nil)
+	if err := c.WriteRequest(ack); err != nil {
+		return err
 	}
 
 	return nil
