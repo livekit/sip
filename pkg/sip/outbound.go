@@ -62,6 +62,7 @@ type sipOutboundConfig struct {
 	maxCallDuration time.Duration
 	enabledFeatures []livekit.SIPFeature
 	mediaEncryption sdp.Encryption
+	displayName     *string
 }
 
 type outboundCall struct {
@@ -123,7 +124,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 			return headers
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
-	})
+	}, sipConf.displayName)
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -648,10 +649,14 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	return nil
 }
 
-func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, getHeaders setHeadersFunc) *sipOutbound {
+func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, getHeaders setHeadersFunc, displayName *string) *sipOutbound {
 	from = from.Normalize()
+	if displayName == nil { // Nothing specified, preserve legacy behavior
+		displayName = &from.User
+	}
+
 	fromHeader := &sip.FromHeader{
-		DisplayName: "",
+		DisplayName: *displayName,
 		Address:     *from.GetURI(),
 		Params:      sip.NewParams(),
 	}
