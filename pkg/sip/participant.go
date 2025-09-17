@@ -105,4 +105,6 @@ const (
 	callUnavailable
 	callRejected
 	callMediaFailed
+	callAcceptFailed
+	callNoACK
 )

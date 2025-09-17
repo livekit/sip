@@ -59,6 +59,8 @@ const (
 	inviteOkAckTimeout = 5 * time.Second
 )
 
+var errNoACK = errors.New("no ACK received for 200 OK")
+
 // hashPassword creates a SHA256 hash of the password for logging purposes
 func hashPassword(password string) string {
 	if password == "" {
@@ -228,15 +230,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
 	callID := lksip.NewCallID()
+	tr := callTransportFromReq(req)
+	legTr := legTransportFromReq(req)
 	log := s.log.WithValues(
 		"callID", callID,
 		"fromIP", src.Addr(),
 		"toIP", req.Destination(),
+		"transport", tr,
 	)
 
 	var call *inboundCall
-	tr := callTransportFromReq(req)
-	legTr := legTransportFromReq(req)
 	cc := s.newInbound(LocalTag(callID), s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
 		c := call
 		if c == nil || len(c.attrsToHdr) == 0 {
@@ -614,7 +617,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		}
 		c.log.Infow("Accepting the call", "headers", headers)
 		if err := c.cc.Accept(ctx, answerData, headers); err != nil {
-			c.log.Errorw("Cannot accept the call", err)
+			if errors.Is(err, errNoACK) {
+				c.log.Errorw("Call accepted, but no ACK received", err)
+				c.close(true, callNoACK, "no-ack")
+			} else {
+				c.log.Errorw("Cannot accept the call", err)
+				c.close(true, callAcceptFailed, "accept-failed")
+			}
 			return false, err
 		}
 		c.media.EnableTimeout(true)
@@ -1380,7 +1389,10 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	defer ackCancel()
 	select {
 	case <-ackCtx.Done():
-		return errors.New("no ACK received for 200 OK")
+		// Other side may think it's accepted, so update our state accordingly.
+		c.inviteOk = r
+		c.inviteTx = nil
+		return errNoACK
 	case <-c.inviteTx.Acks():
 	case <-c.acked.Watch():
 	}
@@ -1608,6 +1620,7 @@ func (c *sipInbound) CloseWithStatus(code sip.StatusCode, status string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteOk != nil {
+		// TODO: add cause for a failure, if any
 		c.sendBye()
 	} else if c.inviteTx != nil {
 		c.sendStatus(code, status)
