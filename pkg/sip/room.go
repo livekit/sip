@@ -96,7 +96,12 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 	}
 	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
 	out := newMediaWriterCount(r.out, &st.OutputFrames, &st.OutputSamples)
-	r.mix, _ = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer, 1)
+
+	var err error
+	r.mix, err = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer, 1)
+	if err != nil {
+		panic(err)
+	}
 
 	roomLog, resolve := log.WithDeferredValues()
 	r.roomLog = roomLog
