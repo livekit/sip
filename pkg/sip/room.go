@@ -98,7 +98,7 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 	out := newMediaWriterCount(r.out, &st.OutputFrames, &st.OutputSamples)
 
 	var err error
-	r.mix, err = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer, 1)
+	r.mix, err = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer, 1, mixer.DefaultInputBufferFrames)
 	if err != nil {
 		panic(err)
 	}

@@ -520,7 +520,7 @@ func (p *MediaPort) setupOutput() error {
 		if p.dtmfAudioEnabled {
 			// Add separate mixer for DTMF audio.
 			// TODO: optimize, if we'll ever need this code path
-			mix, err := mixer.NewMixer(audioOut, rtp.DefFrameDur, nil, 1)
+			mix, err := mixer.NewMixer(audioOut, rtp.DefFrameDur, nil, 1, mixer.DefaultInputBufferFrames)
 			if err != nil {
 				return err
 			}
