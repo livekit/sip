@@ -617,14 +617,19 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			headers = AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
 		}
 		c.log.Infow("Accepting the call", "headers", headers)
-		if err := c.cc.Accept(ctx, answerData, headers); err != nil {
-			if errors.Is(err, errNoACK) {
+		err := c.cc.Accept(ctx, answerData, headers)
+		if errors.Is(err, errNoACK) {
+			if !c.s.conf.Experimental.IgnoreMissingACK {
 				c.log.Errorw("Call accepted, but no ACK received", err)
 				c.close(true, callNoACK, "no-ack")
-			} else {
-				c.log.Errorw("Cannot accept the call", err)
-				c.close(true, callAcceptFailed, "accept-failed")
+				return false, err
 			}
+			c.log.Warnw("Call accepted, but no ACK received", err)
+			err = nil // ignore
+		}
+		if err != nil {
+			c.log.Errorw("Cannot accept the call", err)
+			c.close(true, callAcceptFailed, "accept-failed")
 			return false, err
 		}
 		c.media.EnableTimeout(true)
