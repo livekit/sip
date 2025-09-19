@@ -35,7 +35,7 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 
-	"github.com/livekit/sip/pkg/mixer"
+	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -520,7 +520,10 @@ func (p *MediaPort) setupOutput() error {
 		if p.dtmfAudioEnabled {
 			// Add separate mixer for DTMF audio.
 			// TODO: optimize, if we'll ever need this code path
-			mix := mixer.NewMixer(audioOut, rtp.DefFrameDur, nil)
+			mix, err := mixer.NewMixer(audioOut, rtp.DefFrameDur, nil, 1, mixer.DefaultInputBufferFrames)
+			if err != nil {
+				return err
+			}
 			audioOut = mix.NewInput()
 			p.dtmfOutAudio = mix.NewInput()
 		}

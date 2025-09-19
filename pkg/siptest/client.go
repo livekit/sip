@@ -46,10 +46,10 @@ import (
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
+	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/sip/pkg/audiotest"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/rtpconn"
-	"github.com/livekit/sip/pkg/mixer"
 )
 
 type ClientConfig struct {
@@ -67,6 +67,8 @@ type ClientConfig struct {
 }
 
 func NewClient(id string, conf ClientConfig) (*Client, error) {
+	var err error
+
 	if conf.Log == nil {
 		conf.Log = slog.Default()
 	}
@@ -112,11 +114,15 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
-	cli.audioOut = mixer.NewMixer(cli.audioCodec.EncodeRTP(cli.mediaAudio), rtp.DefFrameDur, nil)
+	cli.audioOut, err = mixer.NewMixer(cli.audioCodec.EncodeRTP(cli.mediaAudio), rtp.DefFrameDur, nil, 1, mixer.DefaultInputBufferFrames)
+	if err != nil {
+		cli.Close()
+		return nil, err
+	}
 
 	cli.setupRTPReceiver()
 
-	err := cli.mediaConn.ListenAndServe(0, 0, "0.0.0.0")
+	err = cli.mediaConn.ListenAndServe(0, 0, "0.0.0.0")
 	if err != nil {
 		cli.Close()
 		return nil, err

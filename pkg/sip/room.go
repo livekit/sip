@@ -32,9 +32,9 @@ import (
 	"github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
+	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/opus"
-	"github.com/livekit/sip/pkg/mixer"
 )
 
 type RoomStats struct {
@@ -96,7 +96,12 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 	}
 	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
 	out := newMediaWriterCount(r.out, &st.OutputFrames, &st.OutputSamples)
-	r.mix = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer)
+
+	var err error
+	r.mix, err = mixer.NewMixer(out, rtp.DefFrameDur, &st.Mixer, 1, mixer.DefaultInputBufferFrames)
+	if err != nil {
+		panic(err)
+	}
 
 	roomLog, resolve := log.WithDeferredValues()
 	r.roomLog = roomLog
