@@ -103,6 +103,11 @@ type Config struct {
 	// internal
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten
+
+	// Experimental, these option might go away without notice.
+	Experimental struct {
+		IgnoreMissingACK bool `yaml:"ignore_missing_ack"`
+	} `yaml:"experimental"`
 }
 
 func NewConfig(confString string) (*Config, error) {
