@@ -114,7 +114,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		Host:      sipConf.host,
 		Addr:      contact.Addr,
 		Transport: tr,
-	}, contact, func(headers map[string]string) map[string]string {
+	}, contact, sipConf.displayName, func(headers map[string]string) map[string]string {
 		c := call
 		if len(c.sipConf.attrsToHeaders) == 0 {
 			return headers
@@ -124,7 +124,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 			return headers
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
-	}, sipConf.displayName)
+	})
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -649,7 +649,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	return nil
 }
 
-func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, getHeaders setHeadersFunc, displayName *string) *sipOutbound {
+func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, displayName *string, getHeaders setHeadersFunc) *sipOutbound {
 	from = from.Normalize()
 	if displayName == nil { // Nothing specified, preserve legacy behavior
 		displayName = &from.User
