@@ -12,8 +12,8 @@ require (
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/media-sdk v0.0.0-20250918175425-11d305ef5503
 	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
-	github.com/livekit/protocol v1.40.1-0.20250827075523-9bd0fc7c95be
-	github.com/livekit/psrpc v0.6.1-0.20250726180611-3915e005e741
+	github.com/livekit/protocol v1.41.1-0.20250919162624-3476f457ed91
+	github.com/livekit/psrpc v0.7.0
 	github.com/livekit/server-sdk-go/v2 v2.11.1
 	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -33,6 +33,7 @@ require (
 )
 
 require (
+	github.com/nyaruka/phonenumbers v1.6.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel v1.37.0 // indirect
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
