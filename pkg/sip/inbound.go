@@ -52,11 +52,13 @@ import (
 )
 
 const (
+	stateUpdateTick = 10 * time.Minute
+
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
 
-	inviteOkAckTimeout = 5 * time.Second
+	inviteOkAckTimeout = 3 * time.Second
 )
 
 var errNoACK = errors.New("no ACK received for 200 OK")
@@ -619,15 +621,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		c.log.Infow("Accepting the call", "headers", headers)
 		err := c.cc.Accept(ctx, answerData, headers)
 		if errors.Is(err, errNoACK) {
-			if !c.s.conf.Experimental.IgnoreMissingACK {
-				c.log.Errorw("Call accepted, but no ACK received", err)
-				c.close(true, callNoACK, "no-ack")
-				return false, err
-			}
-			c.log.Warnw("Call accepted, but no ACK received", err)
-			err = nil // ignore
-		}
-		if err != nil {
+			c.log.Errorw("Call accepted, but no ACK received", err)
+			c.closeWithNoACK()
+			return false, err
+		} else if err != nil {
 			c.log.Errorw("Cannot accept the call", err)
 			c.close(true, callAcceptFailed, "accept-failed")
 			return false, err
@@ -716,9 +713,20 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.started.Break()
 
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
+	// If we didn't wait for ACK during Accept, we could wait for it now.
+	// Otherwise, leave channels nil, so that they never trigger.
+	var (
+		ackReceived <-chan struct{}
+		ackTimeout  <-chan time.Time
+		noAck       = false
+	)
+	if !c.s.conf.Experimental.InboundWaitACK {
+		ackReceived = c.cc.InviteACK()
+		ackTimeout = time.After(inviteOkAckTimeout)
+	}
 	// Wait for the caller to terminate the call. Send regular keep alives
+	ticker := time.NewTicker(stateUpdateTick)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
@@ -734,8 +742,21 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			c.close(false, callDropped, "removed")
 			return nil
 		case <-c.media.Timeout():
+			if noAck {
+				c.log.Errorw("Media timeout after missing ACK", errNoACK)
+				c.closeWithNoACK()
+				return psrpc.NewError(psrpc.DeadlineExceeded, errNoACK)
+			}
 			c.closeWithTimeout()
 			return psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
+		case <-ackReceived:
+			ackTimeout = nil // all good, disable timeout
+		case <-ackTimeout:
+			// Only warn, the other side still thinks the call is active, media may be flowing.
+			c.log.Warnw("Call accepted, but no ACK received", errNoACK)
+			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
+			c.media.SetTimeout(min(inviteOkAckTimeout, c.s.conf.MediaTimeoutInitial), c.s.conf.MediaTimeout)
+			noAck = true
 		}
 	}
 }
@@ -969,6 +990,10 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 func (c *inboundCall) closeWithTimeout() {
 	c.close(true, callDropped, "media-timeout")
+}
+
+func (c *inboundCall) closeWithNoACK() {
+	c.close(true, callNoACK, "no-ack")
 }
 
 func (c *inboundCall) closeWithCancelled() {
@@ -1352,6 +1377,10 @@ func (c *sipInbound) stopRinging() {
 	}
 }
 
+func (c *sipInbound) InviteACK() <-chan struct{} {
+	return c.acked.Watch()
+}
+
 func (c *sipInbound) Cancelled() <-chan struct{} {
 	return c.cancelled
 }
@@ -1393,19 +1422,21 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	if err := c.inviteTx.Respond(r); err != nil {
 		return err
 	}
+	// Other side already thinks it's accepted, so update our state accordingly, even if no ACK follows.
+	c.inviteOk = r
+	c.inviteTx = nil
+
+	if !c.s.conf.Experimental.InboundWaitACK {
+		return nil
+	}
 	ackCtx, ackCancel := context.WithTimeout(ctx, inviteOkAckTimeout)
 	defer ackCancel()
 	select {
 	case <-ackCtx.Done():
-		// Other side may think it's accepted, so update our state accordingly.
-		c.inviteOk = r
-		c.inviteTx = nil
 		return errNoACK
 	case <-c.inviteTx.Acks():
 	case <-c.acked.Watch():
 	}
-	c.inviteOk = r
-	c.inviteTx = nil // accepted
 	return nil
 }
 

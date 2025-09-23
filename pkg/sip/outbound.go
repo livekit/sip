@@ -210,7 +210,7 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
 
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(stateUpdateTick)
 	defer ticker.Stop()
 	for {
 		select {
