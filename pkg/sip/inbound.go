@@ -58,7 +58,11 @@ const (
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
 
-	inviteOkAckTimeout = 3 * time.Second
+	inviteOkRetryInterval      = 250 * time.Millisecond // 1/2 of T1 for faster recovery
+	inviteOkRetryIntervalMax   = 3 * time.Second
+	inviteOKRetryAttempts      = 5
+	inviteOKRetryAttemptsNoACK = 2
+	inviteOkAckLateTimeout     = inviteOkRetryIntervalMax
 )
 
 var errNoACK = errors.New("no ACK received for 200 OK")
@@ -722,7 +726,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	)
 	if !c.s.conf.Experimental.InboundWaitACK {
 		ackReceived = c.cc.InviteACK()
-		ackTimeout = time.After(inviteOkAckTimeout)
+		ackTimeout = time.After(inviteOkAckLateTimeout)
 	}
 	// Wait for the caller to terminate the call. Send regular keep alives
 	ticker := time.NewTicker(stateUpdateTick)
@@ -755,7 +759,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log.Warnw("Call accepted, but no ACK received", errNoACK)
 			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
-			c.media.SetTimeout(min(inviteOkAckTimeout, c.s.conf.MediaTimeoutInitial), c.s.conf.MediaTimeout)
+			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), c.s.conf.MediaTimeout)
 			noAck = true
 		}
 	}
@@ -1187,6 +1191,7 @@ func (s *Server) newInbound(log logger.Logger, id LocalTag, contact URI, invite 
 		id:       id,
 		invite:   invite,
 		inviteTx: inviteTx,
+		legTr:    legTransportFromReq(invite),
 		contact: &sip.ContactHeader{
 			Address: *contact.GetContactURI(),
 		},
@@ -1220,6 +1225,7 @@ type sipInbound struct {
 	cancelled chan struct{}
 	from      *sip.FromHeader
 	to        *sip.ToHeader
+	legTr     Transport
 	referDone chan error
 
 	mu              sync.RWMutex
@@ -1399,6 +1405,11 @@ func (c *sipInbound) addExtraHeaders(r *sip.Response) {
 	}
 }
 
+func (c *sipInbound) accepted(inviteOK *sip.Response) {
+	c.inviteOk = inviteOK
+	c.inviteTx = nil
+}
+
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
 	ctx, span := tracer.Start(ctx, "sipInbound.Accept")
 	defer span.End()
@@ -1419,25 +1430,51 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
 	c.stopRinging()
-	if err := c.inviteTx.Respond(r); err != nil {
-		return err
-	}
-	// Other side already thinks it's accepted, so update our state accordingly, even if no ACK follows.
-	c.inviteOk = r
-	c.inviteTx = nil
-
+	retryAfter := inviteOkRetryInterval
+	maxRetries := inviteOKRetryAttempts
 	if !c.s.conf.Experimental.InboundWaitACK {
-		return nil
+		// Still retry, but limit it to ~750ms.
+		maxRetries = inviteOKRetryAttemptsNoACK
 	}
-	ackCtx, ackCancel := context.WithTimeout(ctx, inviteOkAckTimeout)
-	defer ackCancel()
-	select {
-	case <-ackCtx.Done():
-		return errNoACK
-	case <-c.inviteTx.Acks():
-	case <-c.acked.Watch():
+	if c.legTr != TransportUDP {
+		maxRetries = 1
+		// That actually becomes an ACK timeout here.
+		retryAfter = inviteOkRetryIntervalMax
 	}
-	return nil
+	var acceptErr error
+retries:
+	for try := 1; ; try++ {
+		if err := c.inviteTx.Respond(r); err != nil {
+			return err
+		}
+		if c.legTr != TransportUDP && !c.s.conf.Experimental.InboundWaitACK {
+			// Reliable transport and we are not waiting for ACK - return immediately.
+			break retries
+		}
+		t := time.NewTimer(retryAfter)
+		select {
+		case <-c.inviteTx.Acks():
+			t.Stop()
+			break retries
+		case <-c.acked.Watch():
+			t.Stop()
+			break retries
+		case <-t.C:
+		}
+		if try > maxRetries {
+			// Only set error if an option is enabled.
+			// Otherwise, ignore missing ACK for now.
+			if c.s.conf.Experimental.InboundWaitACK {
+				acceptErr = errNoACK
+			}
+			break retries
+		}
+		retryAfter *= 2
+		retryAfter = min(retryAfter, inviteOkRetryIntervalMax)
+	}
+	// Other side likely thinks it's accepted, so update our state accordingly, even if no ACK follows.
+	c.accepted(r)
+	return acceptErr
 }
 
 func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
