@@ -615,6 +615,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		return answerData, nil
 	}
 
+	// If we do not wait for ACK during Accept, we could wait for it later.
+	// Otherwise, leave channels nil, so that they never trigger.
+	var (
+		ackReceived <-chan struct{}
+		ackTimeout  <-chan time.Time
+	)
+
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
 	acceptCall := func(answerData []byte) (bool, error) {
 		headers := disp.Headers
@@ -632,6 +639,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			c.log.Errorw("Cannot accept the call", err)
 			c.close(true, callAcceptFailed, "accept-failed")
 			return false, err
+		}
+		if !c.s.conf.Experimental.InboundWaitACK {
+			ackReceived = c.cc.InviteACK()
+			// Start this timer right after the Accept.
+			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
 		c.media.EnableTimeout(true)
 		c.media.EnableOut()
@@ -717,17 +729,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.started.Break()
 
-	// If we didn't wait for ACK during Accept, we could wait for it now.
-	// Otherwise, leave channels nil, so that they never trigger.
-	var (
-		ackReceived <-chan struct{}
-		ackTimeout  <-chan time.Time
-		noAck       = false
-	)
-	if !c.s.conf.Experimental.InboundWaitACK {
-		ackReceived = c.cc.InviteACK()
-		ackTimeout = time.After(inviteOkAckLateTimeout)
-	}
+	var noAck = false
 	// Wait for the caller to terminate the call. Send regular keep alives
 	ticker := time.NewTicker(stateUpdateTick)
 	defer ticker.Stop()
