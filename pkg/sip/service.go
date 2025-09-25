@@ -240,6 +240,7 @@ func (s *Service) Start() error {
 			Certificates: certs,
 			KeyLogWriter: keyLog,
 		}
+		ConfigureTLS(tlsConf)
 		opts = append(opts, sipgo.WithUserAgenTLSConfig(tlsConf))
 	}
 	ua, err := sipgo.NewUA(opts...)
