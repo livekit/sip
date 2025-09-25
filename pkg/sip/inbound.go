@@ -52,11 +52,17 @@ import (
 )
 
 const (
+	stateUpdateTick = 10 * time.Minute
+
 	// audioBridgeMaxDelay delays sending audio for certain time, unless RTP packet is received.
 	// This is done because of audio cutoff at the beginning of calls observed in the wild.
 	audioBridgeMaxDelay = 1 * time.Second
 
-	inviteOkAckTimeout = 5 * time.Second
+	inviteOkRetryInterval      = 250 * time.Millisecond // 1/2 of T1 for faster recovery
+	inviteOkRetryIntervalMax   = 3 * time.Second
+	inviteOKRetryAttempts      = 5
+	inviteOKRetryAttemptsNoACK = 2
+	inviteOkAckLateTimeout     = inviteOkRetryIntervalMax
 )
 
 var errNoACK = errors.New("no ACK received for 200 OK")
@@ -609,6 +615,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		return answerData, nil
 	}
 
+	// If we do not wait for ACK during Accept, we could wait for it later.
+	// Otherwise, leave channels nil, so that they never trigger.
+	var (
+		ackReceived <-chan struct{}
+		ackTimeout  <-chan time.Time
+	)
+
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
 	acceptCall := func(answerData []byte) (bool, error) {
 		headers := disp.Headers
@@ -619,18 +632,18 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		c.log.Infow("Accepting the call", "headers", headers)
 		err := c.cc.Accept(ctx, answerData, headers)
 		if errors.Is(err, errNoACK) {
-			if !c.s.conf.Experimental.IgnoreMissingACK {
-				c.log.Errorw("Call accepted, but no ACK received", err)
-				c.close(true, callNoACK, "no-ack")
-				return false, err
-			}
-			c.log.Warnw("Call accepted, but no ACK received", err)
-			err = nil // ignore
-		}
-		if err != nil {
+			c.log.Errorw("Call accepted, but no ACK received", err)
+			c.closeWithNoACK()
+			return false, err
+		} else if err != nil {
 			c.log.Errorw("Cannot accept the call", err)
 			c.close(true, callAcceptFailed, "accept-failed")
 			return false, err
+		}
+		if !c.s.conf.Experimental.InboundWaitACK {
+			ackReceived = c.cc.InviteACK()
+			// Start this timer right after the Accept.
+			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
 		c.media.EnableTimeout(true)
 		c.media.EnableOut()
@@ -716,9 +729,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.started.Break()
 
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
+	var noAck = false
 	// Wait for the caller to terminate the call. Send regular keep alives
+	ticker := time.NewTicker(stateUpdateTick)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
@@ -734,8 +748,21 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			c.close(false, callDropped, "removed")
 			return nil
 		case <-c.media.Timeout():
+			if noAck {
+				c.log.Errorw("Media timeout after missing ACK", errNoACK)
+				c.closeWithNoACK()
+				return psrpc.NewError(psrpc.DeadlineExceeded, errNoACK)
+			}
 			c.closeWithTimeout()
 			return psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
+		case <-ackReceived:
+			ackTimeout = nil // all good, disable timeout
+		case <-ackTimeout:
+			// Only warn, the other side still thinks the call is active, media may be flowing.
+			c.log.Warnw("Call accepted, but no ACK received", errNoACK)
+			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
+			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), c.s.conf.MediaTimeout)
+			noAck = true
 		}
 	}
 }
@@ -971,6 +998,10 @@ func (c *inboundCall) closeWithTimeout() {
 	c.close(true, callDropped, "media-timeout")
 }
 
+func (c *inboundCall) closeWithNoACK() {
+	c.close(true, callNoACK, "no-ack")
+}
+
 func (c *inboundCall) closeWithCancelled() {
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
@@ -1162,6 +1193,7 @@ func (s *Server) newInbound(log logger.Logger, id LocalTag, contact URI, invite 
 		id:       id,
 		invite:   invite,
 		inviteTx: inviteTx,
+		legTr:    legTransportFromReq(invite),
 		contact: &sip.ContactHeader{
 			Address: *contact.GetContactURI(),
 		},
@@ -1195,6 +1227,7 @@ type sipInbound struct {
 	cancelled chan struct{}
 	from      *sip.FromHeader
 	to        *sip.ToHeader
+	legTr     Transport
 	referDone chan error
 
 	mu              sync.RWMutex
@@ -1352,6 +1385,10 @@ func (c *sipInbound) stopRinging() {
 	}
 }
 
+func (c *sipInbound) InviteACK() <-chan struct{} {
+	return c.acked.Watch()
+}
+
 func (c *sipInbound) Cancelled() <-chan struct{} {
 	return c.cancelled
 }
@@ -1368,6 +1405,11 @@ func (c *sipInbound) addExtraHeaders(r *sip.Response) {
 			Address: *recordRoute,
 		})
 	}
+}
+
+func (c *sipInbound) accepted(inviteOK *sip.Response) {
+	c.inviteOk = inviteOK
+	c.inviteTx = nil
 }
 
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
@@ -1390,23 +1432,51 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
 	c.stopRinging()
-	if err := c.inviteTx.Respond(r); err != nil {
-		return err
+	retryAfter := inviteOkRetryInterval
+	maxRetries := inviteOKRetryAttempts
+	if !c.s.conf.Experimental.InboundWaitACK {
+		// Still retry, but limit it to ~750ms.
+		maxRetries = inviteOKRetryAttemptsNoACK
 	}
-	ackCtx, ackCancel := context.WithTimeout(ctx, inviteOkAckTimeout)
-	defer ackCancel()
-	select {
-	case <-ackCtx.Done():
-		// Other side may think it's accepted, so update our state accordingly.
-		c.inviteOk = r
-		c.inviteTx = nil
-		return errNoACK
-	case <-c.inviteTx.Acks():
-	case <-c.acked.Watch():
+	if c.legTr != TransportUDP {
+		maxRetries = 1
+		// That actually becomes an ACK timeout here.
+		retryAfter = inviteOkRetryIntervalMax
 	}
-	c.inviteOk = r
-	c.inviteTx = nil // accepted
-	return nil
+	var acceptErr error
+retries:
+	for try := 1; ; try++ {
+		if err := c.inviteTx.Respond(r); err != nil {
+			return err
+		}
+		if c.legTr != TransportUDP && !c.s.conf.Experimental.InboundWaitACK {
+			// Reliable transport and we are not waiting for ACK - return immediately.
+			break retries
+		}
+		t := time.NewTimer(retryAfter)
+		select {
+		case <-c.inviteTx.Acks():
+			t.Stop()
+			break retries
+		case <-c.acked.Watch():
+			t.Stop()
+			break retries
+		case <-t.C:
+		}
+		if try > maxRetries {
+			// Only set error if an option is enabled.
+			// Otherwise, ignore missing ACK for now.
+			if c.s.conf.Experimental.InboundWaitACK {
+				acceptErr = errNoACK
+			}
+			break retries
+		}
+		retryAfter *= 2
+		retryAfter = min(retryAfter, inviteOkRetryIntervalMax)
+	}
+	// Other side likely thinks it's accepted, so update our state accordingly, even if no ACK follows.
+	c.accepted(r)
+	return acceptErr
 }
 
 func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {

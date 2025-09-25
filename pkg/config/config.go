@@ -106,7 +106,8 @@ type Config struct {
 
 	// Experimental, these option might go away without notice.
 	Experimental struct {
-		IgnoreMissingACK bool `yaml:"ignore_missing_ack"`
+		// InboundWaitACK forces SIP to wait for an ACK to 200 OK before proceeding with the call.
+		InboundWaitACK bool `yaml:"inbound_wait_ack"`
 	} `yaml:"experimental"`
 }
 
