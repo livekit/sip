@@ -19,7 +19,8 @@ require (
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/interceptor v0.1.40
-	github.com/pion/rtp v1.8.22
+	github.com/pion/rtp v1.8.21
+	github.com/pion/rtp/v2 v2.0.0
 	github.com/pion/sdp/v3 v3.0.15
 	github.com/pion/webrtc/v4 v4.1.4
 	github.com/pkg/errors v0.9.1
