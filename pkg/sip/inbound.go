@@ -76,6 +76,32 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
+func inviteHasAuth(r *sip.Request) bool {
+	return r.GetHeader("Proxy-Authorization") != nil ||
+		r.GetHeader("Authorization") != nil
+}
+
+type inboundCallInfo struct {
+	Invites         atomic.Uint32
+	InvitesWithAuth atomic.Uint32
+}
+
+func (p *Server) getCallInfo(id string) *inboundCallInfo {
+	c, _ := p.infos.byCallID.Get(id)
+	if c != nil {
+		return c
+	}
+	p.infos.Lock()
+	defer p.infos.Unlock()
+	c, _ = p.infos.byCallID.Get(id)
+	if c != nil {
+		return c
+	}
+	c = &inboundCallInfo{}
+	p.infos.byCallID.Add(id, c)
+	return c
+}
+
 func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	s.imu.Lock()
 	defer s.imu.Unlock()
@@ -117,6 +143,16 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	sipCallID := ""
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
+	}
+	c := s.getCallInfo(sipCallID)
+	if inviteHasAuth(req) {
+		if n := c.InvitesWithAuth.Add(1); n > 1 {
+			log.Warnw("remote appears to be retrying an invite with auth", nil, "invites", n)
+		}
+	} else {
+		if n := c.Invites.Add(1); n > 1 {
+			log.Warnw("remote appears to be retrying an invite", nil, "invites", n)
+		}
 	}
 	inviteState := s.getInvite(sipCallID)
 	log = log.WithValues("inviteStateSipCallID", sipCallID)
