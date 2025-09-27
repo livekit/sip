@@ -76,29 +76,60 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
+type inboundCallInfo struct {
+	sync.Mutex
+	cseq        uint32
+	cseqAuth    uint32
+	invites     uint32
+	invitesAuth uint32
+}
+
 func inviteHasAuth(r *sip.Request) bool {
 	return r.GetHeader("Proxy-Authorization") != nil ||
 		r.GetHeader("Authorization") != nil
 }
 
-type inboundCallInfo struct {
-	Invites         atomic.Uint32
-	InvitesWithAuth atomic.Uint32
+func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
+	hasAuth := inviteHasAuth(req)
+	cseq := req.CSeq()
+	if cseq == nil {
+		return
+	}
+	c.Lock()
+	defer c.Unlock()
+	cseqPtr := &c.cseq
+	countPtr := &c.invites
+	name := "invite"
+	if hasAuth {
+		cseqPtr = &c.cseqAuth
+		countPtr = &c.invitesAuth
+		name = "invite with auth"
+	}
+	if *cseqPtr == 0 {
+		*cseqPtr = cseq.SeqNo
+	}
+	if cseq.SeqNo > *cseqPtr {
+		return // reinvite
+	}
+	*countPtr++
+	if *countPtr > 1 {
+		log.Warnw("remote appears to be retrying an "+name, nil, "invites", *countPtr, "cseq", *cseqPtr)
+	}
 }
 
-func (p *Server) getCallInfo(id string) *inboundCallInfo {
-	c, _ := p.infos.byCallID.Get(id)
+func (s *Server) getCallInfo(id string) *inboundCallInfo {
+	c, _ := s.infos.byCallID.Get(id)
 	if c != nil {
 		return c
 	}
-	p.infos.Lock()
-	defer p.infos.Unlock()
-	c, _ = p.infos.byCallID.Get(id)
+	s.infos.Lock()
+	defer s.infos.Unlock()
+	c, _ = s.infos.byCallID.Get(id)
 	if c != nil {
 		return c
 	}
 	c = &inboundCallInfo{}
-	p.infos.byCallID.Add(id, c)
+	s.infos.byCallID.Add(id, c)
 	return c
 }
 
@@ -144,16 +175,8 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	c := s.getCallInfo(sipCallID)
-	if inviteHasAuth(req) {
-		if n := c.InvitesWithAuth.Add(1); n > 1 {
-			log.Warnw("remote appears to be retrying an invite with auth", nil, "invites", n)
-		}
-	} else {
-		if n := c.Invites.Add(1); n > 1 {
-			log.Warnw("remote appears to be retrying an invite", nil, "invites", n)
-		}
-	}
+	ci := s.getCallInfo(sipCallID)
+	ci.countInvite(log, req)
 	inviteState := s.getInvite(sipCallID)
 	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
