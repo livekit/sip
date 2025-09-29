@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
@@ -44,6 +45,11 @@ import (
 const (
 	UserAgent   = "LiveKit"
 	digestLimit = 500
+)
+
+const (
+	maxCallCache = 5000        // ~8 B per entry, ~40 KB
+	callCacheTTL = time.Minute // we only need it for detecting retries from providers for now
 )
 
 var (
@@ -133,6 +139,11 @@ type Server struct {
 	activeCalls map[RemoteTag]*inboundCall
 	byLocal     map[LocalTag]*inboundCall
 
+	infos struct {
+		sync.Mutex
+		byCallID *expirable.LRU[string, *inboundCallInfo]
+	}
+
 	handler Handler
 	conf    *config.Config
 	sconf   *ServiceConfig
@@ -158,6 +169,7 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		activeCalls: make(map[RemoteTag]*inboundCall),
 		byLocal:     make(map[LocalTag]*inboundCall),
 	}
+	s.infos.byCallID = expirable.NewLRU[string, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
 	s.initMediaRes()
 	return s
 }
