@@ -72,3 +72,37 @@ func TestHandleNotify(t *testing.T) {
 	m, c, s, r, err = handleNotify(req)
 	require.Error(t, err)
 }
+
+func TestParseReason(t *testing.T) {
+	cases := []struct {
+		Name   string
+		Header string
+		Reason ReasonHeader
+	}{
+		{
+			Name:   "SIP",
+			Header: `SIP ;cause=200 ;text="Call completed elsewhere"`,
+			Reason: ReasonHeader{
+				Type:  "SIP",
+				Cause: 200,
+				Text:  "Call completed elsewhere",
+			},
+		},
+		{
+			Name:   "Q.850",
+			Header: `Q.850;cause=16;text="Terminated"`,
+			Reason: ReasonHeader{
+				Type:  "Q.850",
+				Cause: 16,
+				Text:  "Terminated",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			r, err := ParseReasonHeader(c.Header)
+			require.NoError(t, err)
+			require.Equal(t, c.Reason, r)
+		})
+	}
+}
