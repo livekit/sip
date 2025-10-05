@@ -108,7 +108,12 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		jitterBuf: jitterBuf,
 		projectID: projectID,
 	}
-	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
+	// Generate SIP call ID early so it's available for all logging
+	toUri := CreateURIFromUserAndAddress(sipConf.to, sipConf.address, tr)
+	toHeader := &sip.ToHeader{Address: *toUri.GetURI()}
+	sipCallID := guid.HashedID(fmt.Sprintf("%s-%s", string(id), toHeader.Address.String()))
+	call.log = call.log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", sipCallID)
+
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
 		Host:      sipConf.host,
@@ -125,6 +130,9 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
 	})
+
+	// Set the SIP call ID in the sipOutbound struct
+	call.cc.callID = sipCallID
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -751,8 +759,6 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 	toHeader := &sip.ToHeader{Address: *to.GetURI()}
 
 	dest := to.GetDest()
-	c.callID = guid.HashedID(fmt.Sprintf("%s-%s", string(c.id), toHeader.Address.String()))
-	c.log = c.log.WithValues("sipCallID", c.callID)
 
 	var (
 		sipHeaders         Headers
