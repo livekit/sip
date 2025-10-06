@@ -456,3 +456,59 @@ func ToSIPUri(ip string, u sip.Uri) *livekit.SIPUri {
 	}
 	return url
 }
+
+type ReasonHeader struct {
+	Type  string
+	Cause int
+	Text  string
+}
+
+func (r ReasonHeader) IsZero() bool {
+	return r == ReasonHeader{}
+}
+
+func (r ReasonHeader) IsNormal() bool {
+	if r.IsZero() {
+		return true // assume there's no specific reason
+	}
+	switch r.Type {
+	case "Q.850":
+		switch r.Cause {
+		case 16: // Normal call clearing
+			return true
+		}
+	}
+	return false
+}
+
+func (r ReasonHeader) String() string {
+	if r.IsZero() {
+		return "<none>"
+	}
+	return fmt.Sprintf("%s-%d: %s", r.Type, r.Cause, r.Text)
+}
+
+func ParseReasonHeader(header string) (ReasonHeader, error) {
+	list := strings.Split(header, ";")
+	if len(list) < 2 {
+		return ReasonHeader{}, errors.New("no fields in the reason")
+	}
+	typ := strings.TrimSpace(list[0])
+	r := ReasonHeader{Type: typ}
+	for _, line := range list[1:] {
+		line = strings.TrimSpace(line)
+		i := strings.Index(line, "=")
+		if i < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:i])
+		val := strings.TrimSpace(line[i+1:])
+		switch key {
+		case "cause":
+			r.Cause, _ = strconv.Atoi(val)
+		case "text":
+			r.Text, _ = strconv.Unquote(val)
+		}
+	}
+	return r, nil
+}

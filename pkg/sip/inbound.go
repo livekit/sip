@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -464,9 +465,25 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	c := s.activeCalls[tag]
 	s.cmu.RUnlock()
 	if c != nil {
-		c.log.Infow("BYE from remote")
 		c.cc.AcceptBye(req, tx)
-		_ = c.Close()
+		var (
+			reason    ReasonHeader
+			rawReason string
+		)
+		if h := req.GetHeader("Reason"); h != nil {
+			rawReason = h.Value()
+			reason, err = ParseReasonHeader(rawReason)
+			if err != nil {
+				c.log.Warnw("cannot parse reason header", err, "reason-raw", rawReason)
+			}
+		}
+		c.log.Infow("BYE from remote",
+			"reason-type", reason.Type,
+			"reason-cause", reason.Cause,
+			"reason-text", reason.Text,
+			"reason-raw", rawReason,
+		)
+		c.Bye(reason)
 		return
 	}
 	ok := false
@@ -540,6 +557,7 @@ type inboundCall struct {
 	attrsToHdr  map[string]string
 	ctx         context.Context
 	cancel      func()
+	closeReason atomic.Pointer[ReasonHeader]
 	call        *rpc.SIPCall
 	media       *MediaPort
 	dtmf        chan dtmf.Event // buffered
@@ -1062,17 +1080,41 @@ func (c *inboundCall) closeWithNoACK() {
 }
 
 func (c *inboundCall) closeWithCancelled() {
-	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
-	})
-	c.close(false, CallHangup, "cancelled")
+	var reason ReasonHeader
+	if p := c.closeReason.Load(); p != nil {
+		reason = *p
+	}
+	c.closeWithReason(CallHangup, "cancelled", reason)
 }
 
 func (c *inboundCall) closeWithHangup() {
+	var reason ReasonHeader
+	if p := c.closeReason.Load(); p != nil {
+		reason = *p
+	}
+	c.closeWithReason(CallHangup, "hangup", reason)
+}
+
+func (c *inboundCall) closeWithReason(status CallStatus, reasonName string, reason ReasonHeader) {
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+		if info.Error == "" {
+			if !reason.IsNormal() {
+				info.Error = reason.String()
+			}
+		}
 	})
-	c.close(false, CallHangup, "hangup")
+	if reason.Type != "" {
+		if !reason.IsNormal() {
+			reasonName = fmt.Sprintf("bye-%s-%d", strings.ToLower(reason.Type), reason.Cause)
+		}
+	}
+	c.close(false, status, reasonName)
+}
+
+func (c *inboundCall) Bye(reason ReasonHeader) {
+	c.closeReason.Store(&reason)
+	_ = c.Close()
 }
 
 func (c *inboundCall) Close() error {
