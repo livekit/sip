@@ -467,6 +467,20 @@ func (r ReasonHeader) IsZero() bool {
 	return r == ReasonHeader{}
 }
 
+func (r ReasonHeader) IsNormal() bool {
+	if r.IsZero() {
+		return true // assume there's no specific reason
+	}
+	switch r.Type {
+	case "Q.850":
+		switch r.Cause {
+		case 16: // Normal call clearing
+			return true
+		}
+	}
+	return false
+}
+
 func (r ReasonHeader) String() string {
 	if r.IsZero() {
 		return "<none>"

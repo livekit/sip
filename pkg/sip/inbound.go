@@ -1099,21 +1099,13 @@ func (c *inboundCall) closeWithReason(status CallStatus, reasonName string, reas
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
 		if info.Error == "" {
-			if !reason.IsZero() {
+			if !reason.IsNormal() {
 				info.Error = reason.String()
 			}
 		}
 	})
 	if reason.Type != "" {
-		change := true
-		switch reason.Type {
-		case "Q.850":
-			switch reason.Cause {
-			case 16: // Normal call clearing
-				change = false
-			}
-		}
-		if change {
+		if !reason.IsNormal() {
 			reasonName = fmt.Sprintf("bye-%s-%d", strings.ToLower(reason.Type), reason.Cause)
 		}
 	}
