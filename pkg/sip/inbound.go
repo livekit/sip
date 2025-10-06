@@ -834,6 +834,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			return psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
 		case <-ackReceived:
 			ackTimeout = nil // all good, disable timeout
+			ackReceived = nil
 		case <-ackTimeout:
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log.Warnw("Call accepted, but no ACK received", errNoACK)
