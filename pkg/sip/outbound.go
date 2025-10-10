@@ -217,6 +217,7 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 		case <-ticker.C:
 			c.log.Debugw("sending keep-alive")
 			c.state.ForceFlush(ctx)
+			c.printStats()
 		case <-c.Disconnected():
 			c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
 			return nil
@@ -269,8 +270,15 @@ func (c *outboundCall) closeWithTimeout() {
 	c.close(psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"), callDropped, "media-timeout", livekit.DisconnectReason_UNKNOWN_REASON)
 }
 
+func (c *outboundCall) printStats() {
+	c.log.Infow("call statistics", "stats", c.stats.Load())
+}
+
 func (c *outboundCall) close(err error, status CallStatus, description string, reason livekit.DisconnectReason) {
 	c.stopped.Once(func() {
+		c.stats.Closed.Store(true)
+		defer c.printStats()
+
 		c.setStatus(status)
 		if err != nil {
 			c.log.Warnw("Closing outbound call with error", nil, "reason", description)
@@ -291,8 +299,6 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 		c.lkRoomIn = nil
 
 		c.stopSIP(description)
-
-		c.log.Infow("call statistics", "stats", c.stats.Load())
 
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())

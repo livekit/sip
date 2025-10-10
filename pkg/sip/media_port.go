@@ -58,6 +58,8 @@ type PortStats struct {
 
 	DTMFPackets atomic.Uint64
 	DTMFBytes   atomic.Uint64
+
+	Closed atomic.Bool
 }
 
 type UDPConn interface {
@@ -271,6 +273,7 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			ticker.Reset(tick)
 			startPackets = p.packetCount.Load()
 			lastTime = time.Now()
+			p.log.Infow("media timeout reset", "packets", startPackets, "tick", tick)
 		case <-ticker.C:
 			curPackets := p.packetCount.Load()
 			if curPackets != lastPackets {
@@ -306,7 +309,7 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			}
 
 			// Ticker is allowed to fire earlier than the full timeout interval. Skip if it's not a full timeout yet.
-			if since < timeout {
+			if since+timeout/10 < timeout {
 				continue
 			}
 			p.log.Infow("triggering media timeout",
@@ -325,6 +328,8 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 
 func (p *MediaPort) Close() {
 	p.closed.Once(func() {
+		defer p.stats.Closed.Store(true)
+
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if w := p.audioOut.Swap(nil); w != nil {

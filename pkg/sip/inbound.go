@@ -815,6 +815,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		case <-ticker.C:
 			c.log.Debugw("sending keep-alive")
 			c.state.ForceFlush(ctx)
+			c.printStats(c.log)
 		case <-ctx.Done():
 			c.closeWithHangup()
 			return nil
@@ -1027,18 +1028,21 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 	}
 }
 
+func (c *inboundCall) printStats(log logger.Logger) {
+	log.Infow("call statistics", "stats", c.stats.Load())
+}
+
 // close should only be called from handleInvite.
 func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	if !c.done.CompareAndSwap(false, true) {
 		return
 	}
-	c.setStatus(status)
-	c.mon.CallTerminate(reason)
+	c.stats.Closed.Store(true)
 	sipCode, sipStatus := status.SIPStatus()
 	log := c.log.WithValues("status", sipCode, "reason", reason)
-	defer func() {
-		log.Infow("call statistics", "stats", c.stats.Load())
-	}()
+	defer c.printStats(log)
+	c.setStatus(status)
+	c.mon.CallTerminate(reason)
 	if error {
 		log.Warnw("Closing inbound call with error", nil)
 	} else {
