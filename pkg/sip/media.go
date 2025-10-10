@@ -20,9 +20,10 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	msdk "github.com/livekit/media-sdk"
 	"github.com/pion/interceptor"
 	prtp "github.com/pion/rtp"
+
+	msdk "github.com/livekit/media-sdk"
 
 	"github.com/livekit/media-sdk/rtp"
 
@@ -32,14 +33,16 @@ import (
 var _ json.Marshaler = (*Stats)(nil)
 
 type Stats struct {
-	Port PortStats
-	Room RoomStats
+	Port   PortStats
+	Room   RoomStats
+	Closed atomic.Bool
 }
 
 type StatsSnapshot struct {
-	Port  PortStatsSnapshot  `json:"port"`
-	Room  RoomStatsSnapshot  `json:"room"`
-	Mixer MixerStatsSnapshot `json:"mixer"`
+	Port   PortStatsSnapshot  `json:"port"`
+	Room   RoomStatsSnapshot  `json:"room"`
+	Mixer  MixerStatsSnapshot `json:"mixer"`
+	Closed bool               `json:"closed"`
 }
 
 type PortStatsSnapshot struct {
@@ -56,6 +59,8 @@ type PortStatsSnapshot struct {
 
 	DTMFPackets uint64 `json:"dtmf_packets"`
 	DTMFBytes   uint64 `json:"dtmf_bytes"`
+
+	Closed bool `json:"closed"`
 }
 
 type RoomStatsSnapshot struct {
@@ -67,6 +72,8 @@ type RoomStatsSnapshot struct {
 
 	OutputSamples uint64 `json:"output_samples"`
 	OutputFrames  uint64 `json:"output_frames"`
+
+	Closed bool `json:"closed"`
 }
 
 type MixerStatsSnapshot struct {
@@ -105,6 +112,7 @@ func (s *Stats) Load() StatsSnapshot {
 			AudioBytes:     p.AudioBytes.Load(),
 			DTMFPackets:    p.DTMFPackets.Load(),
 			DTMFBytes:      p.DTMFBytes.Load(),
+			Closed:         p.Closed.Load(),
 		},
 		Room: RoomStatsSnapshot{
 			InputPackets:  r.InputPackets.Load(),
@@ -113,6 +121,7 @@ func (s *Stats) Load() StatsSnapshot {
 			MixerFrames:   r.MixerFrames.Load(),
 			OutputSamples: r.OutputSamples.Load(),
 			OutputFrames:  r.OutputFrames.Load(),
+			Closed:        r.Closed.Load(),
 		},
 		Mixer: MixerStatsSnapshot{
 			Tracks:        m.Tracks.Load(),
@@ -129,6 +138,7 @@ func (s *Stats) Load() StatsSnapshot {
 			OutputSamples: m.OutputSamples.Load(),
 			OutputFrames:  m.OutputFrames.Load(),
 		},
+		Closed: s.Closed.Load(),
 	}
 }
 

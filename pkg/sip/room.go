@@ -48,6 +48,8 @@ type RoomStats struct {
 
 	OutputFrames  atomic.Uint64
 	OutputSamples atomic.Uint64
+
+	Closed atomic.Bool
 }
 
 type ParticipantInfo struct {
@@ -381,18 +383,21 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 	if r == nil {
 		return nil
 	}
+	var err error
+	r.closed.Once(func() {
+		defer r.stats.Closed.Store(true)
 
-	r.closed.Break()
-	r.subscribe.Store(false)
-	err := r.CloseOutput()
-	r.SetDTMFOutput(nil)
-	if r.room != nil {
-		r.room.DisconnectWithReason(reason)
-		r.room = nil
-	}
-	if r.mix != nil {
-		r.mix.Stop()
-	}
+		r.subscribe.Store(false)
+		err = r.CloseOutput()
+		r.SetDTMFOutput(nil)
+		if r.room != nil {
+			r.room.DisconnectWithReason(reason)
+			r.room = nil
+		}
+		if r.mix != nil {
+			r.mix.Stop()
+		}
+	})
 	return err
 }
 
