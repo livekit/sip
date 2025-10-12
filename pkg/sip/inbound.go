@@ -401,6 +401,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
 		CreatedAtNs:   time.Now().UnixNano(),
 		TrunkId:       r.TrunkID,
+		ProviderInfo:  r.ProviderInfo,
 	})
 	state.Flush(ctx)
 

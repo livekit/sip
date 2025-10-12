@@ -7,12 +7,13 @@ toolchain go1.24.3
 require (
 	github.com/at-wat/ebml-go v0.17.1
 	github.com/frostbyte73/core v0.1.1
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/media-sdk v0.0.0-20250918175425-11d305ef5503
 	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
-	github.com/livekit/protocol v1.41.1-0.20250919162624-3476f457ed91
+	github.com/livekit/protocol v1.42.1-0.20251012093153-c84cf2c2802b
 	github.com/livekit/psrpc v0.7.0
 	github.com/livekit/server-sdk-go/v2 v2.11.1
 	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
@@ -33,7 +34,6 @@ require (
 )
 
 require (
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/nyaruka/phonenumbers v1.6.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel v1.37.0 // indirect
