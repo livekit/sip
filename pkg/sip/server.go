@@ -73,11 +73,12 @@ const (
 )
 
 type AuthInfo struct {
-	Result    AuthResult
-	ProjectID string
-	TrunkID   string
-	Username  string
-	Password  string
+	Result       AuthResult
+	ProjectID    string
+	TrunkID      string
+	Username     string
+	Password     string
+	ProviderInfo *livekit.ProviderInfo
 }
 
 type DispatchResult int

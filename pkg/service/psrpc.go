@@ -29,23 +29,26 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call 
 	}
 	if resp.Drop {
 		return sip.AuthInfo{
-			ProjectID: resp.ProjectId,
-			Result:    sip.AuthDrop,
+			ProjectID:    resp.ProjectId,
+			Result:       sip.AuthDrop,
+			ProviderInfo: resp.ProviderInfo,
 		}, nil
 	}
 	if resp.Username != "" && resp.Password != "" {
 		return sip.AuthInfo{
-			ProjectID: resp.ProjectId,
-			TrunkID:   resp.SipTrunkId,
-			Result:    sip.AuthPassword,
-			Username:  resp.Username,
-			Password:  resp.Password,
+			ProjectID:    resp.ProjectId,
+			TrunkID:      resp.SipTrunkId,
+			Result:       sip.AuthPassword,
+			Username:     resp.Username,
+			Password:     resp.Password,
+			ProviderInfo: resp.ProviderInfo,
 		}, nil
 	}
 	return sip.AuthInfo{
-		ProjectID: resp.ProjectId,
-		TrunkID:   resp.SipTrunkId,
-		Result:    sip.AuthAccept,
+		ProjectID:    resp.ProjectId,
+		TrunkID:      resp.SipTrunkId,
+		Result:       sip.AuthAccept,
+		ProviderInfo: resp.ProviderInfo,
 	}, nil
 }
 
