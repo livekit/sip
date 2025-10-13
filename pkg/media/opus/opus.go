@@ -104,6 +104,9 @@ func (d *decoder) SampleRate() int {
 }
 
 func (d *decoder) WriteSample(in Sample) error {
+	if len(in) == 0 {
+		return nil
+	}
 	n, err := d.dec.Decode(in, d.buf)
 	if err != nil {
 		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore small amount of corruption errors
