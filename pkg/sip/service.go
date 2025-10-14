@@ -156,7 +156,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	s.cli.cmu.Unlock()
 
 	s.srv.cmu.Lock()
-	samples, total = sampleMap(5, s.srv.activeCalls, func(v *inboundCall) string {
+	samples, total = sampleMap(5, s.srv.byRemoteTag, func(v *inboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
@@ -334,7 +334,7 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	}
 
 	s.srv.cmu.Lock()
-	in := s.srv.byLocal[LocalTag(callID)]
+	in := s.srv.byLocalTag[LocalTag(callID)]
 	s.srv.cmu.Unlock()
 
 	if in != nil {

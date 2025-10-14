@@ -176,8 +176,6 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	ci := s.getCallInfo(sipCallID)
-	ci.countInvite(log, req)
 	inviteState := s.getInvite(sipCallID)
 	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
@@ -333,6 +331,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	ctx, span := tracer.Start(ctx, "Server.onInvite")
 	defer span.End()
 
+	s.cmu.RLock()
+	existing := s.byCallID[cc.SIPCallID()]
+	s.cmu.RUnlock()
+	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
+		log.Infow("accepting reinvite", "sipCallID", existing.cc.ID(), "content-type", req.ContentType(), "content-length", req.ContentLength())
+		existing.log.Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		cc.AcceptAsKeepAlive()
+		return nil
+	}
+
 	from, to := cc.From(), cc.To()
 
 	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
@@ -352,15 +360,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.Processing()
 	}
 
-	// Extract SIP Call ID directly from the request
-	sipCallID := ""
-	if h := req.CallID(); h != nil {
-		sipCallID = h.Value()
-	}
-
 	callInfo := &rpc.SIPCall{
 		LkCallId:  callID,
-		SipCallId: sipCallID,
+		SipCallId: cc.SIPCallID(),
 		SourceIp:  src.Addr().String(),
 		Address:   ToSIPUri("", cc.Address()),
 		From:      ToSIPUri("", from),
@@ -421,13 +423,15 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			// We will send password request anyway, so might as well signal that the progress is made.
 			cc.Processing()
 		}
+		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
 		if !s.handleInviteAuth(log, req, tx, from.User, r.Username, r.Password) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
-		fallthrough
+		// ok
 	case AuthAccept:
+		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
 		// ok
 	}
 
@@ -446,7 +450,7 @@ func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 		return
 	}
 	s.cmu.RLock()
-	c := s.activeCalls[tag]
+	c := s.byRemoteTag[tag]
 	s.cmu.RUnlock()
 	if c == nil {
 		return
@@ -463,7 +467,7 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	}
 
 	s.cmu.RLock()
-	c := s.activeCalls[tag]
+	c := s.byRemoteTag[tag]
 	s.cmu.RUnlock()
 	if c != nil {
 		c.cc.AcceptBye(req, tx)
@@ -512,7 +516,7 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 	}
 	s.log.Infow("Inbound SIP request not handled",
 		"method", req.Method.String(),
-		"callID", callID,
+		"sipCallID", callID,
 		"from", from,
 		"to", to)
 	tx.Respond(sip.NewResponseFromRequest(req, 405, "Method Not Allowed", nil))
@@ -526,7 +530,7 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 	}
 
 	s.cmu.RLock()
-	c := s.activeCalls[tag]
+	c := s.byRemoteTag[tag]
 	s.cmu.RUnlock()
 	if c != nil {
 		c.log.Infow("NOTIFY")
@@ -600,8 +604,9 @@ func (s *Server) newInboundCall(
 	c.log = c.log.WithValues("jitterBuf", c.jitterBuf)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
-	s.activeCalls[cc.Tag()] = c
-	s.byLocal[cc.ID()] = c
+	s.byRemoteTag[cc.Tag()] = c
+	s.byLocalTag[cc.ID()] = c
+	s.byCallID[cc.SIPCallID()] = c
 	s.cmu.Unlock()
 	return c
 }
@@ -1059,8 +1064,9 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 		c.callDur()
 	}
 	c.s.cmu.Lock()
-	delete(c.s.activeCalls, c.cc.Tag())
-	delete(c.s.byLocal, c.cc.ID())
+	delete(c.s.byRemoteTag, c.cc.Tag())
+	delete(c.s.byLocalTag, c.cc.ID())
+	delete(c.s.byCallID, c.cc.SIPCallID())
 	c.s.cmu.Unlock()
 
 	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
@@ -1314,28 +1320,30 @@ func (s *Server) newInbound(log logger.Logger, id LocalTag, contact URI, invite 
 	}
 	c.to = invite.To()
 	if h := invite.CSeq(); h != nil {
+		c.inviteCSeq = h.SeqNo
 		c.nextRequestCSeq = h.SeqNo + 1
 	}
 	if callID := invite.CallID(); callID != nil {
-		c.callID = callID.Value()
+		c.sipCallID = callID.Value()
 	}
 	return c
 }
 
 type sipInbound struct {
-	log       logger.Logger
-	s         *Server
-	id        LocalTag
-	tag       RemoteTag
-	callID    string
-	invite    *sip.Request
-	inviteTx  sip.ServerTransaction
-	contact   *sip.ContactHeader
-	cancelled chan struct{}
-	from      *sip.FromHeader
-	to        *sip.ToHeader
-	legTr     Transport
-	referDone chan error
+	log        logger.Logger
+	s          *Server
+	id         LocalTag // SCL
+	tag        RemoteTag
+	sipCallID  string
+	invite     *sip.Request
+	inviteCSeq uint32
+	inviteTx   sip.ServerTransaction
+	contact    *sip.ContactHeader
+	cancelled  chan struct{}
+	from       *sip.FromHeader
+	to         *sip.ToHeader
+	legTr      Transport
+	referDone  chan error
 
 	mu              sync.RWMutex
 	inviteOk        *sip.Response
@@ -1347,7 +1355,7 @@ type sipInbound struct {
 }
 
 func (c *sipInbound) ValidateInvite() error {
-	if c.callID == "" {
+	if c.sipCallID == "" {
 		return errors.New("no Call-ID header in INVITE")
 	}
 	if c.from == nil {
@@ -1427,8 +1435,12 @@ func (c *sipInbound) Tag() RemoteTag {
 	return c.tag
 }
 
-func (c *sipInbound) CallID() string {
-	return c.callID
+func (c *sipInbound) SIPCallID() string {
+	return c.sipCallID
+}
+
+func (c *sipInbound) InviteCSeq() uint32 {
+	return c.inviteCSeq
 }
 
 func (c *sipInbound) RemoteHeaders() Headers {
@@ -1517,6 +1529,10 @@ func (c *sipInbound) addExtraHeaders(r *sip.Response) {
 func (c *sipInbound) accepted(inviteOK *sip.Response) {
 	c.inviteOk = inviteOK
 	c.inviteTx = nil
+}
+
+func (c *sipInbound) AcceptAsKeepAlive() {
+	c.RespondAndDrop(sip.StatusOK, "OK")
 }
 
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
