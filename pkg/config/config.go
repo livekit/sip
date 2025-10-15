@@ -100,6 +100,9 @@ type Config struct {
 	EnableJitterBuffer     bool    `yaml:"enable_jitter_buffer"`
 	EnableJitterBufferProb float64 `yaml:"enable_jitter_buffer_prob"`
 
+	// PreventTransferForInternalProvider prevents SIP transfers when the provider is internal and config is set.
+	PreventTransferForInternalProvider bool `yaml:"prevent_transfer_for_internal_provider"`
+
 	// internal
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten
