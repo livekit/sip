@@ -78,24 +78,54 @@ func TestParseReason(t *testing.T) {
 		Name   string
 		Header string
 		Reason ReasonHeader
+		Normal bool
 	}{
 		{
 			Name:   "SIP",
 			Header: `SIP ;cause=200 ;text="Call completed elsewhere"`,
 			Reason: ReasonHeader{
-				Type:  "SIP",
+				Type:  "sip",
 				Cause: 200,
 				Text:  "Call completed elsewhere",
 			},
+			Normal: false,
 		},
 		{
 			Name:   "Q.850",
 			Header: `Q.850;cause=16;text="Terminated"`,
 			Reason: ReasonHeader{
-				Type:  "Q.850",
+				Type:  "q.850",
 				Cause: 16,
 				Text:  "Terminated",
 			},
+			Normal: true,
+		},
+		{
+			Name:   "X.int",
+			Header: `X.int;text="0x00000000";add-info=05CC.0001.0001`,
+			Reason: ReasonHeader{
+				Type:  "x.int",
+				Cause: 0x00,
+			},
+			Normal: true,
+		},
+		{
+			Name:   "X.int not ok text",
+			Header: `X.int;text="0x00000001";add-info=05CC.0001.0001`,
+			Reason: ReasonHeader{
+				Type:  "x.int",
+				Cause: 0x01,
+			},
+			Normal: false,
+		},
+		{
+			Name:   "X.int reason code",
+			Header: `X.int;reasoncode=0x0000032D;add-info=05CC.0001.0004`,
+			Reason: ReasonHeader{
+				Type:  "x.int",
+				Cause: 0x32D,
+			},
+			Normal: false,
 		},
 	}
 	for _, c := range cases {
@@ -103,6 +133,7 @@ func TestParseReason(t *testing.T) {
 			r, err := ParseReasonHeader(c.Header)
 			require.NoError(t, err)
 			require.Equal(t, c.Reason, r)
+			require.Equal(t, c.Normal, r.IsNormal())
 		})
 	}
 }
