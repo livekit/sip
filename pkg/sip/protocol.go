@@ -477,6 +477,11 @@ func (r ReasonHeader) IsNormal() bool {
 		case 16: // Normal call clearing
 			return true
 		}
+	case "x.int":
+		switch r.Cause {
+		case 0x00:
+			return true
+		}
 	}
 	return false
 }
@@ -496,6 +501,7 @@ func ParseReasonHeader(header string) (ReasonHeader, error) {
 	typ := strings.TrimSpace(list[0])
 	typ = strings.ToLower(typ)
 	r := ReasonHeader{Type: typ}
+	var reasonCode string
 	for _, line := range list[1:] {
 		line = strings.TrimSpace(line)
 		i := strings.Index(line, "=")
@@ -509,6 +515,23 @@ func ParseReasonHeader(header string) (ReasonHeader, error) {
 			r.Cause, _ = strconv.Atoi(val)
 		case "text":
 			r.Text, _ = strconv.Unquote(val)
+		case "reasoncode":
+			reasonCode = val
+		}
+	}
+	switch typ {
+	case "x.int":
+		if r.Cause == 0 {
+			if reasonCode != "" {
+				v, _ := strconv.ParseUint(reasonCode, 0, 64)
+				r.Cause = int(v)
+			} else if r.Text != "" {
+				v, err := strconv.ParseUint(r.Text, 0, 64)
+				r.Cause = int(v)
+				if err == nil {
+					r.Text = ""
+				}
+			}
 		}
 	}
 	return r, nil
