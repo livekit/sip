@@ -83,7 +83,7 @@ func TestParseReason(t *testing.T) {
 			Name:   "SIP",
 			Header: `SIP ;cause=200 ;text="Call completed elsewhere"`,
 			Reason: ReasonHeader{
-				Type:  "SIP",
+				Type:  "sip",
 				Cause: 200,
 				Text:  "Call completed elsewhere",
 			},
@@ -92,7 +92,7 @@ func TestParseReason(t *testing.T) {
 			Name:   "Q.850",
 			Header: `Q.850;cause=16;text="Terminated"`,
 			Reason: ReasonHeader{
-				Type:  "Q.850",
+				Type:  "q.850",
 				Cause: 16,
 				Text:  "Terminated",
 			},

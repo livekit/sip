@@ -472,7 +472,7 @@ func (r ReasonHeader) IsNormal() bool {
 		return true // assume there's no specific reason
 	}
 	switch r.Type {
-	case "Q.850":
+	case "q.850":
 		switch r.Cause {
 		case 16: // Normal call clearing
 			return true
@@ -494,6 +494,7 @@ func ParseReasonHeader(header string) (ReasonHeader, error) {
 		return ReasonHeader{}, errors.New("no fields in the reason")
 	}
 	typ := strings.TrimSpace(list[0])
+	typ = strings.ToLower(typ)
 	r := ReasonHeader{Type: typ}
 	for _, line := range list[1:] {
 		line = strings.TrimSpace(line)
