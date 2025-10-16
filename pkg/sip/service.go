@@ -381,8 +381,8 @@ func (s *Service) validateCallProvider(state *CallState) error {
 		return nil // No provider info to validate
 	}
 
-	// Check if provider is internal and the prevent transfer config is enabled
-	if state.callInfo.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && s.conf.PreventTransferForInternalProvider {
+	// Check if provider is internal and prevent transfer is enabled
+	if state.callInfo.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && state.callInfo.ProviderInfo.PreventTransfer {
 		return fmt.Errorf("we don't yet support transfers for this phone number type")
 	}
 
