@@ -245,7 +245,7 @@ func LoggerWithParams(log logger.Logger, c Signaling) logger.Logger {
 	if tag := c.Tag(); tag != "" {
 		log = log.WithValues("sipTag", tag)
 	}
-	if cid := c.CallID(); cid != "" {
+	if cid := c.SIPCallID(); cid != "" {
 		log = log.WithValues("sipCallID", cid)
 	}
 	return log
@@ -304,7 +304,7 @@ func HeadersToAttrs(attrs, hdrToAttr map[string]string, opts livekit.SIPHeaderOp
 		if tag := c.Tag(); tag != "" {
 			attrs[AttrSIPCallTag] = string(tag)
 		}
-		if cid := c.CallID(); cid != "" {
+		if cid := c.SIPCallID(); cid != "" {
 			attrs[AttrSIPCallIDFull] = cid
 		}
 	}

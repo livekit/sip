@@ -314,7 +314,7 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 			go c.c.handler.OnSessionEnd(context.Background(), &CallIdentifier{
 				ProjectID: c.projectID,
 				CallID:    c.state.callInfo.CallId,
-				SipCallID: c.cc.CallID(),
+				SipCallID: c.cc.SIPCallID(),
 			}, c.state.callInfo, description)
 		}
 	})
@@ -734,7 +734,7 @@ func (c *sipOutbound) Tag() RemoteTag {
 	return c.tag
 }
 
-func (c *sipOutbound) CallID() string {
+func (c *sipOutbound) SIPCallID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.callID
