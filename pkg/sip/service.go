@@ -32,6 +32,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
@@ -271,6 +272,11 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
+	// Check if provider is internal and config is set before allowing transfer
+	if err := s.checkInternalProviderRequest(ctx, req.SipCallId); err != nil {
+		return &emptypb.Empty{}, err
+	}
+
 	var transferResult atomic.Pointer[error]
 
 	s.mu.Lock()
@@ -347,4 +353,38 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	}
 
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+}
+
+func (s *Service) checkInternalProviderRequest(ctx context.Context, callID string) error {
+	// Look for call both in client (outbound) and server (inbound)
+	s.cli.cmu.Lock()
+	out := s.cli.activeCalls[LocalTag(callID)]
+	s.cli.cmu.Unlock()
+
+	if out != nil {
+		return s.validateCallProvider(out.state)
+	}
+
+	s.srv.cmu.Lock()
+	in := s.srv.byLocal[LocalTag(callID)]
+	s.srv.cmu.Unlock()
+
+	if in != nil {
+		return s.validateCallProvider(in.state)
+	}
+
+	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+}
+
+func (s *Service) validateCallProvider(state *CallState) error {
+	if state == nil || state.callInfo == nil || state.callInfo.ProviderInfo == nil {
+		return nil // No provider info to validate
+	}
+
+	// Check if provider is internal and prevent transfer is enabled
+	if state.callInfo.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && state.callInfo.ProviderInfo.PreventTransfer {
+		return fmt.Errorf("we don't yet support transfers for this phone number type")
+	}
+
+	return nil
 }
