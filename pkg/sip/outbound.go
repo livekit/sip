@@ -756,7 +756,6 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 	defer c.mu.Unlock()
 	toHeader := &sip.ToHeader{Address: *to.GetURI()}
 
-	dest := to.GetDest()
 	c.callID = guid.HashedID(fmt.Sprintf("%s-%s", string(c.id), toHeader.Address.String()))
 	c.log = c.log.WithValues("sipCallID", c.callID)
 
@@ -779,7 +778,7 @@ authLoop:
 		if try >= 5 {
 			return nil, fmt.Errorf("max auth retry attemps reached")
 		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
 		}
@@ -889,7 +888,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := tracer.Start(ctx, "sipOutbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, to.Address)
@@ -897,7 +896,6 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	req.RemoveHeader("Call-ID")
 	req.AppendHeader(&callID)
 
-	req.SetDestination(dest)
 	req.SetBody(offer)
 	req.AppendHeader(to)
 	req.AppendHeader(c.from)
@@ -913,6 +911,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.AppendHeader(h)
 	}
 
+	req.SetDestination(req.Destination()) // Why is this here? Are we avoiding DNS re-resolution?
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
