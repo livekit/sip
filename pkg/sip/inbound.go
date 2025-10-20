@@ -863,6 +863,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncrypt
 		MediaTimeout:        c.s.conf.MediaTimeout,
 		EnableJitterBuffer:  c.jitterBuf,
 		Stats:               &c.stats.Port,
+		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
