@@ -28,6 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	uuid "github.com/satori/go.uuid"
+
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pkg/errors"
@@ -64,6 +66,8 @@ const (
 	inviteOKRetryAttempts      = 5
 	inviteOKRetryAttemptsNoACK = 2
 	inviteOkAckLateTimeout     = inviteOkRetryIntervalMax
+
+	inviteCredentialValidity = 60 * time.Minute // Allow reuse of credentials for 1h
 )
 
 var errNoACK = errors.New("no ACK received for 200 OK")
@@ -137,20 +141,23 @@ func (s *Server) getCallInfo(id string) *inboundCallInfo {
 func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	s.imu.Lock()
 	defer s.imu.Unlock()
-	for i := range s.inProgressInvites {
-		if s.inProgressInvites[i].sipCallID == sipCallID {
-			return s.inProgressInvites[i]
-		}
+	is, ok := s.inProgressInvites[sipCallID]
+	if ok {
+		return is
 	}
-	if len(s.inProgressInvites) >= digestLimit {
-		s.inProgressInvites = s.inProgressInvites[1:]
-	}
-	is := &inProgressInvite{sipCallID: sipCallID}
-	s.inProgressInvites = append(s.inProgressInvites, is)
+	is = &inProgressInvite{sipCallID: sipCallID}
+	s.inProgressInvites[sipCallID] = is
+
+	go func() {
+		time.Sleep(inviteCredentialValidity)
+		s.imu.Lock()
+		defer s.imu.Unlock()
+		delete(s.inProgressInvites, sipCallID)
+	}()
 	return is
 }
 
-func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
+func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string, inviteState *inProgressInvite) (ok bool) {
 	log = log.WithValues(
 		"username", username,
 		"passwordHash", hashPassword(password),
@@ -176,8 +183,6 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	inviteState := s.getInvite(sipCallID)
-	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
@@ -230,7 +235,6 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	// Check if we have a valid challenge state
 	if inviteState.challenge.Realm == "" {
 		log.Warnw("No challenge state found for authentication attempt", errors.New("missing challenge state"),
-			"sipCallID", sipCallID,
 			"expectedRealm", UserAgent,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
@@ -305,12 +309,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
 		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
-	callID := lksip.NewCallID()
+	sipCallID := legCallIDFromReq(req)
 	tid := traceid.FromGUID(callID)
 	tr := callTransportFromReq(req)
 	legTr := legTransportFromReq(req)
 	log := s.log.WithValues(
-		"callID", callID,
+		"sipCallID", sipCallID,
 		"traceID", tid.String(),
 		"fromIP", src.Addr(),
 		"toIP", req.Destination(),
@@ -318,7 +322,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	)
 
 	var call *inboundCall
-	cc := s.newInbound(log, LocalTag(callID), s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
+	cc := s.newInbound(log, "unassigned", s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
 		c := call
 		if c == nil || len(c.attrsToHdr) == 0 {
 			return headers
@@ -331,8 +335,6 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	})
 	log = LoggerWithParams(log, cc)
 	log = LoggerWithHeaders(log, cc)
-	cc.log = log
-	log.Infow("processing invite")
 
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
@@ -342,6 +344,28 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		return psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
 	}
+
+	// Establish ID
+	if _, ok := req.To().Params.Get("tag"); !ok {
+		// No to-tag on the invite means we need to generate one per RFC 3261 section 12.
+		if !inviteHasAuth(req) {
+			// No auth = a 407 response and another INVITE+auth.
+			// Generate a new to-tag early, to make sure both INVITES have the same ID.
+			uuid, _ := uuid.NewV4() // Same as NewResponseFromRequest in sipgo
+			req.To().Params.Add("tag", uuid.String())
+		}
+	}
+	inviteProgress := s.getInvite(req.CallID().Value())
+	callID := inviteProgress.lkCallID
+	if callID == "" {
+		callID = lksip.NewCallID()
+		inviteProgress.lkCallID = callID
+	}
+
+	log = log.WithValues("callID", callID)
+	cc.log = log
+	log.Infow("processing invite")
+
 	ctx, span := tracer.Start(ctx, "Server.onInvite")
 	defer span.End()
 
@@ -448,7 +472,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			cc.Processing()
 		}
 		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
-		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
+		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password, inviteProgress) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")

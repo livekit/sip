@@ -44,8 +44,7 @@ import (
 )
 
 const (
-	UserAgent   = "LiveKit"
-	digestLimit = 500
+	UserAgent = "LiveKit"
 )
 
 const (
@@ -138,7 +137,7 @@ type Server struct {
 	sipUnhandled RequestHandler
 
 	imu               sync.Mutex
-	inProgressInvites []*inProgressInvite
+	inProgressInvites map[string]*inProgressInvite
 
 	closing     core.Fuse
 	cmu         sync.RWMutex
@@ -161,6 +160,7 @@ type Server struct {
 type inProgressInvite struct {
 	sipCallID string
 	challenge digest.Challenge
+	lkCallID  string // SCL_* LiveKit call ID assigned to this dialog
 }
 
 type ServerOption func(s *Server)
@@ -178,15 +178,16 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:         log,
-		conf:        conf,
-		region:      region,
-		mon:         mon,
-		getIOClient: getIOClient,
-		getRoom:     DefaultGetRoomFunc,
-		byRemoteTag: make(map[RemoteTag]*inboundCall),
-		byLocalTag:  make(map[LocalTag]*inboundCall),
-		byCallID:    make(map[string]*inboundCall),
+		log:               log,
+		conf:              conf,
+		region:            region,
+		mon:               mon,
+		getIOClient:       getIOClient,
+		getRoom:           DefaultGetRoomFunc,
+		inProgressInvites: make(map[string]*inProgressInvite),
+		byRemoteTag:       make(map[RemoteTag]*inboundCall),
+		byLocalTag:        make(map[LocalTag]*inboundCall),
+		byCallID:          make(map[string]*inboundCall),
 	}
 	for _, option := range options {
 		option(s)
