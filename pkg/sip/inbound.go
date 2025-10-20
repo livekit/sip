@@ -138,21 +138,22 @@ func (s *Server) getCallInfo(id string) *inboundCallInfo {
 	return c
 }
 
-func (s *Server) getInvite(sipCallID string) *inProgressInvite {
+func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
+	key := fmt.Sprintf("%s:%s:%s", sipCallID, toTag, fromTag)
 	s.imu.Lock()
 	defer s.imu.Unlock()
-	is, ok := s.inProgressInvites[sipCallID]
+	is, ok := s.inProgressInvites[key]
 	if ok {
 		return is
 	}
 	is = &inProgressInvite{sipCallID: sipCallID}
-	s.inProgressInvites[sipCallID] = is
+	s.inProgressInvites[key] = is
 
 	go func() {
 		time.Sleep(inviteCredentialValidity)
 		s.imu.Lock()
 		defer s.imu.Unlock()
-		delete(s.inProgressInvites, sipCallID)
+		delete(s.inProgressInvites, key)
 	}()
 	return is
 }
@@ -322,7 +323,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	)
 
 	var call *inboundCall
-	cc := s.newInbound(log, "unassigned", s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
+	cc := s.newInbound(log, s.ContactURI(legTr), req, tx, func(headers map[string]string) map[string]string {
 		c := call
 		if c == nil || len(c.attrsToHdr) == 0 {
 			return headers
@@ -346,21 +347,22 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 
 	// Establish ID
-	if _, ok := req.To().Params.Get("tag"); !ok {
+	fromTag, _ := req.From().Params.Get("tag") // always exists, via ValidateInvite() check
+	toTag, ok := req.To().Params.Get("tag")    // To() always exists, via ValidateInvite() check
+	if !ok {
 		// No to-tag on the invite means we need to generate one per RFC 3261 section 12.
-		if !inviteHasAuth(req) {
-			// No auth = a 407 response and another INVITE+auth.
-			// Generate a new to-tag early, to make sure both INVITES have the same ID.
-			uuid, _ := uuid.NewV4() // Same as NewResponseFromRequest in sipgo
-			req.To().Params.Add("tag", uuid.String())
-		}
+		// Generate a new to-tag early, to make sure both INVITES have the same ID.
+		uuid, _ := uuid.NewV4() // Same as NewResponseFromRequest in sipgo
+		toTag = uuid.String()
+		req.To().Params.Add("tag", toTag)
 	}
-	inviteProgress := s.getInvite(req.CallID().Value())
+	inviteProgress := s.getInvite(sipCallID, toTag, fromTag)
 	callID := inviteProgress.lkCallID
 	if callID == "" {
 		callID = lksip.NewCallID()
 		inviteProgress.lkCallID = callID
 	}
+	cc.id = LocalTag(callID)
 
 	log = log.WithValues("callID", callID)
 	cc.log = log
@@ -1390,11 +1392,11 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 }
 
-func (s *Server) newInbound(log logger.Logger, id LocalTag, contact URI, invite *sip.Request, inviteTx sip.ServerTransaction, getHeaders setHeadersFunc) *sipInbound {
+func (s *Server) newInbound(log logger.Logger, contact URI, invite *sip.Request, inviteTx sip.ServerTransaction, getHeaders setHeadersFunc) *sipInbound {
 	c := &sipInbound{
 		log:      log,
 		s:        s,
-		id:       id,
+		id:       "unassigned",
 		invite:   invite,
 		inviteTx: inviteTx,
 		legTr:    legTransportFromReq(invite),

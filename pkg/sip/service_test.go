@@ -792,6 +792,7 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 		username = "testuser"
 		password = "testpass"
 		callID   = "same-call-id@test.com"
+		fromTag  = "fixed-from-tag-12345"
 	)
 
 	var capturedCallIDs []string
@@ -860,6 +861,12 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 	offerData, err := offer.SDP.Marshal()
 	require.NoError(t, err)
 
+	inviteFromHeader := sip.FromHeader{
+		DisplayName: fromUser,
+		Address:     sip.Uri{User: fromUser, Host: sipServerAddress},
+		Params:      sip.NewParams().Add("tag", fromTag), // Key bit here
+	}
+
 	// Create first INVITE request (without auth)
 	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
 	inviteRequest1 := sip.NewRequest(sip.INVITE, inviteRecipient)
@@ -867,6 +874,7 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 	inviteRequest1.SetBody(offerData)
 	inviteRequest1.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	inviteRequest1.AppendHeader(sip.NewHeader("Call-ID", callID))
+	inviteRequest1.AppendHeader(&inviteFromHeader)
 
 	tx1, err := sipClient.TransactionRequest(inviteRequest1)
 	require.NoError(t, err)
@@ -877,6 +885,12 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 	require.Equal(t, sip.StatusCode(100), res1.StatusCode, "First request should receive 100 Trying")
 	res1 = getResponseOrFail(t, tx1)
 	require.Equal(t, sip.StatusCode(407), res1.StatusCode, "First request should receive 407 Unauthorized")
+
+	// Get the To tag from the 407 response
+	toHeader := res1.To()
+	require.NotNil(t, toHeader, "407 response should have To header")
+	_, ok := toHeader.Params.Get("tag")
+	require.True(t, ok, "407 response To header should have tag parameter")
 
 	// Get the challenge from first response
 	authHeader1 := res1.GetHeader("Proxy-Authenticate")
@@ -896,13 +910,15 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 	})
 	require.NoError(t, err, "Should be able to compute digest response")
 
-	// Create second INVITE request (with auth) using the SAME Call-ID
+	// Create second INVITE request (with auth) using the SAME Call-ID, From tag, and To tag
 	inviteRequest2 := sip.NewRequest(sip.INVITE, inviteRecipient)
 	inviteRequest2.SetDestination(sipServerAddress)
 	inviteRequest2.SetBody(offerData)
 	inviteRequest2.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	inviteRequest2.AppendHeader(sip.NewHeader("Call-ID", callID))
 	inviteRequest2.AppendHeader(sip.NewHeader("Proxy-Authorization", cred.String()))
+	inviteRequest2.AppendHeader(&inviteFromHeader)
+	inviteRequest2.AppendHeader(toHeader)
 
 	tx2, err := sipClient.TransactionRequest(inviteRequest2)
 	require.NoError(t, err)
