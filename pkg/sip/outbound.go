@@ -911,7 +911,6 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.AppendHeader(h)
 	}
 
-	req.SetDestination(req.Destination()) // Why is this here? Are we avoiding DNS re-resolution?
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
