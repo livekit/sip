@@ -131,6 +131,7 @@ type MediaOptions struct {
 	MediaTimeout        time.Duration
 	Stats               *PortStats
 	EnableJitterBuffer  bool
+	NoInputResample     bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -158,6 +159,10 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		conn = c
 	}
 	mediaTimeout := make(chan struct{})
+	inSampleRate := sampleRate
+	if opts.NoInputResample {
+		inSampleRate = -1 // set only after SDP is accepted
+	}
 	p := &MediaPort{
 		tid:              tid,
 		log:              log,
@@ -169,7 +174,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		jitterEnabled:    opts.EnableJitterBuffer,
 		port:             newUDPConn(log, conn),
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
-		audioIn:          msdk.NewSwitchWriter(sampleRate),
+		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
 	}
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
@@ -628,14 +633,19 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 
 func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
-	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
+	codec := p.conf.Audio.Codec
+	codecInfo := codec.Info()
+	if p.opts.NoInputResample {
+		p.audioIn.SetSampleRate(codecInfo.SampleRate)
+	}
+	audioHandler := codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
 
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.mon, "", nil))
 	mux.Register(
 		p.conf.Audio.Type, newRTPHandlerCount(
-			newRTPStatsHandler(p.mon, p.conf.Audio.Codec.Info().SDPName, audioHandler),
+			newRTPStatsHandler(p.mon, codecInfo.SDPName, audioHandler),
 			&p.stats.AudioPackets, &p.stats.AudioBytes,
 		),
 	)
