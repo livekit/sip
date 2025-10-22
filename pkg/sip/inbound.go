@@ -28,8 +28,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	uuid "github.com/satori/go.uuid"
-
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pkg/errors"
@@ -42,6 +40,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/utils"
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/protocol/utils/traceid"
@@ -139,7 +138,11 @@ func (s *Server) getCallInfo(id string) *inboundCallInfo {
 }
 
 func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
-	key := fmt.Sprintf("%s:%s:%s", sipCallID, toTag, fromTag)
+	key := dialogKey{
+		sipCallID: sipCallID,
+		toTag:     toTag,
+		fromTag:   fromTag,
+	}
 	s.imu.Lock()
 	defer s.imu.Unlock()
 	is, ok := s.inProgressInvites[key]
@@ -338,6 +341,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	log = LoggerWithHeaders(log, cc)
 
 	if err := cc.ValidateInvite(); err != nil {
+		log.Errorw("invalid invite", err)
 		if s.conf.HideInboundPort {
 			cc.Drop()
 		} else {
@@ -348,13 +352,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	// Establish ID
 	fromTag, _ := req.From().Params.Get("tag") // always exists, via ValidateInvite() check
-	toTag, ok := req.To().Params.Get("tag")    // To() always exists, via ValidateInvite() check
+	toParams := req.To().Params                // To() always exists, via ValidateInvite() check
+	if toParams == nil {
+		toParams = sip.NewParams()
+		req.To().Params = toParams
+	}
+	toTag, ok := toParams.Get("tag")
 	if !ok {
 		// No to-tag on the invite means we need to generate one per RFC 3261 section 12.
 		// Generate a new to-tag early, to make sure both INVITES have the same ID.
-		uuid, _ := uuid.NewV4() // Same as NewResponseFromRequest in sipgo
-		toTag = uuid.String()
-		req.To().Params.Add("tag", toTag)
+		toParams.Add("tag", utils.NewGuid(""))
 	}
 	inviteProgress := s.getInvite(sipCallID, toTag, fromTag)
 	callID := inviteProgress.lkCallID

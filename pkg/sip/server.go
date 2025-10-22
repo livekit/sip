@@ -126,6 +126,12 @@ type Handler interface {
 	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
+type dialogKey struct {
+	sipCallID string
+	toTag     string
+	fromTag   string
+}
+
 type Server struct {
 	log          logger.Logger
 	mon          *stats.Monitor
@@ -137,7 +143,7 @@ type Server struct {
 	sipUnhandled RequestHandler
 
 	imu               sync.Mutex
-	inProgressInvites map[string]*inProgressInvite
+	inProgressInvites map[dialogKey]*inProgressInvite
 
 	closing     core.Fuse
 	cmu         sync.RWMutex
@@ -184,7 +190,7 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		mon:               mon,
 		getIOClient:       getIOClient,
 		getRoom:           DefaultGetRoomFunc,
-		inProgressInvites: make(map[string]*inProgressInvite),
+		inProgressInvites: make(map[dialogKey]*inProgressInvite),
 		byRemoteTag:       make(map[RemoteTag]*inboundCall),
 		byLocalTag:        make(map[LocalTag]*inboundCall),
 		byCallID:          make(map[string]*inboundCall),
