@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -35,6 +36,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
@@ -142,8 +144,10 @@ type Server struct {
 	sipListeners []io.Closer
 	sipUnhandled RequestHandler
 
-	imu               sync.Mutex
-	inProgressInvites map[dialogKey]*inProgressInvite
+	imu                  sync.Mutex
+	inProgressInvites    map[dialogKey]*inProgressInvite
+	inviteTimeoutQueue   utils.TimeoutQueue[*dialogKey]
+	isCleanupTaskRunning atomic.Bool
 
 	closing     core.Fuse
 	cmu         sync.RWMutex
@@ -167,6 +171,7 @@ type inProgressInvite struct {
 	sipCallID string
 	challenge digest.Challenge
 	lkCallID  string // SCL_* LiveKit call ID assigned to this dialog
+	expireAt  time.Time
 }
 
 type ServerOption func(s *Server)
@@ -336,6 +341,9 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 			return err
 		}
 	}
+
+	// Start the cleanup task
+	go s.cleanupInvites()
 
 	return nil
 }

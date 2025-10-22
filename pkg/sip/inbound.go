@@ -137,6 +137,24 @@ func (s *Server) getCallInfo(id string) *inboundCallInfo {
 	return c
 }
 
+func (s *Server) cleanupInvites() {
+	ticker := time.NewTicker(5 * time.Minute) // Periodic cleanup every 5 minutes
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.closing.Watch():
+			return
+		case <-ticker.C:
+			s.imu.Lock()
+			for it := s.inviteTimeoutQueue.IterateRemoveAfter(inviteCredentialValidity); it.Next(); {
+				key := it.Item().Value
+				delete(s.inProgressInvites, *key)
+			}
+			s.imu.Unlock()
+		}
+	}
+}
+
 func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
 	key := dialogKey{
 		sipCallID: sipCallID,
@@ -149,15 +167,13 @@ func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
 	if ok {
 		return is
 	}
-	is = &inProgressInvite{sipCallID: sipCallID}
+	is = &inProgressInvite{
+		sipCallID: sipCallID,
+		expireAt:  time.Now().Add(inviteCredentialValidity),
+	}
 	s.inProgressInvites[key] = is
+	s.inviteTimeoutQueue.Reset(&utils.TimeoutQueueItem[*dialogKey]{Value: &key})
 
-	go func() {
-		time.Sleep(inviteCredentialValidity)
-		s.imu.Lock()
-		defer s.imu.Unlock()
-		delete(s.inProgressInvites, key)
-	}()
 	return is
 }
 
@@ -1403,7 +1419,6 @@ func (s *Server) newInbound(log logger.Logger, contact URI, invite *sip.Request,
 	c := &sipInbound{
 		log:      log,
 		s:        s,
-		id:       "unassigned",
 		invite:   invite,
 		inviteTx: inviteTx,
 		legTr:    legTransportFromReq(invite),
