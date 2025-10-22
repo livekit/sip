@@ -171,7 +171,6 @@ type inProgressInvite struct {
 	sipCallID string
 	challenge digest.Challenge
 	lkCallID  string // SCL_* LiveKit call ID assigned to this dialog
-	expireAt  time.Time
 }
 
 type ServerOption func(s *Server)

@@ -167,10 +167,7 @@ func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
 	if ok {
 		return is
 	}
-	is = &inProgressInvite{
-		sipCallID: sipCallID,
-		expireAt:  time.Now().Add(inviteCredentialValidity),
-	}
+	is = &inProgressInvite{sipCallID: sipCallID}
 	s.inProgressInvites[key] = is
 	s.inviteTimeoutQueue.Reset(&utils.TimeoutQueueItem[*dialogKey]{Value: &key})
 
