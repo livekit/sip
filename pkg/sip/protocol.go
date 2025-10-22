@@ -482,6 +482,16 @@ func (r ReasonHeader) IsNormal() bool {
 		case 0x00:
 			return true
 		}
+	case "release_cause":
+		switch r.Cause {
+		case 1:
+			return true
+		}
+	case "sip":
+		switch r.Cause {
+		case 200:
+			return true
+		}
 	}
 	return false
 }
