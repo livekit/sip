@@ -374,7 +374,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if !ok {
 		// No to-tag on the invite means we need to generate one per RFC 3261 section 12.
 		// Generate a new to-tag early, to make sure both INVITES have the same ID.
-		toParams.Add("tag", utils.NewGuid(""))
+		toTag = utils.NewGuid("")
+		toParams.Add("tag", toTag)
 	}
 	inviteProgress := s.getInvite(sipCallID, toTag, fromTag)
 	callID := inviteProgress.lkCallID
