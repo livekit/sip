@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -943,5 +944,117 @@ func TestSIPOutbound(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestSIPOutboundRouteHeader(t *testing.T) {
+	// Test that when a Route header is specified in CreateSIPParticipant request,
+	// the SIP message is sent to the route header target instead of the request URI.
+
+	// Set up two LiveKit servers and SIP servers
+	lkOut := runLiveKit(t)
+	lkIn := runLiveKit(t)
+	srvOut := runSIPServer(t, lkOut)
+	srvIn := runSIPServer(t, lkIn)
+
+	const (
+		roomIn   = "inbound"
+		userName = "test-user"
+		userPass = "test-pass"
+		meta     = `{"test":true}`
+	)
+
+	// Configure Trunk for inbound server
+	trunkIn := srvIn.CreateTrunkIn(t, &livekit.SIPInboundTrunkInfo{
+		Name:         "Test In",
+		Numbers:      []string{serverNumber},
+		AuthUsername: userName,
+		AuthPassword: userPass,
+	})
+	t.Cleanup(func() {
+		srvIn.DeleteTrunk(t, trunkIn)
+	})
+
+	ruleIn := srvIn.CreateDirectDispatch(t, roomIn, "", meta, nil)
+	t.Cleanup(func() {
+		srvIn.DeleteDispatch(t, ruleIn)
+	})
+
+	// Create a mock SIP server that will receive the route header target
+	// This server should be different from the request URI
+	routeTarget := "127.0.0.1:5061" // Different from srvIn.Address
+
+	// Set up a mock SIP server to capture the route header target
+	// We'll create a simple UDP server that can receive and log the SIP message
+	routeServer, err := net.ListenPacket("udp", routeTarget)
+	require.NoError(t, err)
+	defer routeServer.Close()
+
+	// Channel to capture received messages
+	receivedMessages := make(chan string, 10)
+
+	// Start a goroutine to listen for messages on the route target
+	go func() {
+		buffer := make([]byte, 1024)
+		for {
+			n, addr, err := routeServer.ReadFrom(buffer)
+			if err != nil {
+				return
+			}
+			message := string(buffer[:n])
+			receivedMessages <- message
+			t.Logf("Route server received message from %s: %s", addr, message)
+		}
+	}()
+
+	// Configure Trunk for outbound server with the request URI (different from route target)
+	trunkOut := srvOut.CreateTrunkOut(t, &livekit.SIPOutboundTrunkInfo{
+		Name:         "Test Out",
+		Numbers:      []string{clientNumber},
+		Address:      srvIn.Address, // This will be the request URI
+		Transport:    livekit.SIPTransport_SIP_TRANSPORT_UDP,
+		AuthUsername: userName,
+		AuthPassword: userPass,
+	})
+	t.Cleanup(func() {
+		srvOut.DeleteTrunk(t, trunkOut)
+	})
+
+	// Create the outbound SIP participant with a Route header
+	// The Route header should point to a different destination than the request URI
+	routeHeader := fmt.Sprintf("<sip:%s;lr>", routeTarget)
+
+	// Create the SIP participant with the Route header
+	// We need to pass the Route header in the headers map
+	headers := map[string]string{
+		"Route": routeHeader,
+	}
+
+	// Create the outbound SIP participant with the Route header
+	t.Logf("Testing Route header: %s", routeHeader)
+	t.Logf("Request URI target: %s", srvIn.Address)
+	t.Logf("Route header target: %s", routeTarget)
+
+	// Create the outbound SIP participant
+	r := lkOut.CreateSIPParticipant(t, &livekit.CreateSIPParticipantRequest{
+		SipTrunkId:          trunkOut,
+		SipCallTo:           serverNumber,
+		RoomName:            "outbound",
+		ParticipantIdentity: "siptest_outbound",
+		ParticipantName:     "Outbound Call",
+		ParticipantMetadata: `{"test":true, "dir": "out"}`,
+		Headers:             headers, // This is the key - passing the Route header
+	})
+	t.Logf("outbound call ID: %s", r.SipCallId)
+
+	// Wait a bit to see if any messages are received on the route target
+	select {
+	case msg := <-receivedMessages:
+		t.Logf("Received message on route target: %s", msg)
+		// If we receive a message, it means the Route header is working
+		require.Contains(t, msg, "INVITE", "Should receive INVITE message on route target")
+		t.Log("SUCCESS: Route header is working - message was sent to route target instead of request URI")
+	case <-time.After(10 * time.Second):
+		t.Fatal("No message received on route target within timeout - Route header processing is not working correctly")
 	}
 }
