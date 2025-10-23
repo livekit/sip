@@ -88,7 +88,7 @@ func TestParseReason(t *testing.T) {
 				Cause: 200,
 				Text:  "Call completed elsewhere",
 			},
-			Normal: false,
+			Normal: true,
 		},
 		{
 			Name:   "Q.850",
