@@ -366,7 +366,7 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID strin
 	}
 
 	s.srv.cmu.Lock()
-	in := s.srv.byLocal[LocalTag(callID)]
+	in := s.srv.byLocalTag[LocalTag(callID)]
 	s.srv.cmu.Unlock()
 
 	if in != nil {
