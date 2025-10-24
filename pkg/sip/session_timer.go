@@ -336,7 +336,7 @@ func (st *SessionTimer) Start() {
 	st.lastRefresh = time.Now()
 
 	if st.ctx == nil {
-		st.log.Warnw("Session timer started without context")
+		st.log.Warnw("Session timer started without context", nil)
 		return
 	}
 
@@ -435,7 +435,7 @@ func (st *SessionTimer) handleRefresh() {
 	st.mu.Unlock()
 
 	if onRefresh == nil {
-		st.log.Warnw("No refresh callback registered")
+		st.log.Warnw("No refresh callback registered", nil)
 		return
 	}
 
@@ -480,11 +480,11 @@ func (st *SessionTimer) handleExpiry() {
 	st.mu.Unlock()
 
 	if onExpiry == nil {
-		st.log.Warnw("No expiry callback registered")
+		st.log.Warnw("No expiry callback registered", nil)
 		return
 	}
 
-	st.log.Warnw("Session timer expired, terminating call",
+	st.log.Warnw("Session timer expired, terminating call", nil,
 		"sessionExpires", st.sessionExpires,
 		"lastRefresh", st.lastRefresh)
 
