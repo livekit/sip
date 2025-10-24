@@ -222,10 +222,6 @@ func (st *SessionTimer) NegotiateInvite(req *sip.Request) (sessionExpires int, m
 // NegotiateResponse negotiates session timer parameters from a response (for UAC)
 // This is called when we receive a 2xx response to our INVITE
 func (st *SessionTimer) NegotiateResponse(res *sip.Response) error {
-	if !st.config.Enabled {
-		return nil
-	}
-
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -271,10 +267,6 @@ func (st *SessionTimer) NegotiateResponse(res *sip.Response) error {
 
 // AddHeadersToRequest adds session timer headers to an outgoing INVITE request
 func (st *SessionTimer) AddHeadersToRequest(req *sip.Request) {
-	if !st.config.Enabled {
-		return
-	}
-
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -302,7 +294,7 @@ func (st *SessionTimer) AddHeadersToRequest(req *sip.Request) {
 
 // AddHeadersToResponse adds session timer headers to a response
 func (st *SessionTimer) AddHeadersToResponse(res *sip.Response, sessionExpires int, refresher RefresherRole) {
-	if !st.config.Enabled || sessionExpires == 0 {
+	if sessionExpires == 0 {
 		return
 	}
 
@@ -323,7 +315,7 @@ func (st *SessionTimer) Start() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	if !st.config.Enabled || st.started || st.sessionExpires == 0 {
+	if st.started || st.sessionExpires == 0 {
 		return
 	}
 
