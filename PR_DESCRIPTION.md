@@ -17,17 +17,19 @@ Full RFC 4028 Session Timer implementation with automatic session refresh via mi
 - ✅ Automatic session refresh at configurable intervals (default 30 min)
 - ✅ Session expiry detection and graceful termination
 - ✅ Support for both inbound and outbound calls
-- ✅ Opt-in (disabled by default) - fully backward compatible
+- ✅ **Always enabled** - activates automatically when provider requests it
+- ✅ **100% backward compatible** - dormant unless provider negotiates session timers
 - ✅ Comprehensive unit tests with 100% coverage of negotiation logic
 
 ### Configuration
 ```yaml
 session_timer:
-  enabled: true           # Enable for SignalWire and others
-  default_expires: 1800   # 30 minutes
-  min_se: 90             # RFC 4028 minimum
-  prefer_refresher: "uac"
+  default_expires: 1800   # 30 minutes (optional, has defaults)
+  min_se: 90             # RFC 4028 minimum (optional)
+  prefer_refresher: "uac" # Optional: "uac" or "uas"
 ```
+
+**Note**: Session timers are always enabled. They only activate when the SIP provider includes session timer headers in the INVITE. This is safe because the feature is negotiated per RFC 4028.
 
 ## Changes
 - **New**: `pkg/sip/session_timer.go` (525 lines) - Core implementation
@@ -61,15 +63,17 @@ Minimal overhead:
 - Network: 1 re-INVITE per refresh interval
 
 ## Backward Compatibility
-✅ Disabled by default (opt-in)
-✅ Graceful degradation
-✅ No breaking changes
-✅ Works with existing configurations
+✅ **Always enabled, but only activates via negotiation**
+✅ If provider doesn't request session timers → feature stays dormant
+✅ If provider requests session timers → automatically negotiates and works
+✅ Zero breaking changes for existing deployments
+✅ Works with existing configurations (no config changes required)
 
 ## Migration
-1. Add to config: `session_timer: { enabled: true }`
-2. Restart service
-3. Calls now stay alive past 5 minutes with SignalWire
+**No migration needed!** The feature is already enabled and will automatically work with:
+- ✅ SignalWire (fixes 5-minute timeout)
+- ✅ Any provider that supports RFC 4028
+- ✅ Providers that don't use session timers (no change in behavior)
 
 ---
 
