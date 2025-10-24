@@ -24,6 +24,18 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
+// Helper function to create a properly formatted SIP request for testing
+func createTestRequest() *sip.Request {
+	req := sip.NewRequest(sip.INVITE, sip.Uri{User: "test", Host: "example.com"})
+	// Add required headers for NewResponseFromRequest to work
+	req.AppendHeader(sip.NewHeader("Via", "SIP/2.0/UDP test:5060;branch=z9hG4bK123"))
+	req.AppendHeader(sip.NewHeader("From", "<sip:caller@test.com>;tag=abc123"))
+	req.AppendHeader(sip.NewHeader("To", "<sip:callee@example.com>"))
+	req.AppendHeader(sip.NewHeader("Call-ID", "test-call-id"))
+	req.AppendHeader(sip.NewHeader("CSeq", "1 INVITE"))
+	return req
+}
+
 func TestSessionTimerNegotiateInvite(t *testing.T) {
 	tests := []struct {
 		name                string
@@ -188,7 +200,7 @@ func TestSessionTimerNegotiateResponse(t *testing.T) {
 			st := NewSessionTimer(tt.config, true, log)
 
 			// Create a mock 200 OK response
-			req := sip.NewRequest(sip.INVITE, sip.Uri{User: "test", Host: "example.com"})
+			req := createTestRequest()
 			res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
 			if tt.sessionExpiresValue != "" {
 				res.AppendHeader(sip.NewHeader("Session-Expires", tt.sessionExpiresValue))
@@ -256,7 +268,7 @@ func TestSessionTimerAddHeadersToResponse(t *testing.T) {
 	log := logger.GetLogger()
 	st := NewSessionTimer(config, false, log)
 
-	req := sip.NewRequest(sip.INVITE, sip.Uri{User: "test", Host: "example.com"})
+	req := createTestRequest()
 	res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
 
 	st.AddHeadersToResponse(res, 1800, RefresherUAS)
