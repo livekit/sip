@@ -384,14 +384,15 @@ func TestSessionTimerOnRefreshReceived(t *testing.T) {
 
 	st.Start()
 
-	// Wait a bit
+	// Wait a bit (but less than expiry time)
 	time.Sleep(500 * time.Millisecond)
 
-	// Receive a refresh - this should reset the expiry timer
+	// Receive a refresh - this should reset the expiry timer to 2s from now (t=2.5s)
 	st.OnRefreshReceived()
 
-	// Wait for the original expiry time (should not expire because we refreshed)
-	time.Sleep(2000 * time.Millisecond)
+	// Wait for the original expiry time (t=2.0s) - should not expire because we refreshed
+	// We're now at t=1.5s, which is past the original expiry of t=2s but before the new expiry of t=2.5s
+	time.Sleep(1000 * time.Millisecond)
 
 	if expiryCalled.Load() {
 		t.Errorf("Expiry callback was called despite receiving refresh")
