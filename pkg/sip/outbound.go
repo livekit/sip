@@ -310,7 +310,7 @@ func (c *outboundCall) initSessionTimer(ctx context.Context, conf *config.Config
 			return c.sendSessionRefresh(ctx)
 		},
 		func(ctx context.Context) error {
-			c.log.Warnw("Session timer expired, terminating call")
+			c.log.Warnw("Session timer expired, terminating call", nil)
 			c.closeWithTimeout()
 			return nil
 		},

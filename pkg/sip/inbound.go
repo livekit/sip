@@ -1081,7 +1081,7 @@ func (c *inboundCall) initSessionTimer(req *sip.Request, conf *config.Config) {
 			return c.sendSessionRefresh(ctx)
 		},
 		func(ctx context.Context) error {
-			c.log.Warnw("Session timer expired, terminating call")
+			c.log.Warnw("Session timer expired, terminating call", nil)
 			c.closeWithTimeout()
 			return nil
 		},
@@ -1803,7 +1803,7 @@ func (c *sipInbound) sendSessionRefresh(ctx context.Context, sdpOffer []byte) er
 	c.swapSrcDst(req)
 
 	// Send the request and wait for response
-	tx, err := c.s.sipCli.TransactionRequest(req)
+	tx, err := c.s.sipSrv.TransactionLayer().Request(req)
 	if err != nil {
 		return fmt.Errorf("failed to send session refresh: %w", err)
 	}
@@ -1824,7 +1824,7 @@ func (c *sipInbound) sendSessionRefresh(ctx context.Context, sdpOffer []byte) er
 	// Send ACK
 	ack := sip.NewAckRequest(req, resp, nil)
 	c.swapSrcDst(ack)
-	return c.s.sipCli.WriteRequest(ack)
+	return c.s.sipSrv.TransportLayer().WriteMsg(ack)
 }
 
 func (c *sipInbound) sendBye() {
