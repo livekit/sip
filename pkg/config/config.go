@@ -57,7 +57,6 @@ type TLSConfig struct {
 }
 
 type SessionTimerConfig struct {
-	Enabled         bool   `yaml:"enabled"`           // Enable/disable session timers
 	DefaultExpires  int    `yaml:"default_expires"`   // Default session interval in seconds (default: 1800)
 	MinSE           int    `yaml:"min_se"`            // Minimum acceptable session interval (default: 90)
 	PreferRefresher string `yaml:"prefer_refresher"`  // Preferred refresher role: "uac" or "uas" (default: "uac")

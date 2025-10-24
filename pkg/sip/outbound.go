@@ -285,7 +285,6 @@ func (c *outboundCall) closeWithTimeout() {
 func (c *outboundCall) initSessionTimer(ctx context.Context, conf *config.Config) {
 	// Convert config format to session timer config
 	stConfig := SessionTimerConfig{
-		Enabled:        conf.SessionTimer.Enabled,
 		DefaultExpires: conf.SessionTimer.DefaultExpires,
 		MinSE:          conf.SessionTimer.MinSE,
 		UseUpdate:      conf.SessionTimer.UseUpdate,

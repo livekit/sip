@@ -49,7 +49,6 @@ func TestSessionTimerNegotiateInvite(t *testing.T) {
 		{
 			name: "valid session timer with refresher=uac",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAC,
@@ -63,7 +62,6 @@ func TestSessionTimerNegotiateInvite(t *testing.T) {
 		{
 			name: "valid session timer with refresher=uas",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAS,
@@ -77,7 +75,6 @@ func TestSessionTimerNegotiateInvite(t *testing.T) {
 		{
 			name: "session interval too small",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAC,
@@ -89,7 +86,6 @@ func TestSessionTimerNegotiateInvite(t *testing.T) {
 		{
 			name: "no session expires header",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAC,
@@ -147,7 +143,6 @@ func TestSessionTimerNegotiateResponse(t *testing.T) {
 		{
 			name: "valid response with refresher=uac",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAC,
@@ -159,7 +154,6 @@ func TestSessionTimerNegotiateResponse(t *testing.T) {
 		{
 			name: "valid response with refresher=uas",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAS,
@@ -171,7 +165,6 @@ func TestSessionTimerNegotiateResponse(t *testing.T) {
 		{
 			name: "response without refresher defaults to uac",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAC,
@@ -183,7 +176,6 @@ func TestSessionTimerNegotiateResponse(t *testing.T) {
 		{
 			name: "no session expires in response",
 			config: SessionTimerConfig{
-				Enabled:         true,
 				DefaultExpires:  1800,
 				MinSE:           90,
 				PreferRefresher: RefresherUAC,
@@ -226,7 +218,6 @@ func TestSessionTimerNegotiateResponse(t *testing.T) {
 
 func TestSessionTimerAddHeadersToRequest(t *testing.T) {
 	config := SessionTimerConfig{
-		Enabled:         true,
 		DefaultExpires:  1800,
 		MinSE:           90,
 		PreferRefresher: RefresherUAC,
@@ -259,7 +250,6 @@ func TestSessionTimerAddHeadersToRequest(t *testing.T) {
 
 func TestSessionTimerAddHeadersToResponse(t *testing.T) {
 	config := SessionTimerConfig{
-		Enabled:         true,
 		DefaultExpires:  1800,
 		MinSE:           90,
 		PreferRefresher: RefresherUAS,
@@ -288,7 +278,6 @@ func TestSessionTimerAddHeadersToResponse(t *testing.T) {
 
 func TestSessionTimerRefreshCallback(t *testing.T) {
 	config := SessionTimerConfig{
-		Enabled:         true,
 		DefaultExpires:  1, // 1 second for fast testing
 		MinSE:           1,
 		PreferRefresher: RefresherUAC,
@@ -328,7 +317,6 @@ func TestSessionTimerRefreshCallback(t *testing.T) {
 
 func TestSessionTimerExpiryCallback(t *testing.T) {
 	config := SessionTimerConfig{
-		Enabled:         true,
 		DefaultExpires:  2, // 2 seconds for testing
 		MinSE:           1,
 		PreferRefresher: RefresherNone, // We are not the refresher
@@ -369,7 +357,6 @@ func TestSessionTimerExpiryCallback(t *testing.T) {
 
 func TestSessionTimerOnRefreshReceived(t *testing.T) {
 	config := SessionTimerConfig{
-		Enabled:         true,
 		DefaultExpires:  2,
 		MinSE:           1,
 		PreferRefresher: RefresherNone,
@@ -415,7 +402,6 @@ func TestSessionTimerOnRefreshReceived(t *testing.T) {
 
 func TestSessionTimerStop(t *testing.T) {
 	config := SessionTimerConfig{
-		Enabled:         true,
 		DefaultExpires:  1,
 		MinSE:           1,
 		PreferRefresher: RefresherUAC,

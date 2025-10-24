@@ -70,7 +70,6 @@ func parseRefresherRole(s string) RefresherRole {
 
 // SessionTimerConfig holds configuration for session timers
 type SessionTimerConfig struct {
-	Enabled         bool
 	DefaultExpires  int           // Default session interval in seconds
 	MinSE           int           // Minimum session interval in seconds
 	PreferRefresher RefresherRole // Preferred refresher role
@@ -80,7 +79,6 @@ type SessionTimerConfig struct {
 // DefaultSessionTimerConfig returns the default session timer configuration
 func DefaultSessionTimerConfig() SessionTimerConfig {
 	return SessionTimerConfig{
-		Enabled:         false,
 		DefaultExpires:  defaultSessionExpires,
 		MinSE:           minSessionExpiresRFC,
 		PreferRefresher: RefresherUAC,
@@ -149,10 +147,6 @@ func (st *SessionTimer) SetCallbacks(onRefresh, onExpiry func(ctx context.Contex
 // NegotiateInvite negotiates session timer parameters from an incoming INVITE request
 // Returns the negotiated values and any error (including 422 rejection)
 func (st *SessionTimer) NegotiateInvite(req *sip.Request) (sessionExpires int, minSE int, refresher RefresherRole, err error) {
-	if !st.config.Enabled {
-		return 0, 0, RefresherNone, nil
-	}
-
 	st.mu.Lock()
 	defer st.mu.Unlock()
 

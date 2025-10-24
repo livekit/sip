@@ -1056,7 +1056,6 @@ func (c *inboundCall) printStats(log logger.Logger) {
 func (c *inboundCall) initSessionTimer(req *sip.Request, conf *config.Config) {
 	// Convert config format to session timer config
 	stConfig := SessionTimerConfig{
-		Enabled:        conf.SessionTimer.Enabled,
 		DefaultExpires: conf.SessionTimer.DefaultExpires,
 		MinSE:          conf.SessionTimer.MinSE,
 		UseUpdate:      conf.SessionTimer.UseUpdate,
