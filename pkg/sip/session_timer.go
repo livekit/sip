@@ -101,9 +101,10 @@ type SessionTimer struct {
 	isUAC          bool          // Are we the UAC in this dialog?
 
 	// Timers
-	refreshTimer *time.Timer // Timer for sending refresh
-	expiryTimer  *time.Timer // Timer for session expiry
-	lastRefresh  time.Time   // Timestamp of last refresh
+	refreshTimer   *time.Timer // Timer for sending refresh
+	expiryTimer    *time.Timer // Timer for session expiry
+	expiryGeneration uint64     // Generation counter to invalidate old expiry timers
+	lastRefresh    time.Time   // Timestamp of last refresh
 
 	// Callbacks
 	onRefresh func(ctx context.Context) error // Callback to send refresh request
@@ -358,10 +359,12 @@ func (st *SessionTimer) Start() {
 
 	// Always set expiry timer (both refresher and non-refresher)
 	// Expiry warning at: expires - min(32, expires/3) seconds
+	st.expiryGeneration++
+	currentGen := st.expiryGeneration
 	expiryWarning := st.sessionExpires - min(32, st.sessionExpires/3)
 	expiryDuration := time.Duration(expiryWarning) * time.Second
 	st.expiryTimer = time.AfterFunc(expiryDuration, func() {
-		st.handleExpiry()
+		st.handleExpiry(currentGen)
 	})
 
 	st.log.Infow("Started session timer",
@@ -411,10 +414,12 @@ func (st *SessionTimer) OnRefreshReceived() {
 		st.expiryTimer.Stop()
 	}
 
+	st.expiryGeneration++
+	currentGen := st.expiryGeneration
 	expiryWarning := st.sessionExpires - min(32, st.sessionExpires/3)
 	expiryDuration := time.Duration(expiryWarning) * time.Second
 	st.expiryTimer = time.AfterFunc(expiryDuration, func() {
-		st.handleExpiry()
+		st.handleExpiry(currentGen)
 	})
 
 	st.log.Infow("Session refresh received, reset expiry timer",
@@ -468,8 +473,13 @@ func (st *SessionTimer) handleRefresh() {
 }
 
 // handleExpiry is called when the session expires without refresh
-func (st *SessionTimer) handleExpiry() {
+func (st *SessionTimer) handleExpiry(generation uint64) {
 	st.mu.Lock()
+	// Check if this timer is stale (a newer timer was created)
+	if generation != st.expiryGeneration {
+		st.mu.Unlock()
+		return
+	}
 	if st.stopped || st.ctx == nil {
 		st.mu.Unlock()
 		return
