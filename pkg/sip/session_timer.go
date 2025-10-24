@@ -358,7 +358,7 @@ func (st *SessionTimer) Start() {
 
 	// Always set expiry timer (both refresher and non-refresher)
 	// Expiry warning at: expires - min(32, expires/3) seconds
-	expiryWarning := st.sessionExpires - min(32, st.sessionExpires/3)
+	expiryWarning := st.sessionExpires - minInt(32, st.sessionExpires/3)
 	expiryDuration := time.Duration(expiryWarning) * time.Second
 	st.expiryTimer = time.AfterFunc(expiryDuration, func() {
 		st.handleExpiry()
@@ -411,7 +411,7 @@ func (st *SessionTimer) OnRefreshReceived() {
 		st.expiryTimer.Stop()
 	}
 
-	expiryWarning := st.sessionExpires - min(32, st.sessionExpires/3)
+	expiryWarning := st.sessionExpires - minInt(32, st.sessionExpires/3)
 	expiryDuration := time.Duration(expiryWarning) * time.Second
 	st.expiryTimer = time.AfterFunc(expiryDuration, func() {
 		st.handleExpiry()
@@ -517,7 +517,7 @@ func (st *SessionTimer) IsStarted() bool {
 	return st.started
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
