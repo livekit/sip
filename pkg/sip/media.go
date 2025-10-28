@@ -15,10 +15,12 @@
 package sip
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/pion/interceptor"
 	prtp "github.com/pion/rtp"
@@ -27,7 +29,12 @@ import (
 
 	"github.com/livekit/media-sdk/rtp"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/stats"
+)
+
+const (
+	defaultRateLoggerInterval = 10 * time.Second
 )
 
 var _ json.Marshaler = (*Stats)(nil)
@@ -36,6 +43,8 @@ type Stats struct {
 	Port   PortStats
 	Room   RoomStats
 	Closed atomic.Bool
+
+	rateLoggerStarted atomic.Bool
 }
 
 type StatsSnapshot struct {
@@ -57,6 +66,11 @@ type PortStatsSnapshot struct {
 	AudioPackets uint64 `json:"audio_packets"`
 	AudioBytes   uint64 `json:"audio_bytes"`
 
+	AudioInFrames   uint64 `json:"audio_in_frames"`
+	AudioInSamples  uint64 `json:"audio_in_samples"`
+	AudioOutFrames  uint64 `json:"audio_out_frames"`
+	AudioOutSamples uint64 `json:"audio_out_samples"`
+
 	DTMFPackets uint64 `json:"dtmf_packets"`
 	DTMFBytes   uint64 `json:"dtmf_bytes"`
 
@@ -66,6 +80,9 @@ type PortStatsSnapshot struct {
 type RoomStatsSnapshot struct {
 	InputPackets uint64 `json:"input_packets"`
 	InputBytes   uint64 `json:"input_bytes"`
+
+	PublishedFrames  uint64 `json:"published_frames"`
+	PublishedSamples uint64 `json:"published_samples"`
 
 	MixerSamples uint64 `json:"mixer_samples"`
 	MixerFrames  uint64 `json:"mixer_frames"`
@@ -102,26 +119,32 @@ func (s *Stats) Load() StatsSnapshot {
 	m := &r.Mixer
 	return StatsSnapshot{
 		Port: PortStatsSnapshot{
-			Streams:        p.Streams.Load(),
-			Packets:        p.Packets.Load(),
-			IgnoredPackets: p.IgnoredPackets.Load(),
-			InputPackets:   p.InputPackets.Load(),
-			MuxPackets:     p.MuxPackets.Load(),
-			MuxBytes:       p.MuxBytes.Load(),
-			AudioPackets:   p.AudioPackets.Load(),
-			AudioBytes:     p.AudioBytes.Load(),
-			DTMFPackets:    p.DTMFPackets.Load(),
-			DTMFBytes:      p.DTMFBytes.Load(),
-			Closed:         p.Closed.Load(),
+			Streams:         p.Streams.Load(),
+			Packets:         p.Packets.Load(),
+			IgnoredPackets:  p.IgnoredPackets.Load(),
+			InputPackets:    p.InputPackets.Load(),
+			MuxPackets:      p.MuxPackets.Load(),
+			MuxBytes:        p.MuxBytes.Load(),
+			AudioPackets:    p.AudioPackets.Load(),
+			AudioBytes:      p.AudioBytes.Load(),
+			AudioInFrames:   p.AudioInFrames.Load(),
+			AudioInSamples:  p.AudioInSamples.Load(),
+			AudioOutFrames:  p.AudioOutFrames.Load(),
+			AudioOutSamples: p.AudioOutSamples.Load(),
+			DTMFPackets:     p.DTMFPackets.Load(),
+			DTMFBytes:       p.DTMFBytes.Load(),
+			Closed:          p.Closed.Load(),
 		},
 		Room: RoomStatsSnapshot{
-			InputPackets:  r.InputPackets.Load(),
-			InputBytes:    r.InputBytes.Load(),
-			MixerSamples:  r.MixerSamples.Load(),
-			MixerFrames:   r.MixerFrames.Load(),
-			OutputSamples: r.OutputSamples.Load(),
-			OutputFrames:  r.OutputFrames.Load(),
-			Closed:        r.Closed.Load(),
+			InputPackets:     r.InputPackets.Load(),
+			InputBytes:       r.InputBytes.Load(),
+			PublishedFrames:  r.PublishedFrames.Load(),
+			PublishedSamples: r.PublishedSamples.Load(),
+			MixerSamples:     r.MixerSamples.Load(),
+			MixerFrames:      r.MixerFrames.Load(),
+			OutputSamples:    r.OutputSamples.Load(),
+			OutputFrames:     r.OutputFrames.Load(),
+			Closed:           r.Closed.Load(),
 		},
 		Mixer: MixerStatsSnapshot{
 			Tracks:        m.Tracks.Load(),
@@ -144,6 +167,87 @@ func (s *Stats) Load() StatsSnapshot {
 
 func (s *Stats) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.Load())
+}
+
+func (s *Stats) startRateLogger(ctx context.Context, log logger.Logger, interval time.Duration, expectedSampleRate int) {
+	if interval <= 0 {
+		interval = defaultRateLoggerInterval
+	}
+	if expectedSampleRate <= 0 {
+		expectedSampleRate = RoomSampleRate
+	}
+	if !s.rateLoggerStarted.CompareAndSwap(false, true) {
+		return
+	}
+	go s.rateLoggerLoop(ctx, log, interval, expectedSampleRate)
+}
+
+func (s *Stats) rateLoggerLoop(ctx context.Context, log logger.Logger, interval time.Duration, expectedSampleRate int) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	last := s.Load()
+	lastTime := time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			cur := s.Load()
+			dt := now.Sub(lastTime).Seconds()
+			if dt <= 0 {
+				last = cur
+				lastTime = now
+				continue
+			}
+
+			rxSamples := cur.Port.AudioInSamples - last.Port.AudioInSamples
+			txSamples := cur.Port.AudioOutSamples - last.Port.AudioOutSamples
+			pubSamples := cur.Room.PublishedSamples - last.Room.PublishedSamples
+
+			if rxSamples == 0 && txSamples == 0 && pubSamples == 0 {
+				last = cur
+				lastTime = now
+				if cur.Closed {
+					return
+				}
+				continue
+			}
+
+			rxRate := float64(rxSamples) / dt
+			txRate := float64(txSamples) / dt
+			pubRate := float64(pubSamples) / dt
+
+			log.Infow("media sample rate",
+				"sip_rx_pcm_hz", rxRate,
+				"sip_rx_ppm", ratePPM(rxRate, expectedSampleRate),
+				"sip_tx_pcm_hz", txRate,
+				"sip_tx_ppm", ratePPM(txRate, expectedSampleRate),
+				"lk_publish_pcm_hz", pubRate,
+				"lk_publish_ppm", ratePPM(pubRate, expectedSampleRate),
+				"expected_pcm_hz", expectedSampleRate,
+				"interval", now.Sub(lastTime),
+				"sip_rx_samples", rxSamples,
+				"sip_tx_samples", txSamples,
+				"lk_publish_samples", pubSamples,
+			)
+
+			last = cur
+			lastTime = now
+			if cur.Closed {
+				return
+			}
+		}
+	}
+}
+
+func ratePPM(rate float64, expected int) float64 {
+	if expected <= 0 {
+		return 0
+	}
+	return (rate - float64(expected)) / float64(expected) * 1_000_000
 }
 
 const (

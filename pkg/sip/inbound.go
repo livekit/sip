@@ -896,6 +896,8 @@ func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncrypt
 		c.media.HandleDTMF(c.handleDTMF)
 	}
 
+	c.stats.startRateLogger(c.ctx, c.log, defaultRateLoggerInterval, RoomSampleRate)
+
 	// Must be set earlier to send the pin prompts.
 	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
 		_ = w.Close()

@@ -41,6 +41,9 @@ type RoomStats struct {
 	InputPackets atomic.Uint64
 	InputBytes   atomic.Uint64
 
+	PublishedFrames  atomic.Uint64
+	PublishedSamples atomic.Uint64
+
 	MixerFrames  atomic.Uint64
 	MixerSamples atomic.Uint64
 
@@ -424,7 +427,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	if err != nil {
 		return nil, err
 	}
-	return pw, nil
+	return newMediaWriterCount(pw, &r.stats.PublishedFrames, &r.stats.PublishedSamples), nil
 }
 
 func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {
