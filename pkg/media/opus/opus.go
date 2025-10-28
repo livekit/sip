@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"gopkg.in/hraban/opus.v2"
@@ -89,11 +90,13 @@ func Encode(w Writer, channels int, log logger.Logger) (msdk.PCM16Writer, error)
 }
 
 type decoder struct {
-	w   msdk.PCM16Writer
+	log logger.Logger
 	p   params
+
+	mu  sync.Mutex
+	w   msdk.PCM16Writer
 	dec *opus.Decoder
 	buf msdk.PCM16Sample
-	log logger.Logger
 
 	successiveErrorCount int
 }
@@ -110,6 +113,8 @@ func (d *decoder) WriteSample(in Sample) error {
 	if len(in) == 0 {
 		return nil
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	n, err := d.dec.Decode(in, d.buf)
 	if err != nil {
 		// Some workflows (concatenating opus files) can cause a suprious decoding error, so ignore small amount of corruption errors
@@ -126,17 +131,21 @@ func (d *decoder) WriteSample(in Sample) error {
 }
 
 func (d *decoder) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.w.Close()
 }
 
 type encoder struct {
-	w       Writer
-	p       params
-	enc     *opus.Encoder
-	samples int
-	inbuf   msdk.PCM16Sample
-	buf     Sample
 	log     logger.Logger
+	p       params
+	samples int
+
+	mu    sync.Mutex
+	w     Writer
+	enc   *opus.Encoder
+	inbuf msdk.PCM16Sample
+	buf   Sample
 
 	successiveErrorCount int
 }
@@ -150,6 +159,8 @@ func (e *encoder) SampleRate() int {
 }
 
 func (e *encoder) WriteSample(in msdk.PCM16Sample) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.inbuf = append(e.inbuf, in...)
 	for len(e.inbuf) >= e.samples {
 		i := e.samples
@@ -185,6 +196,8 @@ func (e *encoder) flush() error {
 }
 
 func (e *encoder) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	err1 := e.flush()
 	err2 := e.w.Close()
 	if err1 != nil {
