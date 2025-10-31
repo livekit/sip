@@ -624,10 +624,8 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 	}
 }
 
-// TestCANCELSendsBothResponses verifies that when a CANCEL is received for an INVITE,
-// the server sends both:
-// 1. 200 OK response to the CANCEL request
-// 2. 487 Request Terminated response to the original INVITE
+// When a cancel request is sent, we expect two responses, 200 (for CANCEL), and 487 (for INVITE).
+// This test makes sure the 487 response is received (can't test CANCEL-200)
 func TestCANCELSendsBothResponses(t *testing.T) {
 	const (
 		fromUser = "caller@example.com"
