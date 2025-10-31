@@ -70,6 +70,8 @@ const (
 	AuthDrop
 	AuthPassword
 	AuthAccept
+	AuthQuotaExceeded
+	AuthNoTrunkFound
 )
 
 type AuthInfo struct {

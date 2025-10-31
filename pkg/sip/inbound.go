@@ -418,6 +418,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
+	case AuthQuotaExceeded:
+		cmon.InviteErrorShort("quota-exceeded")
+		log.Warnw("Rejecting inbound, quota exceeded", nil)
+		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service temporarily unavailable")
+		return psrpc.NewErrorf(psrpc.ResourceExhausted, "quota limit exceeded")
+	case AuthNoTrunkFound:
+		cmon.InviteErrorShort("no-trunk")
+		log.Warnw("Rejecting inbound, no trunk found", nil)
+		cc.RespondAndDrop(sip.StatusNotFound, "No trunk found")
+		return psrpc.NewErrorf(psrpc.NotFound, "no trunk found for call")
 	case AuthPassword:
 		if s.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
