@@ -215,6 +215,18 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 
 	log.Debugw("Parsed credentials successfully", "cred", cred)
 
+	// Validate that the username in the request matches the expected username
+	if cred.Username != username {
+		log.Warnw("Authentication failed - username mismatch", errors.New("username mismatch"),
+			"expectedUsername", username,
+			"receivedUsername", cred.Username,
+		)
+		// Commenting for now. Will check the number of occurences in production before
+		// uncommenting this.
+		// _ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
+		// return false
+	}
+
 	// Check if we have a valid challenge state
 	if inviteState.challenge.Realm == "" {
 		log.Warnw("No challenge state found for authentication attempt", errors.New("missing challenge state"),
