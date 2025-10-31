@@ -575,6 +575,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	if err = c.media.SetConfig(mc); err != nil {
 		return err
 	}
+	c.stats.startRateLogger(context.Background(), c.log, defaultRateLoggerInterval, RoomSampleRate)
 
 	c.c.cmu.Lock()
 	c.c.byRemote[c.cc.Tag()] = c

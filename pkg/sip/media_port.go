@@ -56,6 +56,11 @@ type PortStats struct {
 	AudioPackets atomic.Uint64
 	AudioBytes   atomic.Uint64
 
+	AudioInFrames   atomic.Uint64
+	AudioInSamples  atomic.Uint64
+	AudioOutFrames  atomic.Uint64
+	AudioOutSamples atomic.Uint64
+
 	DTMFPackets atomic.Uint64
 	DTMFBytes   atomic.Uint64
 
@@ -562,6 +567,9 @@ func (p *MediaPort) setupOutput() error {
 
 	// Encoding pipeline (LK PCM -> SIP RTP)
 	audioOut := p.conf.Audio.Codec.EncodeRTP(p.audioOutRTP)
+	if p.stats != nil {
+		audioOut = newMediaWriterCount(audioOut, &p.stats.AudioOutFrames, &p.stats.AudioOutSamples)
+	}
 
 	if p.conf.Audio.DTMFType != 0 {
 		p.dtmfOutRTP = s.NewStream(p.conf.Audio.DTMFType, dtmf.SampleRate)
@@ -585,7 +593,11 @@ func (p *MediaPort) setupOutput() error {
 
 func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
-	audioHandler := p.conf.Audio.Codec.DecodeRTP(p.audioIn, p.conf.Audio.Type)
+	var audioWriter msdk.PCM16Writer = p.audioIn
+	if p.stats != nil {
+		audioWriter = newMediaWriterCount(audioWriter, &p.stats.AudioInFrames, &p.stats.AudioInSamples)
+	}
+	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
 	p.audioInHandler = audioHandler
 
 	mux := rtp.NewMux(nil)
