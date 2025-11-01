@@ -33,6 +33,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/media-sdk/mixer"
+
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/opus"
 )
@@ -40,6 +41,7 @@ import (
 type RoomStats struct {
 	InputPackets atomic.Uint64
 	InputBytes   atomic.Uint64
+	DTMFPackets  atomic.Uint64
 
 	MixerFrames  atomic.Uint64
 	MixerSamples atomic.Uint64
@@ -248,6 +250,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
 				case *livekit.SipDTMF:
+					r.stats.InputPackets.Add(1)
 					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
 					//       DTMF audio tone will be automatically mixed in any case.
 					r.sendDTMF(data)

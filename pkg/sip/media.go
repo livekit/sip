@@ -66,6 +66,7 @@ type PortStatsSnapshot struct {
 type RoomStatsSnapshot struct {
 	InputPackets uint64 `json:"input_packets"`
 	InputBytes   uint64 `json:"input_bytes"`
+	DTMFPackets  uint64 `json:"dtmf_packets"`
 
 	MixerSamples uint64 `json:"mixer_samples"`
 	MixerFrames  uint64 `json:"mixer_frames"`
@@ -117,6 +118,7 @@ func (s *Stats) Load() StatsSnapshot {
 		Room: RoomStatsSnapshot{
 			InputPackets:  r.InputPackets.Load(),
 			InputBytes:    r.InputBytes.Load(),
+			DTMFPackets:   r.DTMFPackets.Load(),
 			MixerSamples:  r.MixerSamples.Load(),
 			MixerFrames:   r.MixerFrames.Load(),
 			OutputSamples: r.OutputSamples.Load(),
