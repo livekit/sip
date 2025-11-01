@@ -11,12 +11,12 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20250927154350-bd99739b439b
-	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
-	github.com/livekit/protocol v1.42.3-0.20251028133809-672acf9e6a48
-	github.com/livekit/psrpc v0.7.1-0.20251021235041-bdebea7dacf4
-	github.com/livekit/server-sdk-go/v2 v2.11.4-0.20251016050252-63f7c8381817
-	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
+	github.com/livekit/media-sdk a84c3b4b6c31
+	github.com/livekit/mediatransportutil f537f0880397
+	github.com/livekit/protocol 4e56a139a2c5
+	github.com/livekit/psrpc f7f2fe125942
+	github.com/livekit/server-sdk-go/v2 v2.12.5
+	github.com/livekit/sipgo ca5b8ca7b53d
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/interceptor v0.1.41
