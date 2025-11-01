@@ -56,6 +56,13 @@ type TLSConfig struct {
 	KeyLog     string    `yaml:"key_log"`
 }
 
+type SessionTimerConfig struct {
+	DefaultExpires  int    `yaml:"default_expires"`   // Default session interval in seconds (default: 1800)
+	MinSE           int    `yaml:"min_se"`            // Minimum acceptable session interval (default: 90)
+	PreferRefresher string `yaml:"prefer_refresher"`  // Preferred refresher role: "uac" or "uas" (default: "uac")
+	UseUpdate       bool   `yaml:"use_update"`        // Use UPDATE instead of re-INVITE for refresh (default: false)
+}
+
 type Config struct {
 	Redis     *redis.RedisConfig `yaml:"redis"`      // required
 	ApiKey    string             `yaml:"api_key"`    // required (env LIVEKIT_API_KEY)
@@ -99,6 +106,9 @@ type Config struct {
 	AudioDTMF              bool    `yaml:"audio_dtmf"`
 	EnableJitterBuffer     bool    `yaml:"enable_jitter_buffer"`
 	EnableJitterBufferProb float64 `yaml:"enable_jitter_buffer_prob"`
+
+	// SessionTimer configures RFC 4028 session timer support
+	SessionTimer SessionTimerConfig `yaml:"session_timer"`
 
 	// internal
 	ServiceName string `yaml:"-"`
@@ -156,6 +166,17 @@ func (c *Config) Init() error {
 	}
 	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
 		c.MaxCpuUtilization = 0.9
+	}
+
+	// Initialize session timer defaults
+	if c.SessionTimer.DefaultExpires == 0 {
+		c.SessionTimer.DefaultExpires = 1800 // 30 minutes
+	}
+	if c.SessionTimer.MinSE == 0 {
+		c.SessionTimer.MinSE = 90 // RFC 4028 minimum
+	}
+	if c.SessionTimer.PreferRefresher == "" {
+		c.SessionTimer.PreferRefresher = "uac"
 	}
 
 	if err := c.InitLogger(); err != nil {
