@@ -37,6 +37,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
+	lksip "github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -401,6 +402,35 @@ func extractTransferErrorReason(err error) string {
 		return "unknown"
 	}
 
+	// Check for livekit.SIPStatus errors first
+	var sipStatus *livekit.SIPStatus
+	if errors.As(err, &sipStatus) {
+		switch int(sipStatus.Code) {
+		case int(lksip.StatusBadRequest):
+			return "bad_request"
+		case int(lksip.StatusUnauthorized):
+			return "unauthorized"
+		case int(lksip.StatusForbidden):
+			return "forbidden"
+		case int(lksip.StatusNotFound):
+			return "not_found"
+		case int(lksip.StatusRequestTimeout):
+			return "timeout"
+		case int(lksip.StatusBusyHere):
+			return "busy"
+		case int(lksip.StatusTemporarilyUnavailable):
+			return "unavailable"
+		case int(lksip.StatusInternalServerError):
+			return "internal_error"
+		case int(lksip.StatusNotImplemented):
+			return "not_implemented"
+		case int(lksip.StatusServiceUnavailable):
+			return "service_unavailable"
+		default:
+			return "sip_error"
+		}
+	}
+
 	// Check for psrpc errors
 	var psrpcErr psrpc.Error
 	if errors.As(err, &psrpcErr) {
@@ -428,15 +458,6 @@ func extractTransferErrorReason(err error) string {
 		return "timeout"
 	}
 
-	// Extract error message and normalize
-	errMsg := err.Error()
-	errMsg = strings.ToLower(errMsg)
-	errMsg = strings.ReplaceAll(errMsg, " ", "_")
-
-	// Limit length to avoid label cardinality explosion
-	if len(errMsg) > 50 {
-		errMsg = errMsg[:50]
-	}
-
-	return errMsg
+	// Return "other" for unknown errors
+	return "other"
 }

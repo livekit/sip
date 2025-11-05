@@ -77,6 +77,7 @@ type Monitor struct {
 	transfersTotal     *prometheus.CounterVec
 	transfersSucceeded *prometheus.CounterVec
 	transfersFailed    *prometheus.CounterVec
+	transfersActive    *prometheus.GaugeVec
 
 	cpu            *hwstats.CPUStats
 	maxUtilization float64
@@ -266,6 +267,14 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, []string{"dir", "reason"}))
 
+	m.transfersActive = mustRegister(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "transfers_active",
+		Help:        "Number of currently active SIP transfers",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir"}))
+
 	m.started.Break()
 
 	return nil
@@ -420,12 +429,15 @@ func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
 
 func (m *Monitor) TransferStarted(dir CallDir) {
 	m.transfersTotal.WithLabelValues(dir.String()).Inc()
+	m.transfersActive.WithLabelValues(dir.String()).Inc()
 }
 
 func (m *Monitor) TransferSucceeded(dir CallDir) {
 	m.transfersSucceeded.WithLabelValues(dir.String()).Inc()
+	m.transfersActive.WithLabelValues(dir.String()).Dec()
 }
 
 func (m *Monitor) TransferFailed(dir CallDir, reason string) {
 	m.transfersFailed.WithLabelValues(dir.String(), reason).Inc()
+	m.transfersActive.WithLabelValues(dir.String()).Dec()
 }
