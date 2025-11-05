@@ -575,28 +575,30 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 }
 
 type inboundCall struct {
-	s           *Server
-	log         logger.Logger
-	cc          *sipInbound
-	mon         *stats.CallMonitor
-	state       *CallState
-	extraAttrs  map[string]string
-	attrsToHdr  map[string]string
-	ctx         context.Context
-	cancel      func()
-	closeReason atomic.Pointer[ReasonHeader]
-	call        *rpc.SIPCall
-	media       *MediaPort
-	dtmf        chan dtmf.Event // buffered
-	lkRoom      *Room           // LiveKit room; only active after correct pin is entered
-	callDur     func() time.Duration
-	joinDur     func() time.Duration
-	forwardDTMF atomic.Bool
-	done        atomic.Bool
-	started     core.Fuse
-	stats       Stats
-	jitterBuf   bool
-	projectID   string
+	s            *Server
+	log          logger.Logger
+	cc           *sipInbound
+	mon          *stats.CallMonitor
+	state        *CallState
+	extraAttrs   map[string]string
+	attrsToHdr   map[string]string
+	ctx          context.Context
+	cancel       func()
+	closeReason  atomic.Pointer[ReasonHeader]
+	call         *rpc.SIPCall
+	media        *MediaPort
+	dtmf         chan dtmf.Event // buffered
+	lkRoom       *Room           // LiveKit room; only active after correct pin is entered
+	callDur      func() time.Duration
+	joinDur      func() time.Duration
+	forwardDTMF  atomic.Bool
+	done         atomic.Bool
+	started      core.Fuse
+	stats        Stats
+	jitterBuf    bool
+	projectID    string
+	sessionTimer *SessionTimer // RFC 4028 session timer
+	lastSDP      []byte        // Last SDP answer sent (for session refresh)
 }
 
 func (s *Server) newInboundCall(
@@ -643,6 +645,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	if h := req.CallID(); h != nil {
 		c.call.SipCallId = h.Value()
 	}
+
+	// Initialize session timer (RFC 4028)
+	c.initSessionTimer(req, conf)
 
 	c.cc.StartRinging()
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
@@ -735,6 +740,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			headers = AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
 		}
 		c.log.Infow("Accepting the call", "headers", headers)
+
+		// Store SDP for session refresh
+		c.lastSDP = answerData
+
 		err := c.cc.Accept(ctx, answerData, headers)
 		if errors.Is(err, errNoACK) {
 			c.log.Errorw("Call accepted, but no ACK received", err)
@@ -833,6 +842,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	})
 
 	c.started.Break()
+
+	// Start session timer after call is established
+	if c.sessionTimer != nil {
+		c.sessionTimer.Start()
+	}
 
 	var noAck = false
 	// Wait for the caller to terminate the call. Send regular keep alives
@@ -1060,6 +1074,58 @@ func (c *inboundCall) printStats(log logger.Logger) {
 	log.Infow("call statistics", "stats", c.stats.Load())
 }
 
+// initSessionTimer initializes the session timer from the incoming INVITE
+func (c *inboundCall) initSessionTimer(req *sip.Request, conf *config.Config) {
+	// Convert config format to session timer config
+	stConfig := SessionTimerConfig{
+		DefaultExpires: conf.SessionTimer.DefaultExpires,
+		MinSE:          conf.SessionTimer.MinSE,
+		UseUpdate:      conf.SessionTimer.UseUpdate,
+	}
+
+	// Parse prefer refresher string
+	switch conf.SessionTimer.PreferRefresher {
+	case "uac":
+		stConfig.PreferRefresher = RefresherUAC
+	case "uas":
+		stConfig.PreferRefresher = RefresherUAS
+	default:
+		stConfig.PreferRefresher = RefresherUAC
+	}
+
+	c.sessionTimer = NewSessionTimer(stConfig, false, c.log) // isUAC=false for inbound
+	c.sessionTimer.SetContext(c.ctx)
+
+	// Set up callbacks
+	c.sessionTimer.SetCallbacks(
+		func(ctx context.Context) error {
+			return c.sendSessionRefresh(ctx)
+		},
+		func(ctx context.Context) error {
+			c.log.Warnw("Session timer expired, terminating call", nil)
+			c.closeWithTimeout()
+			return nil
+		},
+	)
+
+	// Share timer with sipInbound for response generation
+	c.cc.sessionTimer = c.sessionTimer
+
+	// Negotiate session timer parameters from INVITE
+	_, _, _, err := c.sessionTimer.NegotiateInvite(req)
+	if err != nil {
+		c.log.Warnw("Session timer negotiation failed, timer disabled", err)
+	}
+}
+
+// sendSessionRefresh sends a session refresh (re-INVITE or UPDATE)
+func (c *inboundCall) sendSessionRefresh(ctx context.Context) error {
+	c.log.Infow("Sending session refresh")
+
+	// Use the sipInbound layer to send the refresh with the same SDP
+	return c.cc.sendSessionRefresh(ctx, c.lastSDP)
+}
+
 // close should only be called from handleInvite.
 func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 	if !c.done.CompareAndSwap(false, true) {
@@ -1082,6 +1148,12 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	c.closeMedia()
 	c.cc.CloseWithStatus(sipCode, sipStatus)
+
+	// Stop session timer if active
+	if c.sessionTimer != nil {
+		c.sessionTimer.Stop()
+	}
+
 	if c.callDur != nil {
 		c.callDur()
 	}
@@ -1374,6 +1446,7 @@ type sipInbound struct {
 	ringing         chan struct{}
 	acked           core.Fuse
 	setHeaders      setHeadersFunc
+	sessionTimer    *SessionTimer // Session timer reference
 }
 
 func (c *sipInbound) ValidateInvite() error {
@@ -1572,6 +1645,15 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 
 	c.addExtraHeaders(r)
 
+	// Add session timer headers if negotiated
+	if c.sessionTimer != nil {
+		sessionExpires := c.sessionTimer.GetSessionExpires()
+		refresher := c.sessionTimer.GetRefresher()
+		if sessionExpires > 0 {
+			c.sessionTimer.AddHeadersToResponse(r, sessionExpires, refresher)
+		}
+	}
+
 	r.AppendHeader(&contentTypeHeaderSDP)
 	for k, v := range headers {
 		r.AppendHeader(sip.NewHeader(k, v))
@@ -1685,6 +1767,85 @@ func (c *sipInbound) setCSeq(req *sip.Request) {
 	setCSeq(req, c.nextRequestCSeq)
 
 	c.nextRequestCSeq++
+}
+
+// sendSessionRefresh sends a mid-dialog re-INVITE to refresh the session
+func (c *sipInbound) sendSessionRefresh(ctx context.Context, sdpOffer []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.inviteOk == nil || c.invite == nil {
+		return errors.New("call not established")
+	}
+
+	ctx, span := tracer.Start(ctx, "sipInbound.sendSessionRefresh")
+	defer span.End()
+
+	// Create re-INVITE request with the same dialog parameters
+	req := sip.NewRequest(sip.INVITE, c.invite.Recipient)
+
+	// Copy essential headers from original INVITE
+	req.RemoveHeader("Call-ID")
+	if callID := c.invite.CallID(); callID != nil {
+		req.AppendHeader(callID)
+	}
+
+	// From and To headers (maintaining tags)
+	req.AppendHeader(c.from)
+	req.AppendHeader(c.to)
+
+	// Contact
+	if c.contact != nil {
+		req.AppendHeader(c.contact)
+	}
+
+	// Set new CSeq
+	c.setCSeq(req)
+
+	// Add SDP body
+	if sdpOffer != nil && len(sdpOffer) > 0 {
+		req.SetBody(sdpOffer)
+		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
+
+	// Add session timer headers if active
+	if c.sessionTimer != nil {
+		c.sessionTimer.AddHeadersToRequest(req)
+	}
+
+	// Add custom headers
+	if c.setHeaders != nil {
+		for k, v := range c.setHeaders(nil) {
+			req.AppendHeader(sip.NewHeader(k, v))
+		}
+	}
+
+	// Swap src/dst for client-like behavior
+	c.swapSrcDst(req)
+
+	// Send the request and wait for response
+	tx, err := c.s.sipSrv.TransactionLayer().Request(req)
+	if err != nil {
+		return fmt.Errorf("failed to send session refresh: %w", err)
+	}
+	defer tx.Terminate()
+
+	// Wait for response
+	resp, err := sipResponse(ctx, tx, nil, nil)
+	if err != nil {
+		return fmt.Errorf("session refresh failed: %w", err)
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return fmt.Errorf("session refresh rejected: %d %s", resp.StatusCode, resp.Reason)
+	}
+
+	c.log.Infow("Session refresh successful")
+
+	// Send ACK
+	ack := sip.NewAckRequest(req, resp, nil)
+	c.swapSrcDst(ack)
+	return c.s.sipSrv.TransportLayer().WriteMsg(ack)
 }
 
 func (c *sipInbound) sendBye() {

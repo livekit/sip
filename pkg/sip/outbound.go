@@ -66,17 +66,19 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c         *Client
-	log       logger.Logger
-	state     *CallState
-	cc        *sipOutbound
-	media     *MediaPort
-	started   core.Fuse
-	stopped   core.Fuse
-	closing   core.Fuse
-	stats     Stats
-	jitterBuf bool
-	projectID string
+	c            *Client
+	log          logger.Logger
+	state        *CallState
+	cc           *sipOutbound
+	media        *MediaPort
+	started      core.Fuse
+	stopped      core.Fuse
+	closing      core.Fuse
+	stats        Stats
+	jitterBuf    bool
+	projectID    string
+	sessionTimer *SessionTimer // RFC 4028 session timer
+	lastSDP      []byte        // Last SDP offer sent (for session refresh)
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
@@ -149,6 +151,9 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
 
+	// Initialize session timer (RFC 4028)
+	call.initSessionTimer(ctx, conf)
+
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
 	c.activeCalls[id] = call
@@ -203,6 +208,12 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 	})
+
+	// Start session timer after call is established
+	if c.sessionTimer != nil {
+		c.sessionTimer.Start()
+	}
+
 	return nil
 }
 
@@ -270,6 +281,52 @@ func (c *outboundCall) closeWithTimeout() {
 	c.close(psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"), callDropped, "media-timeout", livekit.DisconnectReason_UNKNOWN_REASON)
 }
 
+// initSessionTimer initializes the session timer for outbound calls
+func (c *outboundCall) initSessionTimer(ctx context.Context, conf *config.Config) {
+	// Convert config format to session timer config
+	stConfig := SessionTimerConfig{
+		DefaultExpires: conf.SessionTimer.DefaultExpires,
+		MinSE:          conf.SessionTimer.MinSE,
+		UseUpdate:      conf.SessionTimer.UseUpdate,
+	}
+
+	// Parse prefer refresher string
+	switch conf.SessionTimer.PreferRefresher {
+	case "uac":
+		stConfig.PreferRefresher = RefresherUAC
+	case "uas":
+		stConfig.PreferRefresher = RefresherUAS
+	default:
+		stConfig.PreferRefresher = RefresherUAC
+	}
+
+	c.sessionTimer = NewSessionTimer(stConfig, true, c.log) // isUAC=true for outbound
+	c.sessionTimer.SetContext(ctx)
+
+	// Set up callbacks
+	c.sessionTimer.SetCallbacks(
+		func(ctx context.Context) error {
+			return c.sendSessionRefresh(ctx)
+		},
+		func(ctx context.Context) error {
+			c.log.Warnw("Session timer expired, terminating call", nil)
+			c.closeWithTimeout()
+			return nil
+		},
+	)
+
+	// Share timer with sipOutbound for request generation
+	c.cc.sessionTimer = c.sessionTimer
+}
+
+// sendSessionRefresh sends a session refresh (re-INVITE or UPDATE)
+func (c *outboundCall) sendSessionRefresh(ctx context.Context) error {
+	c.log.Infow("Sending session refresh")
+
+	// Use the sipOutbound layer to send the refresh with the same SDP
+	return c.cc.sendSessionRefresh(ctx, c.lastSDP)
+}
+
 func (c *outboundCall) printStats() {
 	c.log.Infow("call statistics", "stats", c.stats.Load())
 }
@@ -297,6 +354,11 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 
 		_ = c.lkRoom.CloseWithReason(status.DisconnectReason())
 		c.lkRoomIn = nil
+
+		// Stop session timer if active
+		if c.sessionTimer != nil {
+			c.sessionTimer.Stop()
+		}
 
 		c.stopSIP(description)
 
@@ -528,6 +590,10 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Store SDP offer for session refresh
+	c.lastSDP = sdpOfferData
+
 	c.mon.SDPSize(len(sdpOfferData), true)
 	c.log.Debugw("SDP offer", "sdp", string(sdpOfferData))
 	joinDur := c.mon.JoinDur()
@@ -683,11 +749,12 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, 
 }
 
 type sipOutbound struct {
-	log     logger.Logger
-	c       *Client
-	id      LocalTag
-	from    *sip.FromHeader
-	contact *sip.ContactHeader
+	log          logger.Logger
+	c            *Client
+	id           LocalTag
+	from         *sip.FromHeader
+	contact      *sip.ContactHeader
+	sessionTimer *SessionTimer // Session timer reference
 
 	mu         sync.RWMutex
 	tag        RemoteTag
@@ -867,6 +934,13 @@ authLoop:
 		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}
 
+	// Negotiate session timer from response
+	if c.sessionTimer != nil {
+		if err := c.sessionTimer.NegotiateResponse(resp); err != nil {
+			c.log.Warnw("Failed to negotiate session timer from response", err)
+		}
+	}
+
 	return c.inviteOk.Body(), nil
 }
 
@@ -904,6 +978,11 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
 	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 
+	// Add session timer headers if configured
+	if c.sessionTimer != nil {
+		c.sessionTimer.AddHeadersToRequest(req)
+	}
+
 	if authHeader != "" {
 		req.AppendHeader(sip.NewHeader(authHeaderName, authHeader))
 	}
@@ -933,6 +1012,84 @@ func (c *sipOutbound) setCSeq(req *sip.Request) {
 	setCSeq(req, c.nextCSeq)
 
 	c.nextCSeq++
+}
+
+// sendSessionRefresh sends a mid-dialog re-INVITE to refresh the session
+func (c *sipOutbound) sendSessionRefresh(ctx context.Context, sdpOffer []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.invite == nil || c.inviteOk == nil {
+		return errors.New("call not established")
+	}
+
+	ctx, span := tracer.Start(ctx, "sipOutbound.sendSessionRefresh")
+	defer span.End()
+
+	// Create re-INVITE request using the established dialog
+	req := sip.NewRequest(sip.INVITE, c.invite.Recipient)
+
+	// Copy essential headers from original INVITE
+	req.RemoveHeader("Call-ID")
+	if callID := c.invite.CallID(); callID != nil {
+		req.AppendHeader(callID)
+	}
+
+	// From and To headers (maintaining tags)
+	req.AppendHeader(c.from)
+	req.AppendHeader(c.to)
+
+	// Contact
+	if c.contact != nil {
+		req.AppendHeader(c.contact)
+	}
+
+	// Set new CSeq
+	c.setCSeq(req)
+
+	// Add SDP body
+	if sdpOffer != nil && len(sdpOffer) > 0 {
+		req.SetBody(sdpOffer)
+		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	}
+
+	// Add session timer headers if active
+	if c.sessionTimer != nil {
+		c.sessionTimer.AddHeadersToRequest(req)
+	}
+
+	// Add User-Agent
+	req.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+
+	// Add custom headers
+	if c.getHeaders != nil {
+		for k, v := range c.getHeaders(nil) {
+			req.AppendHeader(sip.NewHeader(k, v))
+		}
+	}
+
+	// Send the request and wait for response
+	tx, err := c.c.sipCli.TransactionRequest(req)
+	if err != nil {
+		return fmt.Errorf("failed to send session refresh: %w", err)
+	}
+	defer tx.Terminate()
+
+	// Wait for response
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), nil)
+	if err != nil {
+		return fmt.Errorf("session refresh failed: %w", err)
+	}
+
+	if resp.StatusCode != sip.StatusOK {
+		return fmt.Errorf("session refresh rejected: %d %s", resp.StatusCode, resp.Reason)
+	}
+
+	c.log.Infow("Session refresh successful")
+
+	// Send ACK
+	ack := sip.NewAckRequest(req, resp, nil)
+	return c.c.sipCli.WriteRequest(ack)
 }
 
 func (c *sipOutbound) sendBye() {
