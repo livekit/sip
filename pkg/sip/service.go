@@ -37,7 +37,6 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
-	lksip "github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -335,7 +334,7 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 		s.mon.TransferStarted(stats.Outbound)
 		err := out.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
-			s.mon.TransferFailed(stats.Outbound, extractTransferErrorReason(err))
+			s.mon.TransferFailed(stats.Outbound, extractTransferErrorReason(err), true)
 			return err
 		}
 		s.mon.TransferSucceeded(stats.Outbound)
@@ -350,7 +349,7 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 		s.mon.TransferStarted(stats.Inbound)
 		err := in.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
-			s.mon.TransferFailed(stats.Inbound, extractTransferErrorReason(err))
+			s.mon.TransferFailed(stats.Inbound, extractTransferErrorReason(err), true)
 			return err
 		}
 		s.mon.TransferSucceeded(stats.Inbound)
@@ -358,7 +357,7 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	}
 
 	err := psrpc.NewErrorf(psrpc.NotFound, "unknown call")
-	s.mon.TransferFailed(stats.Inbound, "unknown_call")
+	s.mon.TransferFailed(stats.Inbound, "unknown_call", false)
 	return err
 }
 
@@ -405,30 +404,9 @@ func extractTransferErrorReason(err error) string {
 	// Check for livekit.SIPStatus errors first
 	var sipStatus *livekit.SIPStatus
 	if errors.As(err, &sipStatus) {
-		switch int(sipStatus.Code) {
-		case int(lksip.StatusBadRequest):
-			return "bad_request"
-		case int(lksip.StatusUnauthorized):
-			return "unauthorized"
-		case int(lksip.StatusForbidden):
-			return "forbidden"
-		case int(lksip.StatusNotFound):
-			return "not_found"
-		case int(lksip.StatusRequestTimeout):
-			return "timeout"
-		case int(lksip.StatusBusyHere):
-			return "busy"
-		case int(lksip.StatusTemporarilyUnavailable):
-			return "unavailable"
-		case int(lksip.StatusInternalServerError):
-			return "internal_error"
-		case int(lksip.StatusNotImplemented):
-			return "not_implemented"
-		case int(lksip.StatusServiceUnavailable):
-			return "service_unavailable"
-		default:
-			return "sip_error"
-		}
+		// Use ShortName() to get the status code name without "SIP_STATUS_" prefix
+		// and convert to lowercase for metric labels
+		return strings.ToLower(sipStatus.Code.ShortName())
 	}
 
 	// Check for psrpc errors

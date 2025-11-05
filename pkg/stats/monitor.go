@@ -437,7 +437,9 @@ func (m *Monitor) TransferSucceeded(dir CallDir) {
 	m.transfersActive.WithLabelValues(dir.String()).Dec()
 }
 
-func (m *Monitor) TransferFailed(dir CallDir, reason string) {
+func (m *Monitor) TransferFailed(dir CallDir, reason string, changeActive bool) {
 	m.transfersFailed.WithLabelValues(dir.String(), reason).Inc()
-	m.transfersActive.WithLabelValues(dir.String()).Dec()
+	if changeActive {
+		m.transfersActive.WithLabelValues(dir.String()).Dec()
+	}
 }
