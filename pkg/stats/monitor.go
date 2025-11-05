@@ -60,20 +60,23 @@ const (
 type Monitor struct {
 	nodeID string
 
-	inviteReqRaw    prometheus.Counter
-	inviteReq       *prometheus.CounterVec
-	inviteAccept    *prometheus.CounterVec
-	inviteErr       *prometheus.CounterVec
-	callsActive     *prometheus.GaugeVec
-	callsTerminated *prometheus.CounterVec
-	packetsRTP      *prometheus.CounterVec
-	durSession      *prometheus.HistogramVec
-	durCall         *prometheus.HistogramVec
-	durJoin         *prometheus.HistogramVec
-	durCheck        *prometheus.HistogramVec
-	cpuLoad         prometheus.Gauge
-	sdpSize         *prometheus.HistogramVec
-	nodeAvailable   prometheus.GaugeFunc
+	inviteReqRaw       prometheus.Counter
+	inviteReq          *prometheus.CounterVec
+	inviteAccept       *prometheus.CounterVec
+	inviteErr          *prometheus.CounterVec
+	callsActive        *prometheus.GaugeVec
+	callsTerminated    *prometheus.CounterVec
+	packetsRTP         *prometheus.CounterVec
+	durSession         *prometheus.HistogramVec
+	durCall            *prometheus.HistogramVec
+	durJoin            *prometheus.HistogramVec
+	durCheck           *prometheus.HistogramVec
+	cpuLoad            prometheus.Gauge
+	sdpSize            *prometheus.HistogramVec
+	nodeAvailable      prometheus.GaugeFunc
+	transfersTotal     *prometheus.CounterVec
+	transfersSucceeded *prometheus.CounterVec
+	transfersFailed    *prometheus.CounterVec
 
 	cpu            *hwstats.CPUStats
 	maxUtilization float64
@@ -239,6 +242,30 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID, "node_type": "SIP"},
 	}))
 
+	m.transfersTotal = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "transfers_total",
+		Help:        "Total number of SIP transfer attempts",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir"}))
+
+	m.transfersSucceeded = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "transfers_succeeded_total",
+		Help:        "Total number of successful SIP transfers",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir"}))
+
+	m.transfersFailed = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "transfers_failed_total",
+		Help:        "Total number of failed SIP transfers",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "reason"}))
+
 	m.started.Break()
 
 	return nil
@@ -389,4 +416,16 @@ func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
 		typ = "offer"
 	}
 	c.m.sdpSize.WithLabelValues(typ).Observe(float64(sz))
+}
+
+func (m *Monitor) TransferStarted(dir CallDir) {
+	m.transfersTotal.WithLabelValues(dir.String()).Inc()
+}
+
+func (m *Monitor) TransferSucceeded(dir CallDir) {
+	m.transfersSucceeded.WithLabelValues(dir.String()).Inc()
+}
+
+func (m *Monitor) TransferFailed(dir CallDir, reason string) {
+	m.transfersFailed.WithLabelValues(dir.String(), reason).Inc()
 }
