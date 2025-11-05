@@ -148,7 +148,7 @@ func (s *Server) cleanupInvites() {
 			s.imu.Lock()
 			for it := s.inviteTimeoutQueue.IterateRemoveAfter(inviteCredentialValidity); it.Next(); {
 				key := it.Item().Value
-				delete(s.inProgressInvites, *key)
+				delete(s.inProgressInvites, key)
 			}
 			s.imu.Unlock()
 		}
@@ -161,16 +161,22 @@ func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
 		toTag:     toTag,
 		fromTag:   fromTag,
 	}
-	s.imu.Lock()
-	defer s.imu.Unlock()
-	is, ok := s.inProgressInvites[key]
-	if ok {
-		return is
-	}
-	is = &inProgressInvite{sipCallID: sipCallID}
-	s.inProgressInvites[key] = is
-	s.inviteTimeoutQueue.Reset(&utils.TimeoutQueueItem[*dialogKey]{Value: &key})
 
+	s.imu.Lock()
+	is, exists := s.inProgressInvites[key]
+	s.imu.Unlock()
+	if !exists {
+		s.imu.Lock()
+		is, exists = s.inProgressInvites[key]
+		if !exists {
+			is = &inProgressInvite{sipCallID: sipCallID, timeoutLink: utils.TimeoutQueueItem[dialogKey]{Value: key}}
+			s.inProgressInvites[key] = is
+		}
+		s.imu.Unlock()
+	}
+
+	// Always reset the timeout link, whether just created or not
+	s.inviteTimeoutQueue.Reset(&is.timeoutLink)
 	return is
 }
 

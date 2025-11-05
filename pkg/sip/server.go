@@ -24,7 +24,6 @@ import (
 	"net"
 	"net/netip"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -135,19 +134,18 @@ type dialogKey struct {
 }
 
 type Server struct {
-	log          logger.Logger
-	mon          *stats.Monitor
-	region       string
-	sipSrv       *sipgo.Server
-	getIOClient  GetIOInfoClient
-	getRoom      GetRoomFunc
-	sipListeners []io.Closer
-	sipUnhandled RequestHandler
+	log                logger.Logger
+	mon                *stats.Monitor
+	region             string
+	sipSrv             *sipgo.Server
+	getIOClient        GetIOInfoClient
+	getRoom            GetRoomFunc
+	sipListeners       []io.Closer
+	sipUnhandled       RequestHandler
+	inviteTimeoutQueue utils.TimeoutQueue[dialogKey]
 
-	imu                  sync.Mutex
-	inProgressInvites    map[dialogKey]*inProgressInvite
-	inviteTimeoutQueue   utils.TimeoutQueue[*dialogKey]
-	isCleanupTaskRunning atomic.Bool
+	imu               sync.Mutex
+	inProgressInvites map[dialogKey]*inProgressInvite
 
 	closing     core.Fuse
 	cmu         sync.RWMutex
@@ -168,9 +166,10 @@ type Server struct {
 }
 
 type inProgressInvite struct {
-	sipCallID string
-	challenge digest.Challenge
-	lkCallID  string // SCL_* LiveKit call ID assigned to this dialog
+	sipCallID   string
+	challenge   digest.Challenge
+	lkCallID    string // SCL_* LiveKit call ID assigned to this dialog
+	timeoutLink utils.TimeoutQueueItem[dialogKey]
 }
 
 type ServerOption func(s *Server)
