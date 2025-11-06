@@ -99,7 +99,7 @@ require (
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0 // indirect
-	github.com/opencontainers/runc v1.2.3 // indirect
+	github.com/opencontainers/runc v1.2.8 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v3 v3.0.7 // indirect
 	github.com/pion/ice/v4 v4.0.10 // indirect
