@@ -73,6 +73,12 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if log == nil {
 		log = logger.GetLogger()
 	}
+	if conf.MediaTimeout <= 0 {
+		conf.MediaTimeout = defaultMediaTimeout
+	}
+	if conf.MediaTimeoutInitial <= 0 {
+		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
+	}
 	s := &Service{
 		conf:             conf,
 		log:              log,
