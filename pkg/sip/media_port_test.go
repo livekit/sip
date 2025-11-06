@@ -198,14 +198,14 @@ func TestMediaPort(t *testing.T) {
 
 					log := logger.GetLogger()
 
-					m1, err := NewMediaPortWith(log.WithName("one"), nil, c1, &MediaOptions{
+					m1, err := NewMediaPortWith(1, log.WithName("one"), nil, c1, &MediaOptions{
 						IP:    newIP("1.1.1.1"),
 						Ports: rtcconfig.PortRange{Start: 10000},
 					}, tconf.Rate)
 					require.NoError(t, err)
 					defer m1.Close()
 
-					m2, err := NewMediaPortWith(log.WithName("two"), nil, c2, &MediaOptions{
+					m2, err := NewMediaPortWith(2, log.WithName("two"), nil, c2, &MediaOptions{
 						IP:    newIP("2.2.2.2"),
 						Ports: rtcconfig.PortRange{Start: 20000},
 					}, tconf.Rate)
@@ -348,11 +348,11 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 
 	var err error
 
-	m1, err = NewMediaPortWith(log.WithName("one"), nil, c1, opt1, rate)
+	m1, err = NewMediaPortWith(1, log.WithName("one"), nil, c1, opt1, rate)
 	require.NoError(t, err)
 	t.Cleanup(m1.Close)
 
-	m2, err = NewMediaPortWith(log.WithName("two"), nil, c2, opt2, rate)
+	m2, err = NewMediaPortWith(2, log.WithName("two"), nil, c2, opt2, rate)
 	require.NoError(t, err)
 	t.Cleanup(m2.Close)
 

@@ -35,6 +35,7 @@ import (
 	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/utils/traceid"
 
 	"github.com/livekit/sip/pkg/stats"
 )
@@ -132,11 +133,11 @@ type MediaOptions struct {
 	EnableJitterBuffer  bool
 }
 
-func NewMediaPort(log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
-	return NewMediaPortWith(log, mon, nil, opts, sampleRate)
+func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+	return NewMediaPortWith(tid, log, mon, nil, opts, sampleRate)
 }
 
-func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
 	if opts == nil {
 		opts = &MediaOptions{}
 	}
@@ -158,6 +159,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	}
 	mediaTimeout := make(chan struct{})
 	p := &MediaPort{
+		tid:              tid,
 		log:              log,
 		opts:             opts,
 		mon:              mon,
@@ -172,7 +174,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	}
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
 	p.timeoutGeneral.Store(&opts.MediaTimeout)
-	go p.timeoutLoop(func() {
+	go p.timeoutLoop(tid, func() {
 		close(mediaTimeout)
 	})
 	p.log.Debugw("listening for media on UDP", "port", p.Port())
@@ -181,6 +183,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 
 // MediaPort combines all functionality related to sending and accepting SIP media.
 type MediaPort struct {
+	tid              traceid.ID
 	log              logger.Logger
 	opts             *MediaOptions
 	mon              *stats.CallMonitor
@@ -221,6 +224,7 @@ func (p *MediaPort) EnableOut() {
 }
 
 func (p *MediaPort) disableTimeout() {
+	p.log.Infow("media timeout disabled")
 	p.timeoutStart.Store(nil)
 }
 
@@ -256,7 +260,8 @@ func (p *MediaPort) SetTimeout(initial, general time.Duration) {
 	p.enableTimeout(initial, general)
 }
 
-func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
+func (p *MediaPort) timeoutLoop(tid traceid.ID, timeoutCallback func()) {
+	defer p.log.Infow("media timeout loop stopped")
 	ticker := time.NewTicker(p.opts.MediaTimeout)
 	defer ticker.Stop()
 
@@ -264,6 +269,7 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 		lastPackets  uint64
 		startPackets uint64
 		lastTime     time.Time
+		lastLog      = time.Now()
 	)
 	for {
 		select {
@@ -273,16 +279,45 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			ticker.Reset(tick)
 			startPackets = p.packetCount.Load()
 			lastTime = time.Now()
+			lastLog = lastTime
 			p.log.Infow("media timeout reset", "packets", startPackets, "tick", tick)
 		case <-ticker.C:
+			log := p.log
 			curPackets := p.packetCount.Load()
+			startPtr := p.timeoutStart.Load()
+			var startTime time.Time
+			if startPtr != nil {
+				startTime = *startPtr
+			}
+			verbose := false
+			if now := time.Now(); now.Sub(lastLog) > time.Hour {
+				verbose = true
+				lastLog = now
+				log = log.WithValues(
+					"startPackets", startPackets,
+					"packets", curPackets,
+					"lastPackets", lastPackets,
+					"sinceLast", time.Since(lastTime),
+					"sinceStart", time.Since(startTime),
+				)
+				if curPackets == startPackets {
+					log.Warnw("media timout is idle for a long time", nil)
+				} else {
+					log.Infow("media timeout stats")
+				}
+			}
 			if curPackets != lastPackets {
 				lastPackets = curPackets
 				lastTime = time.Now()
+				if verbose {
+					log.Infow("got a new packet")
+				}
 				continue // wait for the next tick
 			}
-			startPtr := p.timeoutStart.Load()
 			if startPtr == nil {
+				if verbose {
+					log.Infow("timeout is disabled")
+				}
 				continue // timeout disabled
 			}
 			isInitial := lastPackets == startPackets
@@ -310,6 +345,9 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 
 			// Ticker is allowed to fire earlier than the full timeout interval. Skip if it's not a full timeout yet.
 			if since+timeout/10 < timeout {
+				if verbose {
+					log.Infow("too early to trigger", "since", since, "timeout", timeout)
+				}
 				continue
 			}
 			p.log.Infow("triggering media timeout",
@@ -456,14 +494,14 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 	p.conf = c
 	p.sess = sess
 
-	if err = p.setupOutput(); err != nil {
+	if err = p.setupOutput(p.tid); err != nil {
 		return err
 	}
 	p.setupInput()
 	return nil
 }
 
-func (p *MediaPort) rtpLoop(sess rtp.Session) {
+func (p *MediaPort) rtpLoop(tid traceid.ID, sess rtp.Session) {
 	// Need a loop to process all incoming packets.
 	for {
 		r, ssrc, err := sess.AcceptStream()
@@ -477,11 +515,11 @@ func (p *MediaPort) rtpLoop(sess rtp.Session) {
 		p.mediaReceived.Break()
 		log := p.log.WithValues("ssrc", ssrc)
 		log.Infow("accepting RTP stream")
-		go p.rtpReadLoop(log, r)
+		go p.rtpReadLoop(tid, log, r)
 	}
 }
 
-func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
+func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStream) {
 	const maxErrors = 50 // 1 sec, given 20 ms frames
 	buf := make([]byte, rtp.MTUSize+1)
 	overflow := false
@@ -546,11 +584,11 @@ func (p *MediaPort) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 }
 
 // Must be called holding the lock
-func (p *MediaPort) setupOutput() error {
+func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
 	}
-	go p.rtpLoop(p.sess)
+	go p.rtpLoop(tid, p.sess)
 	w, err := p.sess.OpenWriteStream()
 	if err != nil {
 		return err

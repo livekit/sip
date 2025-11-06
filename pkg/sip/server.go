@@ -35,6 +35,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -109,6 +110,7 @@ type CallDispatch struct {
 }
 
 type CallIdentifier struct {
+	TraceID   traceid.ID
 	ProjectID string
 	CallID    string
 	SipCallID string
