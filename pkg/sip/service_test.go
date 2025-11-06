@@ -623,3 +623,162 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		t.Logf("Second request got status: %d", res2.StatusCode)
 	}
 }
+
+// When a cancel request is sent, we expect two responses, 200 (for CANCEL), and 487 (for INVITE).
+// This test makes sure the 487 response is received (can't test CANCEL-200)
+func TestCANCELSendsBothResponses(t *testing.T) {
+	const (
+		fromUser = "caller@example.com"
+		toUser   = "callee@example.com"
+	)
+
+	// Handler that accepts calls and makes them ring (so we can cancel during ringing)
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthAccept}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			// Accept the call but don't complete immediately - let it ring
+			// This simulates a call that's ringing when CANCEL is received
+			return CallDispatch{
+				Result: DispatchAccept,
+				Room: RoomConfig{
+					RoomName: "test-room",
+					Participant: ParticipantConfig{
+						Identity: "test-participant",
+					},
+				},
+				RingingTimeout: 30 * time.Second, // Long timeout so call stays ringing
+			}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// No-op for tests
+		},
+	}
+
+	// Create service
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	log := logger.LogRLogger(logr.Discard())
+	s, err := NewService("", &config.Config{
+		HideInboundPort:    false,
+		SIPPort:            sipPort,
+		SIPPortListen:      sipPort,
+		RTPPort:            rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+		SIPRingingInterval: 1 * time.Second,
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
+
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+
+	// Create SIP client using sipgo
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(fromUser),
+	)
+	require.NoError(t, err)
+
+	sipClient, err := sipgo.NewClient(sipUserAgent)
+	require.NoError(t, err)
+
+	// Create SDP offer
+	offer, err := sdp.NewOffer(localIP, 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+
+	// Create INVITE request
+	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
+	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipient)
+	inviteRequest.SetDestination(sipServerAddress)
+	inviteRequest.SetBody(offerData)
+	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+
+	// Send INVITE
+	tx, err := sipClient.TransactionRequest(inviteRequest)
+	require.NoError(t, err)
+	t.Cleanup(tx.Terminate)
+
+	// Wait for 100 Trying
+	res100 := getResponseOrFail(t, tx)
+	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "Should receive 100 Trying")
+
+	// Wait for 180 Ringing (call is now ringing)
+	res180 := getResponseOrFail(t, tx)
+	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "Should receive 180 Ringing")
+
+	// Now send CANCEL
+	err = tx.Cancel()
+	require.NoError(t, err, "Should be able to send CANCEL")
+
+	// On-the-wire there should be two responses after CANCEL:
+	// 1. 200 OK response to the CANCEL request (CSeq method = CANCEL)
+	// 2. 487 Request Terminated response to the original INVITE (CSeq method = INVITE)
+	//    This is the critical one - we must receive it
+	// However, the 200 OK response to CANCEL will not come through tx.Responses().
+	// Sipgo treats both INVITE and CANCEL as the same transaction, and has special handling
+	// to swallow the 200 OK response to CANCEL, so it can't look like the INVITE got the 200.
+
+	// Collect responses until we get the final 487 or transaction completes
+	var responses []*sip.Response
+	var invite487Received bool
+
+	// Wait for responses with a timeout
+	timeout := time.After(time.Second)
+	transactionDone := false
+
+	// Collect responses until we get 487 or timeout
+	for !invite487Received && !transactionDone {
+		select {
+		case res := <-tx.Responses():
+			responses = append(responses, res)
+			cseq := res.CSeq()
+
+			// Debug: log all responses to understand what we're receiving
+			cseqMethod := "nil"
+			if cseq != nil {
+				cseqMethod = string(cseq.MethodName)
+			}
+			t.Logf("Received response: StatusCode=%d, CSeq method=%s", res.StatusCode, cseqMethod)
+
+			// Check if this is the 487 response to INVITE
+			if res.StatusCode == sip.StatusCode(487) {
+				// Verify this is for the INVITE (CSeq method should be INVITE)
+				require.NotNil(t, cseq, "487 response should have CSeq header")
+				if cseq != nil {
+					require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
+					invite487Received = true
+				}
+			}
+
+		case <-tx.Done():
+			// Transaction completed, check if we got the 487 response
+			transactionDone = true
+
+		case <-timeout:
+			// Log all received responses for debugging
+			t.Logf("Timeout after receiving %d responses", len(responses))
+			for i, res := range responses {
+				cseq := res.CSeq()
+				cseqMethod := "nil"
+				if cseq != nil {
+					cseqMethod = string(cseq.MethodName)
+				}
+				t.Logf("  Response %d: StatusCode=%d, CSeq method=%s", i+1, res.StatusCode, cseqMethod)
+			}
+			t.Fatal("Timeout waiting for 487 Request Terminated response after CANCEL")
+		}
+	}
+
+	// Verify we received the critical 487 response
+	require.True(t, invite487Received, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
+}
