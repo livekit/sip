@@ -229,6 +229,15 @@ func (p *MediaPort) disableTimeout() {
 }
 
 func (p *MediaPort) enableTimeout(initial, general time.Duration) {
+	if initial <= 0 || general <= 0 {
+		p.log.Warnw("attempting to set zero media timeout", nil, "initial", initial, "timeout", general)
+		if initial <= 0 {
+			initial = defaultMediaTimeoutInitial
+		}
+		if general <= 0 {
+			general = defaultMediaTimeout
+		}
+	}
 	p.timeoutInitial.Store(&initial)
 	p.timeoutGeneral.Store(&general)
 	select {
@@ -253,10 +262,6 @@ func (p *MediaPort) EnableTimeout(enabled bool) {
 }
 
 func (p *MediaPort) SetTimeout(initial, general time.Duration) {
-	if initial <= 0 {
-		p.disableTimeout()
-		return
-	}
 	p.enableTimeout(initial, general)
 }
 
