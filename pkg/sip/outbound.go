@@ -28,7 +28,6 @@ import (
 	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
-
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/tones"
@@ -36,6 +35,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/protocol/utils/guid"
+	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
@@ -67,8 +67,10 @@ type sipOutboundConfig struct {
 
 type outboundCall struct {
 	c         *Client
+	tid       traceid.ID
 	log       logger.Logger
 	state     *CallState
+	callStart time.Time
 	cc        *sipOutbound
 	media     *MediaPort
 	started   core.Fuse
@@ -85,7 +87,7 @@ type outboundCall struct {
 	sipConf  sipOutboundConfig
 }
 
-func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
+func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -102,9 +104,11 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	}
 	call := &outboundCall{
 		c:         c,
+		tid:       tid,
 		log:       log,
 		sipConf:   sipConf,
 		state:     state,
+		callStart: time.Now(),
 		jitterBuf: jitterBuf,
 		projectID: projectID,
 	}
@@ -129,7 +133,7 @@ func (c *Client) newCall(ctx context.Context, conf *config.Config, log logger.Lo
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
 
-	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
+	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
 		IP:                  c.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
@@ -193,9 +197,9 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 
 	defer c.ensureClosed(ctx)
 
-	err := c.ConnectSIP(ctx)
+	err := c.connectSIP(ctx, c.tid)
 	if err != nil {
-		return err // ConnectSIP updates the error code on the callInfo
+		return err // connectSIP updates the error code on the callInfo
 	}
 
 	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
@@ -207,6 +211,9 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 }
 
 func (c *outboundCall) WaitClose(ctx context.Context) error {
+	return c.waitClose(ctx, c.tid)
+}
+func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
 
@@ -271,7 +278,7 @@ func (c *outboundCall) closeWithTimeout() {
 }
 
 func (c *outboundCall) printStats() {
-	c.log.Infow("call statistics", "stats", c.stats.Load())
+	c.log.Infow("call statistics", "stats", c.stats.Load(), "durMin", int(time.Since(c.callStart).Minutes()))
 }
 
 func (c *outboundCall) close(err error, status CallStatus, description string, reason livekit.DisconnectReason) {
@@ -311,11 +318,14 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
-			go c.c.handler.OnSessionEnd(context.Background(), &CallIdentifier{
-				ProjectID: c.projectID,
-				CallID:    c.state.callInfo.CallId,
-				SipCallID: c.cc.SIPCallID(),
-			}, c.state.callInfo, description)
+			go func(tid traceid.ID) {
+				c.c.handler.OnSessionEnd(context.Background(), &CallIdentifier{
+					TraceID:   tid,
+					ProjectID: c.projectID,
+					CallID:    c.state.callInfo.CallId,
+					SipCallID: c.cc.SIPCallID(),
+				}, c.state.callInfo, description)
+			}(c.tid)
 		}
 	})
 }
@@ -326,12 +336,12 @@ func (c *outboundCall) Participant() ParticipantInfo {
 	return c.lkRoom.Participant()
 }
 
-func (c *outboundCall) ConnectSIP(ctx context.Context) error {
-	ctx, span := tracer.Start(ctx, "outboundCall.ConnectSIP")
+func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
+	ctx, span := tracer.Start(ctx, "outboundCall.connectSIP")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.dialSIP(ctx); err != nil {
+	if err := c.dialSIP(ctx, tid); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
 
 		reportErr := err
@@ -388,7 +398,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 	return nil
 }
 
-func (c *outboundCall) dialSIP(ctx context.Context) error {
+func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	if c.sipConf.dialtone {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
@@ -397,7 +407,7 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		dst := c.lkRoomIn // already under mutex
 
 		// Play dialtone to the room while participant connects
-		go func() {
+		go func(tid traceid.ID) {
 			rctx, span := tracer.Start(rctx, "tones.Play")
 			defer span.End()
 
@@ -409,9 +419,9 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 			if err != nil && !errors.Is(err, context.Canceled) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
-		}()
+		}(tid)
 	}
-	err := c.sipSignal(ctx)
+	err := c.sipSignal(ctx, tid)
 	if err != nil {
 		return err
 	}
@@ -497,7 +507,7 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 	}
 }
 
-func (c *outboundCall) sipSignal(ctx context.Context) error {
+func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	ctx, span := tracer.Start(ctx, "outboundCall.sipSignal")
 	defer span.End()
 

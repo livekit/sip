@@ -28,21 +28,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/protocol/rpc"
-
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
 	"github.com/pkg/errors"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
@@ -150,7 +150,7 @@ func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	return is
 }
 
-func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
+func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
 	log = log.WithValues(
 		"username", username,
 		"passwordHash", hashPassword(password),
@@ -306,10 +306,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
 	callID := lksip.NewCallID()
+	tid := traceid.FromGUID(callID)
 	tr := callTransportFromReq(req)
 	legTr := legTransportFromReq(req)
 	log := s.log.WithValues(
 		"callID", callID,
+		"traceID", tid.String(),
 		"fromIP", src.Addr(),
 		"toIP", req.Destination(),
 		"transport", tr,
@@ -446,7 +448,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			cc.Processing()
 		}
 		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
-		if !s.handleInviteAuth(log, req, tx, from.User, r.Username, r.Password) {
+		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
@@ -457,9 +459,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		// ok
 	}
 
-	call = s.newInboundCall(log, cmon, cc, callInfo, state, nil)
+	call = s.newInboundCall(tid, log, cmon, cc, callInfo, state, start, nil)
 	call.joinDur = joinDur
-	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
+	return call.handleInvite(call.ctx, tid, req, r.TrunkID, s.conf)
 }
 
 func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
@@ -576,10 +578,12 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 
 type inboundCall struct {
 	s           *Server
+	tid         traceid.ID
 	log         logger.Logger
 	cc          *sipInbound
 	mon         *stats.CallMonitor
 	state       *CallState
+	callStart   time.Time
 	extraAttrs  map[string]string
 	attrsToHdr  map[string]string
 	ctx         context.Context
@@ -600,11 +604,13 @@ type inboundCall struct {
 }
 
 func (s *Server) newInboundCall(
+	tid traceid.ID,
 	log logger.Logger,
 	mon *stats.CallMonitor,
 	cc *sipInbound,
 	call *rpc.SIPCall,
 	state *CallState,
+	callStart time.Time,
 	extra map[string]string,
 ) *inboundCall {
 	// Map known headers immediately on join. The rest of the mapping will be available later.
@@ -612,6 +618,8 @@ func (s *Server) newInboundCall(
 	c := &inboundCall{
 		s:          s,
 		log:        log,
+		tid:        tid,
+		callStart:  callStart,
 		mon:        mon,
 		cc:         cc,
 		call:       call,
@@ -633,7 +641,7 @@ func (s *Server) newInboundCall(
 	return c
 }
 
-func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkID string, conf *config.Config) error {
+func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip.Request, trunkID string, conf *config.Config) error {
 	c.mon.InviteAccept()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
@@ -697,7 +705,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	runMedia := func(enc livekit.SIPMediaEncryption) ([]byte, error) {
-		answerData, err := c.runMediaConn(req.Body(), enc, conf, disp.EnabledFeatures)
+		answerData, err := c.runMediaConn(tid, req.Body(), enc, conf, disp.EnabledFeatures)
 		if err != nil {
 			isError := true
 			status, reason := callDropped, "media-failed"
@@ -874,7 +882,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 }
 
-func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log.Debugw("SDP offer", "sdp", string(offerData))
 	e, err := sdpEncryption(enc)
@@ -883,7 +891,7 @@ func (c *inboundCall) runMediaConn(offerData []byte, enc livekit.SIPMediaEncrypt
 		return nil, err
 	}
 
-	mp, err := NewMediaPort(c.log, c.mon, &MediaOptions{
+	mp, err := NewMediaPort(tid, c.log, c.mon, &MediaOptions{
 		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
@@ -1057,7 +1065,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 }
 
 func (c *inboundCall) printStats(log logger.Logger) {
-	log.Infow("call statistics", "stats", c.stats.Load())
+	log.Infow("call statistics", "stats", c.stats.Load(), "durMin", int(time.Since(c.callStart).Minutes()))
 }
 
 // close should only be called from handleInvite.
@@ -1095,11 +1103,13 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
-		go c.s.handler.OnSessionEnd(context.Background(), &CallIdentifier{
-			ProjectID: c.projectID,
-			CallID:    c.call.LkCallId,
-			SipCallID: c.call.SipCallId,
-		}, c.state.callInfo, reason)
+		go func(tid traceid.ID) {
+			c.s.handler.OnSessionEnd(context.Background(), &CallIdentifier{
+				ProjectID: c.projectID,
+				CallID:    c.call.LkCallId,
+				SipCallID: c.call.SipCallId,
+			}, c.state.callInfo, reason)
+		}(c.tid)
 	}
 
 	c.cancel()

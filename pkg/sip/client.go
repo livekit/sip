@@ -29,6 +29,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
@@ -165,8 +166,10 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if err != nil {
 		return nil, err
 	}
+	tid := traceid.FromGUID(req.SipCallId)
 	log = log.WithValues(
 		"callID", req.SipCallId,
+		"traceID", tid.String(),
 		"room", req.RoomName,
 		"participant", req.ParticipantIdentity,
 		"participantName", req.ParticipantName,
@@ -224,7 +227,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		displayName:     req.DisplayName,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
+	call, err := c.newCall(ctx, tid, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
 	if err != nil {
 		return nil, err
 	}
