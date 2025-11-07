@@ -878,7 +878,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			return nil
 		case <-c.media.Timeout():
 			if noAck {
-				c.log().Errorw("Media timeout after missing ACK", errNoACK)
+				c.log().Warnw("Media timeout after missing ACK", errNoACK)
 				c.closeWithNoACK()
 				return psrpc.NewError(psrpc.DeadlineExceeded, errNoACK)
 			}
