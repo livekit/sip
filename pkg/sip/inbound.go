@@ -913,6 +913,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 		MediaTimeout:        c.s.conf.MediaTimeout,
 		EnableJitterBuffer:  c.jitterBuf,
 		Stats:               &c.stats.Port,
+		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err

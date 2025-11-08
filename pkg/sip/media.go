@@ -151,6 +151,7 @@ func (s *Stats) MarshalJSON() ([]byte, error) {
 const (
 	channels       = 1
 	RoomSampleRate = 48000
+	RoomResample   = false
 )
 
 func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) rtp.Handler {

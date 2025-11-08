@@ -140,6 +140,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		MediaTimeout:        c.conf.MediaTimeout,
 		EnableJitterBuffer:  call.jitterBuf,
 		Stats:               &call.stats.Port,
+		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(errors.Wrap(err, "media failed"), callDropped, "media-failed", livekit.DisconnectReason_UNKNOWN_REASON)
