@@ -1442,6 +1442,10 @@ func (c *sipInbound) respond(status sip.StatusCode, reason string) {
 
 	r := sip.NewResponseFromRequest(c.invite, status, reason, nil)
 	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	if status >= 200 {
+		// For an ACK to error statuses.
+		r.AppendHeader(c.contact)
+	}
 	c.addExtraHeaders(r)
 	_ = c.inviteTx.Respond(r)
 }
