@@ -39,6 +39,47 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+// An interface mirroring sipgo.Client to be able to mock it in tests.
+type SIPClient interface {
+	TransactionRequest(req *sip.Request) (sip.ClientTransaction, error)
+	WriteRequest(req *sip.Request) error
+	Close() error
+}
+
+// Passthrough implementation of SIPClient with a sipgo.Client.
+type sipgoClientWrapper struct {
+	client *sipgo.Client
+}
+
+func (w *sipgoClientWrapper) TransactionRequest(req *sip.Request) (sip.ClientTransaction, error) {
+	return w.client.TransactionRequest(req)
+}
+
+func (w *sipgoClientWrapper) WriteRequest(req *sip.Request) error {
+	return w.client.WriteRequest(req)
+}
+
+func (w *sipgoClientWrapper) Close() error {
+	return w.client.Close()
+}
+
+type NewClientFunc func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error)
+
+var newClientFunc NewClientFunc = func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
+	client, err := sipgo.NewClient(ua, options...)
+	if err != nil {
+		return nil, err
+	}
+	return &sipgoClientWrapper{client: client}, nil
+}
+
+// SetNewClientFunc allows tests to override the client creation function.
+func SetNewClientFunc(fn NewClientFunc) (oldfunc NewClientFunc) {
+	old := newClientFunc
+	newClientFunc = fn
+	return old
+}
+
 type Client struct {
 	conf   *config.Config
 	sconf  *ServiceConfig
@@ -46,7 +87,7 @@ type Client struct {
 	region string
 	mon    *stats.Monitor
 
-	sipCli *sipgo.Client
+	sipCli SIPClient
 
 	closing     core.Fuse
 	cmu         sync.Mutex
@@ -89,7 +130,7 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 	}
 
 	var err error
-	c.sipCli, err = sipgo.NewClient(agent,
+	c.sipCli, err = newClientFunc(agent,
 		sipgo.WithClientHostname(c.sconf.SignalingIP.String()),
 		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
 	)
