@@ -241,17 +241,11 @@ func (s *Service) DeregisterCreateSIPParticipantTopic() {
 }
 
 func (s *Service) RegisterTransferSIPParticipantTopic(sipCallId string) error {
-	if s.rpcSIPServer != nil {
-		return s.rpcSIPServer.RegisterTransferSIPParticipantTopic(sipCallId)
-	}
-
-	return psrpc.NewErrorf(psrpc.Internal, "RPC server not started")
+	return s.rpcSIPServer.RegisterTransferSIPParticipantTopic(sipCallId)
 }
 
 func (s *Service) DeregisterTransferSIPParticipantTopic(sipCallId string) {
-	if s.rpcSIPServer != nil {
-		s.rpcSIPServer.DeregisterTransferSIPParticipantTopic(sipCallId)
-	}
+	s.rpcSIPServer.DeregisterTransferSIPParticipantTopic(sipCallId)
 }
 
 func (s *Service) OnSessionEnd(ctx context.Context, callIdentifier *sip.CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
