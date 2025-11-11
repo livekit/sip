@@ -879,6 +879,10 @@ authLoop:
 		}
 	}
 
+	// We currently don't plumb the request back to caller to construct the ACK with.
+	// Thus, we need to modify the request to update any route sets.
+	for req.RemoveHeader("Route") {
+	}
 	for _, hdr := range resp.GetHeaders("Record-Route") {
 		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}

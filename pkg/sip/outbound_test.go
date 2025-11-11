@@ -25,12 +25,14 @@ import (
 )
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
-	initialRouteHeader := "<sip:stateless-proxy.com:5060;lr>"
-	alternateRouteHeader := "<sip:some-other-proxy.com:5060;lr>"
+	initialRouteURI := sip.Uri{Host: "54.68.34.160", UriParams: sip.HeaderParams{"lr": ""}}
+	addedRouteURI := sip.Uri{Host: "54.172.60.2", UriParams: sip.HeaderParams{"lr": ""}}
+	initialRouteHeader := sip.RouteHeader{Address: initialRouteURI}
+	addedRouteHeader := sip.RouteHeader{Address: addedRouteURI}
 	client := NewOutboundTestClient(t, TestClientConfig{})
 	req := MinimalCreateSIPParticipantRequest()
 	req.Headers = map[string]string{
-		"Route": initialRouteHeader,
+		"Route": initialRouteHeader.Value(),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -69,15 +71,15 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, sip.INVITE, tr.req.Method)
 	routeHeaders := tr.req.GetHeaders("Route")
 	require.Equal(t, 1, len(routeHeaders))
-	require.Equal(t, initialRouteHeader, routeHeaders[0].Value())
+	require.Equal(t, initialRouteHeader.Value(), routeHeaders[0].Value())
 
 	// INVITE okay, send fake response with minimal SDP stub
 	minimalSDP := []byte("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
 	response := sip.NewSDPResponseFromRequest(tr.req, minimalSDP)
 	require.NotNil(t, response, "NewSDPResponseFromRequest returned nil")
 	response.RemoveHeader("Record-Route")
-	rr1 := sip.RecordRouteHeader{Address: sip.Uri{Host: "some-other-proxy.com", UriParams: sip.HeaderParams{"lr": ""}}}
-	rr2 := sip.RecordRouteHeader{Address: sip.Uri{Host: "stateless-proxy.com", UriParams: sip.HeaderParams{"lr": ""}}}
+	rr1 := sip.RecordRouteHeader{Address: addedRouteURI}
+	rr2 := sip.RecordRouteHeader{Address: initialRouteURI}
 	response.AppendHeader(&rr1)
 	response.AppendHeader(&rr2)
 	tr.transaction.SendResponse(response)
@@ -99,7 +101,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, tr.req.CallID(), ackReq.req.CallID())
 	ackRouteHeaders := ackReq.req.GetHeaders("Route")
 	require.Equal(t, 2, len(ackRouteHeaders)) // We expect this to fail prior to fixing our bug!
-	require.Equal(t, alternateRouteHeader, ackRouteHeaders[0].Value())
-	require.Equal(t, initialRouteHeader, ackRouteHeaders[1].Value())
+	require.Equal(t, initialRouteHeader.Value(), ackRouteHeaders[0].Value())
+	require.Equal(t, addedRouteHeader.Value(), ackRouteHeaders[1].Value())
 	cancel()
 }
