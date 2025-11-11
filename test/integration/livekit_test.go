@@ -64,6 +64,7 @@ func runLiveKit(t testing.TB) *LiveKit {
 			//       Maybe run on the host network instead? We might need it for RTP anyway.
 			"--redis-host", dockerBridgeIP + ":" + port,
 			"--bind", "0.0.0.0",
+			"--rm",
 		},
 		ExposedPorts: []string{"7880/tcp"},
 	})

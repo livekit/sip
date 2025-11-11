@@ -82,7 +82,7 @@ type outboundCall struct {
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
-	lkRoom   *Room
+	lkRoom   RoomInterface
 	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
 	sipConf  sipOutboundConfig
 }
@@ -204,7 +204,12 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 	}
 
 	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
-		info.RoomId = c.lkRoom.room.SID()
+		lkroom := c.lkRoom.Room()
+		if lkroom == nil {
+			c.log.Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
+			return
+		}
+		info.RoomId = lkroom.SID()
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 	})
@@ -383,7 +388,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
-	r := NewRoom(c.log, &c.stats.Room)
+	r := newRoomFunc(c.log, &c.stats.Room)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}

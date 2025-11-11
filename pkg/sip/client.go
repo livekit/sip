@@ -366,9 +366,14 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 }
 
 func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCall) error {
-	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
+	if c.handler != nil {
+		return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
+	}
+	return nil
 }
 
 func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
-	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
+	if c.handler != nil {
+		c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
+	}
 }
