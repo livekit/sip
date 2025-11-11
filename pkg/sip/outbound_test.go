@@ -25,8 +25,16 @@ import (
 )
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
-	initialRouteURI := sip.Uri{Host: "54.68.34.160", UriParams: sip.HeaderParams{"lr": ""}}
-	addedRouteURI := sip.Uri{Host: "54.172.60.2", UriParams: sip.HeaderParams{"lr": ""}}
+	// Make sure the ACK doesn't carry over initial Route header.
+	// Steps:
+	// 1. Create a SIP participant with an initial Route header.
+	// 2. Make sure the Route header is properly populates in INVITE.
+	// 3. Fake a 200 response with Record Route headers.
+	// 4. Make sure the ACK doesn't carry over initial Route header..
+
+	// Plumbing
+	initialRouteURI := sip.Uri{Host: "initial-header.com", UriParams: sip.HeaderParams{"lr": ""}}
+	addedRouteURI := sip.Uri{Host: "added-header.com", UriParams: sip.HeaderParams{"lr": ""}}
 	initialRouteHeader := sip.RouteHeader{Address: initialRouteURI}
 	addedRouteHeader := sip.RouteHeader{Address: addedRouteURI}
 	client := NewOutboundTestClient(t, TestClientConfig{})
@@ -36,13 +44,15 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
+	go func() { // Allow test to continue
 		_, err := client.CreateSIPParticipant(ctx, req)
 		if err != nil && ctx.Err() == nil {
 			// Only log error if context wasn't cancelled
 			t.Logf("CreateSIPParticipant error: %v", err)
 		}
 	}()
+
+	fmt.Println("Waiting for INVITE to be sent")
 
 	var sipClient *testSIPClient
 	select {
@@ -54,7 +64,6 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 		return
 	}
 
-	fmt.Println("Waiting for transaction request")
 	var tr *transactionRequest
 	select {
 	case tr = <-sipClient.transactions:
@@ -64,7 +73,9 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 		require.Fail(t, "expected transaction request to be created")
 		return
 	}
-	fmt.Println("Transaction request received")
+
+	fmt.Println("Received INVITE, validating")
+
 	require.NotNil(t, tr)
 	require.NotNil(t, tr.req)
 	require.NotNil(t, tr.transaction)
@@ -73,7 +84,8 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, 1, len(routeHeaders))
 	require.Equal(t, initialRouteHeader.Value(), routeHeaders[0].Value())
 
-	// INVITE okay, send fake response with minimal SDP stub
+	fmt.Println("INVITE okay, sending fake response")
+
 	minimalSDP := []byte("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
 	response := sip.NewSDPResponseFromRequest(tr.req, minimalSDP)
 	require.NotNil(t, response, "NewSDPResponseFromRequest returned nil")
@@ -83,6 +95,8 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	response.AppendHeader(&rr1)
 	response.AppendHeader(&rr2)
 	tr.transaction.SendResponse(response)
+
+	fmt.Println("Wait for ACK to be sent")
 
 	// Make sure ACK is okay
 	var ackReq *sipRequest
@@ -94,6 +108,9 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 		require.Fail(t, "expected ACK request to be created")
 		return
 	}
+
+	fmt.Println("Received ACK, validating")
+
 	require.NotNil(t, ackReq)
 	require.NotNil(t, ackReq.req)
 	require.Equal(t, sip.ACK, ackReq.req.Method)
@@ -103,5 +120,6 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, 2, len(ackRouteHeaders)) // We expect this to fail prior to fixing our bug!
 	require.Equal(t, initialRouteHeader.Value(), ackRouteHeaders[0].Value())
 	require.Equal(t, addedRouteHeader.Value(), ackRouteHeaders[1].Value())
+
 	cancel()
 }
