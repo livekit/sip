@@ -135,6 +135,14 @@ func newTestRoom(log logger.Logger, st *RoomStats) RoomInterface {
 	room.ready.Break()
 	resolve.Resolve()
 
+	room.room.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
+		Name:            "test-room",
+		Metadata:        "test-metadata",
+		Sid:             "test-room-sid",
+		NumParticipants: 1,
+		NumPublishers:   1,
+	})
+
 	// Set up minimal participant info
 	room.p = ParticipantInfo{
 		ID:       "test-participant-id",
