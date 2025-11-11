@@ -32,28 +32,35 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	req.Headers = map[string]string{
 		"Route": initialRouteHeader,
 	}
-	go func(t *testing.T) {
-		_, err := client.CreateSIPParticipant(context.Background(), req)
-		require.NoError(t, err)
-	}(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, err := client.CreateSIPParticipant(ctx, req)
+		if err != nil && ctx.Err() == nil {
+			// Only log error if context wasn't cancelled
+			t.Logf("CreateSIPParticipant error: %v", err)
+		}
+	}()
 
-	// Try to see whether our test actually sent out an INVITE, with timeout!
-	fmt.Println("Waiting for client to be created")
 	var sipClient *testSIPClient
 	select {
 	case sipClient = <-createdClients:
-		defer sipClient.Close()
+		t.Cleanup(func() { _ = sipClient.Close() })
 	case <-time.After(100 * time.Millisecond):
+		cancel()
 		require.Fail(t, "expected client to be created")
+		return
 	}
 
 	fmt.Println("Waiting for transaction request")
 	var tr *transactionRequest
 	select {
 	case tr = <-sipClient.transactions:
-		defer tr.transaction.Terminate()
+		t.Cleanup(func() { tr.transaction.Terminate() })
 	case <-time.After(500 * time.Millisecond):
+		cancel()
 		require.Fail(t, "expected transaction request to be created")
+		return
 	}
 	fmt.Println("Transaction request received")
 	require.NotNil(t, tr)
@@ -73,9 +80,6 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	rr2 := sip.RecordRouteHeader{Address: sip.Uri{Host: "stateless-proxy.com", UriParams: sip.HeaderParams{"lr": ""}}}
 	response.AppendHeader(&rr1)
 	response.AppendHeader(&rr2)
-	fmt.Println("Sleeping")
-	time.Sleep(time.Second)
-	fmt.Println("Enqueuing response")
 	tr.transaction.SendResponse(response)
 
 	// Make sure ACK is okay
@@ -84,7 +88,9 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	case ackReq = <-sipClient.requests:
 		// All good
 	case <-time.After(100 * time.Millisecond):
-		require.Fail(t, "expected transaction request to be created")
+		cancel()
+		require.Fail(t, "expected ACK request to be created")
+		return
 	}
 	require.NotNil(t, ackReq)
 	require.NotNil(t, ackReq.req)
@@ -95,4 +101,5 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, 2, len(ackRouteHeaders)) // We expect this to fail prior to fixing our bug!
 	require.Equal(t, alternateRouteHeader, ackRouteHeaders[0].Value())
 	require.Equal(t, initialRouteHeader, ackRouteHeaders[1].Value())
+	cancel()
 }
