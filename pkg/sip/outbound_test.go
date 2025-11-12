@@ -52,7 +52,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 		}
 	}()
 
-	fmt.Println("Waiting for INVITE to be sent")
+	t.Log("Waiting for INVITE to be sent")
 
 	var sipClient *testSIPClient
 	select {
@@ -84,7 +84,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, 1, len(routeHeaders))
 	require.Equal(t, initialRouteHeader.Value(), routeHeaders[0].Value())
 
-	fmt.Println("INVITE okay, sending fake response")
+	t.Log("INVITE okay, sending fake response")
 
 	minimalSDP := []byte("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
 	response := sip.NewSDPResponseFromRequest(tr.req, minimalSDP)
@@ -96,7 +96,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	response.AppendHeader(&rr2)
 	tr.transaction.SendResponse(response)
 
-	fmt.Println("Wait for ACK to be sent")
+	t.Log("Wait for ACK to be sent")
 
 	// Make sure ACK is okay
 	var ackReq *sipRequest
@@ -109,7 +109,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 		return
 	}
 
-	fmt.Println("Received ACK, validating")
+	t.Log("Received ACK, validating")
 
 	require.NotNil(t, ackReq)
 	require.NotNil(t, ackReq.req)
