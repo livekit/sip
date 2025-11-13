@@ -375,12 +375,16 @@ func handleReferNotify(cseq uint32, status int, reason string, referCseq uint32,
 			Code:   livekit.SIPStatusCode(status),
 			Status: reason,
 		}
-		psrpcErrCode := psrpc.UpstreamServerError
-		if status < 500 || status >= 600 {
-			// Common 6xx codes: 603 Declined, 608 Rejected
-			psrpcErrCode = psrpc.UpstreamClientError
+		// Converts SIP status to GRPC via SIPStatus.GRPCStatus(), then converts to psrpc via ErrorCodeFromGRPC()
+		errorCode, _ := psrpc.GetErrorCode(st)
+		if errorCode == psrpc.Internal || errorCode == psrpc.Unavailable {
+			// Temporarily overwrite the code until we support a direct SIPStatus -> psrpc.ErrorCode conversion
+			errorCode = psrpc.UpstreamServerError
+			if status < 500 || status >= 600 { // Common 6xx codes: 603 Declined, 608 Rejected
+				errorCode = psrpc.UpstreamClientError
+			}
 		}
-		result = psrpc.NewErrorf(psrpcErrCode, "call transfer failed: %w", st)
+		result = psrpc.NewErrorf(errorCode, "call transfer failed: %w", st)
 	}
 	select {
 	case referDone <- result:
