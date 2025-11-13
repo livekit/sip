@@ -80,16 +80,10 @@ type RoomInterface interface {
 	NewTrack() *mixer.Input
 }
 
-type NewRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
+type GetRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
 
-var newRoomFunc NewRoomFunc = func(log logger.Logger, st *RoomStats) RoomInterface {
+func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
 	return NewRoom(log, st)
-}
-
-func SetNewRoomFunc(fn NewRoomFunc) (oldFunc NewRoomFunc) {
-	old := newRoomFunc
-	newRoomFunc = fn
-	return old
 }
 
 type Room struct {

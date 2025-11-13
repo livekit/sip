@@ -133,6 +133,7 @@ type Server struct {
 	region       string
 	sipSrv       *sipgo.Server
 	getIOClient  GetIOInfoClient
+	getRoom      GetRoomFunc
 	sipListeners []io.Closer
 	sipUnhandled RequestHandler
 
@@ -162,7 +163,17 @@ type inProgressInvite struct {
 	challenge digest.Challenge
 }
 
-func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Server {
+type ServerOption func(s *Server)
+
+func WithGetRoomServer(fn GetRoomFunc) ServerOption {
+	return func(s *Server) {
+		if fn != nil {
+			s.getRoom = fn
+		}
+	}
+}
+
+func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ServerOption) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -172,9 +183,13 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		region:      region,
 		mon:         mon,
 		getIOClient: getIOClient,
+		getRoom:     DefaultGetRoomFunc,
 		byRemoteTag: make(map[RemoteTag]*inboundCall),
 		byLocalTag:  make(map[LocalTag]*inboundCall),
 		byCallID:    make(map[string]*inboundCall),
+	}
+	for _, option := range options {
+		option(s)
 	}
 	s.infos.byCallID = expirable.NewLRU[string, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
 	s.initMediaRes()

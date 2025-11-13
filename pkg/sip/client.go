@@ -90,11 +90,12 @@ type Client struct {
 	handler      Handler
 	getIOClient  GetIOInfoClient
 	getSipClient GetSipClientFunc
+	getRoom      GetRoomFunc
 }
 
-type Option func(c *Client)
+type ClientOption func(c *Client)
 
-func WithGetSipClient(fn GetSipClientFunc) Option {
+func WithGetSipClient(fn GetSipClientFunc) ClientOption {
 	return func(c *Client) {
 		if fn != nil {
 			c.getSipClient = fn
@@ -102,7 +103,15 @@ func WithGetSipClient(fn GetSipClientFunc) Option {
 	}
 }
 
-func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...Option) *Client {
+func WithGetRoomClient(fn GetRoomFunc) ClientOption {
+	return func(c *Client) {
+		if fn != nil {
+			c.getRoom = fn
+		}
+	}
+}
+
+func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ClientOption) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -113,6 +122,7 @@ func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats
 		mon:          mon,
 		getIOClient:  getIOClient,
 		getSipClient: DefaultGetSipClientFunc,
+		getRoom:      DefaultGetRoomFunc,
 		activeCalls:  make(map[LocalTag]*outboundCall),
 		byRemote:     make(map[RemoteTag]*outboundCall),
 	}
@@ -374,14 +384,9 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 }
 
 func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCall) error {
-	if c.handler != nil {
-		return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
-	}
-	return nil
+	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
 }
 
 func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
-	if c.handler != nil {
-		c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
-	}
+	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }

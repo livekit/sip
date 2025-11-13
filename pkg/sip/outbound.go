@@ -149,7 +149,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.media.SetDTMFAudio(conf.AudioDTMF)
 	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
-	if err := call.connectToRoom(ctx, room); err != nil {
+	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
 		call.close(errors.Wrap(err, "room join failed"), callDropped, "join-failed", livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
@@ -373,7 +373,7 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
-func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) error {
+func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getRoom GetRoomFunc) error {
 	ctx, span := tracer.Start(ctx, "outboundCall.connectToRoom")
 	defer span.End()
 	attrs := lkNew.Participant.Attributes
@@ -388,7 +388,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
-	r := newRoomFunc(c.log, &c.stats.Room)
+	r := getRoom(c.log, &c.stats.Room)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}

@@ -630,7 +630,7 @@ func (s *Server) newInboundCall(
 	}
 	c.setLog(log.WithValues("jitterBuf", c.jitterBuf))
 	// we need it created earlier so that the audio mixer is available for pin prompts
-	c.lkRoom = newRoomFunc(c.log(), &c.stats.Room)
+	c.lkRoom = s.getRoom(c.log(), &c.stats.Room)
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	s.cmu.Lock()
 	s.byRemoteTag[cc.Tag()] = c

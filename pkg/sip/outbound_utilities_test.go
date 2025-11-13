@@ -442,6 +442,7 @@ type TestClientConfig struct {
 	Monitor      *stats.Monitor   // Minimal monitor if nil
 	GetIOClient  GetIOInfoClient  // MockIOInfoClient if nil
 	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
+	GetRoom      GetRoomFunc      // newTestRoom if nil
 }
 
 func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
@@ -504,7 +505,10 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	if cfg.GetSipClient == nil {
 		cfg.GetSipClient = NewTestClientFunc
 	}
-	client := NewClient(cfg.Region, cfg.Config, zlogger, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient))
+	if cfg.GetRoom == nil {
+		cfg.GetRoom = newTestRoom
+	}
+	client := NewClient(cfg.Region, cfg.Config, zlogger, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
 	client.SetHandler(&TestHandler{})
 
 	// Set up service config with minimal values
@@ -518,11 +522,6 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 		MediaIP:          localIP,
 	}
 
-	// Mock Room connection to skip actual LiveKit server connection
-	oldRoomFunc := SetNewRoomFunc(newTestRoom)
-	t.Cleanup(func() {
-		SetNewRoomFunc(oldRoomFunc)
-	})
 	err = client.Start(nil, sconf) // needed to set sconf
 	if err != nil {
 		t.Fatalf("failed to start client: %v", err)
