@@ -63,21 +63,14 @@ func (w *sipgoClientWrapper) Close() error {
 	return w.client.Close()
 }
 
-type NewClientFunc func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error)
+type GetSipClientFunc func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error)
 
-var newClientFunc NewClientFunc = func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
+func DefaultGetSipClientFunc(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
 	client, err := sipgo.NewClient(ua, options...)
 	if err != nil {
 		return nil, err
 	}
 	return &sipgoClientWrapper{client: client}, nil
-}
-
-// SetNewClientFunc allows tests to override the client creation function.
-func SetNewClientFunc(fn NewClientFunc) (oldfunc NewClientFunc) {
-	old := newClientFunc
-	newClientFunc = fn
-	return old
 }
 
 type Client struct {
@@ -94,22 +87,37 @@ type Client struct {
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
 
-	handler     Handler
-	getIOClient GetIOInfoClient
+	handler      Handler
+	getIOClient  GetIOInfoClient
+	getSipClient GetSipClientFunc
 }
 
-func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
+type Option func(c *Client)
+
+func WithGetSipClient(fn GetSipClientFunc) Option {
+	return func(c *Client) {
+		if fn != nil {
+			c.getSipClient = fn
+		}
+	}
+}
+
+func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...Option) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:        conf,
-		log:         log,
-		region:      region,
-		mon:         mon,
-		getIOClient: getIOClient,
-		activeCalls: make(map[LocalTag]*outboundCall),
-		byRemote:    make(map[RemoteTag]*outboundCall),
+		conf:         conf,
+		log:          log,
+		region:       region,
+		mon:          mon,
+		getIOClient:  getIOClient,
+		getSipClient: DefaultGetSipClientFunc,
+		activeCalls:  make(map[LocalTag]*outboundCall),
+		byRemote:     make(map[RemoteTag]*outboundCall),
+	}
+	for _, option := range options {
+		option(c)
 	}
 	return c
 }
@@ -130,7 +138,7 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 	}
 
 	var err error
-	c.sipCli, err = newClientFunc(agent,
+	c.sipCli, err = c.getSipClient(agent,
 		sipgo.WithClientHostname(c.sconf.SignalingIP.String()),
 		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
 	)

@@ -437,11 +437,11 @@ func NewTestClientFunc(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPC
 
 // TestClientConfig holds configuration for creating a test Client
 type TestClientConfig struct {
-	Region        string          // Defaults to "test"
-	Config        *config.Config  // Creates minimal config if nil
-	Monitor       *stats.Monitor  // Minimal monitor if nil
-	GetIOClient   GetIOInfoClient // MockIOInfoClient if nil
-	sipClientFunc NewClientFunc   // NewTestClientFunc if nil
+	Region       string           // Defaults to "test"
+	Config       *config.Config   // Creates minimal config if nil
+	Monitor      *stats.Monitor   // Minimal monitor if nil
+	GetIOClient  GetIOInfoClient  // MockIOInfoClient if nil
+	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
 }
 
 func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
@@ -501,7 +501,10 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 			return &MockIOInfoClient{}
 		}
 	}
-	client := NewClient(cfg.Region, cfg.Config, zlogger, cfg.Monitor, cfg.GetIOClient)
+	if cfg.GetSipClient == nil {
+		cfg.GetSipClient = NewTestClientFunc
+	}
+	client := NewClient(cfg.Region, cfg.Config, zlogger, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient))
 	client.SetHandler(&TestHandler{})
 
 	// Set up service config with minimal values
@@ -514,14 +517,6 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 		SignalingIPLocal: localIP,
 		MediaIP:          localIP,
 	}
-
-	if cfg.sipClientFunc == nil {
-		cfg.sipClientFunc = NewTestClientFunc
-	}
-	oldClientFunc := SetNewClientFunc(cfg.sipClientFunc)
-	t.Cleanup(func() {
-		SetNewClientFunc(oldClientFunc)
-	})
 
 	// Mock Room connection to skip actual LiveKit server connection
 	oldRoomFunc := SetNewRoomFunc(newTestRoom)
