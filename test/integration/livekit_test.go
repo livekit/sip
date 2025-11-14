@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -22,13 +21,6 @@ import (
 var debugLKServer = os.Getenv("DEBUG_LK_SERVER") != ""
 
 var redisLast uint32
-
-func ipv4(addr string) string {
-	if strings.HasPrefix(addr, "localhost:") {
-		return strings.Replace(addr, "localhost:", "127.0.0.1:", 1)
-	}
-	return addr
-}
 
 func runRedis(t testing.TB) *redis.RedisConfig {
 	name := fmt.Sprintf("siptest-redis-%d", atomic.AddUint32(&redisLast, 1))
@@ -48,7 +40,7 @@ func runRedis(t testing.TB) *redis.RedisConfig {
 	t.Cleanup(func() {
 		_ = Docker.Purge(c)
 	})
-	addr := ipv4(c.GetHostPort("6379/tcp"))
+	addr := c.GetHostPort("6379/tcp")
 	waitTCPPort(t, addr)
 
 	t.Log("Redis running on", addr)
@@ -108,7 +100,7 @@ func runLiveKit(t testing.TB) *LiveKit {
 			Stderr:       true,
 		})
 	}
-	wsaddr := ipv4(c.GetHostPort("7880/tcp"))
+	wsaddr := c.GetHostPort("7880/tcp")
 	if wsaddr == "" {
 		t.Fatal("LiveKit WS address is empty")
 	}
