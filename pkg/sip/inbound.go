@@ -40,9 +40,9 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/protocol/utils"
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/tracer"
+	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -201,12 +201,6 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
 	}
 
-	// Extract SIP Call ID for tracking in-progress invites
-	sipCallID := ""
-	if h := req.CallID(); h != nil {
-		sipCallID = h.Value()
-	}
-
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
@@ -333,12 +327,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
 	}
 	sipCallID := legCallIDFromReq(req)
-	tid := traceid.FromGUID(callID)
 	tr := callTransportFromReq(req)
 	legTr := legTransportFromReq(req)
 	log := s.log.WithValues(
 		"sipCallID", sipCallID,
-		"traceID", tid.String(),
 		"fromIP", src.Addr(),
 		"toIP", req.Destination(),
 		"transport", tr,
@@ -390,8 +382,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		inviteProgress.lkCallID = callID
 	}
 	cc.id = LocalTag(callID)
+	tid := traceid.FromGUID(sipCallID)
 
 	log = log.WithValues("callID", callID)
+	log = log.WithValues("traceID", tid.String())
 	cc.log = log
 	log.Infow("processing invite")
 
@@ -399,10 +393,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	defer span.End()
 
 	s.cmu.RLock()
-	existing := s.byCallID[cc.SIPCallID()]
+	existing := s.byCallID[sipCallID]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		log.Infow("accepting reinvite", "sipCallID", existing.cc.ID(), "content-type", req.ContentType(), "content-length", req.ContentLength())
+		log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength())
 		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
@@ -429,7 +423,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	callInfo := &rpc.SIPCall{
 		LkCallId:  callID,
-		SipCallId: cc.SIPCallID(),
+		SipCallId: sipCallID,
 		SourceIp:  src.Addr().String(),
 		Address:   ToSIPUri("", cc.Address()),
 		From:      ToSIPUri("", from),
@@ -500,7 +494,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			// We will send password request anyway, so might as well signal that the progress is made.
 			cc.Processing()
 		}
-		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
+		s.getCallInfo(sipCallID).countInvite(log, req)
 		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password, inviteProgress) {
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
@@ -508,7 +502,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		// ok
 	case AuthAccept:
-		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
+		s.getCallInfo(sipCallID).countInvite(log, req)
 		// ok
 	}
 
