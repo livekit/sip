@@ -351,7 +351,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		log.Infow("accepting reinvite", "sipCallID", existing.cc.ID(), "content-type", req.ContentType(), "content-length", req.ContentLength())
 		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		cc.AcceptAsKeepAlive()
+		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
 
@@ -1394,6 +1394,7 @@ type sipInbound struct {
 	referDone  chan error
 
 	mu              sync.RWMutex
+	lastSDP         []byte
 	inviteOk        *sip.Response
 	nextRequestCSeq uint32
 	referCseq       uint32
@@ -1436,11 +1437,18 @@ func (c *sipInbound) drop() {
 }
 
 func (c *sipInbound) respond(status sip.StatusCode, reason string) {
+	c.respondWithData(status, reason, "", nil)
+}
+
+func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, contentType string, body []byte) {
 	if c.inviteTx == nil {
 		return
 	}
 
-	r := sip.NewResponseFromRequest(c.invite, status, reason, nil)
+	r := sip.NewResponseFromRequest(c.invite, status, reason, body)
+	if typ := sip.ContentTypeHeader(contentType); typ != "" {
+		r.AppendHeader(&typ)
+	}
 	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
 	if status >= 200 {
 		// For an ACK to error statuses.
@@ -1583,8 +1591,14 @@ func (c *sipInbound) accepted(inviteOK *sip.Response) {
 	c.inviteTx = nil
 }
 
-func (c *sipInbound) AcceptAsKeepAlive() {
-	c.RespondAndDrop(sip.StatusOK, "OK")
+func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
+	c.respondWithData(sip.StatusOK, "OK", "application/sdp", sdp)
+}
+
+func (c *sipInbound) OwnSDP() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastSDP
 }
 
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
@@ -1595,6 +1609,7 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	if c.inviteTx == nil {
 		return errors.New("call already rejected")
 	}
+	c.lastSDP = sdpData
 	r := sip.NewResponseFromRequest(c.invite, sip.StatusOK, "OK", sdpData)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
