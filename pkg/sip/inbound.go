@@ -162,9 +162,9 @@ func (s *Server) getInvite(sipCallID, toTag, fromTag string) *inProgressInvite {
 		fromTag:   fromTag,
 	}
 
-	s.imu.Lock()
+	s.imu.RLock()
 	is, exists := s.inProgressInvites[key]
-	s.imu.Unlock()
+	s.imu.RUnlock()
 	if !exists {
 		s.imu.Lock()
 		is, exists = s.inProgressInvites[key]

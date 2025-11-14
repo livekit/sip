@@ -144,7 +144,7 @@ type Server struct {
 	sipUnhandled       RequestHandler
 	inviteTimeoutQueue utils.TimeoutQueue[dialogKey]
 
-	imu               sync.Mutex
+	imu               sync.RWMutex
 	inProgressInvites map[dialogKey]*inProgressInvite
 
 	closing     core.Fuse
