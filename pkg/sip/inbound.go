@@ -720,8 +720,24 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	}
 
 	runMedia := func(enc livekit.SIPMediaEncryption) ([]byte, error) {
-		answerData, err := c.runMediaConn(tid, req.Body(), enc, conf, disp.EnabledFeatures)
+		log := c.log()
+		if h := req.ContentLength(); h != nil {
+			log = log.WithValues("contentLength", int(*h))
+		}
+		if h := req.ContentType(); h != nil {
+			log = log.WithValues("contentType", h.Value())
+			switch h.Value() {
+			default:
+				log.Infow("unsupported offer type")
+			case "application/sdp":
+			}
+		} else {
+			log.Infow("no offer type specified")
+		}
+		rawSDP := req.Body()
+		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, disp.EnabledFeatures)
 		if err != nil {
+			log = log.WithValues("sdp", string(rawSDP))
 			isError := true
 			status, reason := callDropped, "media-failed"
 			if errors.Is(err, sdp.ErrNoCommonMedia) {
@@ -730,11 +746,14 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
 				status, reason = callMediaFailed, "no-common-crypto"
 				isError = false
+			} else if e := (SDPError{}); errors.As(err, &e) {
+				status, reason = callMediaFailed, "sdp-error"
+				isError = false
 			}
 			if isError {
-				c.log().Errorw("Cannot start media", err)
+				log.Errorw("Cannot start media", err)
 			} else {
-				c.log().Warnw("Cannot start media", err)
+				log.Warnw("Cannot start media", err)
 			}
 			c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
 			c.close(true, status, reason)
@@ -925,7 +944,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 
 	answer, mconf, err := mp.SetOffer(offerData, e)
 	if err != nil {
-		return nil, err
+		return nil, SDPError{Err: err}
 	}
 	answerData, err = answer.SDP.Marshal()
 	if err != nil {
