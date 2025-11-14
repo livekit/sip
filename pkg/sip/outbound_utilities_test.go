@@ -363,7 +363,10 @@ func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
 	}
 }
 
-func (w *testSIPClient) TransactionRequest(req *sip.Request) (sip.ClientTransaction, error) {
+func (w *testSIPClient) TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
+	if len(options) > 0 {
+		panic("options not supported for testSIPClient")
+	}
 	fmt.Printf("SIP TransactionRequest sent on client %v:\n%s\n", w, req.String())
 	w.FillRequestBlanks(req)
 	w.sequence++
@@ -386,7 +389,10 @@ func (w *testSIPClient) TransactionRequest(req *sip.Request) (sip.ClientTransact
 	}
 }
 
-func (w *testSIPClient) WriteRequest(req *sip.Request) error {
+func (w *testSIPClient) WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error {
+	if len(options) > 0 {
+		panic("options not supported for testSIPClient")
+	}
 	fmt.Printf("SIP WriteRequest sent on client %v:\n%s\n", w, req.String())
 	w.FillRequestBlanks(req)
 	w.sequence++

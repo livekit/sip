@@ -40,37 +40,17 @@ import (
 )
 
 // An interface mirroring sipgo.Client to be able to mock it in tests.
+// Note: *sipgo.Client implements this interface directly, so no wrapper is needed.
 type SIPClient interface {
-	TransactionRequest(req *sip.Request) (sip.ClientTransaction, error)
-	WriteRequest(req *sip.Request) error
+	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)
+	WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error
 	Close() error
-}
-
-// Passthrough implementation of SIPClient with a sipgo.Client.
-type sipgoClientWrapper struct {
-	client *sipgo.Client
-}
-
-func (w *sipgoClientWrapper) TransactionRequest(req *sip.Request) (sip.ClientTransaction, error) {
-	return w.client.TransactionRequest(req)
-}
-
-func (w *sipgoClientWrapper) WriteRequest(req *sip.Request) error {
-	return w.client.WriteRequest(req)
-}
-
-func (w *sipgoClientWrapper) Close() error {
-	return w.client.Close()
 }
 
 type GetSipClientFunc func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error)
 
 func DefaultGetSipClientFunc(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
-	client, err := sipgo.NewClient(ua, options...)
-	if err != nil {
-		return nil, err
-	}
-	return &sipgoClientWrapper{client: client}, nil
+	return sipgo.NewClient(ua, options...)
 }
 
 type Client struct {
