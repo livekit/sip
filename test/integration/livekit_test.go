@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
@@ -22,6 +24,24 @@ var debugLKServer = os.Getenv("DEBUG_LK_SERVER") != ""
 
 var redisLast uint32
 
+// normalizeHostPort replaces localhost with 127.0.0.1 to force IPv4,
+// which is more reliable in CI environments where IPv6 may not be properly configured.
+func normalizeHostPort(addr string) string {
+	if strings.HasPrefix(addr, "localhost:") {
+		return strings.Replace(addr, "localhost:", "127.0.0.1:", 1)
+	}
+	if strings.HasPrefix(addr, "[::1]:") {
+		// Extract port from [::1]:port format
+		// Find the last colon which separates the port
+		lastColon := strings.LastIndex(addr, ":")
+		if lastColon > 0 {
+			port := addr[lastColon+1:]
+			return "127.0.0.1:" + port
+		}
+	}
+	return addr
+}
+
 func runRedis(t testing.TB) *redis.RedisConfig {
 	c, err := Docker.RunWithOptions(&dockertest.RunOptions{
 		Name:       fmt.Sprintf("siptest-redis-%d", atomic.AddUint32(&redisLast, 1)),
@@ -33,7 +53,7 @@ func runRedis(t testing.TB) *redis.RedisConfig {
 	t.Cleanup(func() {
 		_ = Docker.Purge(c)
 	})
-	addr := c.GetHostPort("6379/tcp")
+	addr := normalizeHostPort(c.GetHostPort("6379/tcp"))
 	waitTCPPort(t, addr)
 
 	t.Log("Redis running on", addr)
@@ -87,7 +107,7 @@ func runLiveKit(t testing.TB) *LiveKit {
 			Stderr:       true,
 		})
 	}
-	wsaddr := c.GetHostPort("7880/tcp")
+	wsaddr := normalizeHostPort(c.GetHostPort("7880/tcp"))
 	waitTCPPort(t, wsaddr)
 	wsurl := "ws://" + wsaddr
 
@@ -99,6 +119,14 @@ func runLiveKit(t testing.TB) *LiveKit {
 	}
 	lk.Rooms = lksdk.NewRoomServiceClient(lk.WsUrl, lk.ApiKey, lk.ApiSecret)
 	lk.SIP = lksdk.NewSIPClient(lk.WsUrl, lk.ApiKey, lk.ApiSecret)
+
+	// Increase timeout for API readiness check as the server may need more time
+	// to fully initialize after the port is open
+	originalMaxWait := Docker.MaxWait
+	Docker.MaxWait = 2 * time.Minute
+	defer func() {
+		Docker.MaxWait = originalMaxWait
+	}()
 
 	err = Docker.Retry(func() error {
 		ctx := context.Background()
