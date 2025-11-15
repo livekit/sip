@@ -843,7 +843,7 @@ authLoop:
 		if err != nil {
 			return nil, fmt.Errorf("invalid challenge %q: %w", challengeStr, err)
 		}
-		toHeader := resp.To()
+		toHeader = resp.To()
 		if toHeader == nil {
 			return nil, errors.New("no 'To' header on Response")
 		}
