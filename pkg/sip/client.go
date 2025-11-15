@@ -39,6 +39,20 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+// An interface mirroring sipgo.Client to be able to mock it in tests.
+// Note: *sipgo.Client implements this interface directly, so no wrapper is needed.
+type SIPClient interface {
+	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)
+	WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error
+	Close() error
+}
+
+type GetSipClientFunc func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error)
+
+func DefaultGetSipClientFunc(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
+	return sipgo.NewClient(ua, options...)
+}
+
 type Client struct {
 	conf   *config.Config
 	sconf  *ServiceConfig
@@ -46,29 +60,54 @@ type Client struct {
 	region string
 	mon    *stats.Monitor
 
-	sipCli *sipgo.Client
+	sipCli SIPClient
 
 	closing     core.Fuse
 	cmu         sync.Mutex
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
 
-	handler     Handler
-	getIOClient GetIOInfoClient
+	handler      Handler
+	getIOClient  GetIOInfoClient
+	getSipClient GetSipClientFunc
+	getRoom      GetRoomFunc
 }
 
-func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient) *Client {
+type ClientOption func(c *Client)
+
+func WithGetSipClient(fn GetSipClientFunc) ClientOption {
+	return func(c *Client) {
+		if fn != nil {
+			c.getSipClient = fn
+		}
+	}
+}
+
+func WithGetRoomClient(fn GetRoomFunc) ClientOption {
+	return func(c *Client) {
+		if fn != nil {
+			c.getRoom = fn
+		}
+	}
+}
+
+func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ClientOption) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:        conf,
-		log:         log,
-		region:      region,
-		mon:         mon,
-		getIOClient: getIOClient,
-		activeCalls: make(map[LocalTag]*outboundCall),
-		byRemote:    make(map[RemoteTag]*outboundCall),
+		conf:         conf,
+		log:          log,
+		region:       region,
+		mon:          mon,
+		getIOClient:  getIOClient,
+		getSipClient: DefaultGetSipClientFunc,
+		getRoom:      DefaultGetRoomFunc,
+		activeCalls:  make(map[LocalTag]*outboundCall),
+		byRemote:     make(map[RemoteTag]*outboundCall),
+	}
+	for _, option := range options {
+		option(c)
 	}
 	return c
 }
@@ -89,7 +128,7 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 	}
 
 	var err error
-	c.sipCli, err = sipgo.NewClient(agent,
+	c.sipCli, err = c.getSipClient(agent,
 		sipgo.WithClientHostname(c.sconf.SignalingIP.String()),
 		sipgo.WithClientLogger(slog.New(logger.ToSlogHandler(c.log))),
 	)

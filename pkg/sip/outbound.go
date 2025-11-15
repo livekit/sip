@@ -82,7 +82,7 @@ type outboundCall struct {
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
-	lkRoom   *Room
+	lkRoom   RoomInterface
 	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
 	sipConf  sipOutboundConfig
 }
@@ -149,7 +149,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.media.SetDTMFAudio(conf.AudioDTMF)
 	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
-	if err := call.connectToRoom(ctx, room); err != nil {
+	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
 		call.close(errors.Wrap(err, "room join failed"), callDropped, "join-failed", livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
@@ -204,7 +204,12 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 	}
 
 	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
-		info.RoomId = c.lkRoom.room.SID()
+		lkroom := c.lkRoom.Room()
+		if lkroom == nil {
+			c.log.Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
+			return
+		}
+		info.RoomId = lkroom.SID()
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 	})
@@ -368,7 +373,7 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
-func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) error {
+func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getRoom GetRoomFunc) error {
 	ctx, span := tracer.Start(ctx, "outboundCall.connectToRoom")
 	defer span.End()
 	attrs := lkNew.Participant.Attributes
@@ -383,7 +388,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig) erro
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
-	r := NewRoom(c.log, &c.stats.Room)
+	r := getRoom(c.log, &c.stats.Room)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
 		return err
 	}
@@ -874,6 +879,10 @@ authLoop:
 		}
 	}
 
+	// We currently don't plumb the request back to caller to construct the ACK with.
+	// Thus, we need to modify the request to update any route sets.
+	for req.RemoveHeader("Route") {
+	}
 	for _, hdr := range resp.GetHeaders("Record-Route") {
 		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}
