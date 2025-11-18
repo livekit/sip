@@ -173,6 +173,13 @@ func legTransportFromReq(req *sip.Request) Transport {
 	return ""
 }
 
+func legCallIDFromReq(req *sip.Request) string {
+	if callID := req.CallID(); callID != nil {
+		return callID.Value()
+	}
+	return ""
+}
+
 func transportPort(c *config.Config, t Transport) int {
 	if t == TransportTLS {
 		if tc := c.TLS; tc != nil {
