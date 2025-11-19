@@ -306,9 +306,10 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 			info.DisconnectReason = reason
 		})
 		c.media.Close()
-		_ = c.lkRoom.CloseOutput()
-
-		_ = c.lkRoom.CloseWithReason(status.DisconnectReason())
+		if r := c.lkRoom; r != nil {
+			_ = r.CloseOutput()
+			_ = r.CloseWithReason(status.DisconnectReason())
+		}
 		c.lkRoomIn = nil
 
 		c.stopSIP(description)
@@ -390,6 +391,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	lkNew.Participant.Attributes = attrs
 	r := getRoom(c.log, &c.stats.Room)
 	if err := r.Connect(c.c.conf, lkNew); err != nil {
+		_ = r.Close()
 		return err
 	}
 	// We have to create the track early because we might play a dialtone while SIP connects.
@@ -490,6 +492,9 @@ func (c *outboundCall) stopSIP(reason string) {
 func (c *outboundCall) setStatus(v CallStatus) {
 	attr := v.Attribute()
 	if attr == "" {
+		return
+	}
+	if c.lkRoom == nil {
 		return
 	}
 	r := c.lkRoom.Room()
@@ -617,6 +622,9 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 }
 
 func (c *outboundCall) handleDTMF(ev dtmf.Event) {
+	if c.lkRoom == nil {
+		return
+	}
 	_ = c.lkRoom.SendData(&livekit.SipDTMF{
 		Code:  uint32(ev.Code),
 		Digit: string([]byte{ev.Digit}),
