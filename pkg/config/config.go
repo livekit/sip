@@ -80,6 +80,8 @@ type Config struct {
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 	ListenIP      string `yaml:"listen_ip"`
 
+	// ENABLE JUMBO FRAME FOR UDP
+	UDPJumboFrame bool `yaml:"udp_jumbo_frame"`
 	// if different from signaling IP
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
