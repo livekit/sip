@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/livekit/sipgo/transport"
 	"io"
 	"log/slog"
 	"net"
@@ -73,6 +74,10 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if log == nil {
 		log = logger.GetLogger()
 	}
+	if conf.UDPJumboFrame {
+		transport.UDPMTUSize = 10000
+	}
+
 	if conf.MediaTimeout <= 0 {
 		conf.MediaTimeout = defaultMediaTimeout
 	}
