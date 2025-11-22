@@ -66,7 +66,7 @@ func (v CallStatus) Attribute() string {
 		return "automation"
 	case CallActive:
 		return "active"
-	case CallHangup:
+	case CallHangup, callHangupMedia:
 		return "hangup"
 	}
 }
@@ -75,7 +75,7 @@ func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
 	switch v {
 	default:
 		return livekit.DisconnectReason_UNKNOWN_REASON
-	case CallHangup:
+	case CallHangup, callHangupMedia:
 		// It's the default that LK sets, but map it here explicitly to show the assumption.
 		return livekit.DisconnectReason_CLIENT_INITIATED
 	case callUnavailable:
@@ -107,4 +107,5 @@ const (
 	callMediaFailed
 	callAcceptFailed
 	callNoACK
+	callHangupMedia
 )

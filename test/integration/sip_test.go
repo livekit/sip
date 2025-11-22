@@ -912,7 +912,7 @@ func TestSIPOutbound(t *testing.T) {
 						},
 					})
 					t.Cleanup(func() {
-						srvIn.DeleteTrunk(t, trunkOut)
+						srvOut.DeleteTrunk(t, trunkOut)
 					})
 
 					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

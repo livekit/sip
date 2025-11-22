@@ -61,6 +61,31 @@ type ParticipantInfo struct {
 	Name     string
 }
 
+// RoomInterface defines the interface for room operations
+type RoomInterface interface {
+	Connect(conf *config.Config, rconf RoomConfig) error
+	Closed() <-chan struct{}
+	Subscribed() <-chan struct{}
+	Room() *lksdk.Room
+	Subscribe()
+	Output() msdk.Writer[msdk.PCM16Sample]
+	SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer
+	CloseOutput() error
+	SetDTMFOutput(w dtmf.Writer)
+	Close() error
+	CloseWithReason(reason livekit.DisconnectReason) error
+	Participant() ParticipantInfo
+	NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error)
+	SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error
+	NewTrack() *mixer.Input
+}
+
+type GetRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
+
+func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
+	return NewRoom(log, st)
+}
+
 type Room struct {
 	log        logger.Logger
 	roomLog    logger.Logger // deferred logger
