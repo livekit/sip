@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
@@ -45,6 +46,32 @@ const (
 	defaultMediaTimeoutInitial = 30 * time.Second
 )
 
+type PortStatsSnapshot struct {
+	Streams        uint64 `json:"streams"`
+	Packets        uint64 `json:"packets"`
+	IgnoredPackets uint64 `json:"packets_ignored"`
+	InputPackets   uint64 `json:"packets_input"`
+
+	MuxPackets uint64 `json:"mux_packets"`
+	MuxBytes   uint64 `json:"mux_bytes"`
+
+	AudioPackets uint64 `json:"audio_packets"`
+	AudioBytes   uint64 `json:"audio_bytes"`
+
+	AudioInFrames   uint64 `json:"audio_in_frames"`
+	AudioInSamples  uint64 `json:"audio_in_samples"`
+	AudioOutFrames  uint64 `json:"audio_out_frames"`
+	AudioOutSamples uint64 `json:"audio_out_samples"`
+
+	AudioRX float64 `json:"audio_rx"`
+	AudioTX float64 `json:"audio_tx"`
+
+	DTMFPackets uint64 `json:"dtmf_packets"`
+	DTMFBytes   uint64 `json:"dtmf_bytes"`
+
+	Closed bool `json:"closed"`
+}
+
 type PortStats struct {
 	Streams        atomic.Uint64
 	Packets        atomic.Uint64
@@ -62,10 +89,67 @@ type PortStats struct {
 	AudioOutFrames  atomic.Uint64
 	AudioOutSamples atomic.Uint64
 
+	AudioRX atomic.Uint64 // based on AudioInSamples
+	AudioTX atomic.Uint64 // based on AudioOutSamples
+
 	DTMFPackets atomic.Uint64
 	DTMFBytes   atomic.Uint64
 
 	Closed atomic.Bool
+
+	mu   sync.Mutex
+	last struct {
+		Time            time.Time
+		AudioInSamples  uint64
+		AudioOutSamples uint64
+	}
+}
+
+func (s *PortStats) Load() PortStatsSnapshot {
+	return PortStatsSnapshot{
+		Streams:         s.Streams.Load(),
+		Packets:         s.Packets.Load(),
+		IgnoredPackets:  s.IgnoredPackets.Load(),
+		InputPackets:    s.InputPackets.Load(),
+		MuxPackets:      s.MuxPackets.Load(),
+		MuxBytes:        s.MuxBytes.Load(),
+		AudioPackets:    s.AudioPackets.Load(),
+		AudioBytes:      s.AudioBytes.Load(),
+		AudioInFrames:   s.AudioInFrames.Load(),
+		AudioInSamples:  s.AudioInSamples.Load(),
+		AudioOutFrames:  s.AudioOutFrames.Load(),
+		AudioOutSamples: s.AudioOutSamples.Load(),
+		AudioRX:         math.Float64frombits(s.AudioRX.Load()),
+		AudioTX:         math.Float64frombits(s.AudioTX.Load()),
+		DTMFPackets:     s.DTMFPackets.Load(),
+		DTMFBytes:       s.DTMFBytes.Load(),
+		Closed:          s.Closed.Load(),
+	}
+}
+
+func (s *PortStats) Update() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := time.Now()
+	dt := t.Sub(s.last.Time).Seconds()
+
+	curAudioInSamples := s.AudioInSamples.Load()
+	curAudioOutSamples := s.AudioOutSamples.Load()
+
+	if dt > 0 {
+		rxSamples := curAudioInSamples - s.last.AudioInSamples
+		txSamples := curAudioOutSamples - s.last.AudioOutSamples
+
+		rxRate := float64(rxSamples) / dt
+		txRate := float64(txSamples) / dt
+
+		s.AudioRX.Store(math.Float64bits(rxRate))
+		s.AudioTX.Store(math.Float64bits(txRate))
+	}
+
+	s.last.Time = t
+	s.last.AudioInSamples = curAudioInSamples
+	s.last.AudioOutSamples = curAudioOutSamples
 }
 
 type UDPConn interface {
