@@ -33,6 +33,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/media-sdk/mixer"
+
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/opus"
 )
@@ -40,6 +41,7 @@ import (
 type RoomStats struct {
 	InputPackets atomic.Uint64
 	InputBytes   atomic.Uint64
+	DTMFPackets  atomic.Uint64
 
 	PublishedFrames  atomic.Uint64
 	PublishedSamples atomic.Uint64
@@ -60,6 +62,31 @@ type ParticipantInfo struct {
 	RoomName string
 	Identity string
 	Name     string
+}
+
+// RoomInterface defines the interface for room operations
+type RoomInterface interface {
+	Connect(conf *config.Config, rconf RoomConfig) error
+	Closed() <-chan struct{}
+	Subscribed() <-chan struct{}
+	Room() *lksdk.Room
+	Subscribe()
+	Output() msdk.Writer[msdk.PCM16Sample]
+	SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer
+	CloseOutput() error
+	SetDTMFOutput(w dtmf.Writer)
+	Close() error
+	CloseWithReason(reason livekit.DisconnectReason) error
+	Participant() ParticipantInfo
+	NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error)
+	SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error
+	NewTrack() *mixer.Input
+}
+
+type GetRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
+
+func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
+	return NewRoom(log, st)
 }
 
 type Room struct {
@@ -251,6 +278,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
 				case *livekit.SipDTMF:
+					r.stats.InputPackets.Add(1)
 					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
 					//       DTMF audio tone will be automatically mixed in any case.
 					r.sendDTMF(data)

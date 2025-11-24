@@ -80,6 +80,7 @@ type PortStatsSnapshot struct {
 type RoomStatsSnapshot struct {
 	InputPackets uint64 `json:"input_packets"`
 	InputBytes   uint64 `json:"input_bytes"`
+	DTMFPackets  uint64 `json:"dtmf_packets"`
 
 	PublishedFrames  uint64 `json:"published_frames"`
 	PublishedSamples uint64 `json:"published_samples"`
@@ -138,6 +139,7 @@ func (s *Stats) Load() StatsSnapshot {
 		Room: RoomStatsSnapshot{
 			InputPackets:     r.InputPackets.Load(),
 			InputBytes:       r.InputBytes.Load(),
+			DTMFPackets:      r.DTMFPackets.Load(),
 			PublishedFrames:  r.PublishedFrames.Load(),
 			PublishedSamples: r.PublishedSamples.Load(),
 			MixerSamples:     r.MixerSamples.Load(),
@@ -253,6 +255,7 @@ func ratePPM(rate float64, expected int) float64 {
 const (
 	channels       = 1
 	RoomSampleRate = 48000
+	RoomResample   = false
 )
 
 func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) rtp.Handler {

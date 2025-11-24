@@ -27,7 +27,7 @@ jobs:
     runs-on: namespace-profile-8vcpu-cache
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install Opus dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libsoxr-dev

@@ -623,3 +623,322 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		t.Logf("Second request got status: %d", res2.StatusCode)
 	}
 }
+
+// When a cancel request is sent, we expect two responses, 200 (for CANCEL), and 487 (for INVITE).
+// This test makes sure the 487 response is received (can't test CANCEL-200)
+func TestCANCELSendsBothResponses(t *testing.T) {
+	const (
+		fromUser = "caller@example.com"
+		toUser   = "callee@example.com"
+	)
+
+	// Handler that accepts calls and makes them ring (so we can cancel during ringing)
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthAccept}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			// Accept the call but don't complete immediately - let it ring
+			// This simulates a call that's ringing when CANCEL is received
+			return CallDispatch{
+				Result: DispatchAccept,
+				Room: RoomConfig{
+					RoomName: "test-room",
+					Participant: ParticipantConfig{
+						Identity: "test-participant",
+					},
+				},
+				RingingTimeout: 30 * time.Second, // Long timeout so call stays ringing
+			}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// No-op for tests
+		},
+	}
+
+	// Create service
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	log := logger.LogRLogger(logr.Discard())
+	s, err := NewService("", &config.Config{
+		HideInboundPort:    false,
+		SIPPort:            sipPort,
+		SIPPortListen:      sipPort,
+		RTPPort:            rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+		SIPRingingInterval: 1 * time.Second,
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
+
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+
+	// Create SIP client using sipgo
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(fromUser),
+	)
+	require.NoError(t, err)
+
+	sipClient, err := sipgo.NewClient(sipUserAgent)
+	require.NoError(t, err)
+
+	// Create SDP offer
+	offer, err := sdp.NewOffer(localIP, 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+
+	// Create INVITE request
+	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
+	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipient)
+	inviteRequest.SetDestination(sipServerAddress)
+	inviteRequest.SetBody(offerData)
+	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+
+	// Send INVITE
+	tx, err := sipClient.TransactionRequest(inviteRequest)
+	require.NoError(t, err)
+	t.Cleanup(tx.Terminate)
+
+	// Wait for 100 Trying
+	res100 := getResponseOrFail(t, tx)
+	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "Should receive 100 Trying")
+
+	// Wait for 180 Ringing (call is now ringing)
+	res180 := getResponseOrFail(t, tx)
+	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "Should receive 180 Ringing")
+
+	// Now send CANCEL
+	err = tx.Cancel()
+	require.NoError(t, err, "Should be able to send CANCEL")
+
+	// On-the-wire there should be two responses after CANCEL:
+	// 1. 200 OK response to the CANCEL request (CSeq method = CANCEL)
+	// 2. 487 Request Terminated response to the original INVITE (CSeq method = INVITE)
+	//    This is the critical one - we must receive it
+	// However, the 200 OK response to CANCEL will not come through tx.Responses().
+	// Sipgo treats both INVITE and CANCEL as the same transaction, and has special handling
+	// to swallow the 200 OK response to CANCEL, so it can't look like the INVITE got the 200.
+
+	// Collect responses until we get the final 487 or transaction completes
+	var responses []*sip.Response
+	var invite487Received bool
+
+	// Wait for responses with a timeout
+	timeout := time.After(time.Second)
+	transactionDone := false
+
+	// Collect responses until we get 487 or timeout
+	for !invite487Received && !transactionDone {
+		select {
+		case res := <-tx.Responses():
+			responses = append(responses, res)
+			cseq := res.CSeq()
+
+			// Debug: log all responses to understand what we're receiving
+			cseqMethod := "nil"
+			if cseq != nil {
+				cseqMethod = string(cseq.MethodName)
+			}
+			t.Logf("Received response: StatusCode=%d, CSeq method=%s", res.StatusCode, cseqMethod)
+
+			// Check if this is the 487 response to INVITE
+			if res.StatusCode == sip.StatusCode(487) {
+				// Verify this is for the INVITE (CSeq method should be INVITE)
+				require.NotNil(t, cseq, "487 response should have CSeq header")
+				if cseq != nil {
+					require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
+					invite487Received = true
+				}
+			}
+
+		case <-tx.Done():
+			// Transaction completed, check if we got the 487 response
+			transactionDone = true
+
+		case <-timeout:
+			// Log all received responses for debugging
+			t.Logf("Timeout after receiving %d responses", len(responses))
+			for i, res := range responses {
+				cseq := res.CSeq()
+				cseqMethod := "nil"
+				if cseq != nil {
+					cseqMethod = string(cseq.MethodName)
+				}
+				t.Logf("  Response %d: StatusCode=%d, CSeq method=%s", i+1, res.StatusCode, cseqMethod)
+			}
+			t.Fatal("Timeout waiting for 487 Request Terminated response after CANCEL")
+		}
+	}
+
+	// Verify we received the critical 487 response
+	require.True(t, invite487Received, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
+}
+
+// TestSameCallIDForAuthFlow verifies that the same LiveKit call ID is assigned to both
+// the initial INVITE (without auth) and the subsequent INVITE (with auth)
+func TestSameCallIDForAuthFlow(t *testing.T) {
+	const (
+		fromUser = "test@example.com"
+		toUser   = "agent@example.com"
+		username = "testuser"
+		password = "testpass"
+		callID   = "same-call-id@test.com"
+		fromTag  = "fixed-from-tag-12345"
+	)
+
+	var capturedCallIDs []string
+	var mu sync.Mutex
+
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			// Capture the LiveKit call ID from the first request
+			mu.Lock()
+			capturedCallIDs = append(capturedCallIDs, call.LkCallId)
+			mu.Unlock()
+
+			return AuthInfo{
+				Result:   AuthPassword,
+				Username: username,
+				Password: password,
+			}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{
+				Result: DispatchNoRuleReject,
+				// No room config needed for reject
+			}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// No-op for tests to avoid async logging issues
+		},
+	}
+
+	// Create service with authentication enabled
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
+	s, err := NewService("", &config.Config{
+		HideInboundPort: false, // Enable authentication
+		SIPPort:         sipPort,
+		SIPPortListen:   sipPort,
+		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
+
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(fromUser),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	)
+	require.NoError(t, err)
+
+	sipClient, err := sipgo.NewClient(sipUserAgent)
+	require.NoError(t, err)
+
+	offer, err := sdp.NewOffer(localIP, 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+
+	inviteFromHeader := sip.FromHeader{
+		DisplayName: fromUser,
+		Address:     sip.Uri{User: fromUser, Host: sipServerAddress},
+		Params:      sip.NewParams().Add("tag", fromTag), // Key bit here
+	}
+
+	// Create first INVITE request (without auth)
+	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
+	inviteRequest1 := sip.NewRequest(sip.INVITE, inviteRecipient)
+	inviteRequest1.SetDestination(sipServerAddress)
+	inviteRequest1.SetBody(offerData)
+	inviteRequest1.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	inviteRequest1.AppendHeader(sip.NewHeader("Call-ID", callID))
+	inviteRequest1.AppendHeader(&inviteFromHeader)
+
+	tx1, err := sipClient.TransactionRequest(inviteRequest1)
+	require.NoError(t, err)
+	t.Cleanup(tx1.Terminate)
+
+	// Should receive 100 Trying first, then 407 Unauthorized
+	res1 := getResponseOrFail(t, tx1)
+	require.Equal(t, sip.StatusCode(100), res1.StatusCode, "First request should receive 100 Trying")
+	res1 = getResponseOrFail(t, tx1)
+	require.Equal(t, sip.StatusCode(407), res1.StatusCode, "First request should receive 407 Unauthorized")
+
+	// Get the To tag from the 407 response
+	toHeader := res1.To()
+	require.NotNil(t, toHeader, "407 response should have To header")
+	_, ok := toHeader.Params.Get("tag")
+	require.True(t, ok, "407 response To header should have tag parameter")
+
+	// Get the challenge from first response
+	authHeader1 := res1.GetHeader("Proxy-Authenticate")
+	require.NotNil(t, authHeader1, "First response should have Proxy-Authenticate header")
+	challenge1 := authHeader1.Value()
+
+	// Parse the challenge to extract nonce and realm
+	challenge, err := digest.ParseChallenge(challenge1)
+	require.NoError(t, err, "Should be able to parse challenge")
+
+	// Compute the digest response using the challenge and credentials
+	cred, err := digest.Digest(challenge, digest.Options{
+		Method:   "INVITE",
+		URI:      inviteRecipient.String(),
+		Username: username,
+		Password: password,
+	})
+	require.NoError(t, err, "Should be able to compute digest response")
+
+	// Create second INVITE request (with auth) using the SAME Call-ID, From tag, and To tag
+	inviteRequest2 := sip.NewRequest(sip.INVITE, inviteRecipient)
+	inviteRequest2.SetDestination(sipServerAddress)
+	inviteRequest2.SetBody(offerData)
+	inviteRequest2.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	inviteRequest2.AppendHeader(sip.NewHeader("Call-ID", callID))
+	inviteRequest2.AppendHeader(sip.NewHeader("Proxy-Authorization", cred.String()))
+	inviteRequest2.AppendHeader(&inviteFromHeader)
+	inviteRequest2.AppendHeader(toHeader)
+
+	tx2, err := sipClient.TransactionRequest(inviteRequest2)
+	require.NoError(t, err)
+	t.Cleanup(tx2.Terminate)
+
+	// Should receive 100 Trying first, then proceed with authentication
+	res2 := getResponseOrFail(t, tx2)
+	require.Equal(t, sip.StatusCode(100), res2.StatusCode, "Second request should receive 100 Trying")
+
+	// Wait a bit for the handler to be called
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify we captured exactly 2 call IDs
+	mu.Lock()
+	require.Len(t, capturedCallIDs, 2, "Should have captured 2 call IDs")
+	require.Equal(t, capturedCallIDs[0], capturedCallIDs[1], "Both requests should have the same LiveKit call ID")
+	require.NotEmpty(t, capturedCallIDs[0], "Call ID should not be empty")
+	require.Contains(t, capturedCallIDs[0], "SCL_", "Call ID should have SCL_ prefix")
+	mu.Unlock()
+
+	t.Logf("First call ID: %s", capturedCallIDs[0])
+	t.Logf("Second call ID: %s", capturedCallIDs[1])
+}

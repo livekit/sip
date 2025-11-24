@@ -198,14 +198,15 @@ func TestMediaPort(t *testing.T) {
 
 					log := logger.GetLogger()
 
-					m1, err := NewMediaPortWith(log.WithName("one"), nil, c1, &MediaOptions{
-						IP:    newIP("1.1.1.1"),
-						Ports: rtcconfig.PortRange{Start: 10000},
+					m1, err := NewMediaPortWith(1, log.WithName("one"), nil, c1, &MediaOptions{
+						IP:              newIP("1.1.1.1"),
+						Ports:           rtcconfig.PortRange{Start: 10000},
+						NoInputResample: true,
 					}, tconf.Rate)
 					require.NoError(t, err)
 					defer m1.Close()
 
-					m2, err := NewMediaPortWith(log.WithName("two"), nil, c2, &MediaOptions{
+					m2, err := NewMediaPortWith(2, log.WithName("two"), nil, c2, &MediaOptions{
 						IP:    newIP("2.2.2.2"),
 						Ports: rtcconfig.PortRange{Start: 20000},
 					}, tconf.Rate)
@@ -235,11 +236,13 @@ func TestMediaPort(t *testing.T) {
 					err = m2.SetConfig(conf)
 					require.NoError(t, err)
 
-					require.Equal(t, info.SDPName, m1.Config().Audio.Codec.Info().SDPName)
-					require.Equal(t, info.SDPName, m2.Config().Audio.Codec.Info().SDPName)
+					codec1 := m1.Config().Audio.Codec
+					codec2 := m2.Config().Audio.Codec
+					require.Equal(t, info.SDPName, codec1.Info().SDPName)
+					require.Equal(t, info.SDPName, codec2.Info().SDPName)
 
 					var buf1 msdk.PCM16Sample
-					bw1 := msdk.NewPCM16BufferWriter(&buf1, tconf.Rate)
+					bw1 := msdk.NewPCM16BufferWriter(&buf1, codec1.Info().SampleRate)
 					m1.WriteAudioTo(bw1)
 
 					var buf2 msdk.PCM16Sample
@@ -257,7 +260,8 @@ func TestMediaPort(t *testing.T) {
 						sample2[i] = -5116
 					}
 
-					writes := 1
+					writes1 := 1
+					writes2 := 1
 					if tconf.Rate == nativeRate {
 						expChain := fmt.Sprintf("Switch(%d) -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain, w1.String())
@@ -271,20 +275,31 @@ func TestMediaPort(t *testing.T) {
 						require.Equal(t, expChain, w1.String())
 						require.Equal(t, expChain, w2.String())
 
-						expChain = fmt.Sprintf("RTP(%d) -> %s(decode) -> Resample(%d->48000) -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
-						require.Equal(t, expChain, PrintAudioInWriter(m1))
-						require.Equal(t, expChain, PrintAudioInWriter(m2))
+						// This side does not resample the received audio, it uses sample rate of the RTP source.
+						expChain1 := fmt.Sprintf("RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
+						// This side resamples the received audio to the expected sample rate.
+						expChain2 := fmt.Sprintf("RTP(%d) -> %s(decode) -> Resample(%d->48000) -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
+						require.Equal(t, expChain1, PrintAudioInWriter(m1))
+						require.Equal(t, expChain2, PrintAudioInWriter(m2))
 
-						writes += 2 // resampler will buffer a few frames
+						// resampler will buffer a few frames
+						writes1 += 2
+						writes2 += 2
+						// a few more because of higher resample quality required
 						if nativeRate == 8000 {
-							writes += 3 // a few more because of higher resample quality required
+							writes1 += 3
+							writes2 += 5
+						}
+						if strings.HasPrefix(info.SDPName, "G722/") {
+							writes2 += 1
 						}
 					}
 
-					for range writes {
+					for range writes1 {
 						err = w1.WriteSample(sample1)
 						require.NoError(t, err)
-
+					}
+					for range writes2 {
 						err = w2.WriteSample(sample2)
 						require.NoError(t, err)
 					}
@@ -309,6 +324,7 @@ func TestMediaPort(t *testing.T) {
 }
 
 func checkPCM(t testing.TB, exp, got msdk.PCM16Sample) {
+	t.Helper()
 	require.Equal(t, len(exp), len(got))
 	expSamples := slices.Clone(exp)
 	slices.Sort(expSamples)
@@ -338,6 +354,7 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 
 	opt1.IP = newIP("1.1.1.1")
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}
+	opt1.NoInputResample = true
 
 	opt2.IP = newIP("2.2.2.2")
 	opt2.Ports = rtcconfig.PortRange{Start: 20000}
@@ -348,11 +365,11 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 
 	var err error
 
-	m1, err = NewMediaPortWith(log.WithName("one"), nil, c1, opt1, rate)
+	m1, err = NewMediaPortWith(1, log.WithName("one"), nil, c1, opt1, rate)
 	require.NoError(t, err)
 	t.Cleanup(m1.Close)
 
-	m2, err = NewMediaPortWith(log.WithName("two"), nil, c2, opt2, rate)
+	m2, err = NewMediaPortWith(2, log.WithName("two"), nil, c2, opt2, rate)
 	require.NoError(t, err)
 	t.Cleanup(m2.Close)
 

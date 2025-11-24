@@ -73,6 +73,12 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if log == nil {
 		log = logger.GetLogger()
 	}
+	if conf.MediaTimeout <= 0 {
+		conf.MediaTimeout = defaultMediaTimeout
+	}
+	if conf.MediaTimeoutInitial <= 0 {
+		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
+	}
 	s := &Service{
 		conf:             conf,
 		log:              log,
@@ -97,7 +103,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 				"[", "", "]", "", ":", "-", // IPv6
 			).Replace(s.sconf.SignalingIP.String()),
 		)
-		addr, err := net.ResolveTCPAddr("tcp4", s.conf.SIPHostname)
+		addr, err := net.ResolveIPAddr("tcp4", s.conf.SIPHostname)
 		if err != nil {
 			log.Errorw("cannot resolve node hostname", err, "hostname", s.conf.SIPHostname)
 		} else {
@@ -331,11 +337,13 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	s.cli.cmu.Unlock()
 
 	if out != nil {
+		s.mon.TransferStarted(stats.Outbound)
 		err := out.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
+			s.mon.TransferFailed(stats.Outbound, extractTransferErrorReason(err), true)
 			return err
 		}
-
+		s.mon.TransferSucceeded(stats.Outbound)
 		return nil
 	}
 
@@ -344,15 +352,19 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	s.srv.cmu.Unlock()
 
 	if in != nil {
+		s.mon.TransferStarted(stats.Inbound)
 		err := in.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
+			s.mon.TransferFailed(stats.Inbound, extractTransferErrorReason(err), true)
 			return err
 		}
-
+		s.mon.TransferSucceeded(stats.Inbound)
 		return nil
 	}
 
-	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+	err := psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+	s.mon.TransferFailed(stats.Inbound, "unknown_call", false)
+	return err
 }
 
 func (s *Service) checkInternalProviderRequest(ctx context.Context, callID string) error {
@@ -387,4 +399,49 @@ func (s *Service) validateCallProvider(state *CallState) error {
 	}
 
 	return nil
+}
+
+// extractTransferErrorReason extracts a user-friendly reason string from an error
+func extractTransferErrorReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	// Check for livekit.SIPStatus errors first
+	var sipStatus *livekit.SIPStatus
+	if errors.As(err, &sipStatus) {
+		// Use ShortName() to get the status code name without "SIP_STATUS_" prefix
+		// and convert to lowercase for metric labels
+		return strings.ToLower(sipStatus.Code.ShortName())
+	}
+
+	// Check for psrpc errors
+	var psrpcErr psrpc.Error
+	if errors.As(err, &psrpcErr) {
+		switch psrpcErr.Code() {
+		case psrpc.NotFound:
+			return "not_found"
+		case psrpc.Canceled:
+			return "canceled"
+		case psrpc.DeadlineExceeded:
+			return "timeout"
+		case psrpc.InvalidArgument:
+			return "invalid_argument"
+		case psrpc.Internal:
+			return "internal_error"
+		default:
+			return "psrpc_error"
+		}
+	}
+
+	// Check for context errors
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+
+	// Return "other" for unknown errors
+	return "other"
 }

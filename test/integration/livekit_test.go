@@ -23,10 +23,17 @@ var debugLKServer = os.Getenv("DEBUG_LK_SERVER") != ""
 var redisLast uint32
 
 func runRedis(t testing.TB) *redis.RedisConfig {
-	c, err := Docker.RunWithOptions(&dockertest.RunOptions{
-		Name:       fmt.Sprintf("siptest-redis-%d", atomic.AddUint32(&redisLast, 1)),
-		Repository: "redis", Tag: "latest",
-	})
+	name := fmt.Sprintf("siptest-redis-%d", atomic.AddUint32(&redisLast, 1))
+	c, ok := Docker.ContainerByName(name)
+	if ok {
+		t.Log("Redis container already exists - stopping and removing", name)
+		Docker.Purge(c)
+	}
+	c, err := Docker.RunWithOptions(
+		&dockertest.RunOptions{
+			Name:       name,
+			Repository: "redis", Tag: "latest",
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,18 +62,25 @@ func runLiveKit(t testing.TB) *LiveKit {
 		t.Fatal(err)
 	}
 
-	c, err := Docker.RunWithOptions(&dockertest.RunOptions{
-		Name:       fmt.Sprintf("siptest-livekit-%d", atomic.AddUint32(&livekitLast, 1)),
-		Repository: "livekit/livekit-server", Tag: "master",
-		Cmd: []string{
-			"--dev",
-			// TODO: We use Docker bridge IP here instead of the host IP.
-			//       Maybe run on the host network instead? We might need it for RTP anyway.
-			"--redis-host", dockerBridgeIP + ":" + port,
-			"--bind", "0.0.0.0",
-		},
-		ExposedPorts: []string{"7880/tcp"},
-	})
+	name := fmt.Sprintf("siptest-livekit-%d", atomic.AddUint32(&livekitLast, 1))
+	c, ok := Docker.ContainerByName(name)
+	if ok {
+		t.Log("Livekit-server container already exists - stopping and removing", name)
+		Docker.Purge(c)
+	}
+	c, err = Docker.RunWithOptions(
+		&dockertest.RunOptions{
+			Name:       name,
+			Repository: "livekit/livekit-server", Tag: "master",
+			Cmd: []string{
+				"--dev",
+				// TODO: We use Docker bridge IP here instead of the host IP.
+				//       Maybe run on the host network instead? We might need it for RTP anyway.
+				"--redis-host", dockerBridgeIP + ":" + port,
+				"--bind", "0.0.0.0",
+			},
+			ExposedPorts: []string{"7880/tcp"},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +101,9 @@ func runLiveKit(t testing.TB) *LiveKit {
 		})
 	}
 	wsaddr := c.GetHostPort("7880/tcp")
+	if wsaddr == "" {
+		t.Fatal("LiveKit WS address is empty")
+	}
 	waitTCPPort(t, wsaddr)
 	wsurl := "ws://" + wsaddr
 

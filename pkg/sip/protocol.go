@@ -173,6 +173,13 @@ func legTransportFromReq(req *sip.Request) Transport {
 	return ""
 }
 
+func legCallIDFromReq(req *sip.Request) string {
+	if callID := req.CallID(); callID != nil {
+		return callID.Value()
+	}
+	return ""
+}
+
 func transportPort(c *config.Config, t Transport) int {
 	if t == TransportTLS {
 		if tc := c.TLS; tc != nil {
@@ -375,7 +382,16 @@ func handleReferNotify(cseq uint32, status int, reason string, referCseq uint32,
 			Code:   livekit.SIPStatusCode(status),
 			Status: reason,
 		}
-		result = psrpc.NewErrorf(psrpc.Canceled, "call transfer failed: %w", st)
+		// Converts SIP status to GRPC via SIPStatus.GRPCStatus(), then converts to psrpc via ErrorCodeFromGRPC()
+		errorCode, _ := psrpc.GetErrorCode(st)
+		if errorCode == psrpc.Internal || errorCode == psrpc.Unavailable {
+			// Temporarily overwrite the code until we support a direct SIPStatus -> psrpc.ErrorCode conversion
+			errorCode = psrpc.UpstreamServerError
+			if status < 500 || status >= 600 { // Common 6xx codes: 603 Declined, 608 Rejected
+				errorCode = psrpc.UpstreamClientError
+			}
+		}
+		result = psrpc.NewErrorf(errorCode, "call transfer failed: %w", st)
 	}
 	select {
 	case referDone <- result:
@@ -413,6 +429,10 @@ func sipStatusForErrorCode(code psrpc.ErrorCode) sip.StatusCode {
 		return sip.StatusServiceUnavailable
 	case psrpc.Unauthenticated:
 		return sip.StatusUnauthorized
+	case psrpc.UpstreamServerError:
+		return sip.StatusBadGateway
+	case psrpc.UpstreamClientError:
+		return sip.StatusTemporarilyUnavailable
 	default:
 		return sip.StatusInternalServerError
 	}
