@@ -1014,7 +1014,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 		c.media.HandleDTMF(c.handleDTMF)
 	}
 
-	c.stats.startRateLogger(c.ctx, c.log, defaultRateLoggerInterval, RoomSampleRate)
+	c.stats.startRateLogger(c.ctx, c.log(), defaultRateLoggerInterval, RoomSampleRate)
 
 	// Must be set earlier to send the pin prompts.
 	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
