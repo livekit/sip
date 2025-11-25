@@ -230,6 +230,7 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 		case <-ticker.C:
 			c.log.Debugw("sending keep-alive")
 			c.state.ForceFlush(ctx)
+			c.stats.Update()
 			c.printStats()
 		case <-c.Disconnected():
 			c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
@@ -284,7 +285,7 @@ func (c *outboundCall) closeWithTimeout() {
 }
 
 func (c *outboundCall) printStats() {
-	c.log.Infow("call statistics", "stats", c.stats.Load(), "durMin", int(time.Since(c.callStart).Minutes()))
+	c.stats.Log(c.log, c.callStart)
 }
 
 func (c *outboundCall) close(err error, status CallStatus, description string, reason livekit.DisconnectReason) {

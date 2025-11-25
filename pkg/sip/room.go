@@ -18,7 +18,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v4"
@@ -38,10 +41,34 @@ import (
 	"github.com/livekit/sip/pkg/media/opus"
 )
 
+type RoomStatsSnapshot struct {
+	InputPackets uint64 `json:"input_packets"`
+	InputBytes   uint64 `json:"input_bytes"`
+	DTMFPackets  uint64 `json:"dtmf_packets"`
+
+	PublishedFrames  uint64 `json:"published_frames"`
+	PublishedSamples uint64 `json:"published_samples"`
+
+	PublishTX float64 `json:"publish_tx"`
+
+	MixerSamples uint64 `json:"mixer_samples"`
+	MixerFrames  uint64 `json:"mixer_frames"`
+
+	OutputSamples uint64 `json:"output_samples"`
+	OutputFrames  uint64 `json:"output_frames"`
+
+	Closed bool `json:"closed"`
+}
+
 type RoomStats struct {
 	InputPackets atomic.Uint64
 	InputBytes   atomic.Uint64
 	DTMFPackets  atomic.Uint64
+
+	PublishedFrames  atomic.Uint64
+	PublishedSamples atomic.Uint64
+
+	PublishTX atomic.Uint64
 
 	MixerFrames  atomic.Uint64
 	MixerSamples atomic.Uint64
@@ -52,6 +79,48 @@ type RoomStats struct {
 	OutputSamples atomic.Uint64
 
 	Closed atomic.Bool
+
+	mu   sync.Mutex
+	last struct {
+		Time             time.Time
+		PublishedSamples uint64
+	}
+}
+
+func (s *RoomStats) Load() RoomStatsSnapshot {
+	return RoomStatsSnapshot{
+		InputPackets:     s.InputPackets.Load(),
+		InputBytes:       s.InputBytes.Load(),
+		DTMFPackets:      s.DTMFPackets.Load(),
+		PublishedFrames:  s.PublishedFrames.Load(),
+		PublishedSamples: s.PublishedSamples.Load(),
+		PublishTX:        math.Float64frombits(s.PublishTX.Load()),
+		MixerSamples:     s.MixerSamples.Load(),
+		MixerFrames:      s.MixerFrames.Load(),
+		OutputSamples:    s.OutputSamples.Load(),
+		OutputFrames:     s.OutputFrames.Load(),
+		Closed:           s.Closed.Load(),
+	}
+}
+
+func (s *RoomStats) Update() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := time.Now()
+	dt := t.Sub(s.last.Time).Seconds()
+
+	curPublishedSamples := s.PublishedSamples.Load()
+
+	if dt > 0 {
+		txSamples := curPublishedSamples - s.last.PublishedSamples
+
+		txRate := float64(txSamples) / dt
+
+		s.PublishTX.Store(math.Float64bits(txRate))
+	}
+
+	s.last.Time = t
+	s.last.PublishedSamples = curPublishedSamples
 }
 
 type ParticipantInfo struct {
@@ -452,7 +521,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	if err != nil {
 		return nil, err
 	}
-	return pw, nil
+	return newMediaWriterCount(pw, &r.stats.PublishedFrames, &r.stats.PublishedSamples), nil
 }
 
 func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {

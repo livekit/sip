@@ -945,6 +945,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		case <-ticker.C:
 			c.log().Debugw("sending keep-alive")
 			c.state.ForceFlush(ctx)
+			c.stats.Update()
 			c.printStats(c.log())
 		case <-ctx.Done():
 			c.closeWithHangup()
@@ -1150,7 +1151,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 }
 
 func (c *inboundCall) printStats(log logger.Logger) {
-	log.Infow("call statistics", "stats", c.stats.Load(), "durMin", int(time.Since(c.callStart).Minutes()))
+	c.stats.Log(log, c.callStart)
 }
 
 // close should only be called from handleInvite.
