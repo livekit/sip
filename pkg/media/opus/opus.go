@@ -78,15 +78,13 @@ func Encode(w Writer, channels int, log logger.Logger) (msdk.PCM16Writer, error)
 		return nil, err
 	}
 	samples := w.SampleRate() / rtp.DefFramesPerSec
-	return &encoder{
-		w:       w,
-		p:       p,
-		enc:     enc,
-		samples: samples,
-		inbuf:   make(msdk.PCM16Sample, 0, samples),
-		buf:     make([]byte, 4*channels*samples),
-		log:     log,
-	}, nil
+	return msdk.FullFrames[msdk.PCM16Sample](&encoder{
+		w:   w,
+		p:   p,
+		enc: enc,
+		buf: make([]byte, 4*channels*samples),
+		log: log,
+	}, samples), nil
 }
 
 type decoder struct {
@@ -137,15 +135,13 @@ func (d *decoder) Close() error {
 }
 
 type encoder struct {
-	log     logger.Logger
-	p       params
-	samples int
+	log logger.Logger
+	p   params
 
-	mu    sync.Mutex
-	w     Writer
-	enc   *opus.Encoder
-	inbuf msdk.PCM16Sample
-	buf   Sample
+	mu  sync.Mutex
+	w   Writer
+	enc *opus.Encoder
+	buf Sample
 
 	successiveErrorCount int
 }
@@ -161,49 +157,22 @@ func (e *encoder) SampleRate() int {
 func (e *encoder) WriteSample(in msdk.PCM16Sample) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.inbuf = append(e.inbuf, in...)
-	for len(e.inbuf) >= e.samples {
-		i := e.samples
-
-		n, err := e.enc.Encode(e.inbuf[:i], e.buf)
-
-		sz := copy(e.inbuf, e.inbuf[i:])
-		e.inbuf = e.inbuf[:sz]
-		if err != nil {
-			if e.successiveErrorCount < 5 {
-				e.log.Errorw("error encoding opus sample", err, "len", len(in), "buf", len(e.buf), "n", n)
-				e.successiveErrorCount++
-			}
-			return err
-		}
-		e.successiveErrorCount = 0
-		if err = e.w.WriteSample(e.buf[:n]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (e *encoder) flush() error {
-	if len(e.inbuf) == 0 {
-		return nil
-	}
-	n, err := e.enc.Encode(e.inbuf, e.buf)
+	n, err := e.enc.Encode(in, e.buf)
 	if err != nil {
+		if e.successiveErrorCount < 5 {
+			e.log.Errorw("error encoding opus sample", err, "len", len(in), "n", n)
+			e.successiveErrorCount++
+		}
 		return err
 	}
+	e.successiveErrorCount = 0
 	return e.w.WriteSample(e.buf[:n])
 }
 
 func (e *encoder) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	err1 := e.flush()
-	err2 := e.w.Close()
-	if err1 != nil {
-		return err1
-	}
-	return err2
+	return e.w.Close()
 }
 
 func NewWebmWriter(w io.WriteCloser, sampleRate int, sampleDur time.Duration) msdk.WriteCloser[Sample] {
