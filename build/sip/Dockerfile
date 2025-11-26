@@ -41,11 +41,11 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then GOARCH=arm64; else GOARCH=amd
     -ldflags "-X github.com/livekit/sip/version.Version=${VERSION}" \
     -o livekit-sip ./cmd/livekit-sip
 
-FROM golang:$GOVERSION
+FROM debian:trixie-slim
 
 # install wget for health check
 RUN apt-get update && \
-    apt-get install -y libopus0 libopusfile0 libsoxr0 && \
+    apt-get install -y libopus0 libopusfile0 libsoxr0 ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
