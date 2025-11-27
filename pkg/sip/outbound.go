@@ -852,14 +852,15 @@ authLoop:
 		if err != nil {
 			return nil, fmt.Errorf("invalid challenge %q: %w", challengeStr, err)
 		}
-		toHeader = resp.To()
-		if toHeader == nil {
+		// Intentionally not using the new To header for new requests, as it causes issues.
+		respToHeader := resp.To()
+		if respToHeader == nil {
 			return nil, errors.New("no 'To' header on Response")
 		}
 
 		cred, err := digest.Digest(challenge, digest.Options{
 			Method:   req.Method.String(),
-			URI:      toHeader.Address.String(),
+			URI:      respToHeader.Address.String(),
 			Username: user,
 			Password: pass,
 		})
