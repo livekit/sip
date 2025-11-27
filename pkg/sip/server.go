@@ -35,7 +35,6 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
@@ -45,7 +44,8 @@ import (
 )
 
 const (
-	UserAgent = "LiveKit"
+	UserAgent   = "LiveKit"
+	digestLimit = 500
 )
 
 const (
@@ -127,25 +127,18 @@ type Handler interface {
 	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
-type dialogKey struct {
-	sipCallID string
-	toTag     string
-	fromTag   string
-}
-
 type Server struct {
-	log                logger.Logger
-	mon                *stats.Monitor
-	region             string
-	sipSrv             *sipgo.Server
-	getIOClient        GetIOInfoClient
-	getRoom            GetRoomFunc
-	sipListeners       []io.Closer
-	sipUnhandled       RequestHandler
-	inviteTimeoutQueue utils.TimeoutQueue[dialogKey]
+	log          logger.Logger
+	mon          *stats.Monitor
+	region       string
+	sipSrv       *sipgo.Server
+	getIOClient  GetIOInfoClient
+	getRoom      GetRoomFunc
+	sipListeners []io.Closer
+	sipUnhandled RequestHandler
 
-	imu               sync.RWMutex
-	inProgressInvites map[dialogKey]*inProgressInvite
+	imu               sync.Mutex
+	inProgressInvites []*inProgressInvite
 
 	closing     core.Fuse
 	cmu         sync.RWMutex
@@ -166,10 +159,8 @@ type Server struct {
 }
 
 type inProgressInvite struct {
-	sipCallID   string
-	challenge   digest.Challenge
-	lkCallID    string // SCL_* LiveKit call ID assigned to this dialog
-	timeoutLink utils.TimeoutQueueItem[dialogKey]
+	sipCallID string
+	challenge digest.Challenge
 }
 
 type ServerOption func(s *Server)
@@ -187,16 +178,15 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:               log,
-		conf:              conf,
-		region:            region,
-		mon:               mon,
-		getIOClient:       getIOClient,
-		getRoom:           DefaultGetRoomFunc,
-		inProgressInvites: make(map[dialogKey]*inProgressInvite),
-		byRemoteTag:       make(map[RemoteTag]*inboundCall),
-		byLocalTag:        make(map[LocalTag]*inboundCall),
-		byCallID:          make(map[string]*inboundCall),
+		log:         log,
+		conf:        conf,
+		region:      region,
+		mon:         mon,
+		getIOClient: getIOClient,
+		getRoom:     DefaultGetRoomFunc,
+		byRemoteTag: make(map[RemoteTag]*inboundCall),
+		byLocalTag:  make(map[LocalTag]*inboundCall),
+		byCallID:    make(map[string]*inboundCall),
 	}
 	for _, option := range options {
 		option(s)
@@ -339,9 +329,6 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 			return err
 		}
 	}
-
-	// Start the cleanup task
-	go s.cleanupInvites()
 
 	return nil
 }
