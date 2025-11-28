@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"errors"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -20,11 +21,7 @@ func Diff16(cur, prev uint16) int16 {
 	return int16(cur - prev)
 }
 
-type RTPStats struct { // Complies with rtp.Handler interface
-	h   rtp.Handler
-	log logger.Logger
-
-	mu            sync.Mutex
+type RTPStats struct {
 	packetSize    *statAtomic // Contains count as well
 	deltaMS       *statAtomic // PACING indicator ; difference in milliseconds between last packet and current
 	deltaSeq      *statAtomic // LOSS / OUT OF ORDER indicator ; positive difference in rtp.sequenceNumber
@@ -34,6 +31,28 @@ type RTPStats struct { // Complies with rtp.Handler interface
 
 	packetCount uint64 // number of total packets received, persists across resets
 	resetCount  uint64 // number of resets detected, persists across resets
+}
+
+func NewRTPStats() *RTPStats {
+	return &RTPStats{
+		packetSize:    NewStatAtomic(),
+		deltaMS:       NewStatAtomic(),
+		deltaSeq:      NewStatAtomic(),
+		deltaTS:       NewStatAtomic(),
+		seqOutOfOrder: NewStatAtomic(),
+		tsOutOfOrder:  NewStatAtomic(),
+	}
+}
+
+type RtpStats struct { // Complies with rtp.Handler and rtp.HandlerCloser interfaces
+	h    rtp.Handler
+	hc   rtp.HandlerCloser
+	w    rtp.WriteStream
+	name string
+	log  logger.Logger
+
+	mu   sync.Mutex
+	data *RTPStats
 
 	latestReceived  time.Time // timestamp of latest packet received
 	latestSSRC      uint32    // SSRC of latest packet received
@@ -41,27 +60,49 @@ type RTPStats struct { // Complies with rtp.Handler interface
 	latestTimestamp uint32    // timestamp of latest packet received
 }
 
-func NewRTPStats(h rtp.Handler, log logger.Logger) *RTPStats {
-	return &RTPStats{
-		h:             h,
-		log:           log,
-		packetSize:    NewStatAtomic(),
-		deltaMS:       NewStatAtomic(),
-		deltaSeq:      NewStatAtomic(),
-		deltaTS:       NewStatAtomic(),
-		seqOutOfOrder: NewStatAtomic(),
-		tsOutOfOrder:  NewStatAtomic(),
-		packetCount:   0,
-		resetCount:    0,
-		latestSSRC:    0,
+type RTPStatsOptions func(*RtpStats)
+
+func WithWriteStream(w rtp.WriteStream) RTPStatsOptions {
+	return func(s *RtpStats) {
+		s.w = w
 	}
 }
 
-func (s *RTPStats) String() string {
+func WithHandler(h rtp.Handler) RTPStatsOptions {
+	return func(s *RtpStats) {
+		s.h = h
+	}
+}
+
+func WithHandlerCloser(hc rtp.HandlerCloser) RTPStatsOptions {
+	return func(s *RtpStats) {
+		s.hc = hc
+	}
+}
+
+func NewHandlerStats(name string, log logger.Logger, data *RTPStats, opts ...RTPStatsOptions) *RtpStats {
+	if data == nil {
+		data = NewRTPStats()
+	}
+	stats := &RtpStats{
+		name: name,
+		log:  log,
+		data: data,
+	}
+	for _, opt := range opts {
+		opt(stats)
+	}
+	if stats.w == nil && stats.h == nil && stats.hc == nil {
+		panic("no handler, handler closer, or write stream provided")
+	}
+	return stats
+}
+
+func (s *RtpStats) String() string {
 	return "RTPStats"
 }
 
-func (s *RTPStats) isReset(h *rtp.Header) bool {
+func (s *RtpStats) isReset(h *rtp.Header) bool {
 	const maxSeqDiff = (math.MaxUint16 / 4) // 16384, about 5.5 minutes at 20ms packets
 
 	// for now, we're assuming 20ms packets and a maximum of 48000sample rate
@@ -76,49 +117,50 @@ func (s *RTPStats) isReset(h *rtp.Header) bool {
 	return false
 }
 
-func (s *RTPStats) LogStats(reason string) {
+func (s *RtpStats) LogStats(reason string) {
 	s.log.Infow("rtp stats",
+		"name", s.name,
 		"reason", reason,
-		"packetSize", s.packetSize.Snapshot(),
-		"deltaMS", s.deltaMS.Snapshot(),
-		"deltaSeq", s.deltaSeq.Snapshot(),
-		"deltaTS", s.deltaTS.Snapshot(),
-		"seqOutOfOrder", s.seqOutOfOrder.Snapshot(),
-		"tsOutOfOrder", s.tsOutOfOrder.Snapshot(),
-		"packetCount", s.packetCount,
-		"resetCount", s.resetCount,
+		"packetSize", s.data.packetSize.Snapshot(),
+		"deltaMS", s.data.deltaMS.Snapshot(),
+		"deltaSeq", s.data.deltaSeq.Snapshot(),
+		"deltaTS", s.data.deltaTS.Snapshot(),
+		"seqOutOfOrder", s.data.seqOutOfOrder.Snapshot(),
+		"tsOutOfOrder", s.data.tsOutOfOrder.Snapshot(),
+		"packetCount", s.data.packetCount,
+		"resetCount", s.data.resetCount,
 	)
 }
 
-func (s *RTPStats) Reset() {
-	s.packetSize = NewStatAtomic()
-	s.deltaMS = NewStatAtomic()
-	s.deltaSeq = NewStatAtomic()
-	s.deltaTS = NewStatAtomic()
-	s.seqOutOfOrder = NewStatAtomic()
-	s.tsOutOfOrder = NewStatAtomic()
+func (s *RtpStats) Reset() {
+	s.data.packetSize = NewStatAtomic()
+	s.data.deltaMS = NewStatAtomic()
+	s.data.deltaSeq = NewStatAtomic()
+	s.data.deltaTS = NewStatAtomic()
+	s.data.seqOutOfOrder = NewStatAtomic()
+	s.data.tsOutOfOrder = NewStatAtomic()
 	s.latestReceived = time.Time{}
 }
 
-func (s *RTPStats) Update(h *rtp.Header, payload []byte) {
-	newCount := atomic.AddUint64(&s.packetCount, 1)
-	s.packetSize.Update(uint64(len(payload)))
+func (s *RtpStats) update(h *rtp.Header, payload []byte) {
+	newCount := atomic.AddUint64(&s.data.packetCount, 1)
+	s.data.packetSize.Update(uint64(len(payload)))
 	if newCount != 1 {
 		msSinceLast := time.Since(s.latestReceived).Milliseconds()
-		s.deltaMS.Update(uint64(msSinceLast))
+		s.data.deltaMS.Update(uint64(msSinceLast))
 
 		deltaSeq := Diff16(h.SequenceNumber, s.latestSequence)
 		if deltaSeq >= 0 {
-			s.deltaSeq.Update(uint64(deltaSeq))
+			s.data.deltaSeq.Update(uint64(deltaSeq))
 		} else {
-			s.seqOutOfOrder.Update(uint64(-deltaSeq))
+			s.data.seqOutOfOrder.Update(uint64(-deltaSeq))
 		}
 
 		deltaTS := Diff32(h.Timestamp, s.latestTimestamp)
 		if deltaTS >= 0 {
-			s.deltaTS.Update(uint64(deltaTS))
+			s.data.deltaTS.Update(uint64(deltaTS))
 		} else {
-			s.tsOutOfOrder.Update(uint64(-deltaTS))
+			s.data.tsOutOfOrder.Update(uint64(-deltaTS))
 		}
 	}
 	s.latestReceived = time.Now()
@@ -127,15 +169,48 @@ func (s *RTPStats) Update(h *rtp.Header, payload []byte) {
 	s.latestTimestamp = h.Timestamp
 }
 
-func (s *RTPStats) HandleRTP(h *rtp.Header, payload []byte) error {
+func (s *RtpStats) processPacket(h *rtp.Header, payload []byte) error {
 	if s.isReset(h) {
 		s.mu.Lock()
 		if s.isReset(h) {
-			s.resetCount++ // Locked, so not atomic
+			s.data.resetCount++ // Locked, so not atomic
 			s.LogStats("stream reset")
 			s.Reset()
 		}
 		s.mu.Unlock()
 	}
-	return s.h.HandleRTP(h, payload)
+	s.update(h, payload)
+	return nil
+}
+
+func (s *RtpStats) HandleRTP(h *rtp.Header, payload []byte) error {
+	if err := s.processPacket(h, payload); err != nil {
+		return err
+	}
+	if s.h != nil {
+		return s.h.HandleRTP(h, payload)
+	}
+	if s.hc != nil {
+		return s.hc.HandleRTP(h, payload)
+	}
+	return errors.New("no handler or handler closer provided")
+}
+
+func (s *RtpStats) WriteRTP(h *rtp.Header, payload []byte) (int, error) {
+	if err := s.processPacket(h, payload); err != nil {
+		return 0, err
+	}
+	if s.w == nil {
+		return 0, errors.New("no write stream provided")
+	}
+	return s.w.WriteRTP(h, payload)
+}
+
+func (s *RtpStats) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.LogStats("stream closing")
+	if s.hc != nil {
+		s.hc.Close()
+	}
 }
