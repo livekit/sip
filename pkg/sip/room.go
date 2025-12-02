@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sync"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/opus"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 type RoomStatsSnapshot struct {
@@ -335,6 +337,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h)
 					}
+					h = stats.NewHandlerStats(fmt.Sprintf("room in %s", track.ID()), log, nil, stats.WithHandlerCloser(h))
 					err = rtp.HandleLoop(in, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
@@ -517,6 +520,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 		return nil, err
 	}
 	ow := msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
+	ow = stats.NewRtpStatsWriteCloser(ow, rtp.DefFrameDur, stats.NewHandlerStats("room out", r.log, nil))
 	pw, err := opus.Encode(ow, channels, r.log)
 	if err != nil {
 		return nil, err
