@@ -292,6 +292,7 @@ type MediaPort struct {
 	timeoutGeneral   atomic.Pointer[time.Duration]
 	closed           core.Fuse
 	stats            *PortStats
+	outputStats      atomic.Pointer[stats.RtpStats]
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
 
@@ -491,6 +492,11 @@ func (p *MediaPort) Close() {
 		hnd := p.hnd.Load()
 		if hnd != nil {
 			(*hnd).Close()
+		}
+
+		outputStats := p.outputStats.Load()
+		if outputStats != nil {
+			(*outputStats).Close()
 		}
 	})
 }
@@ -692,9 +698,11 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
+	outputStats := stats.NewHandlerStats("sip out", p.log, nil, stats.WithWriteStream(w))
+	p.outputStats.Store(outputStats)
 
 	// TODO: this says "audio", but actually includes DTMF too
-	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", w))
+	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", outputStats))
 	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, p.conf.Audio.Codec.Info().RTPClockRate)
 
 	// Encoding pipeline (LK PCM -> SIP RTP)
@@ -768,6 +776,7 @@ func (p *MediaPort) setupInput() {
 	if p.jitterEnabled {
 		hnd = rtp.HandleJitter(hnd)
 	}
+	hnd = stats.NewHandlerStats("sip in", p.log, nil, stats.WithHandlerCloser(hnd))
 	p.hnd.Store(&hnd)
 }
 
