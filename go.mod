@@ -13,8 +13,8 @@ require (
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/media-sdk v0.0.0-20251114100349-04e36dff48cc
 	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
-	github.com/livekit/protocol v1.42.3-0.20251106135512-8c21d2d3727e
-	github.com/livekit/psrpc v0.7.1-0.20251021235041-bdebea7dacf4
+	github.com/livekit/protocol v1.43.3-0.20251202235353-eec8df247cf9
+	github.com/livekit/psrpc v0.7.1
 	github.com/livekit/server-sdk-go/v2 v2.11.4-0.20251016050252-63f7c8381817
 	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -132,11 +132,11 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
-	golang.org/x/net v0.46.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/crypto v0.45.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251014184007-4626949a642f // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251014184007-4626949a642f // indirect
 	google.golang.org/grpc v1.76.0 // indirect
