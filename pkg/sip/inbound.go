@@ -221,10 +221,8 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"expectedUsername", username,
 			"receivedUsername", cred.Username,
 		)
-		// Commenting for now. Will check the number of occurences in production before
-		// uncommenting this.
-		// _ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
-		// return false
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
+		return false
 	}
 
 	// Check if we have a valid challenge state
