@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
+	prtp "github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 
 	msdk "github.com/livekit/media-sdk"
@@ -509,7 +511,18 @@ func (r *Room) Participant() ParticipantInfo {
 }
 
 func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
-	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
+	track, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		"audio",
+		"pion",
+		webrtc.WithPayloader(func(codec webrtc.RTPCodecCapability) (prtp.Payloader, error) {
+			if codec.MimeType != webrtc.MimeTypeOpus {
+				return nil, errors.New("unsupported codec")
+			}
+			rtpStats := stats.NewHandlerStats("room out", r.log, nil)
+			return &stats.RTPStatsPayloader{Payloader: &codecs.OpusPayloader{}, Stats: rtpStats}, nil
+		}),
+	)
 	if err != nil {
 		return nil, err
 	}

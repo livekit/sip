@@ -2,15 +2,14 @@ package stats
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/logger"
+	prtp "github.com/pion/webrtc/v4/pkg/media/rtp"
 )
 
 // DiffNN returns the signed difference between cur and prev, accounting for wrap-around in a set integer size
@@ -53,7 +52,6 @@ func NewRTPStats() *RTPStats {
 }
 
 type RtpStats struct { // Complies with rtp.Handler and rtp.HandlerCloser interfaces
-	h    rtp.Handler
 	hc   rtp.HandlerCloser
 	w    rtp.WriteStream
 	name string
@@ -76,12 +74,6 @@ func WithWriteStream(w rtp.WriteStream) RTPStatsOptions {
 	}
 }
 
-func WithHandler(h rtp.Handler) RTPStatsOptions {
-	return func(s *RtpStats) {
-		s.h = h
-	}
-}
-
 func WithHandlerCloser(hc rtp.HandlerCloser) RTPStatsOptions {
 	return func(s *RtpStats) {
 		s.hc = hc
@@ -100,7 +92,7 @@ func NewHandlerStats(name string, log logger.Logger, data *RTPStats, opts ...RTP
 	for _, opt := range opts {
 		opt(stats)
 	}
-	if stats.w == nil && stats.h == nil && stats.hc == nil {
+	if stats.w == nil && stats.hc == nil {
 		panic("no handler, handler closer, or write stream provided")
 	}
 	return stats
@@ -199,9 +191,6 @@ func (s *RtpStats) HandleRTP(h *rtp.Header, payload []byte) error {
 	if err := s.processPacket(h, payload); err != nil {
 		return err
 	}
-	if s.h != nil {
-		return s.h.HandleRTP(h, payload)
-	}
 	if s.hc != nil {
 		return s.hc.HandleRTP(h, payload)
 	}
@@ -227,45 +216,15 @@ func (s *RtpStats) Close() {
 	}
 }
 
-func NewRtpStatsWriteCloser[T ~[]byte](w media.WriteCloser[T], dur time.Duration, stats *RtpStats) media.WriteCloser[T] {
-	writer := &RtpStatsWriteCloser[T]{w: w, dur: dur, stats: stats}
-	return writer
+type RTPStatsPayloader struct {
+	Payloader prtp.Payloader
+	Stats     *RtpStats
 }
 
-type RtpStatsWriteCloser[T ~[]byte] struct {
-	stats *RtpStats
-	w     media.WriteCloser[T]
-	dur   time.Duration
-	tsHop uint32
-	seq   uint32
-	ts    uint32
-}
-
-func (s *RtpStatsWriteCloser[T]) String() string {
-	return fmt.Sprintf("RtpStatsWriteCloser(%s)", s.w.String())
-}
-
-func (s *RtpStatsWriteCloser[T]) SampleRate() int {
-	return s.w.SampleRate()
-}
-
-func (s *RtpStatsWriteCloser[T]) WriteSample(sample T) error {
-	// For now, fake out the rtp header.
-	seq := uint16(atomic.AddUint32(&s.seq, 1))
-	if s.tsHop == 0 {
-		s.tsHop = uint32(s.w.SampleRate()) * uint32(s.dur.Milliseconds()) / 1000
+func (p *RTPStatsPayloader) Payload(mtu uint16, payload []byte) [][]byte {
+	result := p.Payloader.Payload(mtu, payload)
+	for _, packet := range result {
+		p.Stats.update(&packet.Header, uint64(len(packet.Payload)))
 	}
-	ts := atomic.AddUint32(&s.ts, s.tsHop)
-	h := &rtp.Header{
-		SequenceNumber: seq,
-		Timestamp:      ts,
-		SSRC:           0,
-	}
-	s.stats.update(h, uint64(len(sample)))
-	return s.w.WriteSample(sample)
-}
-
-func (s *RtpStatsWriteCloser[T]) Close() error {
-	s.stats.Close()
-	return s.w.Close()
+	return result
 }
