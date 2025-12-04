@@ -38,7 +38,7 @@ COPY version/ version/
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then GOARCH=arm64; else GOARCH=amd64; fi && \
     CGO_ENABLED=1 GOOS=linux GOARCH=${GOARCH} GO111MODULE=on go build -a -o livekit-sip ./cmd/livekit-sip
 
-FROM golang:$GOVERSION
+FROM debian:trixie-slim
 
 # install wget for health check
 RUN apt-get update && \
