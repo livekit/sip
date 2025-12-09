@@ -37,6 +37,6 @@ func ApplySIPStatus(err error) error {
 		return err
 	}
 	code := sipStatus.GRPCStatus().Code()
-	err = psrpc.NewError(psrpc.ErrorCodeFromGRPC(code), err)
+	err = psrpc.NewError(psrpc.ErrorCodeFromGRPC(code), err, sipStatus)
 	return err
 }
