@@ -14,4 +14,5 @@
 
 package version
 
-const Version = "0.0.1"
+// Version is a var (not const) so it can be overridden at link time via ldflags
+var Version = "0.0.0-dev"
