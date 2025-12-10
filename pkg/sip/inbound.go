@@ -1126,8 +1126,12 @@ func (c *inboundCall) close(error bool, status CallStatus, reason string) {
 		defer log.Infow("Inbound call closed")
 	}
 
-	c.closeMedia()
+	// Send BYE _before_ closing media/room connection.
+	// This ensures participant attributes are still available for
+	// attributes_to_headers mapping in the setHeaders callback.
+	// See: https://github.com/livekit/sip/issues/404
 	c.cc.CloseWithStatus(sipCode, sipStatus)
+	c.closeMedia()
 	if c.callDur != nil {
 		c.callDur()
 	}

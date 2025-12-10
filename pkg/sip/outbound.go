@@ -306,14 +306,19 @@ func (c *outboundCall) close(err error, status CallStatus, description string, r
 			}
 			info.DisconnectReason = reason
 		})
+
+		// Send BYE _before_ closing media/room connection.
+		// This ensures participant attributes are still available for
+		// attributes_to_headers mapping in the setHeaders callback.
+		// See: https://github.com/livekit/sip/issues/404
+		c.stopSIP(description)
 		c.media.Close()
+
 		if r := c.lkRoom; r != nil {
 			_ = r.CloseOutput()
 			_ = r.CloseWithReason(status.DisconnectReason())
 		}
 		c.lkRoomIn = nil
-
-		c.stopSIP(description)
 
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())
