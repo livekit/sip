@@ -112,6 +112,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		jitterBuf: jitterBuf,
 		projectID: projectID,
 	}
+	call.stats.Update()
 	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
@@ -225,13 +226,17 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 
 	ticker := time.NewTicker(stateUpdateTick)
 	defer ticker.Stop()
+
+	statsTicker := time.NewTicker(statsInterval)
+	defer statsTicker.Stop()
 	for {
 		select {
+		case <-statsTicker.C:
+			c.stats.Update()
+			c.printStats()
 		case <-ticker.C:
 			c.log.Debugw("sending keep-alive")
 			c.state.ForceFlush(ctx)
-			c.stats.Update()
-			c.printStats()
 		case <-c.Disconnected():
 			c.CloseWithReason(callDropped, "removed", livekit.DisconnectReason_CLIENT_INITIATED)
 			return nil
@@ -291,7 +296,10 @@ func (c *outboundCall) printStats() {
 func (c *outboundCall) close(err error, status CallStatus, description string, reason livekit.DisconnectReason) {
 	c.stopped.Once(func() {
 		c.stats.Closed.Store(true)
-		defer c.printStats()
+		defer func() {
+			c.stats.Update()
+			c.printStats()
+		}()
 
 		c.setStatus(status)
 		if err != nil {

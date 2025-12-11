@@ -131,7 +131,11 @@ func (s *PortStats) Update() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := time.Now()
-	dt := t.Sub(s.last.Time).Seconds()
+	lastTime := s.last.Time
+	if lastTime.IsZero() {
+		lastTime = t
+	}
+	dt := t.Sub(lastTime).Seconds()
 
 	curAudioInSamples := s.AudioInSamples.Load()
 	curAudioOutSamples := s.AudioOutSamples.Load()
