@@ -19,7 +19,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/livekit/sipgo/transport"
 	"io"
 	"log/slog"
 	"net"
@@ -29,6 +28,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/livekit/sipgo/transport"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -74,10 +75,9 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if log == nil {
 		log = logger.GetLogger()
 	}
-	if conf.UDPJumboFrame {
-		transport.UDPMTUSize = 10000
+	if conf.UDPMaxPayload > 0 {
+		transport.UDPMTUSize = conf.UDPMaxPayload
 	}
-
 	if conf.MediaTimeout <= 0 {
 		conf.MediaTimeout = defaultMediaTimeout
 	}
