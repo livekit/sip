@@ -15,12 +15,6 @@
 name: Test
 on:
   push:
-    branches:
-      - main
-      - ci_test
-  pull_request:
-    branches:
-      - main
 
 jobs:
   test:
