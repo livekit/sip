@@ -16,7 +16,7 @@ require (
 	github.com/livekit/protocol v1.43.3-0.20251202235353-eec8df247cf9
 	github.com/livekit/psrpc v0.7.1
 	github.com/livekit/server-sdk-go/v2 v2.11.4-0.20251016050252-63f7c8381817
-	github.com/livekit/sipgo v0.13.2-0.20250601220430-a77cc3f220fb
+	github.com/livekit/sipgo v0.13.2-0.20251211100430-721445a49c96
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/interceptor v0.1.41
@@ -65,7 +65,7 @@ require (
 	github.com/docker/docker v28.3.3+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v0.24.1 // indirect
+	github.com/emiago/sipgo v0.32.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gammazero/deque v1.1.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
@@ -88,8 +88,6 @@ require (
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
 	github.com/mackerelio/go-osstat v0.2.5 // indirect
 	github.com/magefile/mage v1.15.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/sys/user v0.3.0 // indirect
 	github.com/moby/term v0.5.0 // indirect
@@ -118,7 +116,6 @@ require (
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
 	github.com/redis/go-redis/v9 v9.14.0 // indirect
-	github.com/rs/zerolog v1.33.0 // indirect
 	github.com/satori/go.uuid v1.2.1-0.20181028125025-b2ce2384e17b // indirect
 	github.com/stoewer/go-strcase v1.3.1 // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect

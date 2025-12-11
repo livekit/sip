@@ -36,12 +36,11 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
-	"github.com/livekit/sipgo"
-
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
+	"github.com/livekit/sipgo"
 )
 
 type ServiceConfig struct {
@@ -213,6 +212,14 @@ func (s *Service) Start() error {
 	var opts = []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(UserAgent),
 		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	}
+	if tconf := s.conf.TCP; tconf != nil {
+		opts = append(opts, sipgo.WithUserAgentTCPConfig(&sipgo.TCPConfig{
+			DialPorts: sipgo.PortRange{
+				Min: tconf.DialPort.Start,
+				Max: tconf.DialPort.End,
+			},
+		}))
 	}
 	var tlsConf *tls.Config
 	if tconf := s.conf.TLS; tconf != nil {

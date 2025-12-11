@@ -56,6 +56,10 @@ type TLSConfig struct {
 	KeyLog     string    `yaml:"key_log"`
 }
 
+type TCPConfig struct {
+	DialPort rtcconfig.PortRange `yaml:"dial_port"`
+}
+
 type Config struct {
 	Redis     *redis.RedisConfig `yaml:"redis"`      // required
 	ApiKey    string             `yaml:"api_key"`    // required (env LIVEKIT_API_KEY)
@@ -69,6 +73,7 @@ type Config struct {
 	SIPPortListen      int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	SIPHostname        string              `yaml:"sip_hostname"`
 	SIPRingingInterval time.Duration       `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default '1s')
+	TCP                *TCPConfig          `yaml:"tcp"`
 	TLS                *TLSConfig          `yaml:"tls"`
 	RTPPort            rtcconfig.PortRange `yaml:"rtp_port"`
 	Logging            logger.Config       `yaml:"logging"`
