@@ -65,6 +65,9 @@ type MixerStatsSnapshot struct {
 
 	OutputSamples uint64 `json:"output_samples"`
 	OutputFrames  uint64 `json:"output_frames"`
+
+	BlockedMixes uint64 `json:"blocked_mixes"`
+	WriteErrors  uint64 `json:"write_errors"`
 }
 
 func (s *Stats) Update() {
@@ -96,6 +99,8 @@ func (s *Stats) Load() StatsSnapshot {
 			MixedFrames:   m.MixedFrames.Load(),
 			OutputSamples: m.OutputSamples.Load(),
 			OutputFrames:  m.OutputFrames.Load(),
+			BlockedMixes:  m.BlockedMixes.Load(),
+			WriteErrors:   m.WriteErrors.Load(),
 		},
 		Closed: s.Closed.Load(),
 	}
