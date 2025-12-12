@@ -422,7 +422,7 @@ func TestSIPJoinOpenRoom(t *testing.T) {
 
 	require.Equal(t, sipgo.REFER, referRequest.Method)
 	transferTo := referRequest.GetHeader("Refer-To")
-	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
+	require.Equal(t, "<tel:"+transferNumber+">", transferTo.Value())
 
 	time.Sleep(notifyIntervalDelay)
 	err = cli.SendNotify(referRequest, "SIP/2.0 100 Trying")
@@ -578,7 +578,7 @@ func TestSIPJoinPinRoom(t *testing.T) {
 
 	require.Equal(t, sipgo.REFER, referRequest.Method)
 	transferTo := referRequest.GetHeader("Refer-To")
-	require.Equal(t, "tel:"+transferNumber, transferTo.Value())
+	require.Equal(t, "<tel:"+transferNumber+">", transferTo.Value())
 
 	time.Sleep(notifyIntervalDelay)
 	err = cli.SendNotify(referRequest, "SIP/2.0 403 Fobidden")
