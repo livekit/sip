@@ -382,7 +382,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		From:      ToSIPUri("", from),
 		To:        ToSIPUri("", to),
 	}
-	for _, h := range cc.RemoteHeaders() {
+	rheaders := cc.RemoteHeaders()
+	s.handler.OnInboundInfo(log, callInfo, rheaders)
+	for _, h := range rheaders {
 		switch h := h.(type) {
 		case *sip.ViaHeader:
 			callInfo.Via = append(callInfo.Via, &livekit.SIPUri{

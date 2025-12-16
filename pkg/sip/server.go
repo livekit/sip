@@ -124,6 +124,7 @@ type Handler interface {
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
 
+	OnInboundInfo(log logger.Logger, callInfo *rpc.SIPCall, headers Headers)
 	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
