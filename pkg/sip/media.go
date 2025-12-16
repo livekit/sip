@@ -48,14 +48,16 @@ type StatsSnapshot struct {
 }
 
 type MixerStatsSnapshot struct {
-	Tracks      int64  `json:"tracks"`
-	TracksTotal uint64 `json:"tracks_total"`
-	Restarts    uint64 `json:"restarts"`
+	Tracks       int64  `json:"tracks"`
+	TracksTotal  uint64 `json:"tracks_total"`
+	Restarts     uint64 `json:"restarts"`
+	TimingResets uint64 `json:"timing_resets"`
 
-	Mixes      uint64 `json:"mixes"`
-	TimedMixes uint64 `json:"mixes_timed"`
-	JumpMixes  uint64 `json:"mixes_jump"`
-	ZeroMixes  uint64 `json:"mixes_zero"`
+	Mixes         uint64 `json:"mixes"`
+	TimedMixes    uint64 `json:"mixes_timed"`
+	JumpMixes     uint64 `json:"mixes_jump"`
+	ZeroMixes     uint64 `json:"mixes_zero"`
+	NegativeMixes uint64 `json:"mixes_negative"`
 
 	InputSamples uint64 `json:"input_samples"`
 	InputFrames  uint64 `json:"input_frames"`
@@ -65,6 +67,9 @@ type MixerStatsSnapshot struct {
 
 	OutputSamples uint64 `json:"output_samples"`
 	OutputFrames  uint64 `json:"output_frames"`
+
+	WriteErrors  uint64 `json:"write_errors"`
+	BlockedMixes uint64 `json:"blocked_mixes"`
 }
 
 func (s *Stats) Update() {
@@ -86,16 +91,20 @@ func (s *Stats) Load() StatsSnapshot {
 			Tracks:        m.Tracks.Load(),
 			TracksTotal:   m.TracksTotal.Load(),
 			Restarts:      m.Restarts.Load(),
+			TimingResets:  m.TimingResets.Load(),
 			Mixes:         m.Mixes.Load(),
 			TimedMixes:    m.TimedMixes.Load(),
 			JumpMixes:     m.JumpMixes.Load(),
 			ZeroMixes:     m.ZeroMixes.Load(),
+			NegativeMixes: m.NegativeMixes.Load(),
 			InputSamples:  m.InputSamples.Load(),
 			InputFrames:   m.InputFrames.Load(),
 			MixedSamples:  m.MixedSamples.Load(),
 			MixedFrames:   m.MixedFrames.Load(),
 			OutputSamples: m.OutputSamples.Load(),
 			OutputFrames:  m.OutputFrames.Load(),
+			WriteErrors:   m.WriteErrors.Load(),
+			BlockedMixes:  m.BlockedMixes.Load(),
 		},
 		Closed: s.Closed.Load(),
 	}
