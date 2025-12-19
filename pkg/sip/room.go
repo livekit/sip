@@ -350,6 +350,9 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					r.sendDTMF(data)
 				}
 			},
+			OnTrackUnsubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "pID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
+			},
 		},
 		OnDisconnected: func() {
 			r.stopped.Break()
