@@ -319,6 +319,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					if mTrack == nil {
 						return // closed
 					}
+					defer log.Infow("track closed")
 					defer mTrack.Close()
 
 					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)

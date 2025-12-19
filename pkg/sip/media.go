@@ -59,8 +59,10 @@ type MixerStatsSnapshot struct {
 	ZeroMixes     uint64 `json:"mixes_zero"`
 	NegativeMixes uint64 `json:"mixes_negative"`
 
-	InputSamples uint64 `json:"input_samples"`
-	InputFrames  uint64 `json:"input_frames"`
+	InputSamples        uint64 `json:"input_samples"`
+	InputFrames         uint64 `json:"input_frames"`
+	InputSamplesDropped uint64 `json:"input_samples_dropped"`
+	InputFramesDropped  uint64 `json:"input_frames_dropped"`
 
 	MixedSamples uint64 `json:"mixed_samples"`
 	MixedFrames  uint64 `json:"mixed_frames"`
@@ -88,23 +90,25 @@ func (s *Stats) Load() StatsSnapshot {
 		Port: p.Load(),
 		Room: r.Load(),
 		Mixer: MixerStatsSnapshot{
-			Tracks:        m.Tracks.Load(),
-			TracksTotal:   m.TracksTotal.Load(),
-			Restarts:      m.Restarts.Load(),
-			TimingResets:  m.TimingResets.Load(),
-			Mixes:         m.Mixes.Load(),
-			TimedMixes:    m.TimedMixes.Load(),
-			JumpMixes:     m.JumpMixes.Load(),
-			ZeroMixes:     m.ZeroMixes.Load(),
-			NegativeMixes: m.NegativeMixes.Load(),
-			InputSamples:  m.InputSamples.Load(),
-			InputFrames:   m.InputFrames.Load(),
-			MixedSamples:  m.MixedSamples.Load(),
-			MixedFrames:   m.MixedFrames.Load(),
-			OutputSamples: m.OutputSamples.Load(),
-			OutputFrames:  m.OutputFrames.Load(),
-			WriteErrors:   m.WriteErrors.Load(),
-			BlockedMixes:  m.BlockedMixes.Load(),
+			Tracks:              m.Tracks.Load(),
+			TracksTotal:         m.TracksTotal.Load(),
+			Restarts:            m.Restarts.Load(),
+			TimingResets:        m.TimingResets.Load(),
+			Mixes:               m.Mixes.Load(),
+			TimedMixes:          m.TimedMixes.Load(),
+			JumpMixes:           m.JumpMixes.Load(),
+			ZeroMixes:           m.ZeroMixes.Load(),
+			NegativeMixes:       m.NegativeMixes.Load(),
+			InputSamples:        m.InputSamples.Load(),
+			InputFrames:         m.InputFrames.Load(),
+			InputFramesDropped:  m.InputFramesDropped.Load(),
+			InputSamplesDropped: m.InputSamplesDropped.Load(),
+			MixedSamples:        m.MixedSamples.Load(),
+			MixedFrames:         m.MixedFrames.Load(),
+			OutputSamples:       m.OutputSamples.Load(),
+			OutputFrames:        m.OutputFrames.Load(),
+			WriteErrors:         m.WriteErrors.Load(),
+			BlockedMixes:        m.BlockedMixes.Load(),
 		},
 		Closed: s.Closed.Load(),
 	}
