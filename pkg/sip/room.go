@@ -319,6 +319,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					if mTrack == nil {
 						return // closed
 					}
+					defer log.Infow("track closed")
 					defer mTrack.Close()
 
 					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)
@@ -349,6 +350,9 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					//       DTMF audio tone will be automatically mixed in any case.
 					r.sendDTMF(data)
 				}
+			},
+			OnTrackUnsubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "pID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
 		OnDisconnected: func() {
