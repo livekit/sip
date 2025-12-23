@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,8 +22,6 @@ import (
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/media-sdk/sdp"
-
-	"sync"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -61,6 +60,7 @@ func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 type TestHandler struct {
 	GetAuthCredentialsFunc func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
+	OnInboundInfoFunc      func(log logger.Logger, call *rpc.SIPCall, headers Headers)
 	OnSessionEndFunc       func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
 }
 
@@ -83,6 +83,12 @@ func (h TestHandler) RegisterTransferSIPParticipantTopic(sipCallId string) error
 
 func (h TestHandler) DeregisterTransferSIPParticipantTopic(sipCallId string) {
 	// no-op
+}
+
+func (h TestHandler) OnInboundInfo(log logger.Logger, call *rpc.SIPCall, headers Headers) {
+	if h.OnInboundInfoFunc != nil {
+		h.OnInboundInfoFunc(log, call, headers)
+	}
 }
 
 func (h TestHandler) OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
