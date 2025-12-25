@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -540,5 +541,409 @@ func TestMediaTimeout(t *testing.T) {
 				t.Fatal("timeout")
 			}
 		}
+	})
+}
+
+// testPCM16Writer is a mock PCM16Writer that captures all written samples
+type testPCM16Writer struct {
+	samples     []msdk.PCM16Sample
+	silenceOnly []msdk.PCM16Sample // only silence samples (all zeros)
+	rate        int
+	mu          sync.Mutex
+}
+
+func newTestPCM16Writer(rate int) *testPCM16Writer {
+	return &testPCM16Writer{
+		samples:     make([]msdk.PCM16Sample, 0),
+		silenceOnly: make([]msdk.PCM16Sample, 0),
+		rate:        rate,
+	}
+}
+
+func (w *testPCM16Writer) String() string {
+	return "testPCM16Writer"
+}
+
+func (w *testPCM16Writer) SampleRate() int {
+	return w.rate
+}
+
+func (w *testPCM16Writer) WriteSample(sample msdk.PCM16Sample) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.samples = append(w.samples, slices.Clone(sample))
+	// Track silence samples separately (all zeros)
+	if len(sample) > 0 && !slices.ContainsFunc(sample, func(v int16) bool { return v != 0 }) {
+		w.silenceOnly = append(w.silenceOnly, slices.Clone(sample))
+	}
+	return nil
+}
+
+func (w *testPCM16Writer) Close() error {
+	return nil
+}
+
+func (w *testPCM16Writer) GetSamples() []msdk.PCM16Sample {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.samples)
+}
+
+func (w *testPCM16Writer) GetSampleCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.samples)
+}
+
+func (w *testPCM16Writer) GetSilenceSamples() []msdk.PCM16Sample {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.silenceOnly)
+}
+
+func (w *testPCM16Writer) GetSilenceSampleCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.silenceOnly)
+}
+
+// testRTPHandler is a mock RTP handler that tracks calls
+type testRTPHandler struct {
+	calls []struct {
+		ts      uint32
+		payload []byte
+	}
+	mu sync.Mutex
+}
+
+func newTestRTPHandler() *testRTPHandler {
+	return &testRTPHandler{
+		calls: make([]struct {
+			ts      uint32
+			payload []byte
+		}, 0),
+	}
+}
+
+func (h *testRTPHandler) String() string {
+	return "testRTPHandler"
+}
+
+func (h *testRTPHandler) HandleRTP(header *rtp.Header, payload []byte) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, struct {
+		ts      uint32
+		payload []byte
+	}{ts: header.Timestamp, payload: slices.Clone(payload)})
+	return nil
+}
+
+func (h *testRTPHandler) GetCalls() []struct {
+	ts      uint32
+	payload []byte
+} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.calls)
+}
+
+// simulateDecoding simulates the decoder writing samples after HandleRTP
+// This is needed because in real usage, decoding happens synchronously during HandleRTP
+// Note: currentTS should already be set by HandleRTP before calling this
+func simulateDecoding(handler rtp.Handler, samplesPerFrame int) {
+	if gf, ok := handler.(*gapFillerHandler); ok {
+		// Get the current timestamp that was set by HandleRTP
+		// Set currentTS to match lastTS so WriteSample can update expectedTS
+		gf.currentTS = gf.lastTS
+
+		sample := make(msdk.PCM16Sample, samplesPerFrame)
+		// Fill with non-zero values to distinguish from silence
+		for j := range sample {
+			sample[j] = 1000
+		}
+		_ = gf.WriteSample(sample)
+	}
+}
+
+func TestGapFillerHandler(t *testing.T) {
+	const (
+		sampleRate = 8000
+		clockRate  = 8000
+	)
+
+	t.Run("no gap - normal packets", func(t *testing.T) {
+		audioWriter := newTestPCM16Writer(sampleRate)
+		nextHandler := newTestRTPHandler()
+		handler := newGapFillerHandler(
+			logger.GetLogger(),
+			nextHandler,
+			audioWriter,
+			clockRate,
+		)
+
+		// Calculate frame duration in RTP timestamp units
+		frameDurTS := uint32(uint64(clockRate) * uint64(rtp.DefFrameDur) / uint64(time.Second))
+		samplesPerFrame := sampleRate / int(time.Second/rtp.DefFrameDur)
+
+		// Send packets with normal spacing (no gaps)
+		for i := 0; i < 5; i++ {
+			h := &rtp.Header{
+				Timestamp:   uint32(i) * frameDurTS,
+				PayloadType: 0,
+			}
+			payload := []byte{0x01, 0x02, 0x03}
+			err := handler.HandleRTP(h, payload)
+			require.NoError(t, err)
+
+			// Simulate decoder writing samples AFTER HandleRTP
+			// This updates expectedTS for the next packet
+			simulateDecoding(handler, samplesPerFrame)
+		}
+
+		// Should have no silence samples (no gaps) - only decoded samples
+		require.Equal(t, 0, audioWriter.GetSilenceSampleCount())
+		// Should have forwarded all packets
+		require.Equal(t, 5, len(nextHandler.GetCalls()))
+	})
+
+	t.Run("single frame gap", func(t *testing.T) {
+		audioWriter := newTestPCM16Writer(sampleRate)
+		nextHandler := newTestRTPHandler()
+		handler := newGapFillerHandler(
+			logger.GetLogger(),
+			nextHandler,
+			audioWriter,
+			clockRate,
+		)
+
+		frameDurTS := uint32(uint64(clockRate) * uint64(rtp.DefFrameDur) / uint64(time.Second))
+		samplesPerFrame := sampleRate / int(time.Second/rtp.DefFrameDur)
+
+		// First packet
+		h1 := &rtp.Header{Timestamp: 0, PayloadType: 0}
+		err := handler.HandleRTP(h1, []byte{0x01})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for first packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Skip one frame (gap of 2 frames)
+		h2 := &rtp.Header{Timestamp: 2 * frameDurTS, PayloadType: 0}
+		err = handler.HandleRTP(h2, []byte{0x02})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for second packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Should have generated silence for 1 missing frame
+		silenceSamples := audioWriter.GetSilenceSamples()
+		require.Equal(t, 1, len(silenceSamples))
+		require.Equal(t, samplesPerFrame, len(silenceSamples[0]))
+		// All samples should be zero (silence)
+		for _, s := range silenceSamples[0] {
+			require.Equal(t, int16(0), s)
+		}
+		// Should have forwarded both packets
+		require.Equal(t, 2, len(nextHandler.GetCalls()))
+	})
+
+	t.Run("multiple frame gap", func(t *testing.T) {
+		audioWriter := newTestPCM16Writer(sampleRate)
+		nextHandler := newTestRTPHandler()
+		handler := newGapFillerHandler(
+			logger.GetLogger(),
+			nextHandler,
+			audioWriter,
+			clockRate,
+		)
+
+		frameDurTS := uint32(uint64(clockRate) * uint64(rtp.DefFrameDur) / uint64(time.Second))
+		samplesPerFrame := sampleRate / int(time.Second/rtp.DefFrameDur)
+
+		// First packet
+		h1 := &rtp.Header{Timestamp: 0, PayloadType: 0}
+		err := handler.HandleRTP(h1, []byte{0x01})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for first packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Skip 5 frames (gap of 6 frames)
+		h2 := &rtp.Header{Timestamp: 6 * frameDurTS, PayloadType: 0}
+		err = handler.HandleRTP(h2, []byte{0x02})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for second packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Should have generated silence for 5 missing frames
+		silenceSamples := audioWriter.GetSilenceSamples()
+		require.Equal(t, 5, len(silenceSamples))
+		for _, sample := range silenceSamples {
+			require.Equal(t, samplesPerFrame, len(sample))
+			for _, s := range sample {
+				require.Equal(t, int16(0), s)
+			}
+		}
+		// Should have forwarded both packets
+		require.Equal(t, 2, len(nextHandler.GetCalls()))
+	})
+
+	t.Run("timestamp wrap-around", func(t *testing.T) {
+		audioWriter := newTestPCM16Writer(sampleRate)
+		nextHandler := newTestRTPHandler()
+		handler := newGapFillerHandler(
+			logger.GetLogger(),
+			nextHandler,
+			audioWriter,
+			clockRate,
+		)
+
+		frameDurTS := uint32(uint64(clockRate) * uint64(rtp.DefFrameDur) / uint64(time.Second))
+		samplesPerFrame := sampleRate / int(time.Second/rtp.DefFrameDur)
+
+		// Set lastTS near wrap-around
+		lastTS := ^uint32(0) - frameDurTS
+		h1 := &rtp.Header{Timestamp: lastTS, PayloadType: 0}
+		err := handler.HandleRTP(h1, []byte{0x01})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for first packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Next packet after wrap-around with a gap
+		h2 := &rtp.Header{Timestamp: 2 * frameDurTS, PayloadType: 0}
+		err = handler.HandleRTP(h2, []byte{0x02})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for second packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Should have generated silence for the gap (accounting for wrap-around)
+		silenceSamples := audioWriter.GetSilenceSamples()
+		require.Greater(t, len(silenceSamples), 0)
+		// Should have forwarded both packets
+		require.Equal(t, 2, len(nextHandler.GetCalls()))
+	})
+
+	t.Run("large gap capped at 1 second", func(t *testing.T) {
+		audioWriter := newTestPCM16Writer(sampleRate)
+		nextHandler := newTestRTPHandler()
+		handler := newGapFillerHandler(
+			logger.GetLogger(),
+			nextHandler,
+			audioWriter,
+			clockRate,
+		)
+
+		frameDurTS := uint32(uint64(clockRate) * uint64(rtp.DefFrameDur) / uint64(time.Second))
+		framesPerSecond := clockRate / frameDurTS
+		samplesPerFrame := sampleRate / int(time.Second/rtp.DefFrameDur)
+
+		// First packet
+		h1 := &rtp.Header{Timestamp: 0, PayloadType: 0}
+		err := handler.HandleRTP(h1, []byte{0x01})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for first packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Very large gap (more than 1 second)
+		largeGap := uint32(framesPerSecond) * 2 * frameDurTS
+		h2 := &rtp.Header{Timestamp: largeGap, PayloadType: 0}
+		err = handler.HandleRTP(h2, []byte{0x02})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for second packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Should have generated silence capped at 1 second worth of frames
+		silenceSamples := audioWriter.GetSilenceSamples()
+		require.Equal(t, int(framesPerSecond), len(silenceSamples))
+		// Should have forwarded both packets
+		require.Equal(t, 2, len(nextHandler.GetCalls()))
+	})
+
+	t.Run("small gap within tolerance", func(t *testing.T) {
+		audioWriter := newTestPCM16Writer(sampleRate)
+		nextHandler := newTestRTPHandler()
+		handler := newGapFillerHandler(
+			logger.GetLogger(),
+			nextHandler,
+			audioWriter,
+			clockRate,
+		)
+
+		frameDurTS := uint32(uint64(clockRate) * uint64(rtp.DefFrameDur) / uint64(time.Second))
+		samplesPerFrame := sampleRate / int(time.Second/rtp.DefFrameDur)
+
+		// First packet
+		h1 := &rtp.Header{Timestamp: 0, PayloadType: 0}
+		err := handler.HandleRTP(h1, []byte{0x01})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for first packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Small gap within tolerance (should not trigger gap filling)
+		// Use a gap smaller than 5ms tolerance (40 timestamps at 8kHz)
+		smallGap := uint32(uint64(clockRate) * 3 / 1000) // 3ms, less than 5ms tolerance
+		h2 := &rtp.Header{Timestamp: frameDurTS + smallGap, PayloadType: 0}
+		err = handler.HandleRTP(h2, []byte{0x02})
+		require.NoError(t, err)
+
+		// Simulate decoder writing samples for second packet
+		simulateDecoding(handler, samplesPerFrame)
+
+		// Should have no silence samples (gap within tolerance)
+		require.Equal(t, 0, audioWriter.GetSilenceSampleCount())
+		// Should have forwarded both packets
+		require.Equal(t, 2, len(nextHandler.GetCalls()))
+	})
+}
+
+func TestGapFillingIntegration(t *testing.T) {
+	t.Run("gap filling disabled", func(t *testing.T) {
+		m1, _ := newMediaPair(t, &MediaOptions{
+			EnableGapFilling: false,
+		}, nil)
+
+		// Verify gap filling is not in the chain
+		chain := PrintAudioInWriter(m1)
+		require.NotContains(t, chain, "GapFiller")
+	})
+
+	t.Run("gap filling enabled", func(t *testing.T) {
+		m1, m2 := newMediaPair(t, &MediaOptions{
+			EnableGapFilling: true,
+		}, nil)
+
+		// Verify gap filling is in the chain
+		chain := PrintAudioInWriter(m1)
+		require.Contains(t, chain, "GapFiller")
+
+		// Send a packet to initialize
+		w2 := m2.GetAudioWriter()
+		err := w2.WriteSample(msdk.PCM16Sample{100, 200})
+		require.NoError(t, err)
+
+		// Wait for packet to be received
+		select {
+		case <-time.After(time.Second / 4):
+			t.Fatal("no media received")
+		case <-m1.Received():
+		}
+
+		// Send another packet after a delay to simulate gap
+		time.Sleep(rtp.DefFrameDur * 3)
+		err = w2.WriteSample(msdk.PCM16Sample{300, 400})
+		require.NoError(t, err)
+
+		// Give time for processing
+		time.Sleep(time.Second / 4)
+
+		// Verify m2 is functional by checking its audio writer
+		require.NotNil(t, m2.GetAudioWriter())
 	})
 }
