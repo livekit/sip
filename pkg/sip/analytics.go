@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/guid"
@@ -82,6 +83,21 @@ func (s *CallState) StartTransfer(ctx context.Context, transferTo string) string
 		TransferInfo: ti,
 	}
 
+	log := logger.GetLogger().WithValues(
+		"callID", s.callInfo.CallId,
+		"callStatus", s.callInfo.CallStatus.String(),
+		"transferID", ti.TransferId,
+		"transferTo", transferTo,
+		"transferStatus", ti.TransferStatus.String(),
+	)
+	if s.callInfo.StartedAtNs != 0 {
+		log = log.WithValues("startedAtNs", s.callInfo.StartedAtNs)
+	}
+	if s.callInfo.EndedAtNs != 0 {
+		log = log.WithValues("endedAtNs", s.callInfo.EndedAtNs)
+	}
+	log.Infow("calling UpdateSIPCallState for transfer start")
+
 	s.cli.UpdateSIPCallState(ctx, req)
 
 	s.mu.Lock()
@@ -96,6 +112,9 @@ func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr er
 	s.mu.Lock()
 	ti := s.transferInfos[transferID]
 	delete(s.transferInfos, transferID)
+	callStatus := s.callInfo.CallStatus
+	startedAtNs := s.callInfo.StartedAtNs
+	endedAtNs := s.callInfo.EndedAtNs
 	s.mu.Unlock()
 
 	if ti == nil {
@@ -119,9 +138,25 @@ func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr er
 		TransferInfo: ti,
 	}
 
-	s.cli.UpdateSIPCallState(ctx, req)
+	log := logger.GetLogger().WithValues(
+		"callID", ti.CallId,
+		"callStatus", callStatus.String(),
+		"transferID", ti.TransferId,
+		"transferStatus", ti.TransferStatus.String(),
+		"hasError", inErr != nil,
+	)
+	if startedAtNs != 0 {
+		log = log.WithValues("startedAtNs", startedAtNs)
+	}
+	if endedAtNs != 0 {
+		log = log.WithValues("endedAtNs", endedAtNs)
+	}
+	if inErr != nil {
+		log = log.WithValues("error", inErr.Error())
+	}
+	log.Infow("calling UpdateSIPCallState for transfer end")
 
-	return
+	s.cli.UpdateSIPCallState(ctx, req)
 }
 
 func (s *CallState) flush(ctx context.Context) {
@@ -129,9 +164,25 @@ func (s *CallState) flush(ctx context.Context) {
 		s.dirty = false
 		return
 	}
-	_, err := s.cli.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+	req := &rpc.UpdateSIPCallStateRequest{
 		CallInfo: s.callInfo,
-	})
+	}
+	log := logger.GetLogger().WithValues(
+		"callID", s.callInfo.CallId,
+		"callStatus", s.callInfo.CallStatus.String(),
+	)
+	if s.callInfo.RoomId != "" {
+		log = log.WithValues("roomID", s.callInfo.RoomId)
+	}
+	if s.callInfo.StartedAtNs != 0 {
+		log = log.WithValues("startedAtNs", s.callInfo.StartedAtNs)
+	}
+	if s.callInfo.EndedAtNs != 0 {
+		log = log.WithValues("endedAtNs", s.callInfo.EndedAtNs)
+	}
+	log.Infow("calling UpdateSIPCallState for call state update")
+
+	_, err := s.cli.UpdateSIPCallState(context.WithoutCancel(ctx), req)
 	if err == nil {
 		s.dirty = false
 	}
