@@ -197,10 +197,9 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 
-	defer c.ensureClosed(ctx)
-
 	err := c.connectSIP(ctx, c.tid)
 	if err != nil {
+		c.ensureClosed(ctx)
 		return err // connectSIP updates the error code on the callInfo
 	}
 
