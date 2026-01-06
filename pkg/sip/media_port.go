@@ -728,9 +728,10 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	return nil
 }
 
-// silenceSuppressionHandler detects RTP timestamp discontinuities (silence suppression)
+// silenceFiller detects RTP timestamp discontinuities (silence suppression)
 // and generates silence samples to fill the gaps before passing packets to the decoder.
-type silenceSuppressionHandler struct {
+type silenceFiller struct {
+	maxGapSize      int
 	encodedSink     rtp.Handler
 	pcmSink         msdk.PCM16Writer
 	samplesPerFrame int
@@ -744,20 +745,35 @@ type silenceSuppressionHandler struct {
 	lastPrintTime   time.Time
 }
 
-func newSilenceSuppressionHandler(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, sampleRate int, log logger.Logger) rtp.Handler {
-	return &silenceSuppressionHandler{
+type SilenceSuppressionOption func(*silenceFiller)
+
+func WithMaxGapSize(maxGapSize int) SilenceSuppressionOption {
+	return func(h *silenceFiller) {
+		if maxGapSize > 0 {
+			h.maxGapSize = maxGapSize
+		}
+	}
+}
+
+func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, sampleRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.Handler {
+	h := &silenceFiller{
+		maxGapSize:      25, // Default max gap size
 		encodedSink:     encodedSink,
 		pcmSink:         pcmSink,
 		samplesPerFrame: sampleRate / rtp.DefFramesPerSec,
 		log:             log,
 	}
+	for _, option := range options {
+		option(h)
+	}
+	return h
 }
 
-func (h *silenceSuppressionHandler) String() string {
-	return fmt.Sprintf("SilenceSuppression -> %s", h.encodedSink.String())
+func (h *silenceFiller) String() string {
+	return fmt.Sprintf("SilenceFiller(%d) -> %s", h.maxGapSize, h.encodedSink.String())
 }
 
-func (h *silenceSuppressionHandler) isSilenceSuppression(header *rtp.Header) (bool, int) {
+func (h *silenceFiller) isSilenceSuppression(header *rtp.Header) (bool, int) {
 	currentTS := header.Timestamp
 	currentSeq := header.SequenceNumber
 	expectedSeq := h.lastSeq + 1
@@ -785,7 +801,7 @@ func (h *silenceSuppressionHandler) isSilenceSuppression(header *rtp.Header) (bo
 	return true, missedFrames
 }
 
-func (h *silenceSuppressionHandler) fillWithSilence(framesToFill int) error {
+func (h *silenceFiller) fillWithSilence(framesToFill int) error {
 	for ; framesToFill > 0; framesToFill-- {
 		silence := make(msdk.PCM16Sample, h.samplesPerFrame)
 		if err := h.pcmSink.WriteSample(silence); err != nil {
@@ -795,7 +811,7 @@ func (h *silenceSuppressionHandler) fillWithSilence(framesToFill int) error {
 	return nil
 }
 
-func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte) error {
+func (h *silenceFiller) HandleRTP(header *rtp.Header, payload []byte) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -817,7 +833,7 @@ func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte
 		}
 
 		// Don't cause a flood of silence packets on too large of a gap (large loss, RTP TS or Seq reset)
-		if missingFrameCount <= 25 {
+		if missingFrameCount <= h.maxGapSize {
 			err := h.fillWithSilence(missingFrameCount)
 			if err != nil {
 				return err
@@ -841,7 +857,7 @@ func (p *MediaPort) setupInput() {
 	}
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
 	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
-	audioHandler = newSilenceSuppressionHandler(audioHandler, audioWriter, codecInfo.SampleRate, p.log)
+	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.SampleRate, p.log)
 	p.audioInHandler = audioHandler
 
 	mux := rtp.NewMux(nil)

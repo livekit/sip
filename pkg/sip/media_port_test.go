@@ -267,7 +267,7 @@ func TestMediaPort(t *testing.T) {
 						require.Equal(t, expChain, w1.String())
 						require.Equal(t, expChain, w2.String())
 
-						expChain = fmt.Sprintf("RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
+						expChain = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
 						require.Equal(t, expChain, PrintAudioInWriter(m1))
 						require.Equal(t, expChain, PrintAudioInWriter(m2))
 					} else {
@@ -276,9 +276,9 @@ func TestMediaPort(t *testing.T) {
 						require.Equal(t, expChain, w2.String())
 
 						// This side does not resample the received audio, it uses sample rate of the RTP source.
-						expChain1 := fmt.Sprintf("RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
+						expChain1 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
 						// This side resamples the received audio to the expected sample rate.
-						expChain2 := fmt.Sprintf("RTP(%d) -> %s(decode) -> Resample(%d->48000) -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
+						expChain2 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Resample(%d->48000) -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain1, PrintAudioInWriter(m1))
 						require.Equal(t, expChain2, PrintAudioInWriter(m2))
 
@@ -559,7 +559,7 @@ func newSilenceSuppressionTester(audioSampleRate int, log logger.Logger) *Silenc
 		receivedSilenceFrames: 0,
 		receivedSignalFrames:  0,
 	}
-	tester.gapFiller = newSilenceSuppressionHandler(tester, tester, audioSampleRate, log)
+	tester.gapFiller = newSilenceFiller(tester, tester, audioSampleRate, log)
 	return tester
 }
 
