@@ -740,6 +740,9 @@ type silenceSuppressionHandler struct {
 	lastTS          uint32
 	lastSeq         uint16
 	initialized     bool
+	gapCount        uint64
+	gapSizeSum      uint64
+	lastPrintTime   time.Time
 }
 
 func newSilenceSuppressionHandler(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, sampleRate int, log logger.Logger) rtp.Handler {
@@ -755,10 +758,7 @@ func (h *silenceSuppressionHandler) String() string {
 	return fmt.Sprintf("SilenceSuppression -> %s", h.encodedSink.String())
 }
 
-func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
+func (h *silenceSuppressionHandler) isSilenceSuppression(header *rtp.Header) (bool, int) {
 	currentTS := header.Timestamp
 	currentSeq := header.SequenceNumber
 	expectedSeq := h.lastSeq + 1
@@ -768,7 +768,7 @@ func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte
 
 	if !h.initialized {
 		h.initialized = true
-		return h.encodedSink.HandleRTP(header, payload)
+		return false, 0
 	}
 
 	seqDiff := currentSeq - expectedSeq
@@ -777,33 +777,72 @@ func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte
 	// A key characteristic of DTX or silence supression is no sequence gaps, but >1 frame TS gaps
 
 	if seqDiff != 0 || tsDiff == 0 {
-		// No silence suppression happened, don't fill
 		// This also filters out out-of-order packets, due to seqDiff != 0
-		return h.encodedSink.HandleRTP(header, payload)
+		return false, 0
 	}
 
-	// Sequential packets (no loss), but with a gap in timestamp
-	h.log.Infow("timestamp gap", // TODO: handle rate limit, this is very verbose
-		"seq", currentSeq,
-		"currentTS", currentTS,
-		"expectedTS", expectedTS,
-		"marker", header.Marker)
-
-	// Don't cause a flood of silence packets on too large of a gap (large loss, RTP TS or Seq reset)
+	// Silence supression happened - sequential packets (no loss), but with a gap in timestamp
 	missedFrames := int(tsDiff) / int(h.samplesPerFrame)
-	if missedFrames > 25 {
-		return h.encodedSink.HandleRTP(header, payload)
-	}
+	return true, missedFrames
+}
 
-	// Generate silence
-	for ; missedFrames > 0; missedFrames-- {
+func (h *silenceSuppressionHandler) fillWithSilence(framesToFill int) error {
+	for ; framesToFill > 0; framesToFill-- {
 		silence := make(msdk.PCM16Sample, h.samplesPerFrame)
 		if err := h.pcmSink.WriteSample(silence); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	return h.encodedSink.HandleRTP(header, payload)
+func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	isSilenceSupression, missingFrameCount := h.isSilenceSuppression(header)
+
+	if isSilenceSupression {
+		h.gapCount++
+		h.gapSizeSum += uint64(missingFrameCount)
+		if time.Since(h.lastPrintTime) > 15*time.Second {
+			h.lastPrintTime = time.Now()
+			h.log.Infow("timestamp gap",
+				"rtpSeq", header.SequenceNumber,
+				"rtpTimestamp", header.SequenceNumber,
+				"rtpMarker", header.Marker,
+				"gapCount", h.gapCount,
+				"gapSize", missingFrameCount,
+				"gapSizeSum", h.gapSizeSum, // Used to get averages and figure out outliers between prints
+			)
+		}
+
+		// Don't cause a flood of silence packets on too large of a gap (large loss, RTP TS or Seq reset)
+		if missingFrameCount <= 25 {
+			err := h.fillWithSilence(missingFrameCount)
+			if err != nil {
+				h.log.Errorw("failed to fill timestamp gap", err,
+					"rtpSeq", header.SequenceNumber,
+					"rtpTimestamp", header.SequenceNumber,
+					"rtpMarker", header.Marker,
+					"gapCount", h.gapCount,
+					"gapSize", missingFrameCount,
+					"gapSizeSum", h.gapSizeSum,
+				)
+				return err
+			}
+		}
+	}
+
+	err := h.encodedSink.HandleRTP(header, payload)
+	if err != nil {
+		h.log.Errorw("failed to propagate RTP", err,
+			"rtpSeq", header.SequenceNumber,
+			"rtpTimestamp", header.SequenceNumber,
+			"rtpMarker", header.Marker,
+		)
+	}
+	return err
 }
 
 func (p *MediaPort) setupInput() {
