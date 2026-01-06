@@ -26,6 +26,7 @@ import (
 
 	"github.com/frostbyte73/core"
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/livekit/protocol/livekit"
@@ -168,7 +169,9 @@ func (s *Service) Run() error {
 	}
 
 	var err error
-	if s.rpcSIPServer, err = rpc.NewSIPInternalServer(s.psrpcServer, s.bus); err != nil {
+	if s.rpcSIPServer, err = rpc.NewSIPInternalServer(s.psrpcServer, s.bus,
+		otelpsrpc.ServerOptions(otelpsrpc.Config{}),
+	); err != nil {
 		return err
 	}
 	defer s.rpcSIPServer.Shutdown()

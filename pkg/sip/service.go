@@ -36,11 +36,12 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sipgo"
+
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
-	"github.com/livekit/sipgo"
 )
 
 type ServiceConfig struct {

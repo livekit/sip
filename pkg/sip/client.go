@@ -28,7 +28,6 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/protocol/tracer"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
@@ -140,6 +139,9 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 }
 
 func (c *Client) Stop() {
+	ctx := context.Background()
+	ctx, span := Tracer.Start(ctx, "sip.Client.Stop")
+	defer span.End()
 	c.closing.Break()
 	c.cmu.Lock()
 	calls := maps.Values(c.activeCalls)
@@ -147,7 +149,7 @@ func (c *Client) Stop() {
 	c.byRemote = make(map[RemoteTag]*outboundCall)
 	c.cmu.Unlock()
 	for _, call := range calls {
-		call.Close()
+		call.Close(ctx)
 	}
 	if c.sipCli != nil {
 		c.sipCli.Close()
@@ -164,7 +166,7 @@ func (c *Client) ContactURI(tr Transport) URI {
 }
 
 func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	ctx, span := tracer.Start(ctx, "Client.CreateSIPParticipant")
+	ctx, span := Tracer.Start(ctx, "Client.CreateSIPParticipant")
 	defer span.End()
 	return c.createSIPParticipant(ctx, req)
 }
@@ -325,6 +327,9 @@ func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
 }
 
 func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
+	ctx := context.Background()
+	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
+	defer span.End()
 	tag, _ := getFromTag(req)
 	c.cmu.Lock()
 	call := c.byRemote[tag]
@@ -339,7 +344,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	call.log.Infow("BYE from remote")
 	go func(call *outboundCall) {
 		call.cc.AcceptBye(req, tx)
-		call.CloseWithReason(CallHangup, "bye", livekit.DisconnectReason_CLIENT_INITIATED)
+		call.CloseWithReason(ctx, CallHangup, "bye", livekit.DisconnectReason_CLIENT_INITIATED)
 	}(call)
 	return true
 }
