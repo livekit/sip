@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -727,6 +728,84 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	return nil
 }
 
+// silenceSuppressionHandler detects RTP timestamp discontinuities (silence suppression)
+// and generates silence samples to fill the gaps before passing packets to the decoder.
+type silenceSuppressionHandler struct {
+	encodedSink     rtp.Handler
+	pcmSink         msdk.PCM16Writer
+	rtpClockRate    int
+	samplesPerFrame int
+	log             logger.Logger
+	mu              sync.Mutex
+	lastTS          uint32
+	lastSeq         uint16
+	initialized     bool
+}
+
+func newSilenceSuppressionHandler(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, sampleRate int, log logger.Logger) rtp.Handler {
+	return &silenceSuppressionHandler{
+		encodedSink:     encodedSink,
+		pcmSink:         pcmSink,
+		samplesPerFrame: sampleRate / rtp.DefFramesPerSec,
+		log:             log,
+	}
+}
+
+func (h *silenceSuppressionHandler) String() string {
+	return fmt.Sprintf("SilenceSuppression -> %s", h.encodedSink.String())
+}
+
+func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	currentTS := header.Timestamp
+	currentSeq := header.SequenceNumber
+	expectedSeq := h.lastSeq + 1
+	expectedTS := h.lastTS + uint32(h.samplesPerFrame)
+	h.lastTS = currentTS
+	h.lastSeq = currentSeq
+
+	if !h.initialized {
+		h.initialized = true
+		return h.encodedSink.HandleRTP(header, payload)
+	}
+
+	seqDiff := currentSeq - expectedSeq
+	tsDiff := currentTS - expectedTS
+
+	// A key characteristic of DTX or silence supression is no sequence gaps, but >1 frame TS gaps
+
+	if seqDiff != 0 || tsDiff == 0 {
+		// No silence suppression happened, don't fill
+		// This also filters out out-of-order packets, due to seqDiff != 0
+		return h.encodedSink.HandleRTP(header, payload)
+	}
+
+	// Sequential packets (no loss), but with a gap in timestamp
+	h.log.Infow("timestamp gap", // TODO: handle rate limit, this is very verbose
+		"seq", currentSeq,
+		"currentTS", currentTS,
+		"expectedTS", expectedTS,
+		"marker", header.Marker)
+
+	// Don't cause a flood of silence packets on too large of a gap (large loss, RTP TS or Seq reset)
+	missedFrames := int(tsDiff) / int(h.samplesPerFrame)
+	if missedFrames > 25 {
+		return h.encodedSink.HandleRTP(header, payload)
+	}
+
+	// Generate silence
+	for ; missedFrames > 0; missedFrames-- {
+		silence := make(msdk.PCM16Sample, h.samplesPerFrame)
+		if err := h.pcmSink.WriteSample(silence); err != nil {
+			return err
+		}
+	}
+
+	return h.encodedSink.HandleRTP(header, payload)
+}
+
 func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
 	codec := p.conf.Audio.Codec
@@ -740,6 +819,8 @@ func (p *MediaPort) setupInput() {
 		audioWriter = newMediaWriterCount(audioWriter, &p.stats.AudioInFrames, &p.stats.AudioInSamples)
 	}
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
+	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
+	audioHandler = newSilenceSuppressionHandler(audioHandler, audioWriter, codecInfo.SampleRate, p.log)
 	p.audioInHandler = audioHandler
 
 	mux := rtp.NewMux(nil)
