@@ -733,7 +733,6 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 type silenceSuppressionHandler struct {
 	encodedSink     rtp.Handler
 	pcmSink         msdk.PCM16Writer
-	rtpClockRate    int
 	samplesPerFrame int
 	log             logger.Logger
 	mu              sync.Mutex
@@ -821,28 +820,11 @@ func (h *silenceSuppressionHandler) HandleRTP(header *rtp.Header, payload []byte
 		if missingFrameCount <= 25 {
 			err := h.fillWithSilence(missingFrameCount)
 			if err != nil {
-				h.log.Errorw("failed to fill timestamp gap", err,
-					"rtpSeq", header.SequenceNumber,
-					"rtpTimestamp", header.SequenceNumber,
-					"rtpMarker", header.Marker,
-					"gapCount", h.gapCount,
-					"gapSize", missingFrameCount,
-					"gapSizeSum", h.gapSizeSum,
-				)
 				return err
 			}
 		}
 	}
-
-	err := h.encodedSink.HandleRTP(header, payload)
-	if err != nil {
-		h.log.Errorw("failed to propagate RTP", err,
-			"rtpSeq", header.SequenceNumber,
-			"rtpTimestamp", header.SequenceNumber,
-			"rtpMarker", header.Marker,
-		)
-	}
-	return err
+	return h.encodedSink.HandleRTP(header, payload)
 }
 
 func (p *MediaPort) setupInput() {
