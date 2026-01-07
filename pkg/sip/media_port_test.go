@@ -620,7 +620,7 @@ func (s *SilenceSuppressionTester) assertSilenceIndexes(t *testing.T, expectedSi
 	}
 }
 
-func TestSilnceSuppressionHandling(t *testing.T) {
+func TestSilenceSuppressionHandling(t *testing.T) {
 	const (
 		sampleRate      = 8000
 		samplesPerFrame = uint32(sampleRate / rtp.DefFramesPerSec) // 160 samples per 20ms frame

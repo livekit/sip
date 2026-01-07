@@ -736,7 +736,6 @@ type silenceFiller struct {
 	pcmSink         msdk.PCM16Writer
 	samplesPerFrame int
 	log             logger.Logger
-	mu              sync.Mutex
 	lastTS          uint32
 	lastSeq         uint16
 	initialized     bool
@@ -755,12 +754,15 @@ func WithMaxGapSize(maxGapSize int) SilenceSuppressionOption {
 	}
 }
 
-func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, sampleRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.Handler {
+func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, clockRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.Handler {
+	// TODO: We assume 20ms frame. We would need to adjust this when:
+	// - When we add support for other frame durations.
+	// - When we add support for re-INVITE sdp renegotiation (maybe, if we don't destroy this and start over).
 	h := &silenceFiller{
 		maxGapSize:      25, // Default max gap size
 		encodedSink:     encodedSink,
 		pcmSink:         pcmSink,
-		samplesPerFrame: sampleRate / rtp.DefFramesPerSec,
+		samplesPerFrame: clockRate / rtp.DefFramesPerSec,
 		log:             log,
 	}
 	for _, option := range options {
@@ -774,20 +776,24 @@ func (h *silenceFiller) String() string {
 }
 
 func (h *silenceFiller) isSilenceSuppression(header *rtp.Header) (bool, int) {
-	currentTS := header.Timestamp
-	currentSeq := header.SequenceNumber
-	expectedSeq := h.lastSeq + 1
-	expectedTS := h.lastTS + uint32(h.samplesPerFrame)
-	h.lastTS = currentTS
-	h.lastSeq = currentSeq
-
 	if !h.initialized {
 		h.initialized = true
+		h.lastSeq = header.SequenceNumber
+		h.lastTS = header.Timestamp
 		return false, 0
 	}
 
+	currentTS := header.Timestamp
+	currentSeq := header.SequenceNumber
+
+	expectedSeq := h.lastSeq + 1
+	expectedTS := h.lastTS + uint32(h.samplesPerFrame)
+
 	seqDiff := currentSeq - expectedSeq
 	tsDiff := currentTS - expectedTS
+
+	h.lastTS = currentTS
+	h.lastSeq = currentSeq
 
 	// A key characteristic of DTX or silence supression is no sequence gaps, but >1 frame TS gaps
 
@@ -812,9 +818,6 @@ func (h *silenceFiller) fillWithSilence(framesToFill int) error {
 }
 
 func (h *silenceFiller) HandleRTP(header *rtp.Header, payload []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	isSilenceSupression, missingFrameCount := h.isSilenceSuppression(header)
 
 	if isSilenceSupression {
@@ -824,7 +827,7 @@ func (h *silenceFiller) HandleRTP(header *rtp.Header, payload []byte) error {
 			h.lastPrintTime = time.Now()
 			h.log.Infow("timestamp gap",
 				"rtpSeq", header.SequenceNumber,
-				"rtpTimestamp", header.SequenceNumber,
+				"rtpTimestamp", header.Timestamp,
 				"rtpMarker", header.Marker,
 				"gapCount", h.gapCount,
 				"gapSize", missingFrameCount,
@@ -857,7 +860,7 @@ func (p *MediaPort) setupInput() {
 	}
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
 	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
-	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.SampleRate, p.log)
+	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.RTPClockRate, p.log)
 	p.audioInHandler = audioHandler
 
 	mux := rtp.NewMux(nil)
