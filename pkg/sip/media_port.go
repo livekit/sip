@@ -225,6 +225,7 @@ type MediaOptions struct {
 	Stats               *PortStats
 	EnableJitterBuffer  bool
 	NoInputResample     bool
+	LogSignalChanges    bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -265,6 +266,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		mediaTimeout:     mediaTimeout,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
+		logSignalChanges: opts.LogSignalChanges,
 		port:             newUDPConn(log, conn),
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
@@ -298,6 +300,7 @@ type MediaPort struct {
 	stats            *PortStats
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
+	logSignalChanges bool
 
 	mu           sync.Mutex
 	conf         *MediaConf
@@ -706,6 +709,12 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.stats != nil {
 		audioOut = newMediaWriterCount(audioOut, &p.stats.AudioOutFrames, &p.stats.AudioOutSamples)
 	}
+	if p.logSignalChanges {
+		audioOut, err = NewSignalLogger(p.log, "output", audioOut)
+		if err != nil {
+			return err
+		}
+	}
 
 	if p.conf.Audio.DTMFType != 0 {
 		p.dtmfOutRTP = s.NewStream(p.conf.Audio.DTMFType, dtmf.SampleRate)
@@ -738,6 +747,14 @@ func (p *MediaPort) setupInput() {
 	var audioWriter msdk.PCM16Writer = p.audioIn
 	if p.stats != nil {
 		audioWriter = newMediaWriterCount(audioWriter, &p.stats.AudioInFrames, &p.stats.AudioInSamples)
+	}
+	if p.logSignalChanges {
+		signalLogger, err := NewSignalLogger(p.log, "input", audioWriter)
+		if err != nil {
+			p.log.Errorw("failed to create signal logger", err)
+		} else {
+			audioWriter = signalLogger
+		}
 	}
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
 	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
