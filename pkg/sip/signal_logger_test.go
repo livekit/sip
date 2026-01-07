@@ -173,10 +173,11 @@ func TestSignalLogger_WriteSample(t *testing.T) {
 	signalFrames := make([]msdk.PCM16Sample, 100)
 	for i := range signalFrames {
 		amplitude := (int16(rand.Uint32()) % 1000)
+		// Adding (DefaultNoiseFloorMax * DefaultSignalMultiplier) prevents signal from being detected as silence when loud for too long.
 		if amplitude < 0 {
-			amplitude -= int16(DefaultNoiseFloorMax)
+			amplitude -= int16(DefaultNoiseFloorMax * DefaultSignalMultiplier)
 		} else {
-			amplitude += int16(DefaultNoiseFloorMax)
+			amplitude += int16(DefaultNoiseFloorMax * DefaultSignalMultiplier)
 		}
 		signalFrames[i] = createFrame(480, amplitude)
 	}
