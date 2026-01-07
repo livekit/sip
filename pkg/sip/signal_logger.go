@@ -27,7 +27,7 @@ const (
 	DefaultDecayAlpha       = float64(0.95)    // 5% of new silence is added to the noise floor.
 	DefaultAttackAlpha      = float64(0.999)   // 0.1% of new signal is added to the noise floor.
 	DefaultNoiseFloorMin    = float64(30)      // Minimum noise floor. Useful when mic changes to avoid false positives.
-	DefaultNoiseFloorMax    = float64(300)     // Maximum noise floor. Would always detect signal in very noisy environments, but that's okay.
+	DefaultNoiseFloorMax    = float64(200)     // Maximum noise floor. If an environment is noisy, we still consider that as signal.
 	AlphaMin                = float64(0.1)     // Minimum alpha.
 	AlphaMax                = float64(0.99999) // Maximum alpha.
 )
