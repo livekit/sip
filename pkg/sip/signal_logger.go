@@ -26,7 +26,7 @@ const (
 	DefaultSignalMultiplier = float64(2)       // Singnal needs to be at least 2 times the noise floor to be detected.
 	DefaultDecayAlpha       = float64(0.95)    // 5% of new silence is added to the noise floor.
 	DefaultAttackAlpha      = float64(0.999)   // 0.1% of new signal is added to the noise floor.
-	DefaultNoiseFloorMin    = float64(20)      // Minimum noise floor. Useful when mic changes to avoid false positives.
+	DefaultNoiseFloorMin    = float64(30)      // Minimum noise floor. Useful when mic changes to avoid false positives.
 	DefaultNoiseFloorMax    = float64(300)     // Maximum noise floor. Would always detect signal in very noisy environments, but that's okay.
 	AlphaMin                = float64(0.1)     // Minimum alpha.
 	AlphaMax                = float64(0.99999) // Maximum alpha.
@@ -151,15 +151,11 @@ func (s *SignalLogger) MeanAbsoluteDeviation(sample msdk.PCM16Sample) float64 {
 
 // Updates the noise floor using moving average.
 func (s *SignalLogger) updateNoiseFloor(currentEnergy float64, isSignal int32) {
-	if s.noiseFloor == 0 {
-		s.noiseFloor = currentEnergy
-	} else {
-		alpha := s.decayAlpha
-		if isSignal != 0 {
-			alpha = s.attackAlpha
-		}
-		s.noiseFloor = (alpha * s.noiseFloor) + ((1 - alpha) * currentEnergy)
+	alpha := s.decayAlpha
+	if isSignal != 0 {
+		alpha = s.attackAlpha
 	}
+	s.noiseFloor = (alpha * s.noiseFloor) + ((1 - alpha) * currentEnergy)
 	s.noiseFloor = min(s.noiseFloor, s.noiseFloorMax)
 	s.noiseFloor = max(s.noiseFloor, s.noiseFloorMin)
 }
