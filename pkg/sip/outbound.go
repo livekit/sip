@@ -141,6 +141,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
 		EnableJitterBuffer:  call.jitterBuf,
+		LogSignalChanges:    true, // TODO: Replace with per-project setting
 		Stats:               &call.stats.Port,
 		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
