@@ -604,16 +604,18 @@ func (s *SilenceSuppressionTester) SendSignalFrames(count int, nextSeq uint16, n
 	return nextSeq, nextTimestamp, nil
 }
 
-func (s *SilenceSuppressionTester) assertSilenceIndexes(t *testing.T, expectedSize int, indexes []int) {
+func (s *SilenceSuppressionTester) assertSilenceIndexes(t *testing.T, expectedSize int, silenceIndexes []int) {
 	require.Equal(t, expectedSize, len(s.framesReceived))
+	require.Equal(t, uint64(len(silenceIndexes)), s.receivedSilenceFrames)
+	require.Equal(t, uint64(expectedSize-len(silenceIndexes)), s.receivedSignalFrames)
 	for i, isSignal := range s.framesReceived {
-		if slices.Contains(indexes, i) {
-			require.False(t, isSignal, "frame %d should be signal", i)
+		if slices.Contains(silenceIndexes, i) {
+			require.False(t, isSignal, "frame %d should be silence", i)
 		} else {
-			require.True(t, isSignal, "frame %d should be silence", i)
+			require.True(t, isSignal, "frame %d should be signal", i)
 		}
 	}
-	for _, index := range indexes { // Make sure we're not missing any indexes
+	for _, index := range silenceIndexes { // Make sure we're not missing any indexes
 		if index < 0 || index >= expectedSize {
 			t.Fatalf("index %d out of range", index)
 		}
@@ -630,15 +632,10 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 
 	t.Run("no gap", func(t *testing.T) {
 		tester := newSilenceSuppressionTester(sampleRate, log)
-		const numFrames = 10
-		_, _, err := tester.SendSignalFrames(numFrames, 100, 1000)
+		_, _, err := tester.SendSignalFrames(10, 100, 1000)
 		require.NoError(t, err)
 
-		// All frames should be signal frames, no silence generated
-		require.Equal(t, numFrames, len(tester.framesReceived))
-		require.Equal(t, uint64(numFrames), tester.receivedSignalFrames)
-		require.Equal(t, uint64(0), tester.receivedSilenceFrames)
-		tester.assertSilenceIndexes(t, numFrames, []int{})
+		tester.assertSilenceIndexes(t, 10, []int{})
 	})
 
 	t.Run("single frame gap", func(t *testing.T) {
@@ -653,9 +650,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err = tester.SendSignalFrames(5, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		require.Equal(t, 11, len(tester.framesReceived))
-		require.Equal(t, uint64(10), tester.receivedSignalFrames)
-		require.Equal(t, uint64(1), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 11, []int{5})
 	})
 
@@ -671,9 +665,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err = tester.SendSignalFrames(5, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		require.Equal(t, 13, len(tester.framesReceived))
-		require.Equal(t, uint64(10), tester.receivedSignalFrames)
-		require.Equal(t, uint64(3), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 13, []int{5, 6, 7})
 	})
 
@@ -689,9 +680,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err = tester.SendSignalFrames(5, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		require.Equal(t, 10, len(tester.framesReceived))
-		require.Equal(t, uint64(10), tester.receivedSignalFrames)
-		require.Equal(t, uint64(0), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 10, []int{})
 	})
 
@@ -704,10 +692,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err := tester.SendSignalFrames(5, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		// All should be signal frames, no silence
-		require.Equal(t, 5, len(tester.framesReceived))
-		require.Equal(t, uint64(5), tester.receivedSignalFrames)
-		require.Equal(t, uint64(0), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 5, []int{})
 	})
 
@@ -724,9 +708,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err = tester.SendSignalFrames(2, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		require.Equal(t, 7, len(tester.framesReceived))
-		require.Equal(t, uint64(4), tester.receivedSignalFrames)
-		require.Equal(t, uint64(3), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 7, []int{2, 3, 4})
 	})
 
@@ -739,9 +720,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err := tester.SendSignalFrames(4, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		require.Equal(t, 4, len(tester.framesReceived))
-		require.Equal(t, uint64(4), tester.receivedSignalFrames)
-		require.Equal(t, uint64(0), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 4, []int{})
 	})
 
@@ -758,10 +736,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		_, _, err = tester.SendSignalFrames(2, nextSeq, nextTimestamp)
 		require.NoError(t, err)
 
-		// We do not expect generated silence still, since a seq gap isn't silence suppression by definition
-		require.Equal(t, 7, len(tester.framesReceived))
-		require.Equal(t, uint64(4), tester.receivedSignalFrames)
-		require.Equal(t, uint64(3), tester.receivedSilenceFrames)
 		tester.assertSilenceIndexes(t, 7, []int{2, 3, 4})
 	})
 }
