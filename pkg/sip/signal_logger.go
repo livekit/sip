@@ -133,6 +133,10 @@ func (s *SignalLogger) SampleRate() int {
 	return s.next.SampleRate()
 }
 
+func (s *SignalLogger) Close() error {
+	return s.next.Close()
+}
+
 // Calculates the mean absolute deviation of the frame.
 func (s *SignalLogger) MeanAbsoluteDeviation(sample msdk.PCM16Sample) float64 {
 	if len(sample) == 0 {
