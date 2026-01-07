@@ -134,6 +134,10 @@ func (s *SignalLogger) SampleRate() int {
 }
 
 func (s *SignalLogger) Close() error {
+	stateChanges := atomic.AddUint64(&s.stateChanges, 1)
+	if stateChanges > 0 {
+		s.log.Infow("signal logger closing", "direction", s.direction, "stateChanges", stateChanges)
+	}
 	return s.next.Close()
 }
 
