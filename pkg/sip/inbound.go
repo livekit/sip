@@ -962,6 +962,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,
 		EnableJitterBuffer:  c.jitterBuf,
+		LogSignalChanges:    true, // TODO: Replace with per-project setting
 		Stats:               &c.stats.Port,
 		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
