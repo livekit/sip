@@ -108,6 +108,7 @@ type Config struct {
 	// internal
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten
+	JaegerURL   string `yaml:"jaeger_url"` // for tracing
 
 	// Experimental, these option might go away without notice.
 	Experimental struct {

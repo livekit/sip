@@ -21,6 +21,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/livekit/protocol/tracer/jaeger"
+	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 	"github.com/urfave/cli/v3"
 
 	"github.com/livekit/protocol/logger"
@@ -63,12 +65,15 @@ func main() {
 	}
 }
 
-func runService(_ context.Context, c *cli.Command) error {
+func runService(ctx context.Context, c *cli.Command) error {
 	conf, err := getConfig(c, true)
 	if err != nil {
 		return err
 	}
 	log := logger.GetLogger()
+	if conf.JaegerURL != "" {
+		jaeger.Configure(ctx, conf.JaegerURL, conf.ServiceName)
+	}
 
 	rc, err := redis.GetRedisClient(conf.Redis)
 	if err != nil {
@@ -76,7 +81,9 @@ func runService(_ context.Context, c *cli.Command) error {
 	}
 
 	bus := psrpc.NewRedisMessageBus(rc)
-	psrpcClient, err := rpc.NewIOInfoClient(bus)
+	psrpcClient, err := rpc.NewIOInfoClient(bus,
+		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
+	)
 	if err != nil {
 		return err
 	}

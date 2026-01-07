@@ -62,6 +62,8 @@ func (s *CallState) DeferUpdate(update func(info *livekit.SIPCallInfo)) {
 }
 
 func (s *CallState) Update(ctx context.Context, update func(info *livekit.SIPCallInfo)) {
+	ctx, span := Tracer.Start(ctx, "sip.CallState.Update")
+	defer span.End()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirty = true
@@ -125,11 +127,12 @@ func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr er
 }
 
 func (s *CallState) flush(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
 	if s.cli == nil {
 		s.dirty = false
 		return
 	}
-	_, err := s.cli.UpdateSIPCallState(context.WithoutCancel(ctx), &rpc.UpdateSIPCallStateRequest{
+	_, err := s.cli.UpdateSIPCallState(ctx, &rpc.UpdateSIPCallStateRequest{
 		CallInfo: s.callInfo,
 	})
 	if err == nil {
@@ -138,6 +141,8 @@ func (s *CallState) flush(ctx context.Context) {
 }
 
 func (s *CallState) Flush(ctx context.Context) {
+	ctx, span := Tracer.Start(ctx, "sip.CallState.Flush")
+	defer span.End()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dirty {
@@ -147,6 +152,8 @@ func (s *CallState) Flush(ctx context.Context) {
 }
 
 func (s *CallState) ForceFlush(ctx context.Context) {
+	ctx, span := Tracer.Start(ctx, "sip.CallState.ForceFlush")
+	defer span.End()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.flush(ctx)

@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/livekit/protocol/tracer/jaeger"
+	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/media-sdk/dtmf"
@@ -53,15 +55,11 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		_ = rc.Close()
 	})
 
-	bus := psrpc.NewRedisMessageBus(rc)
-	psrpcCli, err := rpc.NewIOInfoClient(bus)
-	if err != nil {
-		t.Fatal(err)
-	}
 	sipPort := 5060 + rand.Intn(1000)
 	local, err := config.GetLocalIP()
 	require.NoError(t, err)
 	conf := &config.Config{
+		ServiceName:        "sip",
 		NodeID:             utils.NewGuid("NS_"),
 		ApiKey:             lk.ApiKey,
 		ApiSecret:          lk.ApiSecret,
@@ -76,9 +74,21 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		MaxCpuUtilization:  0.9,
 		Logging:            logger.Config{Level: "debug"},
 		EnableJitterBuffer: true,
+		JaegerURL:          os.Getenv("JAEGER_URL"),
 	}
 	_ = conf.InitLogger()
 	log := logger.GetLogger()
+	if conf.JaegerURL != "" {
+		jaeger.Configure(t.Context(), conf.JaegerURL, conf.ServiceName)
+	}
+
+	bus := psrpc.NewRedisMessageBus(rc)
+	psrpcCli, err := rpc.NewIOInfoClient(bus,
+		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	mon, err := stats.NewMonitor(conf)
 	if err != nil {

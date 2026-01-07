@@ -348,7 +348,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					r.stats.InputPackets.Add(1)
 					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
 					//       DTMF audio tone will be automatically mixed in any case.
-					r.sendDTMF(data)
+					r.sendDTMF(context.Background(), data)
 				}
 			},
 			OnTrackUnsubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
@@ -463,14 +463,14 @@ func (r *Room) SetDTMFOutput(w dtmf.Writer) {
 	r.outDtmf.Store(&w)
 }
 
-func (r *Room) sendDTMF(msg *livekit.SipDTMF) {
+func (r *Room) sendDTMF(ctx context.Context, msg *livekit.SipDTMF) {
 	outDTMF := r.outDtmf.Load()
 	if outDTMF == nil {
 		r.log.Infow("ignoring dtmf", "digit", msg.Digit)
 		return
 	}
 	// TODO: Separate goroutine?
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r.log.Infow("forwarding dtmf to sip", "digit", msg.Digit)
 	_ = (*outDTMF).WriteDTMF(ctx, msg.Digit)

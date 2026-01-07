@@ -279,6 +279,8 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 }
 
 func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
+	ctx, span := Tracer.Start(ctx, "sip.sendRefer")
+	defer span.End()
 	tx, err := c.Transaction(req)
 	if err != nil {
 		return nil, err
