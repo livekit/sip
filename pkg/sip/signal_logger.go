@@ -1,3 +1,17 @@
+// Copyright 2024 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sip
 
 import (
@@ -9,9 +23,13 @@ import (
 )
 
 const (
-	DefaultSignalMultiplier = float64(2)     // Singnal needs to be at least 2 times the noise floor to be detected.
-	DefaultDecayAlpha       = float64(0.95)  // 5% of new silence is added to the noise floor.
-	DefaultAttackAlpha      = float64(0.999) // 0.1% of new signal is added to the noise floor.
+	DefaultSignalMultiplier = float64(2)       // Singnal needs to be at least 2 times the noise floor to be detected.
+	DefaultDecayAlpha       = float64(0.95)    // 5% of new silence is added to the noise floor.
+	DefaultAttackAlpha      = float64(0.999)   // 0.1% of new signal is added to the noise floor.
+	DefaultNoiseFloorMin    = float64(20)      // Minimum noise floor. Useful when mic changes to avoid false positives.
+	DefaultNoiseFloorMax    = float64(300)     // Maximum noise floor. Would always detect signal in very noisy environments, but that's okay.
+	AlphaMin                = float64(0.1)     // Minimum alpha.
+	AlphaMax                = float64(0.99999) // Maximum alpha.
 )
 
 // Keeps an internal state of whether we're currently transmitting signal (voice or noise), or silence.
@@ -26,59 +44,85 @@ type SignalLogger struct {
 	attackAlpha      float64 // Weight of previous noise floor when updating signal noise floor.
 	signalMultiplier float64 // Threshold multiplier for signal to be detected.
 	noiseFloor       float64 // Moveing average of noise floor.
+	noiseFloorMin    float64 // Minimum noise floor.
+	noiseFloorMax    float64 // Maximum noise floor.
 	framesProcessed  uint64
+	stateChanges     uint64
 }
 
-type NewSignalLoggerOption func(*SignalLogger)
+type SignalLoggerOption func(*SignalLogger) error
 
-func WithSignalMultiplier(signalMultiplier float64) NewSignalLoggerOption {
-	return func(s *SignalLogger) {
-		if signalMultiplier < 0 {
-			signalMultiplier = -signalMultiplier
+func WithSignalMultiplier(signalMultiplier float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if signalMultiplier <= 1 {
+			return fmt.Errorf("signal multiplier must be greater than 1")
 		}
-		if signalMultiplier > 1 {
-			s.signalMultiplier = signalMultiplier
-		}
+		s.signalMultiplier = signalMultiplier
+		return nil
 	}
 }
 
-func WithDecayAlpha(alpha float64) NewSignalLoggerOption {
-	return func(s *SignalLogger) {
-		if alpha < 0 {
-			alpha = -alpha
-		}
-		if alpha > 1 {
-			alpha = 1
+func WithDecayAlpha(alpha float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if alpha < AlphaMin || alpha > AlphaMax {
+			return fmt.Errorf("decay alpha must be between %f and %f", AlphaMin, AlphaMax)
 		}
 		s.decayAlpha = alpha
+		return nil
 	}
 }
 
-func WithAttackAlpha(alpha float64) NewSignalLoggerOption {
-	return func(s *SignalLogger) {
-		if alpha < 0 {
-			alpha = -alpha
-		}
-		if alpha > 1 {
-			alpha = 1
+func WithAttackAlpha(alpha float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if alpha < AlphaMin || alpha > AlphaMax {
+			return fmt.Errorf("attack alpha must be between %f and %f", AlphaMin, AlphaMax)
 		}
 		s.attackAlpha = alpha
+		return nil
 	}
 }
 
-func NewSignalLogger(log logger.Logger, direction string, alpha float64, next msdk.PCM16Writer) *SignalLogger {
+func WithNoiseFloorMax(noiseFloorMax float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if noiseFloorMax <= 0 {
+			return fmt.Errorf("noise floor max must be greater than 0")
+		}
+		s.noiseFloorMax = noiseFloorMax
+		return nil
+	}
+}
+
+func WithNoiseFloorMin(noiseFloorMin float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if noiseFloorMin < 0 {
+			return fmt.Errorf("noise floor min must be non-negative")
+		}
+		s.noiseFloorMin = noiseFloorMin
+		return nil
+	}
+}
+func NewSignalLogger(log logger.Logger, direction string, next msdk.PCM16Writer, options ...SignalLoggerOption) (*SignalLogger, error) {
 	s := &SignalLogger{
 		log:              log,
 		direction:        direction,
 		next:             next,
 		isLastSignal:     0,
 		framesProcessed:  0,
+		stateChanges:     0,
 		signalMultiplier: DefaultSignalMultiplier,
 		decayAlpha:       DefaultDecayAlpha,
 		attackAlpha:      DefaultAttackAlpha,
+		noiseFloorMax:    DefaultNoiseFloorMax,
+		noiseFloorMin:    DefaultNoiseFloorMin,
 		noiseFloor:       0.0,
 	}
-	return s
+	for _, option := range options {
+		if err := option(s); err != nil {
+			return nil, err
+		}
+	}
+	s.noiseFloor = (s.noiseFloorMax + s.noiseFloorMin) / 2
+	return s, nil
 }
 
 func (s *SignalLogger) String() string {
@@ -106,25 +150,37 @@ func (s *SignalLogger) MeanAbsoluteDeviation(sample msdk.PCM16Sample) float64 {
 }
 
 // Updates the noise floor using moving average.
-func (s *SignalLogger) UpdateNoiseFloor(currentEnergy float64, isSignal int32) {
-	alpha := s.attackAlpha
-	if isSignal == 0 {
-		alpha = s.decayAlpha
+func (s *SignalLogger) updateNoiseFloor(currentEnergy float64, isSignal int32) {
+	if s.noiseFloor == 0 {
+		s.noiseFloor = currentEnergy
+	} else {
+		alpha := s.decayAlpha
+		if isSignal != 0 {
+			alpha = s.attackAlpha
+		}
+		s.noiseFloor = (alpha * s.noiseFloor) + ((1 - alpha) * currentEnergy)
 	}
-	s.noiseFloor = (alpha * s.noiseFloor) + ((1 - alpha) * currentEnergy)
+	s.noiseFloor = min(s.noiseFloor, s.noiseFloorMax)
+	s.noiseFloor = max(s.noiseFloor, s.noiseFloorMin)
 }
 
 func (s *SignalLogger) WriteSample(sample msdk.PCM16Sample) error {
 	currentEnergy := s.MeanAbsoluteDeviation(sample)
+	lastSignal := atomic.LoadInt32(&s.isLastSignal)
+	signalMultiplier := s.signalMultiplier
+	if lastSignal == 1 {
+		signalMultiplier *= 0.9 // Reduce signal multiplier when last signal was signal, to avoid flip-flopping.
+	}
 	isSignal := int32(0)
-	if currentEnergy > (s.noiseFloor * s.signalMultiplier) {
+	if currentEnergy > (s.noiseFloor * signalMultiplier) {
 		isSignal = 1
 	}
-	s.UpdateNoiseFloor(currentEnergy, isSignal)
+	s.updateNoiseFloor(currentEnergy, isSignal)
 	atomic.AddUint64(&s.framesProcessed, 1)
-	lastSignal := atomic.SwapInt32(&s.isLastSignal, isSignal)
+	lastSignal = atomic.SwapInt32(&s.isLastSignal, isSignal)
 	if lastSignal != isSignal && atomic.LoadUint64(&s.framesProcessed) > 10 {
-		s.log.Infow("signal changed", "direction", s.direction, "signal", isSignal)
+		stateChanges := atomic.AddUint64(&s.stateChanges, 1)
+		s.log.Infow("signal changed", "direction", s.direction, "signal", isSignal, "stateChanges", stateChanges)
 	}
 	return s.next.WriteSample(sample)
 }
