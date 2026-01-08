@@ -229,9 +229,10 @@ func (w *rtpStatsWriter) String() string {
 func (w *rtpStatsWriter) WriteRTP(h *prtp.Header, payload []byte) (int, error) {
 	if w.mon != nil {
 		typ := ""
-		if h.PayloadType == w.audioPayloadType {
+		switch h.PayloadType {
+		case w.audioPayloadType:
 			typ = w.audioType
-		} else if h.PayloadType == w.dtmfPayloadType {
+		case w.dtmfPayloadType:
 			typ = w.dtmfType
 		}
 		if typ == "" && h.PayloadType < 96 {
