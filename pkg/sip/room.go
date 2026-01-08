@@ -51,12 +51,6 @@ type RoomStatsSnapshot struct {
 
 	PublishTX float64 `json:"publish_tx"`
 
-	MixerSamples uint64 `json:"mixer_samples"`
-	MixerFrames  uint64 `json:"mixer_frames"`
-
-	OutputSamples uint64 `json:"output_samples"`
-	OutputFrames  uint64 `json:"output_frames"`
-
 	Closed bool `json:"closed"`
 }
 
@@ -70,13 +64,7 @@ type RoomStats struct {
 
 	PublishTX atomic.Uint64
 
-	MixerFrames  atomic.Uint64
-	MixerSamples atomic.Uint64
-
 	Mixer mixer.Stats
-
-	OutputFrames  atomic.Uint64
-	OutputSamples atomic.Uint64
 
 	Closed atomic.Bool
 
@@ -95,10 +83,6 @@ func (s *RoomStats) Load() RoomStatsSnapshot {
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
 		PublishTX:        math.Float64frombits(s.PublishTX.Load()),
-		MixerSamples:     s.MixerSamples.Load(),
-		MixerFrames:      s.MixerFrames.Load(),
-		OutputSamples:    s.OutputSamples.Load(),
-		OutputFrames:     s.OutputFrames.Load(),
 		Closed:           s.Closed.Load(),
 	}
 }
@@ -193,10 +177,9 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 		st = &RoomStats{}
 	}
 	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
-	out := newMediaWriterCount(r.out, &st.OutputFrames, &st.OutputSamples)
 
 	var err error
-	r.mix, err = mixer.NewMixer(out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
+	r.mix, err = mixer.NewMixer(r.out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
 	if err != nil {
 		panic(err)
 	}
@@ -323,9 +306,8 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer mTrack.Close()
 
 					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)
-					out := newMediaWriterCount(mTrack, &r.stats.MixerFrames, &r.stats.MixerSamples)
 
-					odec, err := opus.Decode(out, channels, log)
+					odec, err := opus.Decode(mTrack, channels, log)
 					if err != nil {
 						log.Errorw("cannot create opus decoder", err)
 						return
