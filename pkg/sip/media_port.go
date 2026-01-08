@@ -698,8 +698,10 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	}
 
 	// TODO: this says "audio", but actually includes DTMF too
-	s := rtp.NewSeqWriter(newRTPStatsWriter(p.mon, "audio", w))
-	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, p.conf.Audio.Codec.Info().RTPClockRate)
+	codecInfo := p.conf.Audio.Codec.Info()
+	w = newRTPStatsWriter(p.mon, p.conf.Audio.Type, p.conf.Audio.DTMFType, codecInfo.SDPName, dtmf.SDPName, w)
+	s := rtp.NewSeqWriter(w)
+	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, codecInfo.RTPClockRate)
 
 	// Encoding pipeline (LK PCM -> SIP RTP)
 	audioOut := p.conf.Audio.Codec.EncodeRTP(p.audioOutRTP)

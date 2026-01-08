@@ -144,6 +144,33 @@ const (
 	RoomResample   = false
 )
 
+var staticPayloadTypes = map[uint8]string{
+	0:  "Auto_PCMU/8000",
+	3:  "Auto_GSM/8000",
+	4:  "Auto_G723/8000",
+	5:  "Auto_DVI4/8000",
+	6:  "Auto_DVI4/16000",
+	7:  "Auto_LPC/8000",
+	8:  "Auto_PCMA/8000",
+	9:  "Auto_G722/8000",
+	10: "Auto_L16/44100/2",
+	11: "Auto_L16/44100",
+	12: "Auto_QCELP/8000",
+	13: "Auto_CN/8000",
+	14: "Auto_MPA/90000",
+	15: "Auto_G728/16000",
+	16: "Auto_DVI4/11025",
+	17: "Auto_DVI4/22050",
+	18: "Auto_G729/8000",
+	25: "Auto_CELLB/90000",
+	26: "Auto_JPEG/90000",
+	28: "Auto_NV/90000",
+	31: "Auto_H261/90000",
+	32: "Auto_MPV/90000",
+	33: "Auto_MP2T/90000",
+	34: "Auto_H263/90000",
+}
+
 func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) rtp.Handler {
 	if r == nil {
 		r = rtp.HandlerFunc(nil)
@@ -164,6 +191,9 @@ func (r *rtpStatsHandler) String() string {
 func (r *rtpStatsHandler) HandleRTP(h *rtp.Header, payload []byte) error {
 	if r.mon != nil {
 		typ := r.typ
+		if typ == "" && h.PayloadType < 96 {
+			typ, _ = staticPayloadTypes[h.PayloadType]
+		}
 		if typ == "" {
 			typ = strconv.Itoa(int(h.PayloadType))
 		}
@@ -172,23 +202,41 @@ func (r *rtpStatsHandler) HandleRTP(h *rtp.Header, payload []byte) error {
 	return r.h.HandleRTP(h, payload)
 }
 
-func newRTPStatsWriter(mon *stats.CallMonitor, typ string, w rtp.WriteStream) rtp.WriteStream {
-	return &rtpStatsWriter{w: w, typ: typ, mon: mon}
+func newRTPStatsWriter(mon *stats.CallMonitor, audioPayloadType uint8, dtmfPayloadType uint8, audioType string, dtmfType string, w rtp.WriteStream) rtp.WriteStream {
+	return &rtpStatsWriter{
+		w:                w,
+		audioPayloadType: audioPayloadType,
+		dtmfPayloadType:  dtmfPayloadType,
+		audioType:        audioType,
+		dtmfType:         dtmfType,
+		mon:              mon,
+	}
 }
 
 type rtpStatsWriter struct {
-	w   rtp.WriteStream
-	typ string
-	mon *stats.CallMonitor
+	w                rtp.WriteStream
+	audioPayloadType uint8
+	dtmfPayloadType  uint8
+	audioType        string
+	dtmfType         string
+	mon              *stats.CallMonitor
 }
 
 func (w *rtpStatsWriter) String() string {
-	return fmt.Sprintf("StatsWriter(%s) -> %s", w.typ, w.w.String())
+	return fmt.Sprintf("StatsWriter(%s) -> %s", w.audioType, w.w.String())
 }
 
 func (w *rtpStatsWriter) WriteRTP(h *prtp.Header, payload []byte) (int, error) {
 	if w.mon != nil {
-		typ := w.typ
+		typ := ""
+		if h.PayloadType == w.audioPayloadType {
+			typ = w.audioType
+		} else if h.PayloadType == w.dtmfPayloadType {
+			typ = w.dtmfType
+		}
+		if typ == "" && h.PayloadType < 96 {
+			typ, _ = staticPayloadTypes[h.PayloadType]
+		}
 		if typ == "" {
 			typ = strconv.Itoa(int(h.PayloadType))
 		}
