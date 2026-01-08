@@ -404,7 +404,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
 	r.log = r.log.WithValues("room", r.room.Name(), "roomID", r.room.SID(), "participant", r.p.Identity, "pID", r.p.ID)
-	r.log.Infow("joined room")
+	r.log.Infow("SIP participant joined room")
 	room.LocalParticipant.SetAttributes(partConf.Attributes)
 	r.ready.Break()
 	r.subscribe.Store(false) // already false, but keep for visibility
