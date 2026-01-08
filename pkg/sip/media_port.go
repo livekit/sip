@@ -757,17 +757,7 @@ func (p *MediaPort) setupInput() {
 	if p.conf.Audio.DTMFType != 0 {
 		mux.Register(
 			p.conf.Audio.DTMFType, newRTPHandlerCount(
-				newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(func(h *rtp.Header, payload []byte) error {
-					ptr := p.dtmfIn.Load()
-					if ptr == nil {
-						return nil
-					}
-					fnc := *ptr
-					if ev, ok := dtmf.DecodeRTP(h, payload); ok && fnc != nil {
-						fnc(ev)
-					}
-					return nil
-				})),
+				newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(p.dtmfHandler)),
 				&p.stats.DTMFPackets, &p.stats.DTMFBytes,
 			),
 		)
@@ -791,6 +781,18 @@ func (p *MediaPort) HandleDTMF(h func(ev dtmf.Event)) {
 	} else {
 		p.dtmfIn.Store(&h)
 	}
+}
+
+func (p *MediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
+	ptr := p.dtmfIn.Load()
+	if ptr == nil {
+		return nil
+	}
+	fnc := *ptr
+	if ev, ok := dtmf.DecodeRTP(h, payload); ok && fnc != nil {
+		fnc(ev)
+	}
+	return nil
 }
 
 func (p *MediaPort) WriteDTMF(ctx context.Context, digits string) error {
