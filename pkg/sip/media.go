@@ -284,7 +284,6 @@ func (w *mediaWriterCount) WriteSample(sample msdk.PCM16Sample) error {
 }
 
 func newRTPHandlerCount(h rtp.Handler, packets, bytes *atomic.Uint64) *rtpHandlerCount {
-	fmt.Println("newRTPHandlerCount", h.String())
 	return &rtpHandlerCount{
 		h:       h,
 		packets: packets,
