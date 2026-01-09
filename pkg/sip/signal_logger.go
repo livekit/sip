@@ -38,7 +38,7 @@ const (
 type SignalLogger struct {
 	log              logger.Logger
 	next             msdk.PCM16Writer
-	direction        string
+	name             string
 	isLastSignal     int32
 	decayAlpha       float64 // Weight of previous noise floor when updating silence noise floor.
 	attackAlpha      float64 // Weight of previous noise floor when updating signal noise floor.
@@ -101,10 +101,10 @@ func WithNoiseFloorMin(noiseFloorMin float64) SignalLoggerOption {
 		return nil
 	}
 }
-func NewSignalLogger(log logger.Logger, direction string, next msdk.PCM16Writer, options ...SignalLoggerOption) (*SignalLogger, error) {
+func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, options ...SignalLoggerOption) (*SignalLogger, error) {
 	s := &SignalLogger{
 		log:              log,
-		direction:        direction,
+		name:             name,
 		next:             next,
 		isLastSignal:     0,
 		framesProcessed:  0,
@@ -126,7 +126,7 @@ func NewSignalLogger(log logger.Logger, direction string, next msdk.PCM16Writer,
 }
 
 func (s *SignalLogger) String() string {
-	return fmt.Sprintf("SignalLogger(%s) -> %s", s.direction, s.next.String())
+	return fmt.Sprintf("SignalLogger(%s) -> %s", s.name, s.next.String())
 }
 
 func (s *SignalLogger) SampleRate() int {
@@ -136,7 +136,7 @@ func (s *SignalLogger) SampleRate() int {
 func (s *SignalLogger) Close() error {
 	stateChanges := atomic.AddUint64(&s.stateChanges, 1)
 	if stateChanges > 0 {
-		s.log.Infow("signal logger closing", "direction", s.direction, "stateChanges", stateChanges)
+		s.log.Infow("signal logger closing", "name", s.name, "stateChanges", stateChanges)
 	}
 	return s.next.Close()
 }
