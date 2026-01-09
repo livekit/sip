@@ -19,8 +19,11 @@ import (
 	"math/rand/v2"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/logger"
 	"github.com/stretchr/testify/require"
 )
@@ -66,39 +69,29 @@ func TestSignalLogger_initialization(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, sl)
 		require.Equal(t, DefaultSignalMultiplier, sl.signalMultiplier)
-		require.Equal(t, DefaultDecayAlpha, sl.decayAlpha)
-		require.Equal(t, DefaultAttackAlpha, sl.attackAlpha)
-		require.Equal(t, DefaultNoiseFloorMax, sl.noiseFloorMax)
-		require.Equal(t, DefaultNoiseFloorMin, sl.noiseFloorMin)
+		require.Equal(t, DefaultNoiseFloor, sl.noiseFloor)
+		require.Equal(t, DefaultHangoverDuration, sl.hangoverDuration)
 	})
 
 	t.Run("with valid options", func(t *testing.T) {
-		sl, err := NewSignalLogger(log, "incoming", next, WithSignalMultiplier(3.0), WithDecayAlpha(0.9), WithAttackAlpha(0.99), WithNoiseFloorMax(1000), WithNoiseFloorMin(100))
+		sl, err := NewSignalLogger(log, "incoming", next, WithSignalMultiplier(3.0), WithNoiseFloor(100), WithHangoverDuration(time.Second))
 		require.NoError(t, err)
 		require.NotNil(t, sl)
 		require.Equal(t, 3.0, sl.signalMultiplier)
-		require.Equal(t, 0.9, sl.decayAlpha)
-		require.Equal(t, 0.99, sl.attackAlpha)
-		require.Equal(t, 1000.0, sl.noiseFloorMax)
-		require.Equal(t, 100.0, sl.noiseFloorMin)
+		require.Equal(t, 100.0, sl.noiseFloor)
+		require.Equal(t, time.Second, sl.hangoverDuration)
 	})
 
 	t.Run("with invalid options", func(t *testing.T) {
 		_, err := NewSignalLogger(log, "incoming", next, WithSignalMultiplier(0.5))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "signal multiplier must be greater than 1")
-		_, err = NewSignalLogger(log, "incoming", next, WithDecayAlpha(0.05))
+		_, err = NewSignalLogger(log, "incoming", next, WithNoiseFloor(0))
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "decay alpha must be between")
-		_, err = NewSignalLogger(log, "incoming", next, WithAttackAlpha(1.0))
+		require.Contains(t, err.Error(), "noise floor min must be positive")
+		_, err = NewSignalLogger(log, "incoming", next, WithHangoverDuration(-time.Second))
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "attack alpha must be between")
-		_, err = NewSignalLogger(log, "incoming", next, WithNoiseFloorMax(0))
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "noise floor max must be greater than 0")
-		_, err = NewSignalLogger(log, "incoming", next, WithNoiseFloorMin(-1))
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "noise floor min must be non-negative")
+		require.Contains(t, err.Error(), "hangover duration must be positive")
 	})
 }
 
@@ -153,20 +146,50 @@ func TestSignalLogger_MeanAbsoluteDeviation(t *testing.T) {
 	}
 }
 
-func TestSignalLogger_WriteSample(t *testing.T) {
-	log := logger.GetLogger()
+func newTestLogger(t *testing.T, opts ...SignalLoggerOption) (*SignalLogger, *mockPCM16Writer) {
+	next := newMockPCM16Writer(48000)
+	sl, err := NewSignalLogger(logger.GetLogger(), "incoming", next, opts...)
+	require.NoError(t, err)
+	return sl, next
+}
 
-	createFrame := func(size int, amplitude int16) msdk.PCM16Sample {
-		frame := make(msdk.PCM16Sample, size)
-		for i := range frame {
-			frame[i] = amplitude
+func writer(t *testing.T, sl *SignalLogger, array []msdk.PCM16Sample, count int, wait bool) error {
+	for i := 0; i < count; i++ {
+		randIndex := rand.Uint() % uint(len(array))
+		if err := sl.WriteSample(array[randIndex]); err != nil {
+			return err
 		}
-		return frame
+		since := time.Since(sl.lastSignalTime).Milliseconds()
+		t.Logf("%d written sample %d/%d: amplitude %d, noise floor %f, state changes %d, last signal %t (%dms ago)\n", sl.framesProcessed, randIndex, len(array), array[randIndex][0], sl.noiseFloor, sl.stateChanges, sl.lastIsSignal, since)
+		if wait {
+			time.Sleep(rtp.DefFrameDur)
+		}
 	}
+	return nil
+}
+
+func testTransition(t *testing.T, first, second []msdk.PCM16Sample, firstCount, secondCount int, wait bool, opts ...SignalLoggerOption) *SignalLogger {
+	sl, _ := newTestLogger(t, opts...)
+	require.NoError(t, writer(t, sl, first, firstCount, wait))
+	require.Equal(t, uint64(firstCount), sl.framesProcessed)
+	require.NoError(t, writer(t, sl, second, secondCount, wait))
+	require.Equal(t, uint64(firstCount+secondCount), sl.framesProcessed)
+	return sl
+}
+
+func createFrame(size int, amplitude int16) msdk.PCM16Sample {
+	frame := make(msdk.PCM16Sample, size)
+	for i := range frame {
+		frame[i] = amplitude
+	}
+	return frame
+}
+
+func TestSignalLogger_WriteSample(t *testing.T) {
 
 	silenceFrames := make([]msdk.PCM16Sample, 100)
 	for i := range silenceFrames {
-		amplitude := int16(rand.Uint32()) % 50
+		amplitude := int16(rand.Uint32()) % int16(DefaultNoiseFloor)
 		silenceFrames[i] = createFrame(480, amplitude)
 	}
 
@@ -175,83 +198,55 @@ func TestSignalLogger_WriteSample(t *testing.T) {
 		amplitude := (int16(rand.Uint32()) % 1000)
 		// Adding (DefaultNoiseFloorMax * DefaultSignalMultiplier) prevents signal from being detected as silence when loud for too long.
 		if amplitude < 0 {
-			amplitude -= int16(DefaultNoiseFloorMax * DefaultSignalMultiplier)
+			amplitude -= int16(DefaultNoiseFloor * DefaultSignalMultiplier)
 		} else {
-			amplitude += int16(DefaultNoiseFloorMax * DefaultSignalMultiplier)
+			amplitude += int16(DefaultNoiseFloor * DefaultSignalMultiplier)
 		}
 		signalFrames[i] = createFrame(480, amplitude)
-	}
-
-	writer := func(t *testing.T, sl *SignalLogger, array []msdk.PCM16Sample, count int) error {
-		for i := 0; i < count; i++ {
-			randIndex := rand.Uint() % uint(len(array))
-			if err := sl.WriteSample(array[randIndex]); err != nil {
-				return err
-			}
-			t.Logf("%d written sample %d/%d: amplitude %d, noise floor %f, state changes %d, last signal %d\n", sl.framesProcessed, randIndex, len(array), array[randIndex][0], sl.noiseFloor, sl.stateChanges, sl.isLastSignal)
-		}
-		return nil
-	}
-
-	newTestLogger := func(t *testing.T, opts ...SignalLoggerOption) (*SignalLogger, *mockPCM16Writer) {
-		next := newMockPCM16Writer(48000)
-		sl, err := NewSignalLogger(log, "incoming", next, opts...)
-		require.NoError(t, err)
-		return sl, next
-	}
-
-	testTransition := func(t *testing.T, first, second []msdk.PCM16Sample, firstCount, secondCount int, opts ...SignalLoggerOption) *SignalLogger {
-		sl, _ := newTestLogger(t, opts...)
-		require.NoError(t, writer(t, sl, first, firstCount))
-		require.Equal(t, uint64(firstCount), sl.framesProcessed)
-		require.NoError(t, writer(t, sl, second, secondCount))
-		require.Equal(t, uint64(firstCount+secondCount), sl.framesProcessed)
-		return sl
 	}
 
 	t.Run("not_printing_on_first_10_frames", func(t *testing.T) {
 		sl, _ := newTestLogger(t)
 		sl.noiseFloor = 40
 
-		require.NoError(t, writer(t, sl, silenceFrames, 5))
-		require.Equal(t, int32(0), sl.isLastSignal)
-		require.NoError(t, writer(t, sl, signalFrames, 3))
-		require.Equal(t, int32(1), sl.isLastSignal)
-		require.NoError(t, writer(t, sl, silenceFrames, 2))
-		require.Equal(t, int32(0), sl.isLastSignal)
+		require.NoError(t, writer(t, sl, silenceFrames, 5, false))
+		require.NoError(t, writer(t, sl, signalFrames, 3, false))
+		require.NoError(t, writer(t, sl, silenceFrames, 2, false))
 		require.Equal(t, uint64(10), sl.framesProcessed)
 		require.Equal(t, uint64(0), sl.stateChanges)
 	})
 
 	t.Run("printing_on_11th_frame_transition", func(t *testing.T) {
 		t.Run("silence_to_signal", func(t *testing.T) {
-			sl := testTransition(t, silenceFrames, signalFrames, 10, 1)
+			sl := testTransition(t, silenceFrames, signalFrames, 10, 1, false)
 			require.Equal(t, uint64(1), sl.stateChanges)
 		})
 		t.Run("signal_to_silence", func(t *testing.T) {
-			sl := testTransition(t, signalFrames, silenceFrames, 10, 1)
-			require.Equal(t, uint64(1), sl.stateChanges)
+			synctest.Test(t, func(t *testing.T) {
+				sl := testTransition(t, signalFrames, silenceFrames, 10, 50, true)
+				require.Equal(t, uint64(1), sl.stateChanges)
+			})
 		})
 	})
 
 	t.Run("silence_to_silence_transitions", func(t *testing.T) {
-		sl := testTransition(t, silenceFrames, silenceFrames, 10, 0) // Not too long, it will eventually bring noise floor low enough
+		sl := testTransition(t, silenceFrames, silenceFrames, 10, 0, false) // Not too long, it will eventually bring noise floor low enough
 		require.Equal(t, uint64(0), sl.stateChanges)
-		require.Equal(t, int32(0), sl.isLastSignal)
+		require.Equal(t, false, sl.lastIsSignal)
 	})
 
 	t.Run("signal_to_signal_transitions", func(t *testing.T) {
-		sl := testTransition(t, signalFrames, signalFrames, 10, 0, WithNoiseFloorMax(200))
+		sl := testTransition(t, signalFrames, signalFrames, 10, 0, false)
 		require.Equal(t, uint64(0), sl.stateChanges)
-		require.Equal(t, int32(1), sl.isLastSignal)
+		require.Equal(t, true, sl.lastIsSignal)
 	})
 
 	t.Run("silence_to_signal_transitions", func(t *testing.T) {
 		for i := 0; i < 100; i++ {
 			t.Run(fmt.Sprintf("silence_to_signal_transition_%d", i), func(t *testing.T) {
-				sl := testTransition(t, silenceFrames, signalFrames, 10, 1)
+				sl := testTransition(t, silenceFrames, signalFrames, 10, 1, false)
 				require.Equal(t, uint64(1), sl.stateChanges)
-				require.Equal(t, int32(1), sl.isLastSignal)
+				require.Equal(t, true, sl.lastIsSignal)
 			})
 		}
 	})
@@ -259,9 +254,11 @@ func TestSignalLogger_WriteSample(t *testing.T) {
 	t.Run("signal_to_silence_transitions", func(t *testing.T) {
 		for i := 0; i < 100; i++ {
 			t.Run(fmt.Sprintf("signal_to_silence_transition_%d", i), func(t *testing.T) {
-				sl := testTransition(t, signalFrames, silenceFrames, 10, 1)
-				require.Equal(t, uint64(1), sl.stateChanges)
-				require.Equal(t, int32(0), sl.isLastSignal)
+				synctest.Test(t, func(t *testing.T) {
+					sl := testTransition(t, signalFrames, silenceFrames, 10, 50, true)
+					require.Equal(t, uint64(1), sl.stateChanges)
+					require.Equal(t, false, sl.lastIsSignal)
+				})
 			})
 		}
 	})
