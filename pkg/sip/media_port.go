@@ -773,7 +773,7 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 		audioOut = newMediaWriterCount(audioOut, &p.stats.AudioOutFrames, &p.stats.AudioOutSamples)
 	}
 	if p.logSignalChanges {
-		audioOut, err = NewSignalLogger(p.log, "output", audioOut)
+		audioOut, err = NewSignalLogger(p.log, "mixed", audioOut)
 		if err != nil {
 			return err
 		}

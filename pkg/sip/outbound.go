@@ -98,6 +98,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 	jitterBuf := SelectValueBool(conf.EnableJitterBuffer, conf.EnableJitterBufferProb)
 	room.JitterBuf = jitterBuf
+	room.SignalLogger = true // TODO: Populate
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)

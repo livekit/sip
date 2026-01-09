@@ -80,7 +80,7 @@ func WithHangoverDuration(hangoverDuration time.Duration) SignalLoggerOption {
 		return nil
 	}
 }
-func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, options ...SignalLoggerOption) (*SignalLogger, error) {
+func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, options ...SignalLoggerOption) (msdk.PCM16Writer, error) {
 	s := &SignalLogger{
 		log:              log,
 		next:             next,
@@ -95,7 +95,7 @@ func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, opti
 	}
 	for _, option := range options {
 		if err := option(s); err != nil {
-			return nil, err
+			return next, err
 		}
 	}
 	return s, nil
