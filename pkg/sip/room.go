@@ -179,13 +179,14 @@ type ParticipantConfig struct {
 }
 
 type RoomConfig struct {
-	WsUrl       string
-	Token       string
-	RoomName    string
-	Participant ParticipantConfig
-	RoomPreset  string
-	RoomConfig  *livekit.RoomConfiguration
-	JitterBuf   bool
+	WsUrl        string
+	Token        string
+	RoomName     string
+	Participant  ParticipantConfig
+	RoomPreset   string
+	RoomConfig   *livekit.RoomConfiguration
+	JitterBuf    bool
+	SignalLogger bool
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -324,6 +325,9 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)
 					out := newMediaWriterCount(mTrack, &r.stats.MixerFrames, &r.stats.MixerSamples)
+					if rconf.SignalLogger {
+						out, _ = NewSignalLogger(log, track.ID(), out)
+					}
 
 					odec, err := opus.Decode(out, channels, log)
 					if err != nil {

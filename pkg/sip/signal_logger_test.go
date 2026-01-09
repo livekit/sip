@@ -65,7 +65,9 @@ func TestSignalLogger_initialization(t *testing.T) {
 	next := newMockPCM16Writer(48000)
 
 	t.Run("default initialization", func(t *testing.T) {
-		sl, err := NewSignalLogger(log, "incoming", next)
+		out, err := NewSignalLogger(log, "incoming", next)
+		sl, ok := out.(*SignalLogger)
+		require.True(t, ok)
 		require.NoError(t, err)
 		require.NotNil(t, sl)
 		require.Equal(t, DefaultSignalMultiplier, sl.signalMultiplier)
@@ -74,7 +76,9 @@ func TestSignalLogger_initialization(t *testing.T) {
 	})
 
 	t.Run("with valid options", func(t *testing.T) {
-		sl, err := NewSignalLogger(log, "incoming", next, WithSignalMultiplier(3.0), WithNoiseFloor(100), WithHangoverDuration(time.Second))
+		out, err := NewSignalLogger(log, "incoming", next, WithSignalMultiplier(3.0), WithNoiseFloor(100), WithHangoverDuration(time.Second))
+		sl, ok := out.(*SignalLogger)
+		require.True(t, ok)
 		require.NoError(t, err)
 		require.NotNil(t, sl)
 		require.Equal(t, 3.0, sl.signalMultiplier)
@@ -98,7 +102,9 @@ func TestSignalLogger_initialization(t *testing.T) {
 func TestSignalLogger_MeanAbsoluteDeviation(t *testing.T) {
 	log := logger.GetLogger()
 	next := newMockPCM16Writer(48000)
-	sl, err := NewSignalLogger(log, "incoming", next)
+	out, err := NewSignalLogger(log, "incoming", next)
+	sl, ok := out.(*SignalLogger)
+	require.True(t, ok)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -148,7 +154,9 @@ func TestSignalLogger_MeanAbsoluteDeviation(t *testing.T) {
 
 func newTestLogger(t *testing.T, opts ...SignalLoggerOption) (*SignalLogger, *mockPCM16Writer) {
 	next := newMockPCM16Writer(48000)
-	sl, err := NewSignalLogger(logger.GetLogger(), "incoming", next, opts...)
+	out, err := NewSignalLogger(logger.GetLogger(), "incoming", next, opts...)
+	sl, ok := out.(*SignalLogger)
+	require.True(t, ok)
 	require.NoError(t, err)
 	return sl, next
 }
