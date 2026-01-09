@@ -52,8 +52,16 @@ type PortStatsSnapshot struct {
 	IgnoredPackets uint64 `json:"packets_ignored"`
 	InputPackets   uint64 `json:"packets_input"`
 
-	MuxPackets uint64 `json:"mux_packets"`
-	MuxBytes   uint64 `json:"mux_bytes"`
+	MuxPackets        uint64 `json:"mux_packets"`
+	MuxBytes          uint64 `json:"mux_bytes"`
+	MuxResets         uint64 `json:"mux_resets"`
+	MuxGaps           uint64 `json:"mux_gaps"`
+	MuxGapsSum        uint64 `json:"mux_gaps_sum"`
+	MuxLate           uint64 `json:"mux_late"`
+	MuxLateSum        uint64 `json:"mux_late_sum"`
+	MuxRapidPackets   uint64 `json:"mux_rapid_packets"`
+	MuxDelayedPackets uint64 `json:"mux_delayed_packets"`
+	MuxDelayedSum     uint64 `json:"mux_delayed_sum"`
 
 	AudioPackets uint64 `json:"audio_packets"`
 	AudioBytes   uint64 `json:"audio_bytes"`
@@ -78,8 +86,7 @@ type PortStats struct {
 	IgnoredPackets atomic.Uint64
 	InputPackets   atomic.Uint64
 
-	MuxPackets atomic.Uint64
-	MuxBytes   atomic.Uint64
+	MuxStats rtpCountingStats
 
 	AudioPackets atomic.Uint64
 	AudioBytes   atomic.Uint64
@@ -107,23 +114,31 @@ type PortStats struct {
 
 func (s *PortStats) Load() PortStatsSnapshot {
 	return PortStatsSnapshot{
-		Streams:         s.Streams.Load(),
-		Packets:         s.Packets.Load(),
-		IgnoredPackets:  s.IgnoredPackets.Load(),
-		InputPackets:    s.InputPackets.Load(),
-		MuxPackets:      s.MuxPackets.Load(),
-		MuxBytes:        s.MuxBytes.Load(),
-		AudioPackets:    s.AudioPackets.Load(),
-		AudioBytes:      s.AudioBytes.Load(),
-		AudioInFrames:   s.AudioInFrames.Load(),
-		AudioInSamples:  s.AudioInSamples.Load(),
-		AudioOutFrames:  s.AudioOutFrames.Load(),
-		AudioOutSamples: s.AudioOutSamples.Load(),
-		AudioRX:         math.Float64frombits(s.AudioRX.Load()),
-		AudioTX:         math.Float64frombits(s.AudioTX.Load()),
-		DTMFPackets:     s.DTMFPackets.Load(),
-		DTMFBytes:       s.DTMFBytes.Load(),
-		Closed:          s.Closed.Load(),
+		Streams:           s.Streams.Load(),
+		Packets:           s.Packets.Load(),
+		IgnoredPackets:    s.IgnoredPackets.Load(),
+		InputPackets:      s.InputPackets.Load(),
+		MuxPackets:        s.MuxStats.packets.Load(),
+		MuxBytes:          s.MuxStats.bytes.Load(),
+		MuxResets:         s.MuxStats.resets.Load(),
+		MuxGaps:           s.MuxStats.gaps.Load(),
+		MuxGapsSum:        s.MuxStats.gapsSum.Load(),
+		MuxLate:           s.MuxStats.late.Load(),
+		MuxLateSum:        s.MuxStats.lateSum.Load(),
+		MuxRapidPackets:   s.MuxStats.rapidPackets.Load(),
+		MuxDelayedPackets: s.MuxStats.delayedPackets.Load(),
+		MuxDelayedSum:     s.MuxStats.delayedSum.Load(),
+		AudioPackets:      s.AudioPackets.Load(),
+		AudioBytes:        s.AudioBytes.Load(),
+		AudioInFrames:     s.AudioInFrames.Load(),
+		AudioInSamples:    s.AudioInSamples.Load(),
+		AudioOutFrames:    s.AudioOutFrames.Load(),
+		AudioOutSamples:   s.AudioOutSamples.Load(),
+		AudioRX:           math.Float64frombits(s.AudioRX.Load()),
+		AudioTX:           math.Float64frombits(s.AudioTX.Load()),
+		DTMFPackets:       s.DTMFPackets.Load(),
+		DTMFBytes:         s.DTMFBytes.Load(),
+		Closed:            s.Closed.Load(),
 	}
 }
 
@@ -697,7 +712,6 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 		return err
 	}
 
-	// TODO: this says "audio", but actually includes DTMF too
 	codecInfo := p.conf.Audio.Codec.Info()
 	w = newRTPStatsWriter(p.mon, p.conf.Audio.Type, p.conf.Audio.DTMFType, codecInfo.SDPName, dtmf.SDPName, w)
 	s := rtp.NewSeqWriter(w)
@@ -762,7 +776,7 @@ func (p *MediaPort) setupInput() {
 			),
 		)
 	}
-	var hnd rtp.HandlerCloser = newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes)
+	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.stats.MuxStats)
 	if p.jitterEnabled {
 		hnd = rtp.HandleJitter(hnd)
 	}

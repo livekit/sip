@@ -316,6 +316,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h)
 					}
+					// TODO: Add stream stats per track
 					h = newRTPHandlerCount(h, &r.stats.InputPackets, &r.stats.InputBytes)
 					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {

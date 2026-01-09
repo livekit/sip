@@ -312,3 +312,86 @@ func (h *rtpHandlerCount) HandleRTP(hdr *prtp.Header, payload []byte) error {
 	h.bytes.Add(uint64(len(payload)))
 	return h.h.HandleRTP(hdr, payload)
 }
+
+const maxPositiveSeqDiff = int16(30 * rtp.DefFramesPerSec)
+const maxNegativeSeqDiff = int16(-5 * rtp.DefFramesPerSec)
+const rapidPacketThreshold = int64(float64(1000/rtp.DefFramesPerSec) * 0.5)
+const delayedPacketThreshold = int64(float64(1000/rtp.DefFramesPerSec) * 1.5)
+
+func Diff16(cur, prev uint16) int16 {
+	return int16(cur - prev)
+}
+
+type rtpCountingStats struct {
+	packets        atomic.Uint64
+	bytes          atomic.Uint64
+	resets         atomic.Uint64
+	gaps           atomic.Uint64
+	gapsSum        atomic.Uint64
+	late           atomic.Uint64
+	lateSum        atomic.Uint64
+	delayedPackets atomic.Uint64
+	delayedSum     atomic.Uint64 // total duration of delayed packets in milliseconds
+	rapidPackets   atomic.Uint64 // Number of packets that arrived in less than half the expected duration
+}
+
+func newRTPStreamStats(h rtp.Handler, stats *rtpCountingStats) *rtpStreamStats {
+	if stats == nil {
+		stats = &rtpCountingStats{}
+	}
+	return &rtpStreamStats{
+		h:     h,
+		stats: stats,
+	}
+}
+
+type rtpStreamStats struct {
+	lastSeq    atomic.Uint64
+	lastPacket atomic.Int64
+	h          rtp.Handler
+	stats      *rtpCountingStats
+}
+
+func (h *rtpStreamStats) String() string {
+	return h.h.String()
+}
+
+func (h *rtpStreamStats) Close() {
+	if closer, ok := h.h.(rtp.HandlerCloser); ok {
+		closer.Close()
+	}
+}
+
+func (h *rtpStreamStats) HandleRTP(hdr *prtp.Header, payload []byte) error {
+	count := h.stats.packets.Add(1)
+	h.stats.bytes.Add(uint64(len(payload)))
+
+	lastSeq := uint16(h.lastSeq.Load())
+	h.lastSeq.Store(uint64(hdr.SequenceNumber))
+	now := time.Now().UnixMilli()
+	lastPacket := h.lastPacket.Swap(now)
+	if count > 1 {
+		diff := Diff16(hdr.SequenceNumber, lastSeq)
+		if diff > maxPositiveSeqDiff || diff < maxNegativeSeqDiff {
+			h.stats.resets.Add(1)
+		} else {
+			if diff < 0 {
+				h.stats.late.Add(1)
+				h.stats.lateSum.Add(uint64(-diff))
+			} else if diff > 1 {
+				h.stats.gaps.Add(1)
+				h.stats.gapsSum.Add(uint64(diff))
+			}
+		}
+
+		sinceLastPacket := now - lastPacket
+		if sinceLastPacket < rapidPacketThreshold {
+			h.stats.rapidPackets.Add(1)
+		} else if sinceLastPacket > delayedPacketThreshold {
+			h.stats.delayedPackets.Add(1)
+			h.stats.delayedSum.Add(uint64(sinceLastPacket))
+		}
+	}
+
+	return h.h.HandleRTP(hdr, payload)
+}
