@@ -762,7 +762,7 @@ func (p *MediaPort) setupInput() {
 			),
 		)
 	}
-	var hnd rtp.HandlerCloser = rtp.NewNopCloser(newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes))
+	var hnd rtp.HandlerCloser = newRTPHandlerCount(mux, &p.stats.MuxPackets, &p.stats.MuxBytes)
 	if p.jitterEnabled {
 		hnd = rtp.HandleJitter(hnd)
 	}

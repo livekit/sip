@@ -305,20 +305,19 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer log.Infow("track closed")
 					defer mTrack.Close()
 
-					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)
-
-					odec, err := opus.Decode(mTrack, channels, log)
+					codec, err := opus.Decode(mTrack, channels, log)
 					if err != nil {
 						log.Errorw("cannot create opus decoder", err)
 						return
 					}
-					defer odec.Close()
+					defer codec.Close()
 
-					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](odec))
+					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](codec))
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h)
 					}
-					err = rtp.HandleLoop(in, h)
+					h = newRTPHandlerCount(h, &r.stats.InputPackets, &r.stats.InputBytes)
+					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
 					}

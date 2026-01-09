@@ -21,7 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/interceptor"
 	prtp "github.com/pion/rtp"
 
 	msdk "github.com/livekit/media-sdk"
@@ -171,7 +170,7 @@ var staticPayloadTypes = map[uint8]string{
 	34: "Auto_H263/90000",
 }
 
-func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) rtp.Handler {
+func newRTPStatsHandler(mon *stats.CallMonitor, typ string, r rtp.Handler) *rtpStatsHandler {
 	if r == nil {
 		r = rtp.HandlerFunc(nil)
 	}
@@ -200,6 +199,12 @@ func (r *rtpStatsHandler) HandleRTP(h *rtp.Header, payload []byte) error {
 		r.mon.RTPPacketRecv(typ)
 	}
 	return r.h.HandleRTP(h, payload)
+}
+
+func (r *rtpStatsHandler) Close() {
+	if closer, ok := r.h.(rtp.HandlerCloser); ok {
+		closer.Close()
+	}
 }
 
 func newRTPStatsWriter(mon *stats.CallMonitor, audioPayloadType uint8, dtmfPayloadType uint8, audioType string, dtmfType string, w rtp.WriteStream) rtp.WriteStream {
@@ -278,30 +283,8 @@ func (w *mediaWriterCount) WriteSample(sample msdk.PCM16Sample) error {
 	return w.w.WriteSample(sample)
 }
 
-func newRTPReaderCount(r rtp.Reader, packets, bytes *atomic.Uint64) rtp.Reader {
-	return &rtpReaderCount{
-		r:       r,
-		packets: packets,
-		bytes:   bytes,
-	}
-}
-
-type rtpReaderCount struct {
-	r       rtp.Reader
-	packets *atomic.Uint64
-	bytes   *atomic.Uint64
-}
-
-func (r *rtpReaderCount) ReadRTP() (*prtp.Packet, interceptor.Attributes, error) {
-	p, in, err := r.r.ReadRTP()
-	if p != nil {
-		r.packets.Add(1)
-		r.bytes.Add(uint64(len(p.Payload)))
-	}
-	return p, in, err
-}
-
-func newRTPHandlerCount(h rtp.Handler, packets, bytes *atomic.Uint64) rtp.Handler {
+func newRTPHandlerCount(h rtp.Handler, packets, bytes *atomic.Uint64) *rtpHandlerCount {
+	fmt.Println("newRTPHandlerCount", h.String())
 	return &rtpHandlerCount{
 		h:       h,
 		packets: packets,
@@ -317,6 +300,12 @@ type rtpHandlerCount struct {
 
 func (h *rtpHandlerCount) String() string {
 	return h.h.String()
+}
+
+func (h *rtpHandlerCount) Close() {
+	if closer, ok := h.h.(rtp.HandlerCloser); ok {
+		closer.Close()
+	}
 }
 
 func (h *rtpHandlerCount) HandleRTP(hdr *prtp.Header, payload []byte) error {
