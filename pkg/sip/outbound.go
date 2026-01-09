@@ -967,13 +967,10 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 			if tpl := sipClient.TransportLayer(); tpl != nil {
 				// Try to get the connection using the destination address
 				// The connection should be available after TransactionRequest creates it
-				dest := req.Destination()
-				if dest != "" {
+				if dest := req.Destination(); dest != "" {
 					if conn, err := tpl.GetConnection("tcp", dest); err == nil && conn != nil {
-						if localAddr := conn.LocalAddr(); localAddr != nil {
-							if tcpAddr, ok := localAddr.(*net.TCPAddr); ok {
-								c.log.Debugw("TCP connection using port on cloud-sip side", "port", tcpAddr.Port)
-							}
+						if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok && tcpAddr != nil {
+							c.log.Debugw("TCP connection using port on cloud-sip side", "port", tcpAddr.Port)
 						}
 					}
 				}
