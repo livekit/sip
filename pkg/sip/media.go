@@ -366,9 +366,8 @@ func (h *rtpStreamStats) HandleRTP(hdr *prtp.Header, payload []byte) error {
 	count := h.stats.packets.Add(1)
 	h.stats.bytes.Add(uint64(len(payload)))
 
-	lastSeq := uint16(h.lastSeq.Load())
-	h.lastSeq.Store(uint64(hdr.SequenceNumber))
 	now := time.Now().UnixMilli()
+	lastSeq := uint16(h.lastSeq.Swap(uint64(hdr.SequenceNumber)))
 	lastPacket := h.lastPacket.Swap(now)
 	if count > 1 {
 		diff := Diff16(hdr.SequenceNumber, lastSeq)
