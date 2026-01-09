@@ -179,13 +179,14 @@ type ParticipantConfig struct {
 }
 
 type RoomConfig struct {
-	WsUrl       string
-	Token       string
-	RoomName    string
-	Participant ParticipantConfig
-	RoomPreset  string
-	RoomConfig  *livekit.RoomConfiguration
-	JitterBuf   bool
+	WsUrl        string
+	Token        string
+	RoomName     string
+	Participant  ParticipantConfig
+	RoomPreset   string
+	RoomConfig   *livekit.RoomConfiguration
+	JitterBuf    bool
+	SignalLogger bool
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -321,7 +322,12 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer log.Infow("track closed")
 					defer mTrack.Close()
 
-					codec, err := opus.Decode(mTrack, channels, log)
+					var out msdk.PCM16Writer = mTrack
+					if rconf.SignalLogger {
+						out, _ = NewSignalLogger(log, track.ID(), out)
+					}
+
+					codec, err := opus.Decode(out, channels, log)
 					if err != nil {
 						log.Errorw("cannot create opus decoder", err)
 						return

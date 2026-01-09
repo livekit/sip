@@ -864,6 +864,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		disp.RingingTimeout = defaultRingingTimeout
 	}
 	disp.Room.JitterBuf = c.jitterBuf
+	disp.Room.SignalLogger = true // TODO: Populate
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
 	status := CallRinging
