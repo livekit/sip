@@ -215,12 +215,15 @@ func (s *Service) Start() error {
 		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
 	}
 	if tconf := s.conf.TCP; tconf != nil {
+		s.log.Debugw("configuring TCP dial port range", "start", tconf.DialPort.Start, "end", tconf.DialPort.End)
 		opts = append(opts, sipgo.WithUserAgentTCPConfig(&sipgo.TCPConfig{
 			DialPorts: sipgo.PortRange{
 				Min: tconf.DialPort.Start,
 				Max: tconf.DialPort.End,
 			},
 		}))
+	} else {
+		s.log.Debugw("TCP config is nil")
 	}
 	var tlsConf *tls.Config
 	if tconf := s.conf.TLS; tconf != nil {

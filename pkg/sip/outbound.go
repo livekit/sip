@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -970,6 +972,24 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		return nil, nil, err
 	}
 	defer tx.Terminate()
+
+	// Log the actual local port used for TCP connections from the DialPort range
+	if req.Transport() == "TCP" {
+		// Type-assert to *sipgo.Client to access the embedded UserAgent
+		if sipClient, ok := c.c.sipCli.(*sipgo.Client); ok {
+			if tpl := sipClient.TransportLayer(); tpl != nil {
+				// Try to get the connection using the destination address
+				// The connection should be available after TransactionRequest creates it
+				if dest := req.Destination(); dest != "" {
+					if conn, err := tpl.GetConnection("tcp", dest); err == nil && conn != nil {
+						if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok && tcpAddr != nil {
+							c.log.Debugw("TCP connection using port on cloud-sip side", "port", tcpAddr.Port)
+						}
+					}
+				}
+			}
+		}
+	}
 
 	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
 	return req, resp, err
