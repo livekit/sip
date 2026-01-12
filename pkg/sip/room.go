@@ -42,41 +42,36 @@ import (
 )
 
 type RoomStatsSnapshot struct {
-	InputPackets uint64 `json:"input_packets"`
-	InputBytes   uint64 `json:"input_bytes"`
-	DTMFPackets  uint64 `json:"dtmf_packets"`
+	// Stats quantifying total incoming traffic from all tracks
+	InputPackets   uint64 `json:"input_packets"`
+	InputBytes     uint64 `json:"input_bytes"`
+	Resets         uint64 `json:"resets"`
+	Gaps           uint64 `json:"gaps"`
+	GapsSum        uint64 `json:"gaps_sum"`
+	Late           uint64 `json:"late"`
+	LateSum        uint64 `json:"late_sum"`
+	DelayedPackets uint64 `json:"delayed_packets"`
+	DelayedSum     uint64 `json:"delayed_sum"`
+	RapidPackets   uint64 `json:"rapid_packets"`
+	DataPackets    uint64 `json:"data_packets"`
 
-	PublishedFrames  uint64 `json:"published_frames"`
-	PublishedSamples uint64 `json:"published_samples"`
-
-	PublishTX float64 `json:"publish_tx"`
-
-	MixerSamples uint64 `json:"mixer_samples"`
-	MixerFrames  uint64 `json:"mixer_frames"`
-
-	OutputSamples uint64 `json:"output_samples"`
-	OutputFrames  uint64 `json:"output_frames"`
+	// Stats quantifying total outgoing traffic
+	PublishedFrames  uint64  `json:"published_frames"`
+	PublishedSamples uint64  `json:"published_samples"`
+	PublishTX        float64 `json:"publish_tx"`
 
 	Closed bool `json:"closed"`
 }
 
 type RoomStats struct {
-	InputPackets atomic.Uint64
-	InputBytes   atomic.Uint64
-	DTMFPackets  atomic.Uint64
-
 	PublishedFrames  atomic.Uint64
 	PublishedSamples atomic.Uint64
+	PublishTX        atomic.Uint64
 
-	PublishTX atomic.Uint64
-
-	MixerFrames  atomic.Uint64
-	MixerSamples atomic.Uint64
+	rtpStats    rtpCountingStats
+	dataPackets atomic.Uint64
 
 	Mixer mixer.Stats
-
-	OutputFrames  atomic.Uint64
-	OutputSamples atomic.Uint64
 
 	Closed atomic.Bool
 
@@ -89,16 +84,21 @@ type RoomStats struct {
 
 func (s *RoomStats) Load() RoomStatsSnapshot {
 	return RoomStatsSnapshot{
-		InputPackets:     s.InputPackets.Load(),
-		InputBytes:       s.InputBytes.Load(),
-		DTMFPackets:      s.DTMFPackets.Load(),
+		InputPackets:   s.rtpStats.packets.Load(),
+		InputBytes:     s.rtpStats.bytes.Load(),
+		Resets:         s.rtpStats.resets.Load(),
+		Gaps:           s.rtpStats.gaps.Load(),
+		GapsSum:        s.rtpStats.gapsSum.Load(),
+		Late:           s.rtpStats.late.Load(),
+		LateSum:        s.rtpStats.lateSum.Load(),
+		DelayedPackets: s.rtpStats.delayedPackets.Load(),
+		DelayedSum:     s.rtpStats.delayedSum.Load(),
+		RapidPackets:   s.rtpStats.rapidPackets.Load(),
+		DataPackets:    s.dataPackets.Load(),
+
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
 		PublishTX:        math.Float64frombits(s.PublishTX.Load()),
-		MixerSamples:     s.MixerSamples.Load(),
-		MixerFrames:      s.MixerFrames.Load(),
-		OutputSamples:    s.OutputSamples.Load(),
-		OutputFrames:     s.OutputFrames.Load(),
 		Closed:           s.Closed.Load(),
 	}
 }
@@ -193,10 +193,9 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 		st = &RoomStats{}
 	}
 	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
-	out := newMediaWriterCount(r.out, &st.OutputFrames, &st.OutputSamples)
 
 	var err error
-	r.mix, err = mixer.NewMixer(out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
+	r.mix, err = mixer.NewMixer(r.out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
 	if err != nil {
 		panic(err)
 	}
@@ -322,21 +321,20 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer log.Infow("track closed")
 					defer mTrack.Close()
 
-					in := newRTPReaderCount(track, &r.stats.InputPackets, &r.stats.InputBytes)
-					out := newMediaWriterCount(mTrack, &r.stats.MixerFrames, &r.stats.MixerSamples)
-
-					odec, err := opus.Decode(out, channels, log)
+					codec, err := opus.Decode(mTrack, channels, log)
 					if err != nil {
 						log.Errorw("cannot create opus decoder", err)
 						return
 					}
-					defer odec.Close()
+					defer codec.Close()
 
-					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](odec))
+					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](codec))
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h)
 					}
-					err = rtp.HandleLoop(in, h)
+
+					h = newRTPStreamStats(h, &r.stats.rtpStats)
+					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
 					}
@@ -345,7 +343,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
 				case *livekit.SipDTMF:
-					r.stats.InputPackets.Add(1)
+					r.stats.dataPackets.Add(1)
 					// TODO: Only generate audio DTMF if the message was a broadcast from another SIP participant.
 					//       DTMF audio tone will be automatically mixed in any case.
 					r.sendDTMF(context.Background(), data)
