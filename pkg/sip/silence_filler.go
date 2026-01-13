@@ -59,6 +59,12 @@ func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, clockRa
 		pcmSink:         pcmSink,
 		samplesPerFrame: clockRate / rtp.DefFramesPerSec,
 		log:             log,
+		initialized:     false,
+		lastSeq:         0,
+		lastTS:          0,
+		gapCount:        0,
+		gapSizeSum:      0,
+		lastPrintTime:   time.Time{},
 	}
 	for _, option := range options {
 		option(h)
