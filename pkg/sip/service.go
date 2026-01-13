@@ -29,6 +29,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/livekit/sipgo/transport"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	msdk "github.com/livekit/media-sdk"
@@ -73,6 +75,9 @@ type GetIOInfoClient func(projectID string) rpc.IOInfoClient
 func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
+	}
+	if conf.UDPMaxPayload > 0 {
+		transport.UDPMTUSize = conf.UDPMaxPayload
 	}
 	if conf.MediaTimeout <= 0 {
 		conf.MediaTimeout = defaultMediaTimeout
