@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -82,6 +83,7 @@ type SIPOutboundTestParams struct {
 	RuleIn   string            // rule ID for inbound call
 	AttrsIn  map[string]string // expected attributes for inbound participants
 	NoDMTF   bool              // do not test DTMF
+	RingFor  time.Duration     // do not pick up the call for this long
 }
 
 func loadVal[T any](ptr *atomic.Pointer[T]) T {
@@ -154,15 +156,30 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	)
 
 	var (
-		dataOut   = make(chan lksdk.DataPacket, 20)
-		dataIn    = make(chan lksdk.DataPacket, 20)
-		callIDOut atomic.Pointer[string]
-		callIDIn  atomic.Pointer[string]
-		statusOut atomic.Pointer[string]
-		statusIn  atomic.Pointer[string]
-		connected atomic.Bool
+		dataOut    = make(chan lksdk.DataPacket, 20)
+		dataIn     = make(chan lksdk.DataPacket, 20)
+		callIDOut  atomic.Pointer[string]
+		callIDIn   atomic.Pointer[string]
+		statusOut  atomic.Pointer[string]
+		statusIn   atomic.Pointer[string]
+		ringingOut atomic.Uint64
+		connected  atomic.Bool
+
+		outRingStart time.Time
 	)
 	defer func() {
+		if params.RingFor > 0 {
+			ringedFor := time.Duration(ringingOut.Load())
+			const (
+				dtmin = 2 * time.Second
+				dtmax = 3 * time.Second
+			)
+			if ringedFor < params.RingFor-dtmin || ringedFor > params.RingFor+dtmax {
+				t.Errorf("unexpected ringing duration, exp: %v, got: %v", params.RingFor, ringedFor)
+			} else {
+				t.Logf("ringing duration: %v", ringedFor)
+			}
+		}
 		if !t.Failed() {
 			return
 		}
@@ -226,13 +243,15 @@ Check logs for call:
 	// LK participants that will generate/listen for audio.
 	t.Log("connecting test participants")
 	var (
-		pOut  *Participant
-		pIn   *Participant
-		wgPar sync.WaitGroup
+		pOut     *Participant
+		pIn      *Participant
+		readyOut sync.WaitGroup
+		readyIn  sync.WaitGroup
 	)
-	wgPar.Add(2)
+	readyOut.Add(1)
+	readyIn.Add(1)
 	go func() {
-		defer wgPar.Done()
+		defer readyOut.Done()
 		pOut = lkOut.ConnectParticipant(t, params.RoomOut, identityTest, &RoomParticipantCallback{
 			RoomCallback: lksdk.RoomCallback{
 				ParticipantCallback: lksdk.ParticipantCallback{
@@ -246,13 +265,29 @@ Check logs for call:
 			},
 			OnSIPStatus: func(p *lksdk.RemoteParticipant, callID string, status string) {
 				callIDOut.Store(&callID)
-				statusOut.Store(&status)
+				prev := statusOut.Swap(&status)
+				if prev != nil {
+					switch {
+					case *prev == "dialing" && status == "ringing":
+						outRingStart = time.Now()
+					case *prev == "ringing" && status != "ringing":
+						ringingOut.Store(uint64(time.Since(outRingStart)))
+					}
+				}
 				t.Logf("sip outbound call %s (%s) status %v", callID, p.Identity(), status)
 			},
 		})
 	}()
 	go func() {
-		defer wgPar.Done()
+		defer readyIn.Done()
+		if params.RingFor > 0 {
+			t.Log("ringing for", params.RingFor)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(params.RingFor):
+			}
+		}
 		pIn = lkIn.ConnectParticipant(t, roomIn, identityTest, &RoomParticipantCallback{
 			RoomCallback: lksdk.RoomCallback{
 				ParticipantCallback: lksdk.ParticipantCallback{
@@ -271,7 +306,6 @@ Check logs for call:
 			},
 		})
 	}()
-	wgPar.Wait()
 
 	// Start the outbound call. It should hit Trunk Provider and initiate an inbound call back to the second server.
 	t.Log("creating sip participant")
@@ -286,6 +320,7 @@ Check logs for call:
 	})
 	t.Logf("outbound call ID: %s", r.SipCallId)
 
+	readyOut.Wait()
 	t.Log("waiting for outbound participant to become ready")
 	expAttrsOut := map[string]string{
 		"sip.callID":           r.SipCallId, // special case
@@ -309,6 +344,7 @@ Check logs for call:
 			Attributes: expAttrsOut,
 		},
 	})
+	readyIn.Wait()
 	t.Log("waiting for inbound participant to become ready")
 	expAttrsIn := map[string]string{
 		"sip.callID":           AttrTestAny, // special case
