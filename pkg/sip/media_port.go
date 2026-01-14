@@ -57,11 +57,18 @@ type PortStatsSnapshot struct {
 	MuxResets         uint64 `json:"mux_resets"`
 	MuxGaps           uint64 `json:"mux_gaps"`
 	MuxGapsSum        uint64 `json:"mux_gaps_sum"`
+	MuxGapSeq         uint64 `json:"mux_gap_seq"`
 	MuxLate           uint64 `json:"mux_late"`
 	MuxLateSum        uint64 `json:"mux_late_sum"`
 	MuxRapidPackets   uint64 `json:"mux_rapid_packets"`
+	MuxRapidSum       uint64 `json:"mux_rapid_sum"`
 	MuxDelayedPackets uint64 `json:"mux_delayed_packets"`
 	MuxDelayedSum     uint64 `json:"mux_delayed_sum"`
+	MuxControlCount   int64  `json:"mux_control_count"`
+	MuxControlSum     int64  `json:"mux_control_sum"`
+	MuxControlSquares int64  `json:"mux_control_squares"`
+	MuxControlMin     int64  `json:"mux_control_min"`
+	MuxControlMax     int64  `json:"mux_control_max"`
 
 	AudioPackets uint64 `json:"audio_packets"`
 	AudioBytes   uint64 `json:"audio_bytes"`
@@ -123,11 +130,18 @@ func (s *PortStats) Load() PortStatsSnapshot {
 		MuxResets:         s.MuxStats.resets.Load(),
 		MuxGaps:           s.MuxStats.gaps.Load(),
 		MuxGapsSum:        s.MuxStats.gapsSum.Load(),
+		MuxGapSeq:         s.MuxStats.gapSeq.Load(),
 		MuxLate:           s.MuxStats.late.Load(),
 		MuxLateSum:        s.MuxStats.lateSum.Load(),
 		MuxRapidPackets:   s.MuxStats.rapidPackets.Load(),
+		MuxRapidSum:       s.MuxStats.rapidSum.Load(),
 		MuxDelayedPackets: s.MuxStats.delayedPackets.Load(),
 		MuxDelayedSum:     s.MuxStats.delayedSum.Load(),
+		MuxControlCount:   s.MuxStats.controlCount.Load(),
+		MuxControlSum:     s.MuxStats.controlSum.Load(),
+		MuxControlSquares: s.MuxStats.controlSquares.Load(),
+		MuxControlMin:     s.MuxStats.controlMin.Load(),
+		MuxControlMax:     s.MuxStats.controlMax.Load(),
 		AudioPackets:      s.AudioPackets.Load(),
 		AudioBytes:        s.AudioBytes.Load(),
 		AudioInFrames:     s.AudioInFrames.Load(),
