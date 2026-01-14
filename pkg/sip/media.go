@@ -328,11 +328,18 @@ type rtpCountingStats struct {
 	resets         atomic.Uint64
 	gaps           atomic.Uint64
 	gapsSum        atomic.Uint64
+	gapSeq         atomic.Uint64 // Last sequence number of a gap
 	late           atomic.Uint64
 	lateSum        atomic.Uint64
 	delayedPackets atomic.Uint64
 	delayedSum     atomic.Uint64 // total duration of delayed packets in milliseconds
 	rapidPackets   atomic.Uint64 // Number of packets that arrived in less than half the expected duration
+	rapidSum       atomic.Uint64
+	controlCount   atomic.Int64
+	controlSum     atomic.Int64
+	controlSquares atomic.Int64
+	controlMin     atomic.Int64
+	controlMax     atomic.Int64
 }
 
 func newRTPStreamStats(h rtp.Handler, stats *rtpCountingStats) *rtpStreamStats {
@@ -382,12 +389,38 @@ func (h *rtpStreamStats) HandleRTP(hdr *prtp.Header, payload []byte) error {
 			} else if diff > 1 {
 				h.stats.gaps.Add(1)
 				h.stats.gapsSum.Add(uint64(diff))
+				h.stats.gapSeq.Store(uint64(hdr.SequenceNumber))
 			}
 		}
 
 		sinceLastPacket := now - lastPacket
+
+		// DEBUG: I'm trying to figure out whether the loop is jittery
+		h.stats.controlCount.Add(1)
+		h.stats.controlSum.Add(sinceLastPacket)
+		h.stats.controlSquares.Add(sinceLastPacket * sinceLastPacket)
+		for {
+			min := h.stats.controlMin.Load()
+			if min != 0 && sinceLastPacket >= min {
+				break
+			}
+			if h.stats.controlMin.CompareAndSwap(min, sinceLastPacket) {
+				break
+			}
+		}
+		for {
+			max := h.stats.controlMax.Load()
+			if sinceLastPacket <= max {
+				break
+			}
+			if h.stats.controlMax.CompareAndSwap(max, sinceLastPacket) {
+				break
+			}
+		}
+
 		if sinceLastPacket < rapidPacketThreshold {
 			h.stats.rapidPackets.Add(1)
+			h.stats.rapidSum.Add(uint64(sinceLastPacket))
 		} else if sinceLastPacket > delayedPacketThreshold {
 			h.stats.delayedPackets.Add(1)
 			h.stats.delayedSum.Add(uint64(sinceLastPacket))
