@@ -592,6 +592,12 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
 	})
+	// Update SIPCallInfo with the SIP Call-ID after Invite
+	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
+		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+			info.SipCallId = sipCallID
+		})
+	}
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
 		var e *livekit.SIPStatus

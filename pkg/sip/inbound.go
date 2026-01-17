@@ -419,6 +419,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		CreatedAtNs:   time.Now().UnixNano(),
 		TrunkId:       r.TrunkID,
 		ProviderInfo:  r.ProviderInfo,
+		SipCallId:     cc.SIPCallID(),
 	})
 	state.Flush(ctx)
 
