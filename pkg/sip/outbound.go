@@ -1039,6 +1039,24 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 	sendAndACK(ctx, c, r)
 }
 
+func (c *sipOutbound) sendCancel(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
+	if c.invite == nil {
+		return
+	}
+	ctx, span := Tracer.Start(ctx, "sip.outbound.sendCancel")
+	defer span.End()
+	r := sip.NewCancelRequest(c.invite)
+	r.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+	if c.getHeaders != nil {
+		for k, v := range c.getHeaders(nil) {
+			r.AppendHeader(sip.NewHeader(k, v))
+		}
+	}
+	_ = c.WriteRequest(r)
+	c.drop()
+}
+
 func (c *sipOutbound) drop() {
 	c.invite = nil
 	c.inviteOk = nil
@@ -1123,6 +1141,8 @@ func (c *sipOutbound) Close(ctx context.Context) {
 	defer c.mu.Unlock()
 	if c.inviteOk != nil {
 		c.sendBye(ctx)
+	} else if c.invite != nil {
+		c.sendCancel(ctx)
 	} else {
 		c.drop()
 	}
