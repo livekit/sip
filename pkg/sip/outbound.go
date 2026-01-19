@@ -596,6 +596,11 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
 		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 			info.SipCallId = sipCallID
+			// Set callidfull in participant attributes for backwards compatibility
+			if info.ParticipantAttributes == nil {
+				info.ParticipantAttributes = make(map[string]string)
+			}
+			info.ParticipantAttributes[AttrSIPCallIDFull] = sipCallID
 		})
 	}
 	if err != nil {
