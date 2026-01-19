@@ -714,6 +714,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		info.RoomName = disp.Room.RoomName
 		info.ParticipantIdentity = disp.Room.Participant.Identity
 		info.ParticipantAttributes = disp.Room.Participant.Attributes
+		// Set callidfull in participant attributes for backwards compatibility
+		if c.call.SipCallId != "" {
+			if info.ParticipantAttributes == nil {
+				info.ParticipantAttributes = make(map[string]string)
+			}
+			info.ParticipantAttributes[AttrSIPCallIDFull] = c.call.SipCallId
+		}
 	})
 
 	var pinPrompt bool
