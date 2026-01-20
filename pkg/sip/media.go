@@ -346,6 +346,7 @@ func newRTPStreamStats(h rtp.Handler, stats *rtpCountingStats) *rtpStreamStats {
 }
 
 type rtpStreamStats struct {
+	packets    atomic.Uint64 // per rtpStreamStats, where rtpStreamStats.stats.packets may not be exclusive to this stream
 	lastSeq    atomic.Uint64
 	lastPacket atomic.Int64
 	h          rtp.Handler
@@ -363,7 +364,8 @@ func (h *rtpStreamStats) Close() {
 }
 
 func (h *rtpStreamStats) HandleRTP(hdr *prtp.Header, payload []byte) error {
-	count := h.stats.packets.Add(1)
+	count := h.packets.Add(1)
+	h.stats.packets.Add(1)
 	h.stats.bytes.Add(uint64(len(payload)))
 
 	now := time.Now().UnixMilli()
