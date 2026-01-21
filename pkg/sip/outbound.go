@@ -581,6 +581,15 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 
 	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
+	c.log.Infow("sipSignal: initiating outbound call", 
+		"to", toUri.String(),
+		"from", c.sipConf.from,
+		"address", c.sipConf.address,
+		"transport", c.sipConf.transport,
+		"sdpOfferLength", len(sdpOfferData),
+		"hasAuth", c.sipConf.user != "" || c.sipConf.pass != "",
+		"headersCount", len(c.sipConf.headers))
+
 	ringing := false
 	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
 		if code == sip.StatusOK {
@@ -733,7 +742,7 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, 
 		Address: *contact.GetContactURI(),
 	}
 	fromHeader.Params.Add("tag", string(id))
-	return &sipOutbound{
+	so := &sipOutbound{
 		log:        log,
 		c:          c,
 		id:         id,
@@ -743,6 +752,12 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, 
 		nextCSeq:   1,
 		getHeaders: getHeaders,
 	}
+	so.log.Debugw("newSipOutbound: initialized outbound SIP call", 
+		"id", id,
+		"from", fromHeader.Address.String(),
+		"contact", contactHeader.Address.String(),
+		"nextCSeq", so.nextCSeq)
+	return so
 }
 
 type sipOutbound struct {
@@ -821,6 +836,14 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 
 	c.callID = guid.HashedID(fmt.Sprintf("%s-%s", string(c.id), toHeader.Address.String()))
 	c.log = c.log.WithValues("sipCallID", c.callID)
+	c.log.Infow("Invite: starting outbound INVITE request", 
+		"sipCallID", c.callID,
+		"to", toHeader.Address.String(),
+		"from", c.from,
+		"sdpOfferLength", len(sdpOffer),
+		"hasAuth", user != "" || pass != "",
+		"headersCount", len(headers),
+		"nextCSeq", c.nextCSeq)
 
 	var (
 		sipHeaders         Headers
@@ -839,15 +862,49 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
+			c.log.Errorw("Invite: max auth retry attempts reached", 
+				"sipCallID", c.callID,
+				"attempts", try)
 			return nil, fmt.Errorf("max auth retry attemps reached")
+		}
+		if try > 0 {
+			c.log.Debugw("Invite: retrying with authentication", 
+				"sipCallID", c.callID,
+				"attempt", try,
+				"authHeaderName", authHeaderRespName,
+				"hasAuthHeader", authHeader != "")
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
+			c.log.Debugw("Invite: attemptInvite failed", 
+				"sipCallID", c.callID,
+				"attempt", try,
+				"error", err)
 			return nil, err
 		}
+		c.log.Debugw("Invite: received response", 
+			"sipCallID", c.callID,
+			"attempt", try,
+			"statusCode", resp.StatusCode,
+			"statusReason", resp.Reason,
+			"hasBody", len(resp.Body()) > 0,
+			"bodyLength", len(resp.Body()))
 		var authHeaderName string
 		switch resp.StatusCode {
 		case sip.StatusOK:
+			c.log.Infow("Invite: received 200 OK response", 
+				"sipCallID", c.callID,
+				"attempt", try,
+				"cseq", func() uint32 {
+					if cseq := req.CSeq(); cseq != nil {
+						return cseq.SeqNo
+					}
+					return 0
+				}(),
+				"to", resp.To(),
+				"from", resp.From(),
+				"hasBody", len(resp.Body()) > 0,
+				"bodyLength", len(resp.Body()))
 			break authLoop
 		default:
 			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &livekit.SIPStatus{
@@ -918,6 +975,17 @@ authLoop:
 	if !ok {
 		return nil, errors.New("no tag in To header in INVITE response")
 	}
+	inviteCSeq := uint32(0)
+	if cseq := req.CSeq(); cseq != nil {
+		inviteCSeq = cseq.SeqNo
+	}
+	c.log.Infow("Invite: call established successfully", 
+		"sipCallID", c.callID,
+		"tag", c.tag,
+		"to", toHeader.Address.String(),
+		"from", c.from,
+		"inviteCSeq", inviteCSeq,
+		"nextCSeq", c.nextCSeq)
 
 	if cont := resp.Contact(); cont != nil {
 		req.Recipient = cont.Address
@@ -978,10 +1046,35 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.AppendHeader(h)
 	}
 
+	cseqValue := uint32(0)
+	if cseq := req.CSeq(); cseq != nil {
+		cseqValue = cseq.SeqNo
+	}
+	c.log.Infow("attemptInvite: sending INVITE request", 
+		"sipCallID", callID.Value(),
+		"cseq", cseqValue,
+		"to", to.Address.String(),
+		"from", c.from,
+		"destination", req.Destination(),
+		"source", req.Source(),
+		"transport", req.Transport(),
+		"hasAuth", authHeader != "",
+		"authHeaderName", authHeaderName,
+		"offerLength", len(offer),
+		"headersCount", len(headers),
+		"nextCSeq", c.nextCSeq)
+
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
+		c.log.Errorw("attemptInvite: TransactionRequest failed", 
+			"sipCallID", callID.Value(),
+			"cseq", cseqValue,
+			"error", err)
 		return nil, nil, err
 	}
+	c.log.Debugw("attemptInvite: transaction created, waiting for response", 
+		"sipCallID", callID.Value(),
+		"cseq", cseqValue)
 	defer tx.Terminate()
 
 	// Log the actual local port used for TCP connections from the DialPort range
@@ -1003,21 +1096,118 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 
 	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
+	if err != nil {
+		c.log.Debugw("attemptInvite: sipResponse error", 
+			"sipCallID", callID.Value(),
+			"cseq", cseqValue,
+			"error", err)
+	} else if resp != nil {
+		c.log.Debugw("attemptInvite: received response", 
+			"sipCallID", callID.Value(),
+			"cseq", cseqValue,
+			"statusCode", resp.StatusCode,
+			"statusReason", resp.Reason,
+			"hasBody", len(resp.Body()) > 0,
+			"bodyLength", len(resp.Body()))
+	}
 	return req, resp, err
 }
 
 func (c *sipOutbound) WriteRequest(req *sip.Request) error {
+	c.log.Debugw("WriteRequest: sending SIP request", 
+		"method", req.Method,
+		"sipCallID", c.callID,
+		"cseq", func() uint32 {
+			if cseq := req.CSeq(); cseq != nil {
+				return cseq.SeqNo
+			}
+			return 0
+		}(),
+		"from", req.From(),
+		"to", req.To(),
+		"destination", req.Destination(),
+		"source", req.Source(),
+		"hasBody", len(req.Body()) > 0,
+		"bodyLength", len(req.Body()))
+	if req.Method == sip.INVITE {
+		c.log.Infow("WriteRequest: sending INVITE request (potential reinvite)", 
+			"method", req.Method,
+			"sipCallID", c.callID,
+			"cseq", func() uint32 {
+				if cseq := req.CSeq(); cseq != nil {
+					return cseq.SeqNo
+				}
+				return 0
+			}(),
+			"nextCSeq", c.nextCSeq,
+			"from", req.From(),
+			"to", req.To(),
+			"destination", req.Destination(),
+			"source", req.Source(),
+			"hasBody", len(req.Body()) > 0,
+			"bodyLength", len(req.Body()))
+	}
 	return c.c.sipCli.WriteRequest(req)
 }
 
 func (c *sipOutbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
+	c.log.Debugw("Transaction: creating client transaction for SIP request", 
+		"method", req.Method,
+		"sipCallID", c.callID,
+		"cseq", func() uint32 {
+			if cseq := req.CSeq(); cseq != nil {
+				return cseq.SeqNo
+			}
+			return 0
+		}(),
+		"from", req.From(),
+		"to", req.To(),
+		"destination", req.Destination(),
+		"source", req.Source(),
+		"hasBody", len(req.Body()) > 0,
+		"bodyLength", len(req.Body()))
+	if req.Method == sip.INVITE {
+		c.log.Infow("Transaction: creating client transaction for INVITE request", 
+			"method", req.Method,
+			"sipCallID", c.callID,
+			"cseq", func() uint32 {
+				if cseq := req.CSeq(); cseq != nil {
+					return cseq.SeqNo
+				}
+				return 0
+			}(),
+			"nextCSeq", c.nextCSeq,
+			"from", req.From(),
+			"to", req.To(),
+			"destination", req.Destination(),
+			"source", req.Source(),
+			"hasBody", len(req.Body()) > 0,
+			"bodyLength", len(req.Body()))
+	}
 	return c.c.sipCli.TransactionRequest(req)
 }
 
 func (c *sipOutbound) setCSeq(req *sip.Request) {
+	oldCSeq := c.nextCSeq
 	setCSeq(req, c.nextCSeq)
-
+	c.log.Debugw("setCSeq: setting CSeq for outgoing request", 
+		"method", req.Method,
+		"cseq", c.nextCSeq,
+		"callID", c.callID,
+		"from", req.From(),
+		"to", req.To(),
+		"destination", req.Destination(),
+		"source", req.Source())
 	c.nextCSeq++
+	if oldCSeq != 0 && req.Method == sip.INVITE {
+		c.log.Infow("setCSeq: sending INVITE request (potential reinvite)", 
+			"method", req.Method,
+			"cseq", oldCSeq,
+			"nextCSeq", c.nextCSeq,
+			"callID", c.callID,
+			"from", req.From(),
+			"to", req.To())
+	}
 }
 
 func (c *sipOutbound) sendBye(ctx context.Context) {

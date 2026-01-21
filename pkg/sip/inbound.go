@@ -95,6 +95,7 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 	hasAuth := inviteHasAuth(req)
 	cseq := req.CSeq()
 	if cseq == nil {
+		log.Debugw("countInvite: no CSeq header found", "method", req.Method)
 		return
 	}
 	c.Lock()
@@ -107,15 +108,38 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 		countPtr = &c.invitesAuth
 		name = "invite with auth"
 	}
+	prevCSeq := *cseqPtr
+	prevCount := *countPtr
 	if *cseqPtr == 0 {
 		*cseqPtr = cseq.SeqNo
+		log.Debugw("countInvite: initial "+name, 
+			"cseq", cseq.SeqNo,
+			"hasAuth", hasAuth,
+			"callID", req.CallID())
 	}
 	if cseq.SeqNo > *cseqPtr {
+		log.Debugw("countInvite: detected reinvite", 
+			"name", name,
+			"prevCSeq", prevCSeq,
+			"newCSeq", cseq.SeqNo,
+			"hasAuth", hasAuth,
+			"callID", req.CallID(),
+			"from", req.From(),
+			"to", req.To())
 		return // reinvite
 	}
 	*countPtr++
 	if *countPtr > 1 {
-		log.Warnw("remote appears to be retrying an "+name, nil, "invites", *countPtr, "cseq", *cseqPtr)
+		log.Warnw("remote appears to be retrying an "+name, nil, 
+			"invites", *countPtr, 
+			"cseq", *cseqPtr,
+			"callID", req.CallID(),
+			"prevCount", prevCount)
+	} else {
+		log.Debugw("countInvite: first "+name, 
+			"cseq", cseq.SeqNo,
+			"hasAuth", hasAuth,
+			"callID", req.CallID())
 	}
 }
 
@@ -333,7 +357,23 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	log = LoggerWithParams(log, cc)
 	log = LoggerWithHeaders(log, cc)
 	cc.log = log
-	log.Infow("processing invite")
+	cseq := req.CSeq()
+	cseqValue := uint32(0)
+	if cseq != nil {
+		cseqValue = cseq.SeqNo
+	}
+	log.Infow("processing invite", 
+		"sipCallID", cc.SIPCallID(),
+		"cseq", cseqValue,
+		"method", req.Method,
+		"from", req.From(),
+		"to", req.To(),
+		"callID", req.CallID(),
+		"content-type", req.ContentType(),
+		"content-length", req.ContentLength(),
+		"hasAuth", inviteHasAuth(req),
+		"source", src.Addr().String(),
+		"destination", req.Destination())
 
 	if err := cc.ValidateInvite(); err != nil {
 		if s.conf.HideInboundPort {
@@ -347,11 +387,46 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RLock()
 	existing := s.byCallID[cc.SIPCallID()]
 	s.cmu.RUnlock()
-	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		log.Infow("accepting reinvite", "sipCallID", existing.cc.ID(), "content-type", req.ContentType(), "content-length", req.ContentLength())
-		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
-		return nil
+	if existing != nil {
+		existingCSeq := existing.cc.InviteCSeq()
+		newCSeq := cc.InviteCSeq()
+		log.Debugw("checking for reinvite", 
+			"sipCallID", cc.SIPCallID(),
+			"existingCSeq", existingCSeq,
+			"newCSeq", newCSeq,
+			"existingCallID", existing.cc.ID(),
+			"isReinvite", existingCSeq < newCSeq,
+			"content-type", req.ContentType(),
+			"content-length", req.ContentLength())
+		if existingCSeq < newCSeq {
+			log.Infow("accepting reinvite", 
+				"sipCallID", existing.cc.ID(), 
+				"existingCSeq", existingCSeq,
+				"newCSeq", newCSeq,
+				"content-type", req.ContentType(), 
+				"content-length", req.ContentLength(),
+				"from", req.From(),
+				"to", req.To(),
+				"callID", req.CallID())
+			existing.log().Infow("reinvite", 
+				"content-type", req.ContentType(), 
+				"content-length", req.ContentLength(), 
+				"existingCSeq", existingCSeq,
+				"newCSeq", newCSeq,
+				"cseq", newCSeq)
+			cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
+			return nil
+		} else {
+			log.Debugw("existing call found but not a reinvite", 
+				"sipCallID", cc.SIPCallID(),
+				"existingCSeq", existingCSeq,
+				"newCSeq", newCSeq,
+				"reason", "newCSeq not greater than existingCSeq")
+		}
+	} else {
+		log.Debugw("no existing call found for reinvite check", 
+			"sipCallID", cc.SIPCallID(),
+			"cseq", cc.InviteCSeq())
 	}
 
 	from, to := cc.From(), cc.To()
@@ -1430,6 +1505,12 @@ func (s *Server) newInbound(log logger.Logger, id LocalTag, contact URI, invite 
 	if h := invite.CSeq(); h != nil {
 		c.inviteCSeq = h.SeqNo
 		c.nextRequestCSeq = h.SeqNo + 1
+		c.log.Debugw("newInbound: initialized CSeq", 
+			"sipCallID", c.sipCallID,
+			"inviteCSeq", c.inviteCSeq,
+			"nextRequestCSeq", c.nextRequestCSeq,
+			"from", invite.From(),
+			"to", invite.To())
 	}
 	if callID := invite.CallID(); callID != nil {
 		c.sipCallID = callID.Value()
@@ -1656,6 +1737,13 @@ func (c *sipInbound) accepted(inviteOK *sip.Response) {
 }
 
 func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
+	c.log.Infow("AcceptAsKeepAlive: accepting reinvite with keep-alive response", 
+		"sipCallID", c.sipCallID,
+		"inviteCSeq", c.inviteCSeq,
+		"sdpLength", len(sdp),
+		"hasSDP", len(sdp) > 0,
+		"from", c.from,
+		"to", c.to)
 	c.respondWithData(sip.StatusOK, "OK", "application/sdp", sdp)
 }
 
@@ -1791,9 +1879,26 @@ func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
 }
 
 func (c *sipInbound) setCSeq(req *sip.Request) {
+	oldCSeq := c.nextRequestCSeq
 	setCSeq(req, c.nextRequestCSeq)
-
+	c.log.Debugw("setCSeq: setting CSeq for outgoing request", 
+		"method", req.Method,
+		"cseq", c.nextRequestCSeq,
+		"callID", c.sipCallID,
+		"from", req.From(),
+		"to", req.To(),
+		"destination", req.Destination(),
+		"source", req.Source())
 	c.nextRequestCSeq++
+	if oldCSeq != 0 && req.Method == sip.INVITE {
+		c.log.Infow("setCSeq: sending INVITE request (potential reinvite)", 
+			"method", req.Method,
+			"cseq", oldCSeq,
+			"nextCSeq", c.nextRequestCSeq,
+			"callID", c.sipCallID,
+			"from", req.From(),
+			"to", req.To())
+	}
 }
 
 func (c *sipInbound) sendBye(ctx context.Context) {
@@ -1845,10 +1950,76 @@ func (c *sipInbound) sendStatus(ctx context.Context, code sip.StatusCode, status
 }
 
 func (c *sipInbound) WriteRequest(req *sip.Request) error {
+	c.log.Debugw("WriteRequest: sending SIP request", 
+		"method", req.Method,
+		"callID", c.sipCallID,
+		"cseq", func() uint32 {
+			if cseq := req.CSeq(); cseq != nil {
+				return cseq.SeqNo
+			}
+			return 0
+		}(),
+		"from", req.From(),
+		"to", req.To(),
+		"destination", req.Destination(),
+		"source", req.Source(),
+		"hasBody", len(req.Body()) > 0,
+		"bodyLength", len(req.Body()))
+	if req.Method == sip.INVITE {
+		c.log.Infow("WriteRequest: sending INVITE request", 
+			"method", req.Method,
+			"callID", c.sipCallID,
+			"cseq", func() uint32 {
+				if cseq := req.CSeq(); cseq != nil {
+					return cseq.SeqNo
+				}
+				return 0
+			}(),
+			"inviteCSeq", c.inviteCSeq,
+			"from", req.From(),
+			"to", req.To(),
+			"destination", req.Destination(),
+			"source", req.Source(),
+			"hasBody", len(req.Body()) > 0,
+			"bodyLength", len(req.Body()))
+	}
 	return c.s.sipSrv.TransportLayer().WriteMsg(req)
 }
 
 func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
+	c.log.Debugw("Transaction: creating client transaction for SIP request", 
+		"method", req.Method,
+		"callID", c.sipCallID,
+		"cseq", func() uint32 {
+			if cseq := req.CSeq(); cseq != nil {
+				return cseq.SeqNo
+			}
+			return 0
+		}(),
+		"from", req.From(),
+		"to", req.To(),
+		"destination", req.Destination(),
+		"source", req.Source(),
+		"hasBody", len(req.Body()) > 0,
+		"bodyLength", len(req.Body()))
+	if req.Method == sip.INVITE {
+		c.log.Infow("Transaction: creating client transaction for INVITE request", 
+			"method", req.Method,
+			"callID", c.sipCallID,
+			"cseq", func() uint32 {
+				if cseq := req.CSeq(); cseq != nil {
+					return cseq.SeqNo
+				}
+				return 0
+			}(),
+			"inviteCSeq", c.inviteCSeq,
+			"from", req.From(),
+			"to", req.To(),
+			"destination", req.Destination(),
+			"source", req.Source(),
+			"hasBody", len(req.Body()) > 0,
+			"bodyLength", len(req.Body()))
+	}
 	return c.s.sipSrv.TransactionLayer().Request(req)
 }
 
