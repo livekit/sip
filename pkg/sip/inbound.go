@@ -1133,7 +1133,8 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 	go func() {
 		time.Sleep(5 * time.Minute)
 		if !c.terminated.Load() {
-			c.log().Errorw("call failed to terminate after 5 minutes", nil)
+			c.mon.CallTerminationFailure()
+			c.log().Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
 		}
 	}()
 
