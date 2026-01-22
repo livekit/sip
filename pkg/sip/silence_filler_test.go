@@ -40,7 +40,7 @@ func newSilenceSuppressionTester(audioSampleRate int, log logger.Logger) *Silenc
 		receivedSilenceFrames: 0,
 		receivedSignalFrames:  0,
 	}
-	tester.gapFiller = newSilenceFiller(tester, tester, audioSampleRate, log)
+	tester.gapFiller = newSilenceFiller(tester, tester, audioSampleRate, audioSampleRate, log)
 	return tester
 }
 

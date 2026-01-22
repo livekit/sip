@@ -27,17 +27,18 @@ import (
 // silenceFiller detects RTP timestamp discontinuities (silence suppression)
 // and generates silence samples to fill the gaps before passing packets to the decoder.
 type silenceFiller struct {
-	maxGapSize      int
-	encodedSink     rtp.Handler
-	pcmSink         msdk.PCM16Writer
-	samplesPerFrame int
-	log             logger.Logger
-	lastTS          atomic.Uint64
-	lastSeq         atomic.Uint64
-	packets         atomic.Uint64
-	gapCount        atomic.Uint64
-	gapSizeSum      atomic.Uint64
-	lastPrintTime   time.Time
+	maxGapSize            int
+	encodedSink           rtp.Handler
+	pcmSink               msdk.PCM16Writer
+	rtpSamplesPerFrame    int // For gap detection (based on RTP clock rate)
+	pcmSamplesPerFrame    int // For silence generation (based on PCM output rate)
+	log                   logger.Logger
+	lastTS                atomic.Uint64
+	lastSeq               atomic.Uint64
+	packets               atomic.Uint64
+	gapCount              atomic.Uint64
+	gapSizeSum            atomic.Uint64
+	lastPrintTime         time.Time
 }
 
 type SilenceSuppressionOption func(*silenceFiller)
@@ -50,22 +51,23 @@ func WithMaxGapSize(maxGapSize int) SilenceSuppressionOption {
 	}
 }
 
-func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, clockRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.Handler {
+func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, rtpClockRate int, pcmSampleRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.Handler {
 	// TODO: We assume 20ms frame. We would need to adjust this when:
 	// - When we add support for other frame durations.
 	// - When we add support for re-INVITE sdp renegotiation (maybe, if we don't destroy this and start over).
 	h := &silenceFiller{
-		maxGapSize:      25, // Default max gap size
-		encodedSink:     encodedSink,
-		pcmSink:         pcmSink,
-		samplesPerFrame: clockRate / rtp.DefFramesPerSec,
-		log:             log,
-		packets:         atomic.Uint64{},
-		lastSeq:         atomic.Uint64{},
-		lastTS:          atomic.Uint64{},
-		gapCount:        atomic.Uint64{},
-		gapSizeSum:      atomic.Uint64{},
-		lastPrintTime:   time.Time{},
+		maxGapSize:         25, // Default max gap size
+		encodedSink:        encodedSink,
+		pcmSink:            pcmSink,
+		rtpSamplesPerFrame: rtpClockRate / rtp.DefFramesPerSec,
+		pcmSamplesPerFrame: pcmSampleRate / rtp.DefFramesPerSec,
+		log:                log,
+		packets:            atomic.Uint64{},
+		lastSeq:            atomic.Uint64{},
+		lastTS:             atomic.Uint64{},
+		gapCount:           atomic.Uint64{},
+		gapSizeSum:         atomic.Uint64{},
+		lastPrintTime:      time.Time{},
 	}
 	for _, option := range options {
 		option(h)
@@ -89,7 +91,7 @@ func (h *silenceFiller) isSilenceSuppression(header *rtp.Header) (bool, int) {
 	currentSeq := header.SequenceNumber
 
 	expectedSeq := lastSeq + 1
-	expectedTS := lastTS + uint32(h.samplesPerFrame)
+	expectedTS := lastTS + uint32(h.rtpSamplesPerFrame)
 
 	seqDiff := currentSeq - expectedSeq
 	tsDiff := currentTS - expectedTS
@@ -100,10 +102,10 @@ func (h *silenceFiller) isSilenceSuppression(header *rtp.Header) (bool, int) {
 		return false, 0
 	}
 
-	missedFrames := int(tsDiff) / int(h.samplesPerFrame)
+	missedFrames := int(tsDiff) / int(h.rtpSamplesPerFrame)
 	if missedFrames == 0 {
-		// Needs to be after / int(h.samplesPerFrame),
-		// since some RTP resets may result in a 0 < TS diff < h.samplesPerFrame
+		// Needs to be after / int(h.rtpSamplesPerFrame),
+		// since some RTP resets may result in a 0 < TS diff < h.rtpSamplesPerFrame
 		return false, 0
 	}
 
@@ -113,7 +115,7 @@ func (h *silenceFiller) isSilenceSuppression(header *rtp.Header) (bool, int) {
 
 func (h *silenceFiller) fillWithSilence(framesToFill int) error {
 	for ; framesToFill > 0; framesToFill-- {
-		silence := make(msdk.PCM16Sample, h.samplesPerFrame)
+		silence := make(msdk.PCM16Sample, h.pcmSamplesPerFrame)
 		if err := h.pcmSink.WriteSample(silence); err != nil {
 			return err
 		}
