@@ -757,7 +757,7 @@ func (p *MediaPort) setupInput() {
 	}
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
 	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
-	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.RTPClockRate, p.log)
+	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.RTPClockRate, codecInfo.SampleRate, p.log)
 	p.audioInHandler = audioHandler
 
 	mux := rtp.NewMux(nil)
