@@ -763,7 +763,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			log.Infow("no offer type specified")
 		}
 		rawSDP := req.Body()
-		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, disp.EnabledFeatures)
+		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, disp.EnabledFeatures, disp.FeatureFlags)
 		if err != nil {
 			log = log.WithValues("sdp", string(rawSDP))
 			isError := true
@@ -941,7 +941,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	}
 }
 
-func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
 	e, err := sdpEncryption(enc)
@@ -978,7 +978,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mconf.Processor = c.s.handler.GetMediaProcessor(features)
+	mconf.Processor = c.s.handler.GetMediaProcessor(features, featureFlags)
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}

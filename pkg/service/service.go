@@ -221,7 +221,7 @@ func (s *Service) DispatchCall(ctx context.Context, info *sip.CallInfo) sip.Call
 	return DispatchCall(ctx, s.psrpcClient, s.log, info)
 }
 
-func (s *Service) GetMediaProcessor(_ []livekit.SIPFeature) msdk.PCM16Processor {
+func (s *Service) GetMediaProcessor(_ []livekit.SIPFeature, _ map[string]string) msdk.PCM16Processor {
 	return nil
 }
 
