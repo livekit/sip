@@ -60,24 +60,25 @@ const (
 type Monitor struct {
 	nodeID string
 
-	inviteReqRaw       prometheus.Counter
-	inviteReq          *prometheus.CounterVec
-	inviteAccept       *prometheus.CounterVec
-	inviteErr          *prometheus.CounterVec
-	callsActive        *prometheus.GaugeVec
-	callsTerminated    *prometheus.CounterVec
-	packetsRTP         *prometheus.CounterVec
-	durSession         *prometheus.HistogramVec
-	durCall            *prometheus.HistogramVec
-	durJoin            *prometheus.HistogramVec
-	durCheck           *prometheus.HistogramVec
-	cpuLoad            prometheus.Gauge
-	sdpSize            *prometheus.HistogramVec
-	nodeAvailable      prometheus.GaugeFunc
-	transfersTotal     *prometheus.CounterVec
-	transfersSucceeded *prometheus.CounterVec
-	transfersFailed    *prometheus.CounterVec
-	transfersActive    *prometheus.GaugeVec
+	inviteReqRaw             prometheus.Counter
+	inviteReq                *prometheus.CounterVec
+	inviteAccept             *prometheus.CounterVec
+	inviteErr                *prometheus.CounterVec
+	callsActive              *prometheus.GaugeVec
+	callsTerminated          *prometheus.CounterVec
+	callsTerminationFailures *prometheus.CounterVec
+	packetsRTP               *prometheus.CounterVec
+	durSession               *prometheus.HistogramVec
+	durCall                  *prometheus.HistogramVec
+	durJoin                  *prometheus.HistogramVec
+	durCheck                 *prometheus.HistogramVec
+	cpuLoad                  prometheus.Gauge
+	sdpSize                  *prometheus.HistogramVec
+	nodeAvailable            prometheus.GaugeFunc
+	transfersTotal           *prometheus.CounterVec
+	transfersSucceeded       *prometheus.CounterVec
+	transfersFailed          *prometheus.CounterVec
+	transfersActive          *prometheus.GaugeVec
 
 	cpu            *hwstats.CPUStats
 	maxUtilization float64
@@ -169,6 +170,14 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "Number of calls terminated by SIP bridge",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, []string{"dir", "to", "reason"}))
+
+	m.callsTerminationFailures = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "calls_termination_failures",
+		Help:        "Number of calls that failed to terminate after 5 minutes",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir"}))
 
 	m.packetsRTP = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -393,6 +402,10 @@ func (c *CallMonitor) CallTerminate(reason string) {
 		return
 	}
 	c.m.callsTerminated.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
+}
+
+func (c *CallMonitor) CallTerminationFailure() {
+	c.m.callsTerminationFailures.With(c.labels(prometheus.Labels{})).Inc()
 }
 
 func (c *CallMonitor) RTPPacketSend(payloadType string) {
