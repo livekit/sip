@@ -62,6 +62,7 @@ type sipOutboundConfig struct {
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
 	enabledFeatures []livekit.SIPFeature
+	featureFlags    map[string]string
 	mediaEncryption sdp.Encryption
 	displayName     *string
 }
@@ -627,7 +628,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
-	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures)
+	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags)
 	if err = c.media.SetConfig(mc); err != nil {
 		return err
 	}

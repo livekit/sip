@@ -104,6 +104,7 @@ type CallDispatch struct {
 	IncludeHeaders      livekit.SIPHeaderOptions
 	AttributesToHeaders map[string]string
 	EnabledFeatures     []livekit.SIPFeature
+	FeatureFlags        map[string]string
 	RingingTimeout      time.Duration
 	MaxCallDuration     time.Duration
 	MediaEncryption     livekit.SIPMediaEncryption
@@ -119,7 +120,7 @@ type CallIdentifier struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
-	GetMediaProcessor(features []livekit.SIPFeature) msdk.PCM16Processor
+	GetMediaProcessor(features []livekit.SIPFeature, featureFlags map[string]string) msdk.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
