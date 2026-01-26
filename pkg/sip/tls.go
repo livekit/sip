@@ -18,7 +18,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+
+	"github.com/livekit/protocol/logger"
 )
+
+func makeTLSCipherMap(CipherSuites []*tls.CipherSuite) map[string]*tls.CipherSuite {
+	cipherSuitesMap := make(map[string]*tls.CipherSuite)
+	for _, c := range CipherSuites {
+		cipherSuitesMap[c.Name] = c
+	}
+	return cipherSuitesMap
+}
 
 func ConfigureTLS(c *tls.Config) {
 	// We can't use default cert verification, because SIP headers usually specify IP address instead of a hostname.
@@ -47,5 +57,49 @@ func ConfigureTLS(c *tls.Config) {
 			return err
 		}
 		return nil
+	}
+}
+
+// ParseCipherSuites parses cipher suite names to uint16 IDs.
+// Logs a warning for each insecure cipher suite configured.
+func ParseCipherSuites(suites []string, log logger.Logger) ([]uint16, error) {
+	if len(suites) == 0 {
+		return nil, nil
+	}
+
+	parsedCipherSuites := []uint16{}
+	cipherSuite := makeTLSCipherMap(tls.CipherSuites())
+	insecureCipherSuite := makeTLSCipherMap(tls.InsecureCipherSuites())
+
+	for _, suite := range suites {
+		if cipher, ok := cipherSuite[suite]; ok {
+			parsedCipherSuites = append(parsedCipherSuites, cipher.ID)
+		} else if cipher, ok := insecureCipherSuite[suite]; ok {
+			parsedCipherSuites = append(parsedCipherSuites, cipher.ID)
+			log.Warnw("using insecure TLS cipher suite", nil, "cipherSuite", suite)
+		} else {
+			return nil, errors.New("unknown cipher suite: " + suite)
+		}
+	}
+
+	return parsedCipherSuites, nil
+}
+
+// ParseTLSVersion parses a TLS version string to its uint16 constant.
+// Accepts formats: "1.0", "1.1", "1.2", "1.3" or "TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3".
+func ParseTLSVersion(version string) (uint16, error) {
+	switch version {
+	case "":
+		return 0, nil
+	case "1.0", "TLS 1.0":
+		return tls.VersionTLS10, nil
+	case "1.1", "TLS 1.1":
+		return tls.VersionTLS11, nil
+	case "1.2", "TLS 1.2":
+		return tls.VersionTLS12, nil
+	case "1.3", "TLS 1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, errors.New("unknown TLS version: " + version)
 	}
 }
