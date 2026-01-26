@@ -264,6 +264,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		ringingTimeout:  req.RingingTimeout.AsDuration(),
 		maxCallDuration: req.MaxCallDuration.AsDuration(),
 		enabledFeatures: req.EnabledFeatures,
+		featureFlags:    req.FeatureFlags,
 		mediaEncryption: enc,
 		displayName:     req.DisplayName,
 	}

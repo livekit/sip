@@ -160,6 +160,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			HeadersToAttributes: resp.HeadersToAttributes,
 			AttributesToHeaders: resp.AttributesToHeaders,
 			EnabledFeatures:     resp.EnabledFeatures,
+			FeatureFlags:        resp.FeatureFlags,
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
 			MediaEncryption:     resp.MediaEncryption,
