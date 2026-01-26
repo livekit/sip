@@ -90,6 +90,7 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
+	signalLoggingEnabled := sipConf.featureFlags[signalLoggingFeatureFlag] == "true"
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -98,7 +99,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 	jitterBuf := SelectValueBool(conf.EnableJitterBuffer, conf.EnableJitterBufferProb)
 	room.JitterBuf = jitterBuf
-	room.SignalLogger = true // TODO: Populate
+	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
@@ -143,7 +144,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
 		EnableJitterBuffer:  call.jitterBuf,
-		LogSignalChanges:    true, // TODO: Replace with per-project setting
+		LogSignalChanges:    signalLoggingEnabled,
 		Stats:               &call.stats.Port,
 		NoInputResample:     !RoomResample,
 		IgnorePreanswerData: true,

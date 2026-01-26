@@ -179,14 +179,14 @@ type ParticipantConfig struct {
 }
 
 type RoomConfig struct {
-	WsUrl        string
-	Token        string
-	RoomName     string
-	Participant  ParticipantConfig
-	RoomPreset   string
-	RoomConfig   *livekit.RoomConfiguration
-	JitterBuf    bool
-	SignalLogger bool
+	WsUrl            string
+	Token            string
+	RoomName         string
+	Participant      ParticipantConfig
+	RoomPreset       string
+	RoomConfig       *livekit.RoomConfiguration
+	JitterBuf        bool
+	LogSignalChanges bool
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -323,7 +323,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer mTrack.Close()
 
 					var out msdk.PCM16Writer = mTrack
-					if rconf.SignalLogger {
+					if rconf.LogSignalChanges {
 						out, _ = NewSignalLogger(log, track.ID(), out)
 					}
 
