@@ -261,21 +261,21 @@ func (s *Service) Start() error {
 		}
 
 		if len(tconf.CipherSuites) > 0 {
-			suits, err := ParseCipherSuites(tconf.CipherSuites, s.log)
+			suits, err := parseCipherSuites(s.log, tconf.CipherSuites)
 			if err != nil {
 				return err
 			}
 			tlsConf.CipherSuites = suits
 		}
 		if tconf.MinVersion != "" {
-			minVer, err := ParseTLSVersion(tconf.MinVersion)
+			minVer, err := parseTLSVersion(tconf.MinVersion)
 			if err != nil {
 				return err
 			}
 			tlsConf.MinVersion = minVer
 		}
 		if tconf.MaxVersion != "" {
-			maxVer, err := ParseTLSVersion(tconf.MaxVersion)
+			maxVer, err := parseTLSVersion(tconf.MaxVersion)
 			if err != nil {
 				return err
 			}

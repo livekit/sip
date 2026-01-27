@@ -18,7 +18,7 @@ func TestParseCipherSuites(t *testing.T) {
 			"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
 		}
 
-		suites, err := ParseCipherSuites(cipherSuites, log)
+		suites, err := parseCipherSuites(log, cipherSuites)
 
 		require.NoError(t, err)
 		require.Equal(t, len(cipherSuites), len(suites))
@@ -34,7 +34,7 @@ func TestParseCipherSuites(t *testing.T) {
 			"TLS_ECDHE_RSA_WITH_RC4_128_SHA",
 		}
 
-		suites, err := ParseCipherSuites(cipherSuites, log)
+		suites, err := parseCipherSuites(log, cipherSuites)
 
 		require.NoError(t, err)
 		require.Equal(t, len(cipherSuites), len(suites))
@@ -49,7 +49,7 @@ func TestParseCipherSuites(t *testing.T) {
 			"TLS_ECDHE_RSA_WITH_RC4_128_SHA",
 		}
 
-		suites, err := ParseCipherSuites(cipherSuites, log)
+		suites, err := parseCipherSuites(log, cipherSuites)
 
 		require.NoError(t, err)
 		require.Equal(t, len(cipherSuites), len(suites))
@@ -63,7 +63,7 @@ func TestParseCipherSuites(t *testing.T) {
 			"INVALID_CIPHER_SUITE",
 		}
 
-		_, err := ParseCipherSuites(cipherSuites, log)
+		_, err := parseCipherSuites(log, cipherSuites)
 
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unknown cipher suite: INVALID_CIPHER_SUITE")
@@ -71,69 +71,68 @@ func TestParseCipherSuites(t *testing.T) {
 }
 func TestParseTLSVersion(t *testing.T) {
 	t.Run("empty string", func(t *testing.T) {
-		version, err := ParseTLSVersion("")
+		version, err := parseTLSVersion("")
 		require.NoError(t, err)
 		require.Equal(t, uint16(0), version)
 	})
 
-	t.Run("TLS 1.0 - short format", func(t *testing.T) {
-		version, err := ParseTLSVersion("1.0")
+	t.Run("TLS 1.0 - lowercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("tls1.0")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS10), version)
 	})
 
-	t.Run("TLS 1.0 - long format", func(t *testing.T) {
-		version, err := ParseTLSVersion("TLS 1.0")
+	t.Run("TLS 1.0 - uppercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("TLS1.0")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS10), version)
 	})
 
-	t.Run("TLS 1.1 - short format", func(t *testing.T) {
-		version, err := ParseTLSVersion("1.1")
+	t.Run("TLS 1.1 - lowercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("tls1.1")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS11), version)
 	})
 
-	t.Run("TLS 1.1 - long format", func(t *testing.T) {
-		version, err := ParseTLSVersion("TLS 1.1")
+	t.Run("TLS 1.1 - uppercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("TLS1.1")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS11), version)
 	})
 
-	t.Run("TLS 1.2 - short format", func(t *testing.T) {
-		version, err := ParseTLSVersion("1.2")
+	t.Run("TLS 1.2 - lowercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("tls1.2")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS12), version)
 	})
 
-	t.Run("TLS 1.2 - long format", func(t *testing.T) {
-		version, err := ParseTLSVersion("TLS 1.2")
+	t.Run("TLS 1.2 - uppercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("TLS1.2")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS12), version)
 	})
 
-	t.Run("TLS 1.3 - short format", func(t *testing.T) {
-		version, err := ParseTLSVersion("1.3")
+	t.Run("TLS 1.3 - lowercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("tls1.3")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS13), version)
 	})
 
-	t.Run("TLS 1.3 - long format", func(t *testing.T) {
-		version, err := ParseTLSVersion("TLS 1.3")
+	t.Run("TLS 1.3 - uppercase format", func(t *testing.T) {
+		version, err := parseTLSVersion("TLS1.3")
 		require.NoError(t, err)
 		require.Equal(t, uint16(tls.VersionTLS13), version)
 	})
 
 	t.Run("invalid version", func(t *testing.T) {
-		_, err := ParseTLSVersion("1.4")
+		_, err := parseTLSVersion("tls1.4")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "unknown TLS version: 1.4")
+		require.Contains(t, err.Error(), "unknown TLS version: tls1.4")
 	})
 
 	t.Run("invalid format", func(t *testing.T) {
-		_, err := ParseTLSVersion("TLS1.2")
+		_, err := parseTLSVersion("TLS 1.2")
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "unknown TLS version: TLS1.2")
+		require.Contains(t, err.Error(), "unknown TLS version: TLS 1.2")
 	})
 }
-

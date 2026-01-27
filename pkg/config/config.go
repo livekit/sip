@@ -55,8 +55,8 @@ type TLSConfig struct {
 	Certs      []TLSCert `yaml:"certs"`
 	KeyLog     string    `yaml:"key_log"`
 
-	MinVersion string `yaml:"min_version"` // min TLS version, accepts: "1.0", "1.1", "1.2", "1.3"
-	MaxVersion string `yaml:"max_version"` // max TLS version, accepts: "1.0", "1.1", "1.2", "1.3"
+	MinVersion string `yaml:"min_version"` // min TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
+	MaxVersion string `yaml:"max_version"` // max TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
 
 	// CipherSuites is an optional list of cipher suite names.
 	// If not provided, Go's secure defaults are used.

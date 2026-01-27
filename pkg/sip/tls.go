@@ -60,9 +60,9 @@ func ConfigureTLS(c *tls.Config) {
 	}
 }
 
-// ParseCipherSuites parses cipher suite names to uint16 IDs.
+// parseCipherSuites parses cipher suite names to uint16 IDs.
 // Logs a warning for each insecure cipher suite configured.
-func ParseCipherSuites(suites []string, log logger.Logger) ([]uint16, error) {
+func parseCipherSuites(log logger.Logger, suites []string) ([]uint16, error) {
 	if len(suites) == 0 {
 		return nil, nil
 	}
@@ -85,19 +85,19 @@ func ParseCipherSuites(suites []string, log logger.Logger) ([]uint16, error) {
 	return parsedCipherSuites, nil
 }
 
-// ParseTLSVersion parses a TLS version string to its uint16 constant.
-// Accepts formats: "1.0", "1.1", "1.2", "1.3" or "TLS 1.0", "TLS 1.1", "TLS 1.2", "TLS 1.3".
-func ParseTLSVersion(version string) (uint16, error) {
+// parseTLSVersion parses a TLS version string to its uint16 constant.
+// Accepts formats: "tls1.0", "tls1.1", "tls1.2", "tls1.3" or "TLS1.0", "TLS1.1", "TLS1.2", "TLS1.3".
+func parseTLSVersion(version string) (uint16, error) {
 	switch version {
 	case "":
 		return 0, nil
-	case "1.0", "TLS 1.0":
+	case "tls1.0", "TLS1.0":
 		return tls.VersionTLS10, nil
-	case "1.1", "TLS 1.1":
+	case "tls1.1", "TLS1.1":
 		return tls.VersionTLS11, nil
-	case "1.2", "TLS 1.2":
+	case "tls1.2", "TLS1.2":
 		return tls.VersionTLS12, nil
-	case "1.3", "TLS 1.3":
+	case "tls1.3", "TLS1.3":
 		return tls.VersionTLS13, nil
 	default:
 		return 0, errors.New("unknown TLS version: " + version)
