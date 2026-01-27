@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -177,12 +179,28 @@ type UDPConn interface {
 	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
 }
 
-func newUDPConn(log logger.Logger, conn UDPConn) *udpConn {
-	return &udpConn{UDPConn: conn, log: log}
+func newUDPConn(log logger.Logger, conn UDPConn, portMin, portMax int) (*udpConn, error) {
+	lc := &net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+			})
+		},
+	}
+	if conn == nil {
+		unconstrainedIPv4 := netip.AddrFrom4([4]byte{0, 0, 0, 0})
+		c, err := rtp.ListenUDPPortRangeWithLC(portMin, portMax, unconstrainedIPv4, lc)
+		if err != nil {
+			return nil, err
+		}
+		conn = c
+	}
+	return &udpConn{UDPConn: conn, lc: lc, log: log}, nil
 }
 
 type udpConn struct {
 	UDPConn
+	lc  *net.ListenConfig
 	log logger.Logger
 	src atomic.Pointer[netip.AddrPort]
 	dst atomic.Pointer[netip.AddrPort]
@@ -227,6 +245,23 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 	return c.WriteToUDPAddrPort(b, *dst)
 }
 
+// Creates a new underlying UDP connection on the same port.
+// The practical use of this function is to discard the assicuated OS-level read buffer of the old socket.
+func (c *udpConn) Reopen() error {
+	if c.UDPConn == nil {
+		return errors.New("No existing connection to reopen")
+	}
+	ctx := context.Background() // TODO: Plumb this to be anything but...
+	port := c.UDPConn.LocalAddr().(*net.UDPAddr).Port
+	conn, err := c.lc.ListenPacket(ctx, "udp", fmt.Sprintf("0.0.0.0:%d", port))
+	if err != nil {
+		return err
+	}
+	c.UDPConn.Close()
+	c.UDPConn = conn.(*net.UDPConn)
+	return nil
+}
+
 type MediaConf struct {
 	sdp.MediaConfig
 	Processor msdk.PCM16Processor
@@ -240,6 +275,7 @@ type MediaOptions struct {
 	Stats               *PortStats
 	EnableJitterBuffer  bool
 	NoInputResample     bool
+	IgnorePreanswerData bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -259,12 +295,9 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	if opts.Stats == nil {
 		opts.Stats = &PortStats{}
 	}
-	if conn == nil {
-		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
-		if err != nil {
-			return nil, err
-		}
-		conn = c
+	port, err := newUDPConn(log, conn, opts.Ports.Start, opts.Ports.End)
+	if err != nil {
+		return nil, err
 	}
 	mediaTimeout := make(chan struct{})
 	inSampleRate := sampleRate
@@ -280,7 +313,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		mediaTimeout:     mediaTimeout,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
-		port:             newUDPConn(log, conn),
+		port:             port,
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
@@ -592,6 +625,19 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 		"srtp", crypto,
 	)
 
+	if p.opts.IgnorePreanswerData {
+		// This is a funky bit of business, so buckle up.
+		// We create the network connection to reserve the port as soon as we want to generate a local SDP
+		// When we are answering, this is immaterial.
+		// When offering, this creates a new socket, but does not start reading from it until it is accepted.
+		// During this time, packets pile up in the OS-level read buffer, and if that's full then new ones are discarded.
+		//
+		// If this option is enabled, we discard all buffered packets at this time, before enabling the associated RTP loop.
+		err := p.port.Reopen()
+		if err != nil {
+			return err
+		}
+	}
 	p.port.SetDst(c.Remote)
 	var (
 		sess rtp.Session
@@ -608,7 +654,6 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.port.SetDst(c.Remote)
 	p.conf = c
 	p.sess = sess
 
