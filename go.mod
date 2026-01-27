@@ -11,7 +11,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20260127055432-7206fddfccb3
+	github.com/livekit/media-sdk v0.0.0-20251219194827-658ef49c456b
 	github.com/livekit/mediatransportutil v0.0.0-20250519131108-fb90f5acfded
 	github.com/livekit/protocol v1.43.5-0.20260116194158-9aa98c9aeeaf
 	github.com/livekit/psrpc v0.7.1

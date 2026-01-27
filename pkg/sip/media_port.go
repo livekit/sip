@@ -179,28 +179,35 @@ type UDPConn interface {
 	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
 }
 
-func newUDPConn(log logger.Logger, conn UDPConn, portMin, portMax int) (*udpConn, error) {
-	lc := &net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			return c.Control(func(fd uintptr) {
-				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-			})
-		},
+func newUDPConn(log logger.Logger, portMin, portMax int) (*udpConn, error) {
+	// Must not be called with SO_REUSEADDR.
+	// ListenUDPPortRange may reuse an existing port, resulting in no data on new connection.
+	unconstrainedIPv4 := netip.AddrFrom4([4]byte{0, 0, 0, 0})
+	conn, err := rtp.ListenUDPPortRange(portMin, portMax, unconstrainedIPv4)
+	if err != nil {
+		return nil, err
 	}
-	if conn == nil {
-		unconstrainedIPv4 := netip.AddrFrom4([4]byte{0, 0, 0, 0})
-		c, err := rtp.ListenUDPPortRangeWithLC(portMin, portMax, unconstrainedIPv4, lc)
-		if err != nil {
-			return nil, err
-		}
-		conn = c
+
+	// Enable SO_REUSEADDR to support Reopen()
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return nil, err
 	}
-	return &udpConn{UDPConn: conn, lc: lc, log: log}, nil
+	var fdErr error
+	err = rawConn.Control(func(fd uintptr) {
+		fdErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fdErr != nil {
+		return nil, fdErr
+	}
+	return &udpConn{UDPConn: conn, log: log}, nil
 }
 
 type udpConn struct {
 	UDPConn
-	lc  *net.ListenConfig
 	log logger.Logger
 	src atomic.Pointer[netip.AddrPort]
 	dst atomic.Pointer[netip.AddrPort]
@@ -248,12 +255,16 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 // Creates a new underlying UDP connection on the same port.
 // The practical use of this function is to discard the assicuated OS-level read buffer of the old socket.
 func (c *udpConn) Reopen() error {
-	if c.UDPConn == nil {
-		return errors.New("No existing connection to reopen")
+	lc := &net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+			})
+		},
 	}
-	ctx := context.Background() // TODO: Plumb this to be anything but...
+	ctx := context.Background() // TODO: Consider using anything else
 	port := c.UDPConn.LocalAddr().(*net.UDPAddr).Port
-	conn, err := c.lc.ListenPacket(ctx, "udp", fmt.Sprintf("0.0.0.0:%d", port))
+	conn, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		return err
 	}
@@ -282,7 +293,7 @@ func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opt
 	return NewMediaPortWith(tid, log, mon, nil, opts, sampleRate)
 }
 
-func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn *udpConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
 	if opts == nil {
 		opts = &MediaOptions{}
 	}
@@ -295,9 +306,12 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	if opts.Stats == nil {
 		opts.Stats = &PortStats{}
 	}
-	port, err := newUDPConn(log, conn, opts.Ports.Start, opts.Ports.End)
-	if err != nil {
-		return nil, err
+	if conn == nil {
+		c, err := newUDPConn(log, opts.Ports.Start, opts.Ports.End)
+		if err != nil {
+			return nil, err
+		}
+		conn = c
 	}
 	mediaTimeout := make(chan struct{})
 	inSampleRate := sampleRate
@@ -313,7 +327,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		mediaTimeout:     mediaTimeout,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
-		port:             port,
+		port:             conn,
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,

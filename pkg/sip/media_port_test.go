@@ -197,8 +197,10 @@ func TestMediaPort(t *testing.T) {
 					c1, c2 := newUDPPipe()
 
 					log := logger.GetLogger()
+					l1 := log.WithName("one")
+					l2 := log.WithName("two")
 
-					m1, err := NewMediaPortWith(1, log.WithName("one"), nil, c1, &MediaOptions{
+					m1, err := NewMediaPortWith(1, l1, nil, &udpConn{UDPConn: c1, log: l1}, &MediaOptions{
 						IP:              newIP("1.1.1.1"),
 						Ports:           rtcconfig.PortRange{Start: 10000},
 						NoInputResample: true,
@@ -206,7 +208,7 @@ func TestMediaPort(t *testing.T) {
 					require.NoError(t, err)
 					defer m1.Close()
 
-					m2, err := NewMediaPortWith(2, log.WithName("two"), nil, c2, &MediaOptions{
+					m2, err := NewMediaPortWith(2, l2, nil, &udpConn{UDPConn: c2, log: l2}, &MediaOptions{
 						IP:    newIP("2.2.2.2"),
 						Ports: rtcconfig.PortRange{Start: 20000},
 					}, tconf.Rate)
@@ -362,14 +364,16 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 	const rate = 16000
 
 	log := logger.GetLogger()
+	l1 := log.WithName("one")
+	l2 := log.WithName("two")
 
 	var err error
 
-	m1, err = NewMediaPortWith(1, log.WithName("one"), nil, c1, opt1, rate)
+	m1, err = NewMediaPortWith(1, l1, nil, &udpConn{UDPConn: c1, log: l1}, opt1, rate)
 	require.NoError(t, err)
 	t.Cleanup(m1.Close)
 
-	m2, err = NewMediaPortWith(2, log.WithName("two"), nil, c2, opt2, rate)
+	m2, err = NewMediaPortWith(2, l2, nil, &udpConn{UDPConn: c2, log: l2}, opt2, rate)
 	require.NoError(t, err)
 	t.Cleanup(m2.Close)
 
