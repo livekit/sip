@@ -259,6 +259,29 @@ func (s *Service) Start() error {
 			Certificates: certs,
 			KeyLogWriter: keyLog,
 		}
+
+		if len(tconf.CipherSuites) > 0 {
+			suits, err := parseCipherSuites(s.log, tconf.CipherSuites)
+			if err != nil {
+				return err
+			}
+			tlsConf.CipherSuites = suits
+		}
+		if tconf.MinVersion != "" {
+			minVer, err := parseTLSVersion(tconf.MinVersion)
+			if err != nil {
+				return err
+			}
+			tlsConf.MinVersion = minVer
+		}
+		if tconf.MaxVersion != "" {
+			maxVer, err := parseTLSVersion(tconf.MaxVersion)
+			if err != nil {
+				return err
+			}
+			tlsConf.MaxVersion = maxVer
+		}
+
 		ConfigureTLS(tlsConf)
 		opts = append(opts, sipgo.WithUserAgenTLSConfig(tlsConf))
 	}

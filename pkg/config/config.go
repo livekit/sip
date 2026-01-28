@@ -54,6 +54,14 @@ type TLSConfig struct {
 	ListenPort int       `yaml:"port_listen"` // SIP signaling port to listen on
 	Certs      []TLSCert `yaml:"certs"`
 	KeyLog     string    `yaml:"key_log"`
+
+	MinVersion string `yaml:"min_version"` // min TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
+	MaxVersion string `yaml:"max_version"` // max TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
+
+	// CipherSuites is an optional list of cipher suite names.
+	// If not provided, Go's secure defaults are used.
+	// Note: Only applies to TLS 1.0-1.2; TLS 1.3 cipher suites are not configurable.
+	CipherSuites []string `yaml:"cipher_suites"`
 }
 
 type TCPConfig struct {
