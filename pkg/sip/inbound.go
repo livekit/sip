@@ -864,6 +864,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		disp.RingingTimeout = defaultRingingTimeout
 	}
 	disp.Room.JitterBuf = c.jitterBuf
+	if disp.FeatureFlags != nil {
+		disp.Room.LogSignalChanges = disp.FeatureFlags[signalLoggingFeatureFlag] == "true"
+	}
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
 	status := CallRinging
@@ -950,12 +953,17 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 		return nil, err
 	}
 
+	logSignalChanges := false
+	if featureFlags != nil {
+		logSignalChanges = featureFlags[signalLoggingFeatureFlag] == "true"
+	}
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
 		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,
 		EnableJitterBuffer:  c.jitterBuf,
+		LogSignalChanges:    logSignalChanges,
 		Stats:               &c.stats.Port,
 		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
