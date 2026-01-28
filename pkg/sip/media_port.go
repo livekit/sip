@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -177,8 +179,31 @@ type UDPConn interface {
 	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
 }
 
-func newUDPConn(log logger.Logger, conn UDPConn) *udpConn {
-	return &udpConn{UDPConn: conn, log: log}
+func newUDPConn(log logger.Logger, portMin, portMax int) (*udpConn, error) {
+	// Must not be called with SO_REUSEADDR.
+	// ListenUDPPortRange may reuse an existing port, resulting in no data on new connection.
+	unconstrainedIPv4 := netip.AddrFrom4([4]byte{0, 0, 0, 0})
+	conn, err := rtp.ListenUDPPortRange(portMin, portMax, unconstrainedIPv4)
+	if err != nil {
+		return nil, err
+	}
+
+	// Enable SO_REUSEADDR to support Reopen()
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	var fdErr error
+	err = rawConn.Control(func(fd uintptr) {
+		fdErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fdErr != nil {
+		return nil, fdErr
+	}
+	return &udpConn{UDPConn: conn, log: log}, nil
 }
 
 type udpConn struct {
@@ -227,6 +252,27 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 	return c.WriteToUDPAddrPort(b, *dst)
 }
 
+// Creates a new underlying UDP connection on the same port.
+// The practical use of this function is to discard the assicuated OS-level read buffer of the old socket.
+func (c *udpConn) Reopen() error {
+	lc := &net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+			})
+		},
+	}
+	ctx := context.Background() // TODO: Consider using anything else
+	port := c.UDPConn.LocalAddr().(*net.UDPAddr).Port
+	conn, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("0.0.0.0:%d", port))
+	if err != nil {
+		return err
+	}
+	c.UDPConn.Close()
+	c.UDPConn = conn.(*net.UDPConn)
+	return nil
+}
+
 type MediaConf struct {
 	sdp.MediaConfig
 	Processor msdk.PCM16Processor
@@ -240,13 +286,14 @@ type MediaOptions struct {
 	Stats               *PortStats
 	EnableJitterBuffer  bool
 	NoInputResample     bool
+	IgnorePreanswerData bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
 	return NewMediaPortWith(tid, log, mon, nil, opts, sampleRate)
 }
 
-func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn *udpConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
 	if opts == nil {
 		opts = &MediaOptions{}
 	}
@@ -260,7 +307,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		opts.Stats = &PortStats{}
 	}
 	if conn == nil {
-		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
+		c, err := newUDPConn(log, opts.Ports.Start, opts.Ports.End)
 		if err != nil {
 			return nil, err
 		}
@@ -280,7 +327,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		mediaTimeout:     mediaTimeout,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
-		port:             newUDPConn(log, conn),
+		port:             conn,
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
@@ -592,6 +639,19 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 		"srtp", crypto,
 	)
 
+	if p.opts.IgnorePreanswerData {
+		// This is a funky bit of business, so buckle up.
+		// We create the network connection to reserve the port as soon as we want to generate a local SDP
+		// When we are answering, this is immaterial.
+		// When offering, this creates a new socket, but does not start reading from it until it is accepted.
+		// During this time, packets pile up in the OS-level read buffer, and if that's full then new ones are discarded.
+		//
+		// If this option is enabled, we discard all buffered packets at this time, before enabling the associated RTP loop.
+		err := p.port.Reopen()
+		if err != nil {
+			return err
+		}
+	}
 	p.port.SetDst(c.Remote)
 	var (
 		sess rtp.Session
@@ -608,7 +668,6 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.port.SetDst(c.Remote)
 	p.conf = c
 	p.sess = sess
 
