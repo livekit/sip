@@ -134,7 +134,7 @@ On success, `livekit-cli` will return the unique id for the SIP Dispatch Rule.
 
 #### Running natively
 
-The SIP service can be run natively on any platform supported by libpous.
+The SIP service can be run natively on any platform supported by libopus.
 
 ##### Prerequisites
 
