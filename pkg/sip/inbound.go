@@ -904,7 +904,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 
 	c.started.Break()
 
-	// Wait for the caller to terminate the call. Send regular keep alives
+	return c.waitForCallEnd(ctx, ackReceived, ackTimeout)
+}
+
+func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time) error {
+	ctx, span := Tracer.Start(ctx, "sip.inbound.waitForCallEnd")
+	defer span.End()
+	// Wait for the caller to terminate the call. Send regular keep alives.
 	ticker := time.NewTicker(stateUpdateTick)
 	defer ticker.Stop()
 
