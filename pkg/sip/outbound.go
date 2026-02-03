@@ -840,7 +840,7 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
-			return nil, fmt.Errorf("max auth retry attemps reached")
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, fmt.Errorf("max auth retry attempts reached for SIP invite"))
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
@@ -880,11 +880,11 @@ authLoop:
 		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
-			return nil, errors.New("server required auth, but no username or password was provided")
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, errors.New("sip server required auth, but no username or password was provided"))
 		}
 		headerVal := resp.GetHeader(authHeaderName)
 		if headerVal == nil {
-			return nil, errors.New("no auth header in response")
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, errors.New("no auth header in sip invite response"))
 		}
 		challengeStr := headerVal.Value()
 		challenge, err := digest.ParseChallenge(challengeStr)
