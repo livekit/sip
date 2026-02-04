@@ -18,7 +18,8 @@ name: Release to Docker
 on:
   workflow_dispatch:
   push:
-    # only publish on version tags
+    branches:
+      - main
     tags:
       - "v*.*.*"
 
@@ -45,8 +46,10 @@ jobs:
           images: daniilshamraev/sip
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Set up Go
         uses: actions/setup-go@v6
