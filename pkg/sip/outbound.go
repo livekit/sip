@@ -33,7 +33,7 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	msdp "github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/tones"
-	"github.com/pion/sdp/v3"
+	pionsdp "github.com/pion/sdp/v3"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/utils/guid"
@@ -1281,7 +1281,7 @@ func (c *outboundCall) filterCodecsFromSDP(sdpOffer *msdp.Offer) error {
 		media.MediaName.Formats = filteredPayloads
 
 		// Фильтруем атрибуты (rtpmap, fmtp)
-		var filteredAttrs []*sdp.Attribute
+		var filteredAttrs []*pionsdp.Attribute
 		for _, attr := range media.Attributes {
 			keep := true
 
