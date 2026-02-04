@@ -31,7 +31,7 @@ import (
 var Default = Build
 
 const (
-	imageName = "livekit/sip"
+	imageName = "daniilshamraev/sip"
 )
 
 var packages = []string{"pkg-config", "opus", "opusfile"}

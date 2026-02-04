@@ -42,7 +42,7 @@ jobs:
         id: docker-md
         uses: docker/metadata-action@v5
         with:
-          images: livekit/sip
+          images: daniilshamraev/sip
           # generate Docker tags based on the following events/attributes
           tags: |
             type=semver,pattern=v{{version}}
