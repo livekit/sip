@@ -20,10 +20,12 @@ import (
 	"testing"
 	"time"
 
-	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/sdp"
+	msdp "github.com/livekit/media-sdk/sdp"
+	pionsdp "github.com/pion/sdp/v3"
 	"github.com/livekit/sipgo/sip"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sip/pkg/config"
 )
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
@@ -145,17 +147,17 @@ func TestCodecFiltering(t *testing.T) {
 	}
 
 	// Create mock SDP offer with multiple codecs including G.711A and G.729
-	sdpOffer := &msdk.SDPOffer{
-		SDP: &sdp.SessionDescription{
-			MediaDescriptions: []*sdp.MediaDescription{
+	sdpOffer := &msdp.Offer{
+		SDP: pionsdp.SessionDescription{
+			MediaDescriptions: []*pionsdp.MediaDescription{
 				{
-					MediaName: sdp.MediaName{
+					MediaName: pionsdp.MediaName{
 						Media:   "audio",
-						Ports:   sdp.RangedPort{Value: 5004},
+						Port:    pionsdp.RangedPort{Value: 5004},
 						Protos:  []string{"RTP", "AVP"},
 						Formats: []string{"0", "8", "9", "18", "101"}, // PCMU, PCMA, G722, G729, telephone-event
 					},
-					Attributes: []sdp.Attribute{
+					Attributes: []pionsdp.Attribute{
 						{Key: "rtpmap", Value: "0 PCMU/8000"},
 						{Key: "rtpmap", Value: "8 PCMA/8000"},
 						{Key: "rtpmap", Value: "9 G722/8000"},
@@ -229,17 +231,17 @@ func TestCodecFilteringStaticPayloadTypes(t *testing.T) {
 	}
 
 	// Create mock SDP offer with static payload types (no rtpmap attributes for static types)
-	sdpOffer := &msdk.SDPOffer{
-		SDP: &sdp.SessionDescription{
-			MediaDescriptions: []*sdp.MediaDescription{
+	sdpOffer := &msdp.Offer{
+		SDP: pionsdp.SessionDescription{
+			MediaDescriptions: []*pionsdp.MediaDescription{
 				{
-					MediaName: sdp.MediaName{
+					MediaName: pionsdp.MediaName{
 						Media:   "audio",
-						Ports:   sdp.RangedPort{Value: 5004},
+						Port:    pionsdp.RangedPort{Value: 5004},
 						Protos:  []string{"RTP", "AVP"},
 						Formats: []string{"0", "8", "9", "18", "101"}, // PCMU, PCMA, G722, G729, telephone-event
 					},
-					Attributes: []sdp.Attribute{
+					Attributes: []pionsdp.Attribute{
 						// Only telephone-event has rtpmap (static types don't need it per RFC 3264)
 						{Key: "rtpmap", Value: "101 telephone-event/8000"},
 						{Key: "fmtp", Value: "101 0-16"},
@@ -544,18 +546,18 @@ func TestCodecFilteringNilMediaDescription(t *testing.T) {
 	}
 
 	// Create mock SDP offer with nil media description in the slice
-	sdpOffer := &msdk.SDPOffer{
-		SDP: &sdp.SessionDescription{
-			MediaDescriptions: []*sdp.MediaDescription{
+	sdpOffer := &msdp.Offer{
+		SDP: pionsdp.SessionDescription{
+			MediaDescriptions: []*pionsdp.MediaDescription{
 				nil, // This nil pointer should not cause a panic
 				{
-					MediaName: sdp.MediaName{
+					MediaName: pionsdp.MediaName{
 						Media:   "audio",
-						Ports:   sdp.RangedPort{Value: 5004},
+						Port:    pionsdp.RangedPort{Value: 5004},
 						Protos:  []string{"RTP", "AVP"},
 						Formats: []string{"0"}, // PCMU
 					},
-					Attributes: []sdp.Attribute{
+					Attributes: []pionsdp.Attribute{
 						{Key: "rtpmap", Value: "0 PCMU/8000"},
 					},
 				},
