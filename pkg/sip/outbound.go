@@ -328,7 +328,7 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		c.setStatus(status)
 		if err != nil {
-			c.log.Warnw("Closing outbound call with error", nil, "reason", description)
+			c.log.Warnw("Closing outbound call with error", "reason", description, "error", err)
 		} else {
 			c.log.Infow("Closing outbound call", "reason", description)
 		}
@@ -1219,7 +1219,7 @@ func getCodecNameByPayload(payload string) string {
 }
 
 // filterCodecsFromSDP удаляет отключенные кодеки из SDP offer
-func (c *outboundCall) filterCodecsFromSDP(sdpOffer *msdk.SDPOffer) error {
+func (c *outboundCall) filterCodecsFromSDP(sdpOffer *sdp.Offer) error {
 	codecConfig := c.c.conf.Codecs
 	if codecConfig == nil || len(codecConfig) == 0 {
 		// Если конфигурация пустая, не фильтруем ничего
