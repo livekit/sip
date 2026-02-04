@@ -66,6 +66,10 @@ type Client struct {
 	activeCalls map[LocalTag]*outboundCall
 	byRemote    map[RemoteTag]*outboundCall
 
+	// Trunk configurations storage
+	trunkConfigs   map[string]*TrunkConfig // trunkID -> TrunkConfig
+	trunkConfigsMu sync.RWMutex
+
 	handler      Handler
 	getIOClient  GetIOInfoClient
 	getSipClient GetSipClientFunc
@@ -220,12 +224,18 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
-	// Determine from_domain: use FromDomain from request if available, otherwise leave empty
-	// Note: When protobuf is updated with FromDomain field in InternalCreateSIPParticipantRequest,
-	// uncomment the following line: fromDomain = req.FromDomain
-	// For now, fromDomain is only set from protobuf (when available), not from global config
-	// Global config SIPFromDomain is checked later in newCall with lower priority than hostname
+	// Determine from_domain with priority:
+	// 1. FromDomain from trunk configuration (highest priority - when TrunkID is provided)
+	// 2. FromDomain from request if available (when protobuf is updated)
+	// 3. Empty otherwise (global config SIPFromDomain checked later in newCall)
 	fromDomain := ""
+
+	// Check trunk configuration if SipTrunkId is provided
+	if req.SipTrunkId != "" {
+		if trunkConfig, exists := c.GetTrunkConfig(req.SipTrunkId); exists && trunkConfig.FromDomain != "" {
+			fromDomain = trunkConfig.FromDomain
+		}
+	}
 
 	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req, fromDomain))
 
@@ -299,6 +309,36 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}
 	go call.WaitClose(context.WithoutCancel(ctx))
 	return info, nil
+}
+
+// AddTrunkConfig adds or updates a trunk configuration
+func (c *Client) AddTrunkConfig(trunkID string, config *TrunkConfig) {
+	c.trunkConfigsMu.Lock()
+	defer c.trunkConfigsMu.Unlock()
+
+	if c.trunkConfigs == nil {
+		c.trunkConfigs = make(map[string]*TrunkConfig)
+	}
+
+	config.TrunkID = trunkID
+	c.trunkConfigs[trunkID] = config
+}
+
+// GetTrunkConfig retrieves trunk configuration by ID
+func (c *Client) GetTrunkConfig(trunkID string) (*TrunkConfig, bool) {
+	c.trunkConfigsMu.RLock()
+	defer c.trunkConfigsMu.RUnlock()
+
+	config, exists := c.trunkConfigs[trunkID]
+	return config, exists
+}
+
+// RemoveTrunkConfig removes a trunk configuration
+func (c *Client) RemoveTrunkConfig(trunkID string) {
+	c.trunkConfigsMu.Lock()
+	defer c.trunkConfigsMu.Unlock()
+
+	delete(c.trunkConfigs, trunkID)
 }
 
 func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest, fromDomain string) *livekit.SIPCallInfo {

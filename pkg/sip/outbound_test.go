@@ -574,3 +574,128 @@ func TestCodecFilteringNilMediaDescription(t *testing.T) {
 	media := sdpOffer.SDP.MediaDescriptions[1]
 	require.Equal(t, []string{"0"}, media.MediaName.Formats)
 }
+
+func TestTrunkFromDomainPriority(t *testing.T) {
+	// Test that trunk FromDomain takes highest priority
+	client := NewOutboundTestClient(t, TestClientConfig{
+		Config: &config.Config{
+			SIPFromDomain: "global-from-domain.com",
+		},
+	})
+
+	// Add trunk configuration with FromDomain
+	trunkID := "test-trunk-123"
+	trunkConfig := &TrunkConfig{
+		FromDomain: "trunk-from-domain.com",
+		Name:       "Test Trunk",
+		Numbers:    []string{"+1234567890"},
+	}
+	client.AddTrunkConfig(trunkID, trunkConfig)
+
+	req := MinimalCreateSIPParticipantRequest()
+	req.Hostname = "hostname.com"
+	req.SipTrunkId = trunkID // Set trunk ID
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_, err := client.CreateSIPParticipant(ctx, req)
+		if err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant error: %v", err)
+		}
+	}()
+
+	var sipClient *testSIPClient
+	select {
+	case sipClient = <-createdClients:
+		t.Cleanup(func() { _ = sipClient.Close() })
+	case <-time.After(100 * time.Millisecond):
+		cancel()
+		require.Fail(t, "expected client to be created")
+		return
+	}
+
+	var tr *transactionRequest
+	select {
+	case tr = <-sipClient.transactions:
+		t.Cleanup(func() { tr.transaction.Terminate() })
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		require.Fail(t, "expected transaction request to be created")
+		return
+	}
+
+	require.NotNil(t, tr)
+	require.NotNil(t, tr.req)
+	require.Equal(t, sip.INVITE, tr.req.Method)
+
+	fromHeader := tr.req.From()
+	require.NotNil(t, fromHeader)
+	fromHost := fromHeader.Address.Host
+	require.Equal(t, "trunk-from-domain.com", fromHost, "Trunk FromDomain should take highest priority")
+
+	cancel()
+}
+
+func TestTrunkFromDomainFallback(t *testing.T) {
+	// Test that when trunk has no FromDomain, it falls back to hostname
+	client := NewOutboundTestClient(t, TestClientConfig{
+		Config: &config.Config{
+			SIPFromDomain: "global-from-domain.com",
+		},
+	})
+
+	// Add trunk configuration without FromDomain
+	trunkID := "test-trunk-456"
+	trunkConfig := &TrunkConfig{
+		Name:    "Test Trunk Without FromDomain",
+		Numbers: []string{"+1234567890"},
+	}
+	client.AddTrunkConfig(trunkID, trunkConfig)
+
+	req := MinimalCreateSIPParticipantRequest()
+	req.Hostname = "hostname.com"
+	req.SipTrunkId = trunkID
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_, err := client.CreateSIPParticipant(ctx, req)
+		if err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant error: %v", err)
+		}
+	}()
+
+	var sipClient *testSIPClient
+	select {
+	case sipClient = <-createdClients:
+		t.Cleanup(func() { _ = sipClient.Close() })
+	case <-time.After(100 * time.Millisecond):
+		cancel()
+		require.Fail(t, "expected client to be created")
+		return
+	}
+
+	var tr *transactionRequest
+	select {
+	case tr = <-sipClient.transactions:
+		t.Cleanup(func() { tr.transaction.Terminate() })
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		require.Fail(t, "expected transaction request to be created")
+		return
+	}
+
+	require.NotNil(t, tr)
+	require.NotNil(t, tr.req)
+	require.Equal(t, sip.INVITE, tr.req.Method)
+
+	fromHeader := tr.req.From()
+	require.NotNil(t, fromHeader)
+	fromHost := fromHeader.Address.Host
+	require.Equal(t, "hostname.com", fromHost, "Should fallback to hostname when trunk has no FromDomain")
+
+	cancel()
+}

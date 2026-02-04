@@ -28,6 +28,17 @@ import (
 	"github.com/livekit/sipgo/sip"
 )
 
+// TrunkConfig represents trunk configuration with additional fields not available in livekit.SIPOutboundTrunkInfo
+type TrunkConfig struct {
+	TrunkID    string            // Unique trunk identifier
+	FromDomain string            // Domain to use in From header for outbound calls (highest priority)
+	Name       string            // Human readable name
+	Numbers    []string          // Associated phone numbers
+	Address    string            // SIP server address
+	Transport  livekit.SIPTransport // Transport protocol
+	Headers    map[string]string // Custom headers
+}
+
 type Headers []sip.Header
 
 func (h Headers) GetHeader(name string) sip.Header {

@@ -102,13 +102,15 @@ codecs:
 
 For outbound SIP calls, the domain in the `From` header is determined by the following priority order:
 
-1. **`from_domain`** from trunk configuration (when available via protobuf `FromDomain` field)
+1. **`from_domain`** from trunk configuration (highest priority - configured per trunk)
 2. **`hostname`** from trunk configuration (`Hostname` field in request)
 3. **`sip_from_domain`** from global config (if set)
 4. **`sip_hostname`** from global config (for TLS connections)
 5. **IP address** (fallback to current behavior)
 
 This allows you to configure a specific domain for the `From` header, which is required by some strict SIP providers that validate the domain matches the registration domain.
+
+#### Global Configuration
 
 **Example configuration:**
 
@@ -121,7 +123,11 @@ When making an outbound call, the `From` header will use `sip.myprovider.com` as
 From: <sip:username@sip.myprovider.com>
 ```
 
-**Note:** Per-trunk `from_domain` configuration will be available in a future update when the protobuf `FromDomain` field is added to `SIPOutboundTrunkInfo`.
+#### Per-Trunk Configuration
+
+For more granular control, you can configure a specific `from_domain` for each trunk. This is useful when different trunks require different domains for authentication or routing.
+
+**Note:** Trunk-specific `from_domain` configuration is managed through the LiveKit server API and stored in trunk metadata. The SIP service automatically uses the appropriate domain based on the trunk ID associated with each call.
 
 ### Codec Configuration
 

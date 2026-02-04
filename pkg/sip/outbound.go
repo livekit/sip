@@ -104,7 +104,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
 	// Determine host for From header with priority:
-	// 1. from_domain from config (if set, highest priority - from trunk when protobuf is updated)
+	// 1. from_domain from trunk config (highest priority - when trunk FromDomain is set)
 	// 2. host from config (if set, request-specific hostname)
 	// 3. SIPFromDomain from global config (if set, global fallback)
 	// 4. contact.GetHost() (fallback to current behavior)
