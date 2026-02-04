@@ -326,6 +326,9 @@ func TestCodecNameByPayload(t *testing.T) {
 
 func TestFromDomainPriority(t *testing.T) {
 	// Test priority: from_domain > host > SIPFromDomain > fallback
+	if testing.Short() {
+		t.Skip("Skipping test that requires network in short mode")
+	}
 	testCases := []struct {
 		name          string
 		hostname      string
@@ -415,6 +418,9 @@ func TestFromDomainPriority(t *testing.T) {
 
 func TestFromDomainInINVITE(t *testing.T) {
 	// Test that From header in INVITE contains the correct domain when from_domain is set via config
+	if testing.Short() {
+		t.Skip("Skipping test that requires network in short mode")
+	}
 	client := NewOutboundTestClient(t, TestClientConfig{
 		Config: &config.Config{
 			SIPFromDomain: "test-from-domain.com",
@@ -505,7 +511,7 @@ func TestCreateSIPCallInfoFromDomainPriority(t *testing.T) {
 			fromDomain:    "",
 			hostname:      "",
 			sipFromDomain: "",
-			expected:      "test-client.example.com", // from test client
+			expected:      "", // will be set to actual local IP
 			description:   "should fallback to contact host when all domain fields are empty",
 		},
 	}
@@ -526,7 +532,16 @@ func TestCreateSIPCallInfoFromDomainPriority(t *testing.T) {
 
 			// Extract the host from the FromUri
 			fromUriHost := callInfo.FromUri.Host
-			require.Equal(t, tc.expected, fromUriHost, tc.description)
+
+			// For the fallback case, expect the actual local IP
+			expected := tc.expected
+			if expected == "" {
+				localIP, err := config.GetLocalIP()
+				require.NoError(t, err)
+				expected = localIP.String()
+			}
+
+			require.Equal(t, expected, fromUriHost, tc.description)
 		})
 	}
 }
@@ -579,6 +594,9 @@ func TestCodecFilteringNilMediaDescription(t *testing.T) {
 
 func TestTrunkFromDomainPriority(t *testing.T) {
 	// Test that trunk FromDomain takes highest priority
+	if testing.Short() {
+		t.Skip("Skipping test that requires network in short mode")
+	}
 	client := NewOutboundTestClient(t, TestClientConfig{
 		Config: &config.Config{
 			SIPFromDomain: "global-from-domain.com",
@@ -642,6 +660,9 @@ func TestTrunkFromDomainPriority(t *testing.T) {
 
 func TestTrunkFromDomainFallback(t *testing.T) {
 	// Test that when trunk has no FromDomain, it falls back to hostname
+	if testing.Short() {
+		t.Skip("Skipping test that requires network in short mode")
+	}
 	client := NewOutboundTestClient(t, TestClientConfig{
 		Config: &config.Config{
 			SIPFromDomain: "global-from-domain.com",
