@@ -31,8 +31,9 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
-	"github.com/livekit/media-sdk/sdp"
+	msdp "github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/tones"
+	"github.com/pion/sdp/v3"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/utils/guid"
@@ -65,7 +66,7 @@ type sipOutboundConfig struct {
 	maxCallDuration time.Duration
 	enabledFeatures []livekit.SIPFeature
 	featureFlags    map[string]string
-	mediaEncryption sdp.Encryption
+	mediaEncryption msdp.Encryption
 	displayName     *string
 }
 
@@ -1219,7 +1220,7 @@ func getCodecNameByPayload(payload string) string {
 }
 
 // filterCodecsFromSDP удаляет отключенные кодеки из SDP offer
-func (c *outboundCall) filterCodecsFromSDP(sdpOffer *sdp.Offer) error {
+func (c *outboundCall) filterCodecsFromSDP(sdpOffer *msdp.Offer) error {
 	codecConfig := c.c.conf.Codecs
 	if codecConfig == nil || len(codecConfig) == 0 {
 		// Если конфигурация пустая, не фильтруем ничего
