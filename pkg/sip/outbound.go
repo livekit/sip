@@ -328,7 +328,7 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		c.setStatus(status)
 		if err != nil {
-			c.log.Warnw("Closing outbound call with error", "reason", description, "error", err)
+			c.log.Warnw("Closing outbound call with error", err, "reason", description)
 		} else {
 			c.log.Infow("Closing outbound call", "reason", description)
 		}
@@ -590,7 +590,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 
 	// Фильтруем кодеки на основе конфигурации
 	if err := c.filterCodecsFromSDP(sdpOffer); err != nil {
-		c.log.Warnw("failed to filter codecs from SDP", "error", err)
+		c.log.Warnw("failed to filter codecs from SDP", err)
 		// Продолжаем выполнение, даже если фильтрация не удалась
 	}
 
@@ -1227,7 +1227,7 @@ func (c *outboundCall) filterCodecsFromSDP(sdpOffer *sdp.Offer) error {
 	}
 
 	sdp := sdpOffer.SDP
-	if sdp == nil || len(sdp.MediaDescriptions) == 0 {
+	if len(sdp.MediaDescriptions) == 0 {
 		return nil
 	}
 
@@ -1280,7 +1280,7 @@ func (c *outboundCall) filterCodecsFromSDP(sdpOffer *sdp.Offer) error {
 		media.MediaName.Formats = filteredPayloads
 
 		// Фильтруем атрибуты (rtpmap, fmtp)
-		var filteredAttrs []sdp.Attribute
+		var filteredAttrs []*sdp.Attribute
 		for _, attr := range media.Attributes {
 			keep := true
 
