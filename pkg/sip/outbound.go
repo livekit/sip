@@ -151,7 +151,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
 	})
 
-	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
+	call.mon = c.mon.NewCall(stats.Outbound, fromHost, sipConf.address)
 	var err error
 
 	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
