@@ -220,6 +220,13 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
+	// Determine from_domain: use FromDomain from request if available, otherwise leave empty
+	// Note: When protobuf is updated with FromDomain field in InternalCreateSIPParticipantRequest,
+	// uncomment the following line: fromDomain = req.FromDomain
+	// For now, fromDomain is only set from protobuf (when available), not from global config
+	// Global config SIPFromDomain is checked later in newCall with lower priority than hostname
+	fromDomain := ""
+
 	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req, fromDomain))
 
 	defer func() {
@@ -247,12 +254,6 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			Attributes: req.ParticipantAttributes,
 		},
 	}
-	// Determine from_domain: use FromDomain from request if available, otherwise leave empty
-	// Note: When protobuf is updated with FromDomain field in InternalCreateSIPParticipantRequest,
-	// uncomment the following line: fromDomain = req.FromDomain
-	// For now, fromDomain is only set from protobuf (when available), not from global config
-	// Global config SIPFromDomain is checked later in newCall with lower priority than hostname
-	fromDomain := ""
 
 	sipConf := sipOutboundConfig{
 		address:         req.Address,

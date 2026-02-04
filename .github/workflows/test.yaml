@@ -50,6 +50,9 @@ jobs:
       - name: Test
         run: |
           set -euo pipefail
+          # Create the log file first to ensure it exists even if tests fail
+          touch /tmp/gotest.log
+          # Run tests with output redirection to ensure log is created
           go test -coverpkg=./... -race -json -v -coverprofile=coverage.out -covermode=atomic ./pkg/... 2>&1 | tee /tmp/gotest.log | tparse
 
       - name: Pull LiveKit Docker image
@@ -68,7 +71,7 @@ jobs:
         with:
           name: test-log
           path: /tmp/gotest.log
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
