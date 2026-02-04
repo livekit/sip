@@ -1281,7 +1281,7 @@ func (c *outboundCall) filterCodecsFromSDP(sdpOffer *msdp.Offer) error {
 		media.MediaName.Formats = filteredPayloads
 
 		// Фильтруем атрибуты (rtpmap, fmtp)
-		var filteredAttrs []*pionsdp.Attribute
+		var filteredAttrs []pionsdp.Attribute
 		for _, attr := range media.Attributes {
 			keep := true
 
