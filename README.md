@@ -23,6 +23,7 @@ Currently, the following features are supported:
 - Dialing In (Accepting INVITEs)
 - Digest Authentication
 - Touch Tone (Sending and Reading DTMF)
+- Codec Filtering (configurable codec support in SDP offers)
 
 ## Documentation
 
@@ -61,10 +62,116 @@ health_port: if used, will open an http port for health checks
 prometheus_port: port used to collect prometheus metrics. Used for autoscaling
 log_level: debug, info, warn, or error (default info)
 sip_port: port to listen and send SIP traffic (default 5060)
+sip_hostname: hostname to use in SIP headers (for TLS connections)
+sip_from_domain: domain to use in From header for outbound SIP calls (overrides sip_hostname if set)
 rtp_port: port to listen and send RTP traffic (default 10000-20000)
+codecs: codec configuration map for filtering supported codecs in SDP offers (see Codec Configuration section)
 ```
 
 The config file can be added to a mounted volume with its location passed in the SIP_CONFIG_FILE env var, or its body can be passed in the SIP_CONFIG_BODY env var.
+
+**Example full configuration:**
+
+```yaml
+# required fields
+api_key: your-api-key
+api_secret: your-api-secret
+ws_url: ws://localhost:7880
+redis:
+  address: localhost:6379
+
+# optional fields
+health_port: 8080
+prometheus_port: 9090
+log_level: debug
+sip_port: 5060
+sip_hostname: sip.example.com
+rtp_port:
+  start: 10000
+  end: 20000
+
+# codec configuration
+codecs:
+  PCMU: true
+  PCMA: false
+  G722: true
+  G729: false
+```
+
+### From Header Domain Configuration
+
+For outbound SIP calls, the domain in the `From` header is determined by the following priority order:
+
+1. **`from_domain`** from trunk configuration (when available via protobuf `FromDomain` field)
+2. **`hostname`** from trunk configuration (`Hostname` field in request)
+3. **`sip_from_domain`** from global config (if set)
+4. **`sip_hostname`** from global config (for TLS connections)
+5. **IP address** (fallback to current behavior)
+
+This allows you to configure a specific domain for the `From` header, which is required by some strict SIP providers that validate the domain matches the registration domain.
+
+**Example configuration:**
+
+```yaml
+sip_from_domain: sip.myprovider.com
+```
+
+When making an outbound call, the `From` header will use `sip.myprovider.com` as the domain:
+```
+From: <sip:username@sip.myprovider.com>
+```
+
+**Note:** Per-trunk `from_domain` configuration will be available in a future update when the protobuf `FromDomain` field is added to `SIPOutboundTrunkInfo`.
+
+### Codec Configuration
+
+The SIP service supports configurable codec filtering for outbound SIP calls. This allows you to control which audio codecs are offered in SDP (Session Description Protocol) to remote SIP endpoints.
+
+#### Supported Codecs
+
+The following codecs are supported:
+- **PCMU** (G.711 μ-law) - 8kHz, 64kbps
+- **PCMA** (G.711 A-law) - 8kHz, 64kbps
+- **G722** (Wideband) - 16kHz, 64kbps
+- **G729** (Conjugate Structure Algebraic Code Excited Linear Prediction) - 8kHz, 8kbps
+- **telephone-event** - DTMF support (always enabled)
+
+#### Configuration
+
+Codecs can be configured in the YAML config file using the `codecs` field:
+
+```yaml
+codecs:
+  PCMU: true          # Enable PCMU (G.711 μ-law)
+  PCMA: false         # Disable PCMA (G.711 A-law)
+  G722: true          # Enable G722 (wideband)
+  G729: false         # Disable G729
+  telephone-event: true # Always enabled for DTMF support
+```
+
+**Example configuration:**
+```yaml
+# Enable only PCMU and G722, disable others
+codecs:
+  PCMU: true
+  PCMA: false
+  G722: true
+  G729: false
+```
+
+#### Behavior
+
+- **Default**: If no codec configuration is provided, all supported codecs are enabled
+- **telephone-event**: Always included in SDP offers regardless of configuration to ensure DTMF functionality
+- **Filtering**: Disabled codecs are completely removed from SDP offers, including their payload types and rtpmap/fmtp attributes
+- **Inbound calls**: Codec filtering only applies to outbound calls; inbound calls accept whatever codecs the remote endpoint offers
+
+#### Troubleshooting
+
+To verify codec filtering is working:
+1. Make an outbound SIP call
+2. Check the SIP logs for SDP offer content
+3. Verify that only enabled codecs appear in the `m=audio` line and corresponding `a=rtpmap` attributes
 
 ### Using the SIP service
 

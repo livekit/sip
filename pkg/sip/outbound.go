@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,7 @@ type sipOutboundConfig struct {
 	address         string
 	transport       livekit.SIPTransport
 	host            string
+	fromDomain      string // domain to use in From header (overrides host if set)
 	from            string
 	to              string
 	user            string
@@ -101,6 +103,21 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
+	// Determine host for From header with priority:
+	// 1. from_domain from config (if set, highest priority - from trunk when protobuf is updated)
+	// 2. host from config (if set, request-specific hostname)
+	// 3. SIPFromDomain from global config (if set, global fallback)
+	// 4. contact.GetHost() (fallback to current behavior)
+	fromHost := sipConf.fromDomain
+	if fromHost == "" {
+		fromHost = sipConf.host
+	}
+	if fromHost == "" {
+		fromHost = conf.SIPFromDomain
+	}
+	if fromHost == "" {
+		fromHost = contact.GetHost()
+	}
 	if sipConf.host == "" {
 		sipConf.host = contact.GetHost()
 	}
@@ -118,7 +135,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
 	call.cc = c.newOutbound(log, id, URI{
 		User:      sipConf.from,
-		Host:      sipConf.host,
+		Host:      fromHost,
 		Addr:      contact.Addr,
 		Transport: tr,
 	}, contact, sipConf.displayName, func(headers map[string]string) map[string]string {
@@ -570,6 +587,13 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
+
+	// Фильтруем кодеки на основе конфигурации
+	if err := c.filterCodecsFromSDP(sdpOffer); err != nil {
+		c.log.Warnw("failed to filter codecs from SDP", "error", err)
+		// Продолжаем выполнение, даже если фильтрация не удалась
+	}
+
 	sdpOfferData, err := sdpOffer.SDP.Marshal()
 	if err != nil {
 		return err
@@ -1152,4 +1176,145 @@ func (c *sipOutbound) Close(ctx context.Context) {
 	} else {
 		c.drop()
 	}
+}
+
+// getCodecNameFromRTPMap извлекает имя кодека из rtpmap значения
+// Пример: "0 PCMU/8000" -> "PCMU", "101 telephone-event/8000" -> "telephone-event"
+func getCodecNameFromRTPMap(rtpmapValue string) string {
+	// rtpmap формат: "payloadType codecName/clockRate"
+	parts := strings.Fields(rtpmapValue)
+	if len(parts) < 2 {
+		return ""
+	}
+	// Берем вторую часть и отделяем имя кодека от параметров
+	codecAndParams := parts[1]
+	// Разделяем по слешу, берем первую часть (имя кодека)
+	codecParts := strings.Split(codecAndParams, "/")
+	if len(codecParts) > 0 {
+		return codecParts[0]
+	}
+	return ""
+}
+
+// getCodecNameByPayload возвращает имя кодека по payload type
+// Обрабатывает как статические payload types (RFC 3551), так и динамические
+func getCodecNameByPayload(payload string) string {
+	// Сначала проверяем статические payload types согласно RFC 3551
+	switch payload {
+	case "0":
+		return "PCMU"
+	case "8":
+		return "PCMA"
+	case "9":
+		return "G722"
+	case "18":
+		return "G729"
+	case "101":
+		return "telephone-event"
+	default:
+		// Для динамических payload types (>= 96) имя определяется из rtpmap
+		// Если rtpmap отсутствует, возвращаем пустую строку
+		return ""
+	}
+}
+
+// filterCodecsFromSDP удаляет отключенные кодеки из SDP offer
+func (c *outboundCall) filterCodecsFromSDP(sdpOffer *msdk.SDPOffer) error {
+	codecConfig := c.c.conf.Codecs
+	if codecConfig == nil || len(codecConfig) == 0 {
+		// Если конфигурация пустая, не фильтруем ничего
+		return nil
+	}
+
+	sdp := sdpOffer.SDP
+	if sdp == nil || len(sdp.MediaDescriptions) == 0 {
+		return nil
+	}
+
+	// Проходим по всем media секциям
+	for _, media := range sdp.MediaDescriptions {
+		if media == nil || media.MediaName.Media != "audio" {
+			continue
+		}
+
+		// Создаем мапу payload type -> имя кодека из rtpmap атрибутов
+		payloadToCodec := make(map[string]string)
+		for _, attr := range media.Attributes {
+			if attr.Key == "rtpmap" {
+				// rtpmap формат: "payloadType codecName/clockRate"
+				parts := strings.Fields(attr.Value)
+				if len(parts) >= 2 {
+					payloadType := parts[0]
+					codecName := getCodecNameFromRTPMap(attr.Value)
+					if codecName != "" {
+						payloadToCodec[payloadType] = codecName
+					}
+				}
+			}
+		}
+
+		// Фильтруем payload types
+		var filteredPayloads []string
+		for _, payload := range media.MediaName.Formats {
+			// Сначала проверяем rtpmap атрибуты, затем статические payload types
+			codecName := payloadToCodec[payload]
+			if codecName == "" {
+				// Если rtpmap не найден, проверяем статические payload types
+				codecName = getCodecNameByPayload(payload)
+			}
+
+			// Всегда оставляем telephone-event (DTMF), независимо от конфигурации
+			if codecName == "telephone-event" {
+				filteredPayloads = append(filteredPayloads, payload)
+				continue
+			}
+
+			// Проверяем, включен ли кодек в конфигурации
+			// Если конфигурация задана (проверено выше), включаем только явно указанные как enabled
+			if enabled, exists := codecConfig[codecName]; exists && enabled {
+				filteredPayloads = append(filteredPayloads, payload)
+			}
+		}
+
+		// Обновляем список форматов
+		media.MediaName.Formats = filteredPayloads
+
+		// Фильтруем атрибуты (rtpmap, fmtp)
+		var filteredAttrs []sdp.Attribute
+		for _, attr := range media.Attributes {
+			keep := true
+
+			if attr.Key == "rtpmap" || attr.Key == "fmtp" {
+				// Проверяем, связан ли атрибут с разрешенным payload type
+				parts := strings.Fields(attr.Value)
+				if len(parts) > 0 {
+					payloadType := parts[0]
+
+					// Сначала проверяем rtpmap атрибуты, затем статические payload types
+					codecName := payloadToCodec[payloadType]
+					if codecName == "" {
+						// Если rtpmap не найден, проверяем статические payload types
+						codecName = getCodecNameByPayload(payloadType)
+					}
+
+					// Всегда оставляем telephone-event атрибуты
+					if codecName == "telephone-event" {
+						// keep = true (уже установлено)
+					} else {
+						// Если конфигурация задана, удаляем атрибут если кодек не включен явно
+						if enabled, exists := codecConfig[codecName]; !exists || !enabled {
+							keep = false
+						}
+					}
+				}
+			}
+
+			if keep {
+				filteredAttrs = append(filteredAttrs, attr)
+			}
+		}
+		media.Attributes = filteredAttrs
+	}
+
+	return nil
 }

@@ -220,7 +220,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
-	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req))
+	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req, fromDomain))
 
 	defer func() {
 		state.Update(ctx, func(info *livekit.SIPCallInfo) {
@@ -247,10 +247,18 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 			Attributes: req.ParticipantAttributes,
 		},
 	}
+	// Determine from_domain: use FromDomain from request if available, otherwise leave empty
+	// Note: When protobuf is updated with FromDomain field in InternalCreateSIPParticipantRequest,
+	// uncomment the following line: fromDomain = req.FromDomain
+	// For now, fromDomain is only set from protobuf (when available), not from global config
+	// Global config SIPFromDomain is checked later in newCall with lower priority than hostname
+	fromDomain := ""
+
 	sipConf := sipOutboundConfig{
 		address:         req.Address,
 		transport:       req.Transport,
 		host:            req.Hostname,
+		fromDomain:      fromDomain,
 		from:            req.Number,
 		to:              req.CallTo,
 		user:            req.Username,
@@ -292,11 +300,27 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return info, nil
 }
 
-func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
+func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest, fromDomain string) *livekit.SIPCallInfo {
 	toUri := CreateURIFromUserAndAddress(req.CallTo, req.Address, TransportFrom(req.Transport))
+	// Determine host for From URI with same priority as in newCall:
+	// 1. fromDomain (highest priority - from trunk when protobuf is updated)
+	// 2. Hostname from request
+	// 3. SIPFromDomain from global config
+	// 4. Contact URI host (fallback)
+	fromHost := fromDomain
+	if fromHost == "" {
+		fromHost = req.Hostname
+	}
+	if fromHost == "" {
+		fromHost = c.conf.SIPFromDomain
+	}
+	if fromHost == "" {
+		contact := c.ContactURI(TransportFrom(req.Transport))
+		fromHost = contact.GetHost()
+	}
 	fromiUri := URI{
 		User: req.Number,
-		Host: req.Hostname,
+		Host: fromHost,
 		Addr: netip.AddrPortFrom(c.sconf.SignalingIP, uint16(c.conf.SIPPort)),
 	}
 

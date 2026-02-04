@@ -80,6 +80,7 @@ type Config struct {
 	SIPPort            int                 `yaml:"sip_port"`        // announced SIP signaling port
 	SIPPortListen      int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	SIPHostname        string              `yaml:"sip_hostname"`
+	SIPFromDomain      string              `yaml:"sip_from_domain"`      // domain to use in From header for outbound calls (overrides sip_hostname if set)
 	SIPRingingInterval time.Duration       `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default '1s')
 	TCP                *TCPConfig          `yaml:"tcp"`
 	TLS                *TLSConfig          `yaml:"tls"`
@@ -99,7 +100,11 @@ type Config struct {
 
 	MediaTimeout        time.Duration   `yaml:"media_timeout"`
 	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
-	Codecs              map[string]bool `yaml:"codecs"`
+
+	// Codecs controls which audio codecs are offered in SDP for outbound SIP calls.
+	// Supported codecs: PCMU, PCMA, G722, G729. telephone-event is always enabled for DTMF.
+	// If not set, all supported codecs are enabled.
+	Codecs map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
