@@ -489,10 +489,10 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
+			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "timed out")
 		case <-stop:
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
 		case res := <-tx.Responses():
