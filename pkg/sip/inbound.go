@@ -182,9 +182,12 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
+		// Generate unique nonce using timestamp + Call-ID hash to avoid collisions
+		// when multiple calls arrive in the same microsecond
+		nonce := fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
-			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
+			Nonce:     nonce,
 			Algorithm: "MD5",
 		}
 
