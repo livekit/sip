@@ -179,15 +179,16 @@ type UDPConn interface {
 }
 
 func newUDPConn(log logger.Logger, conn UDPConn) *udpConn {
-	return &udpConn{UDPConn: conn, log: log}
+	return &udpConn{UDPConn: conn, log: log, stopped: make(chan struct{})}
 }
 
 type udpConn struct {
 	UDPConn
-	stop core.Fuse
-	log  logger.Logger
-	src  atomic.Pointer[netip.AddrPort]
-	dst  atomic.Pointer[netip.AddrPort]
+	stopping core.Fuse
+	stopped  chan struct{}
+	log      logger.Logger
+	src      atomic.Pointer[netip.AddrPort]
+	dst      atomic.Pointer[netip.AddrPort]
 }
 
 func (c *udpConn) GetSrc() (netip.AddrPort, bool) {
@@ -233,7 +234,7 @@ func (c *udpConn) discardLoop() error {
 	var err error
 	buf := make([]byte, 1024)
 	packetsDiscarded := uint64(0)
-	for !c.stop.IsBroken() {
+	for !c.stopping.IsBroken() {
 		err = c.UDPConn.SetReadDeadline(time.Now().Add(rtp.DefFrameDur))
 		if err != nil {
 			c.log.Warnw("error encountered while setting read deadline", err)
@@ -256,11 +257,13 @@ func (c *udpConn) discardLoop() error {
 	if err != nil {
 		c.log.Warnw("error encountered while clearing read deadline", err)
 	}
+	close(c.stopped)
 	return err
 }
 
 func (c *udpConn) stopDiscarding() {
-	c.stop.Break()
+	c.stopping.Break()
+	<-c.stopped
 }
 
 type MediaConf struct {
