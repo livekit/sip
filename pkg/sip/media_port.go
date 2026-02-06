@@ -21,6 +21,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,14 +179,16 @@ type UDPConn interface {
 }
 
 func newUDPConn(log logger.Logger, conn UDPConn) *udpConn {
-	return &udpConn{UDPConn: conn, log: log}
+	return &udpConn{UDPConn: conn, log: log, stopped: make(chan struct{})}
 }
 
 type udpConn struct {
 	UDPConn
-	log logger.Logger
-	src atomic.Pointer[netip.AddrPort]
-	dst atomic.Pointer[netip.AddrPort]
+	stopping core.Fuse
+	stopped  chan struct{}
+	log      logger.Logger
+	src      atomic.Pointer[netip.AddrPort]
+	dst      atomic.Pointer[netip.AddrPort]
 }
 
 func (c *udpConn) GetSrc() (netip.AddrPort, bool) {
@@ -227,6 +230,43 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 	return c.WriteToUDPAddrPort(b, *dst)
 }
 
+func (c *udpConn) discardLoop() error {
+	defer close(c.stopped)
+
+	var err error
+	buf := make([]byte, 1024)
+	packetsDiscarded := uint64(0)
+	for !c.stopping.IsBroken() {
+		err = c.UDPConn.SetReadDeadline(time.Now().Add(rtp.DefFrameDur))
+		if err != nil {
+			c.log.Warnw("error encountered while setting read deadline", err)
+			break
+		}
+		_, _, err = c.ReadFromUDPAddrPort(buf)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			continue
+		}
+		if err != nil {
+			c.log.Warnw("error encountered while reading UDP packets", err)
+			break
+		}
+		packetsDiscarded++
+	}
+	if err != nil || packetsDiscarded > 0 {
+		c.log.Infow("Stopped discarding packets", "packetsDiscarded", packetsDiscarded, "error", err)
+	}
+	err = c.UDPConn.SetReadDeadline(time.Time{}) // clear deadline
+	if err != nil {
+		c.log.Warnw("error encountered while clearing read deadline", err)
+	}
+	return err
+}
+
+func (c *udpConn) stopDiscarding() {
+	c.stopping.Break()
+	<-c.stopped
+}
+
 type MediaConf struct {
 	sdp.MediaConfig
 	Processor msdk.PCM16Processor
@@ -240,6 +280,7 @@ type MediaOptions struct {
 	Stats               *PortStats
 	EnableJitterBuffer  bool
 	NoInputResample     bool
+	IgnorePreanswerData bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -284,6 +325,9 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
+	}
+	if p.opts.IgnorePreanswerData {
+		go p.port.discardLoop()
 	}
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
 	p.timeoutGeneral.Store(&opts.MediaTimeout)
@@ -337,7 +381,7 @@ func (p *MediaPort) EnableOut() {
 }
 
 func (p *MediaPort) disableTimeout() {
-	p.log.Infow("media timeout disabled")
+	p.log.Debugw("media timeout disabled")
 	p.timeoutStart.Store(nil)
 }
 
@@ -359,7 +403,7 @@ func (p *MediaPort) enableTimeout(initial, general time.Duration) {
 	}
 	now := time.Now()
 	p.timeoutStart.Store(&now)
-	p.log.Infow("media timeout enabled",
+	p.log.Debugw("media timeout enabled",
 		"packets", p.packetCount.Load(),
 		"initial", initial,
 		"timeout", general,
@@ -705,6 +749,9 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
+	}
+	if p.opts.IgnorePreanswerData {
+		p.port.stopDiscarding()
 	}
 	go p.rtpLoop(tid, p.sess)
 	w, err := p.sess.OpenWriteStream()
