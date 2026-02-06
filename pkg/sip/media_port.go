@@ -231,6 +231,8 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *udpConn) discardLoop() error {
+	defer close(c.stopped)
+
 	var err error
 	buf := make([]byte, 1024)
 	packetsDiscarded := uint64(0)
@@ -257,7 +259,6 @@ func (c *udpConn) discardLoop() error {
 	if err != nil {
 		c.log.Warnw("error encountered while clearing read deadline", err)
 	}
-	close(c.stopped)
 	return err
 }
 
