@@ -159,20 +159,25 @@ func (t *testServerTransaction) Terminate() {}
 
 // TestNonceUniqueness tests that nonce generation includes Call-ID for uniqueness
 func TestNonceUniqueness(t *testing.T) {
-	// This test verifies the nonce collision fix
+	// This test verifies the nonce collision fix by actually calling the helper function
 	// Two calls with different Call-IDs should get different nonces
 	// even if generated at the same microsecond
 
 	callID1 := "call1-123@test.com"
 	callID2 := "call2-456@test.com"
 
-	// Simulate nonce generation as done in handleInviteAuth
-	// Note: We can't directly test handleInviteAuth without full server setup,
-	// but we verify the nonce format includes the Call-ID
-	nonce1 := callID1 // In actual code: fmt.Sprintf("%d-%s", time.Now().UnixMicro(), callID1)
-	nonce2 := callID2 // In actual code: fmt.Sprintf("%d-%s", time.Now().UnixMicro(), callID2)
+	// Actually call the generateNonce helper function
+	nonce1 := generateNonce(callID1)
+	nonce2 := generateNonce(callID2)
 
+	// Verify nonces are different (due to different Call-IDs)
 	require.NotEqual(t, nonce1, nonce2, "nonces should be different for different Call-IDs")
+
+	// Verify nonce format includes Call-ID
 	require.Contains(t, nonce1, callID1, "nonce should contain Call-ID")
 	require.Contains(t, nonce2, callID2, "nonce should contain Call-ID")
+
+	// Verify nonce format includes timestamp
+	require.Contains(t, nonce1, "-", "nonce should have timestamp-callid format")
+	require.Contains(t, nonce2, "-", "nonce should have timestamp-callid format")
 }

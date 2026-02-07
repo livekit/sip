@@ -78,6 +78,13 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
+// generateNonce creates a unique nonce for digest authentication challenges.
+// Includes both timestamp and Call-ID to ensure uniqueness even when multiple
+// challenges are generated in the same microsecond.
+func generateNonce(sipCallID string) string {
+	return fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
+}
+
 type inboundCallInfo struct {
 	sync.Mutex
 	cseq        uint32
@@ -182,12 +189,9 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
-		// Generate unique nonce using timestamp + Call-ID hash to avoid collisions
-		// when multiple calls arrive in the same microsecond
-		nonce := fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
-			Nonce:     nonce,
+			Nonce:     generateNonce(sipCallID),
 			Algorithm: "MD5",
 		}
 
@@ -389,15 +393,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
 	}
 
-	s.cmu.RLock()
-	existing := s.byCallID[cc.SIPCallID()]
-	s.cmu.RUnlock()
-	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		log.Infow("accepting reinvite", "sipCallID", existing.cc.ID(), "content-type", req.ContentType(), "content-length", req.ContentLength())
-		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
-		return nil
-	}
+	// Note: Mid-dialog re-INVITEs are now handled earlier in onInvite() via To tag matching (RFC 3261)
+	// This avoids unnecessary processing and uses proper dialog identification
 
 	from, to := cc.From(), cc.To()
 
@@ -1321,6 +1318,8 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 			r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", sdp)
 			r.AppendHeader(&contentTypeHeaderSDP)
 			_ = tx.Respond(r)
+		} else {
+			c.log().Warnw("retransmission: no SDP available, not responding", nil)
 		}
 		return
 	}
@@ -1344,14 +1343,14 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 	// TODO: Support SDP renegotiation if needed in the future
 	//       This would require parsing the offer, updating media session, etc.
 
-	r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", currentSDP)
-	r.AppendHeader(&contentTypeHeaderSDP)
+	// Create a temporary sipInbound for the re-INVITE to properly handle the response
+	// This ensures all headers (Allow, Contact, etc.) are added correctly
+	tr := callTransportFromReq(req)
+	legTr := legTransportFromReq(req)
+	reinviteCC := c.s.newInbound(c.log(), c.cc.tag, c.s.ContactURI(legTr), req, tx, nil)
 
-	err := tx.Respond(r)
-	if err != nil {
-		c.log().Errorw("failed to respond to re-INVITE", err)
-		return
-	}
+	// Use the existing helper to respond with proper headers
+	reinviteCC.AcceptAsKeepAlive(currentSDP)
 
 	c.log().Infow("re-INVITE accepted with current SDP")
 }
