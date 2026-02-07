@@ -1345,9 +1345,11 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 
 	// Create a temporary sipInbound for the re-INVITE to properly handle the response
 	// This ensures all headers (Allow, Contact, etc.) are added correctly
-	tr := callTransportFromReq(req)
+	// Extract the To tag (our local tag) from the re-INVITE
+	to := req.To()
+	toTag, _ := getTagFrom(to.Params)
 	legTr := legTransportFromReq(req)
-	reinviteCC := c.s.newInbound(c.log(), c.cc.tag, c.s.ContactURI(legTr), req, tx, nil)
+	reinviteCC := c.s.newInbound(c.log(), LocalTag(toTag), c.s.ContactURI(legTr), req, tx, nil)
 
 	// Use the existing helper to respond with proper headers
 	reinviteCC.AcceptAsKeepAlive(currentSDP)
