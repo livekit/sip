@@ -1348,8 +1348,12 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 	r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", currentSDP)
 	r.AppendHeader(&contentTypeHeaderSDP)
 	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
-	r.AppendHeader(c.cc.contact)
-	c.cc.addExtraHeaders(r)
+	if c.cc.contact != nil {
+		r.AppendHeader(c.cc.contact)
+	}
+	if c.s != nil && c.s.conf != nil {
+		c.cc.addExtraHeaders(r)
+	}
 
 	err := tx.Respond(r)
 	if err != nil {
