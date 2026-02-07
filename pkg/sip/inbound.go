@@ -1343,16 +1343,19 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 	// TODO: Support SDP renegotiation if needed in the future
 	//       This would require parsing the offer, updating media session, etc.
 
-	// Create a temporary sipInbound for the re-INVITE to properly handle the response
-	// This ensures all headers (Allow, Contact, etc.) are added correctly
-	// Extract the To tag (our local tag) from the re-INVITE
-	to := req.To()
-	toTag, _ := getTagFrom(to.Params)
-	legTr := legTransportFromReq(req)
-	reinviteCC := c.s.newInbound(c.log(), LocalTag(toTag), c.s.ContactURI(legTr), req, tx, nil)
+	// Respond with 200 OK including all proper SIP headers
+	// Following the same pattern as AcceptAsKeepAlive/respondWithData
+	r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", currentSDP)
+	r.AppendHeader(&contentTypeHeaderSDP)
+	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	r.AppendHeader(c.cc.contact)
+	c.cc.addExtraHeaders(r)
 
-	// Use the existing helper to respond with proper headers
-	reinviteCC.AcceptAsKeepAlive(currentSDP)
+	err := tx.Respond(r)
+	if err != nil {
+		c.log().Errorw("failed to respond to re-INVITE", err)
+		return
+	}
 
 	c.log().Infow("re-INVITE accepted with current SDP")
 }
