@@ -78,6 +78,13 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
+// generateNonce creates a unique nonce for digest authentication challenges.
+// Includes both timestamp and Call-ID to ensure uniqueness even when multiple
+// challenges are generated in the same microsecond.
+func generateNonce(sipCallID string) string {
+	return fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
+}
+
 type inboundCallInfo struct {
 	sync.Mutex
 	cseq        uint32
@@ -184,7 +191,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
-			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
+			Nonce:     generateNonce(sipCallID),
 			Algorithm: "MD5",
 		}
 
@@ -274,8 +281,50 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	return true
 }
 
+// onInvite handles incoming INVITE requests with proper RFC 3261 dialog matching.
+// Mid-dialog requests (re-INVITEs) are detected by matching the To tag against existing dialogs.
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	// Error processed in defer
+	// RFC 3261 Section 12.2: Dialog Identification
+	// A dialog is identified by Call-ID, local tag, and remote tag.
+	// For a UAS (User Agent Server), the local tag is in the To header.
+	// If the To header contains a tag that matches one of our local tags,
+	// this MUST be a mid-dialog request (re-INVITE) for an existing call.
+
+	// Extract To tag
+	to := req.To()
+	if to != nil {
+		toTag, hasToTag := getTagFrom(to.Params)
+		if hasToTag && toTag != "" {
+			// Check if this To tag belongs to us (existing dialog)
+			s.cmu.RLock()
+			existing := s.byLocalTag[LocalTag(toTag)]
+			s.cmu.RUnlock()
+
+			if existing != nil {
+				// This is a mid-dialog re-INVITE for an existing call
+				sipCallID := ""
+				if h := req.CallID(); h != nil {
+					sipCallID = h.Value()
+				}
+
+				log.Info("received mid-dialog re-INVITE",
+					"localTag", toTag,
+					"sipCallID", sipCallID,
+					"existingCallID", existing.cc.SIPCallID())
+
+				// Delegate to the existing call's re-INVITE handler
+				existing.handleReinvite(req, tx)
+				return
+			}
+
+			// To tag present but not found in our dialogs
+			// This could be a stray request for a dialog that already ended
+			log.Warn("INVITE with unknown To tag, treating as new call",
+				"toTag", toTag)
+		}
+	}
+
+	// No To tag or not found in existing dialogs - process as new INVITE
 	_ = s.processInvite(req, tx)
 }
 
@@ -344,15 +393,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
 	}
 
-	s.cmu.RLock()
-	existing := s.byCallID[cc.SIPCallID()]
-	s.cmu.RUnlock()
-	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		log.Infow("accepting reinvite", "sipCallID", existing.cc.ID(), "content-type", req.ContentType(), "content-length", req.ContentLength())
-		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
-		return nil
-	}
+	// Note: Mid-dialog re-INVITEs are now handled earlier in onInvite() via To tag matching (RFC 3261)
+	// This avoids unnecessary processing and uses proper dialog identification
 
 	from, to := cc.From(), cc.To()
 
@@ -1241,6 +1283,85 @@ func (c *inboundCall) closeWithReason(ctx context.Context, status CallStatus, re
 func (c *inboundCall) Bye(reason ReasonHeader) {
 	c.closeReason.Store(&reason)
 	_ = c.Close()
+}
+
+// handleReinvite processes a mid-dialog re-INVITE request for an existing call.
+// Per RFC 3261, re-INVITEs are used for session modification or session refresh.
+func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction) {
+	// Validate CSeq
+	cseq := req.CSeq()
+	if cseq == nil {
+		c.log().Warnw("re-INVITE missing CSeq header", nil)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Missing CSeq", nil))
+		return
+	}
+
+	inviteCSeq := c.cc.InviteCSeq()
+
+	// Check if this is a retransmission or a new re-INVITE
+	if cseq.SeqNo < inviteCSeq {
+		// Lower CSeq - this is out of order or a retransmission of old INVITE
+		c.log().Warnw("re-INVITE with old CSeq, ignoring", nil,
+			"receivedCSeq", cseq.SeqNo,
+			"currentCSeq", inviteCSeq)
+		return
+	}
+
+	if cseq.SeqNo == inviteCSeq {
+		// Same CSeq - this is a retransmission of the original INVITE
+		// Resend the original 200 OK if we already accepted
+		c.log().Infow("INVITE retransmission detected",
+			"cseq", cseq.SeqNo)
+
+		// Re-send 200 OK with our current SDP
+		if sdp := c.cc.OwnSDP(); sdp != nil {
+			r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", sdp)
+			r.AppendHeader(&contentTypeHeaderSDP)
+			_ = tx.Respond(r)
+		} else {
+			c.log().Warnw("retransmission: no SDP available, not responding", nil)
+		}
+		return
+	}
+
+	// cseq.SeqNo > inviteCSeq - This is a new re-INVITE
+	c.log().Infow("processing mid-dialog re-INVITE",
+		"cseq", cseq.SeqNo,
+		"previousCSeq", inviteCSeq,
+		"contentType", req.ContentType(),
+		"contentLength", req.ContentLength())
+
+	// Get current SDP to send in response
+	currentSDP := c.cc.OwnSDP()
+	if currentSDP == nil {
+		c.log().Errorw("no SDP available for re-INVITE response", nil)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "No SDP available", nil))
+		return
+	}
+
+	// For now, we respond with the same SDP (session refresh, no renegotiation)
+	// TODO: Support SDP renegotiation if needed in the future
+	//       This would require parsing the offer, updating media session, etc.
+
+	// Respond with 200 OK including all proper SIP headers
+	// Following the same pattern as AcceptAsKeepAlive/respondWithData
+	r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", currentSDP)
+	r.AppendHeader(&contentTypeHeaderSDP)
+	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	if c.cc.contact != nil {
+		r.AppendHeader(c.cc.contact)
+	}
+	if c.s != nil && c.s.conf != nil {
+		c.cc.addExtraHeaders(r)
+	}
+
+	err := tx.Respond(r)
+	if err != nil {
+		c.log().Errorw("failed to respond to re-INVITE", err)
+		return
+	}
+
+	c.log().Infow("re-INVITE accepted with current SDP")
 }
 
 func (c *inboundCall) Close() error {
