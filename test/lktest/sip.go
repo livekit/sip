@@ -384,10 +384,10 @@ Check logs for call:
 }
 
 type SIPOutboundRequestTestParams struct {
-	req                     *livekit.CreateSIPParticipantRequest
-	ringFor                 time.Duration
-	mediaEncryption         bool
-	expectEncryptionFailure bool
+	Req                     *livekit.CreateSIPParticipantRequest
+	RingFor                 time.Duration
+	MediaEncryption         bool
+	ExpectEncryptionFailure bool
 }
 
 type SIPOutboundRequestTestIDs struct {
@@ -398,6 +398,58 @@ type SIPOutboundRequestTestIDs struct {
 	TrunkID       string
 }
 
+func getInboundTrunksByNumbers(ctx context.Context, lkIn *LiveKit, numbers []string) ([]*livekit.SIPInboundTrunkInfo, error) {
+	trsIn, err := lkIn.SIP.ListSIPInboundTrunk(ctx, &livekit.ListSIPInboundTrunkRequest{
+		Numbers: numbers,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(trsIn.Items) == 0 {
+		return nil, fmt.Errorf("no trunks found for numbers: %v", numbers)
+	}
+	return trsIn.Items, nil
+}
+
+func getDispatchRulesByTrunks(ctx context.Context, lkIn *LiveKit, trunks []*livekit.SIPInboundTrunkInfo) ([]*livekit.SIPDispatchRuleInfo, error) {
+	ids := make([]string, len(trunks))
+	for i, tr := range trunks {
+		ids[i] = tr.SipTrunkId
+	}
+	sdpList, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(sdpList) == 0 {
+		return nil, fmt.Errorf("no dispatch rules found for trunks: %v", ids)
+	}
+	return sdpList, nil
+}
+
 func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundRequestTestParams) (outIDs, inIDs *SIPOutboundRequestTestIDs, err error) {
-	return nil, nil, fmt.Errorf("not implemented")
+	require.Equal(t, "", params.Req.SipTrunkId, "SipTrunkId must be empty")
+	require.NotNil(t, params.Req.Trunk, "A trunk must be inlined")
+	require.NotEmpty(t, params.Req.Trunk.DestinationCountry, "DestinationCountry must be set")
+	require.NotEmpty(t, params.Req.SipCallTo, "SipCallTo must be set")
+	require.NotEmpty(t, params.Req.RoomName, "RoomName must be set")
+	t.Logf("Calling from %s@%s to %s@%s", params.Req.SipNumber, params.Req.Trunk.DestinationCountry, params.Req.SipCallTo, params.Req.Trunk.Hostname)
+	t.Logf("Using outbound room %q", params.Req.RoomName)
+
+	trsIn, err := getInboundTrunksByNumbers(ctx, lkIn, []string{params.Req.SipCallTo})
+	if err != nil {
+		return nil, nil, err
+	}
+	trIn := trsIn[0]
+	t.Logf("Expecting call in inbound trunk %q (%s, via number: %s)", trIn.Name, trIn.SipTrunkId, params.Req.SipCallTo)
+
+	rulesIn, err := getDispatchRulesByTrunks(ctx, lkIn, trsIn)
+	if err != nil {
+		return nil, nil, err
+	}
+	ruleIn := rulesIn[0]
+	t.Logf("Expecting call in dispatch rule %q (%s, room: %s)", ruleIn.Name, ruleIn.SipDispatchRuleId, ruleIn.RoomName)
+
+	// Attach outbound token as SIP header, use header to intercept the correct incoming call
+	
+	... // TODO: Implement
 }
