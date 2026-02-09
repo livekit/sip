@@ -16,6 +16,7 @@ package lktest
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -380,4 +381,23 @@ Check logs for call:
 		t.Log("retesting audio")
 		CheckAudioForParticipants(t, ctx, pOut, pIn)
 	}
+}
+
+type SIPOutboundRequestTestParams struct {
+	req                     *livekit.CreateSIPParticipantRequest
+	ringFor                 time.Duration
+	mediaEncryption         bool
+	expectEncryptionFailure bool
+}
+
+type SIPOutboundRequestTestIDs struct {
+	CallID        string
+	SipCallID     string
+	PatricipantID string
+	RoomID        string
+	TrunkID       string
+}
+
+func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundRequestTestParams) (outIDs, inIDs *SIPOutboundRequestTestIDs, err error) {
+	return nil, nil, fmt.Errorf("not implemented")
 }
