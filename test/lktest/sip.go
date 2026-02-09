@@ -416,14 +416,16 @@ func getDispatchRulesByTrunks(ctx context.Context, lkIn *LiveKit, trunks []*live
 	for i, tr := range trunks {
 		ids[i] = tr.SipTrunkId
 	}
-	sdpList, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, ids)
+	resp, err := lkIn.SIP.ListSIPDispatchRule(ctx, &livekit.ListSIPDispatchRuleRequest{
+		TrunkIds: ids,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if len(sdpList) == 0 {
+	if resp == nil || len(resp.Items) == 0 {
 		return nil, fmt.Errorf("no dispatch rules found for trunks: %v", ids)
 	}
-	return sdpList, nil
+	return resp.Items, nil
 }
 
 func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundRequestTestParams) (outIDs, inIDs *SIPOutboundRequestTestIDs, err error) {
@@ -447,9 +449,188 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		return nil, nil, err
 	}
 	ruleIn := rulesIn[0]
-	t.Logf("Expecting call in dispatch rule %q (%s, room: %s)", ruleIn.Name, ruleIn.SipDispatchRuleId, ruleIn.RoomName)
+	t.Logf("Dispatch rule: %+v", ruleIn)
+	t.Logf("Expecting call in dispatch rule %q (%s)", ruleIn.Name, ruleIn.SipDispatchRuleId)
 
-	// Attach outbound token as SIP header, use header to intercept the correct incoming call
-	
-	... // TODO: Implement
+	// Inbound room name is dynamic: e2e_{SipNumber}_{guid}. SipNumber is unique per test, so we
+	// create the outbound call first, then poll for a room whose name has prefix "e2e_"+SipNumber+"_".
+	inboundRoomPrefix := "e2e_" + params.Req.SipNumber + "_"
+
+	// 1. Connect local audio to outbound room
+	roomOut := params.Req.RoomName
+	const identityTest = "test_probe"
+	dataOut := make(chan lksdk.DataPacket, 20)
+	dataIn := make(chan lksdk.DataPacket, 20)
+	var (
+		pOut     *Participant
+		pIn      *Participant
+		readyOut sync.WaitGroup
+	)
+	readyOut.Add(1)
+	go func() {
+		defer readyOut.Done()
+		pOut = lkOut.ConnectParticipant(t, roomOut, identityTest, &RoomParticipantCallback{
+			RoomCallback: lksdk.RoomCallback{
+				ParticipantCallback: lksdk.ParticipantCallback{
+					OnDataPacket: func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
+						select {
+						case dataOut <- data:
+						default:
+						}
+					},
+				},
+			},
+		})
+	}()
+	readyOut.Wait()
+
+	// 2. Create outbound SIP participant (triggers inbound call and dynamic room creation)
+	req := &livekit.CreateSIPParticipantRequest{
+		Trunk:     params.Req.Trunk,
+		SipCallTo: params.Req.SipCallTo,
+		SipNumber: params.Req.SipNumber,
+		RoomName:  params.Req.RoomName,
+	}
+	const outIdentity = "siptest_outbound"
+	const outName = "Outbound Call"
+	const outMeta = `{"test":true, "dir": "out"}`
+	req.ParticipantIdentity = outIdentity
+	req.ParticipantName = outName
+	req.ParticipantMetadata = outMeta
+	if params.MediaEncryption {
+		req.MediaEncryption = livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE
+	} else {
+		req.MediaEncryption = livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE
+	}
+	if params.ExpectEncryptionFailure {
+		_, createErr := lkOut.SIP.CreateSIPParticipant(ctx, req)
+		require.Error(t, createErr, "expected CreateSIPParticipant to fail due to encryption mismatch")
+		outIDs = &SIPOutboundRequestTestIDs{RoomID: roomOut}
+		return outIDs, nil, nil
+	}
+	r := lkOut.CreateSIPParticipant(t, req)
+	outIDs = &SIPOutboundRequestTestIDs{
+		CallID: r.SipCallId, SipCallID: r.SipCallId,
+		PatricipantID: r.ParticipantIdentity, RoomID: roomOut, TrunkID: "",
+	}
+
+	// 3. Find inbound room by prefix (poll until it appears)
+	roomIn, err := findRoomByNamePrefix(ctx, lkIn, inboundRoomPrefix)
+	if err != nil {
+		return outIDs, nil, fmt.Errorf("find inbound room: %w", err)
+	}
+	t.Logf("Resolved inbound room %q", roomIn)
+
+	t.Cleanup(func() {
+		_, _ = lkOut.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomOut})
+		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomIn})
+	})
+	inIdentity := "sip_" + params.Req.SipNumber
+	t.Cleanup(func() {
+		_, _ = lkIn.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
+			Room: roomIn, Identity: inIdentity,
+		})
+	})
+
+	// 4. Connect local audio to inbound room (optionally after RingFor delay)
+	var readyIn sync.WaitGroup
+	readyIn.Add(1)
+	go func() {
+		defer readyIn.Done()
+		if params.RingFor > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(params.RingFor):
+			}
+		}
+		pIn = lkIn.ConnectParticipant(t, roomIn, identityTest, &RoomParticipantCallback{
+			RoomCallback: lksdk.RoomCallback{
+				ParticipantCallback: lksdk.ParticipantCallback{
+					OnDataPacket: func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
+						select {
+						case dataIn <- data:
+						default:
+						}
+					},
+				},
+			},
+		})
+	}()
+	readyIn.Wait()
+
+	// Assert outbound room
+	expAttrsOut := map[string]string{
+		livekit.AttrSIPCallID:                 r.SipCallId,
+		livekit.AttrSIPPrefix + "callTag":     AttrTestAny,
+		livekit.AttrSIPPrefix + "callIDFull":  AttrTestAny,
+		livekit.AttrSIPPrefix + "callStatus":  "active",
+		livekit.AttrSIPPrefix + "phoneNumber": params.Req.SipCallTo,
+	}
+	lkOut.ExpectRoomWithParticipants(t, ctx, roomOut, []ParticipantInfo{
+		{Identity: identityTest, Kind: livekit.ParticipantInfo_STANDARD},
+		{Identity: outIdentity, Name: outName, Kind: livekit.ParticipantInfo_SIP, Metadata: outMeta, Attributes: expAttrsOut},
+	})
+
+	// Assert inbound room
+	inName := "Phone " + params.Req.SipNumber
+	expAttrsIn := map[string]string{
+		livekit.AttrSIPPrefix + "callTag":          AttrTestAny,
+		livekit.AttrSIPPrefix + "callIDFull":       AttrTestAny,
+		livekit.AttrSIPPrefix + "callStatus":       "active",
+		livekit.AttrSIPPrefix + "trunkPhoneNumber": params.Req.SipCallTo,
+		livekit.AttrSIPPrefix + "phoneNumber":      params.Req.SipNumber,
+		livekit.AttrSIPPrefix + "trunkID":          trIn.SipTrunkId,
+		livekit.AttrSIPPrefix + "ruleID":           ruleIn.SipDispatchRuleId,
+	}
+	lkIn.ExpectRoomWithParticipants(t, ctx, roomIn, []ParticipantInfo{
+		{Identity: identityTest, Kind: livekit.ParticipantInfo_STANDARD},
+		{Identity: inIdentity, Name: inName, Kind: livekit.ParticipantInfo_SIP, Metadata: ruleIn.Metadata, Attributes: expAttrsIn},
+	})
+
+	// Fill inIDs from inbound room
+	participants := lkIn.RoomParticipants(t, roomIn)
+	for _, p := range participants {
+		if p.Identity == inIdentity {
+			inIDs = &SIPOutboundRequestTestIDs{
+				RoomID: roomIn, TrunkID: trIn.SipTrunkId, PatricipantID: p.Sid,
+			}
+			if v := maps.Clone(p.Attributes)[livekit.AttrSIPCallID]; v != "" {
+				inIDs.CallID, inIDs.SipCallID = v, v
+			}
+			break
+		}
+	}
+
+	t.Log("testing audio")
+	CheckAudioForParticipants(t, ctx, pOut, pIn)
+
+	t.Log("testing dtmf")
+	CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
+
+	t.Log("retesting audio")
+	CheckAudioForParticipants(t, ctx, pOut, pIn)
+
+	return outIDs, inIDs, nil
+}
+
+// findRoomByNamePrefix polls ListRooms until a room whose name has the given prefix appears, or ctx expires.
+func findRoomByNamePrefix(ctx context.Context, lk *LiveKit, prefix string) (string, error) {
+	const pollInterval = 250 * time.Millisecond
+	for {
+		resp, err := lk.Rooms.ListRooms(ctx, &livekit.ListRoomsRequest{})
+		if err != nil {
+			return "", err
+		}
+		for _, room := range resp.Rooms {
+			if strings.HasPrefix(room.Name, prefix) {
+				return room.Name, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
 }
