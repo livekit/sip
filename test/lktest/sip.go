@@ -518,10 +518,15 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		req.MediaEncryption = livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE
 	}
 	if params.ExpectEncryptionFailure {
+		req.WaitUntilAnswered = true // We expect this to get rejected
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 		_, createErr := lkOut.SIP.CreateSIPParticipant(ctx, req)
-		require.Error(t, createErr, "expected CreateSIPParticipant to fail due to encryption mismatch")
-		outIDs = &SIPOutboundRequestTestIDs{RoomID: roomOut}
-		return outIDs, nil, nil
+		require.Error(t, createErr)
+		sipStatus := lksdk.SIPStatusFrom(createErr)
+		require.NotNil(t, sipStatus)
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, sipStatus.Code)
+		return outIDs, nil, nil // Success!
 	}
 	r := lkOut.CreateSIPParticipant(t, req)
 	outIDs = &SIPOutboundRequestTestIDs{
