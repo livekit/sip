@@ -449,12 +449,17 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		return nil, nil, err
 	}
 	ruleIn := rulesIn[0]
-	t.Logf("Dispatch rule: %+v", ruleIn)
 	t.Logf("Expecting call in dispatch rule %q (%s)", ruleIn.Name, ruleIn.SipDispatchRuleId)
 
 	// Inbound room name is dynamic: e2e_{SipNumber}_{guid}. SipNumber is unique per test, so we
 	// create the outbound call first, then poll for a room whose name has prefix "e2e_"+SipNumber+"_".
-	inboundRoomPrefix := "e2e_" + params.Req.SipNumber + "_"
+	indvRule, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleIndividual)
+	if !ok {
+		return nil, nil, fmt.Errorf("unsupported dispatch rule type %T", ruleIn.Rule.Rule)
+	}
+	inboundRoomPrefix := indvRule.DispatchRuleIndividual.RoomPrefix + "_" + params.Req.SipNumber + "_"
+
+	t.Logf("DEBUG: Connecting local outbound participant")
 
 	// 1. Connect local audio to outbound room
 	roomOut := params.Req.RoomName
@@ -483,6 +488,8 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		})
 	}()
 	readyOut.Wait()
+
+	t.Logf("DEBUG: Connecting outbound call")
 
 	// 2. Create outbound SIP participant (triggers inbound call and dynamic room creation)
 	req := &livekit.CreateSIPParticipantRequest{
@@ -514,12 +521,14 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		PatricipantID: r.ParticipantIdentity, RoomID: roomOut, TrunkID: "",
 	}
 
+	t.Logf("DEBUG: Finding inbound room")
+
 	// 3. Find inbound room by prefix (poll until it appears)
 	roomIn, err := findRoomByNamePrefix(ctx, lkIn, inboundRoomPrefix)
 	if err != nil {
 		return outIDs, nil, fmt.Errorf("find inbound room: %w", err)
 	}
-	t.Logf("Resolved inbound room %q", roomIn)
+	t.Logf("DEBUG: Found inbound room: %s", roomIn)
 
 	t.Cleanup(func() {
 		_, _ = lkOut.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomOut})
@@ -531,6 +540,8 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 			Room: roomIn, Identity: inIdentity,
 		})
 	})
+
+	t.Logf("DEBUG: Connecting local audio to inbound room: %s", roomIn)
 
 	// 4. Connect local audio to inbound room (optionally after RingFor delay)
 	var readyIn sync.WaitGroup
@@ -559,6 +570,8 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 	}()
 	readyIn.Wait()
 
+	t.Logf("DEBUG: Asserting outbound room")
+
 	// Assert outbound room
 	expAttrsOut := map[string]string{
 		livekit.AttrSIPCallID:                 r.SipCallId,
@@ -571,6 +584,8 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		{Identity: identityTest, Kind: livekit.ParticipantInfo_STANDARD},
 		{Identity: outIdentity, Name: outName, Kind: livekit.ParticipantInfo_SIP, Metadata: outMeta, Attributes: expAttrsOut},
 	})
+
+	t.Logf("DEBUG: Asserting inbound room")
 
 	// Assert inbound room
 	inName := "Phone " + params.Req.SipNumber
@@ -602,13 +617,13 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		}
 	}
 
-	t.Log("testing audio")
+	t.Log("DEBUG: testing audio")
 	CheckAudioForParticipants(t, ctx, pOut, pIn)
 
-	t.Log("testing dtmf")
+	t.Log("DEBUG: testing dtmf")
 	CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
 
-	t.Log("retesting audio")
+	t.Log("DEBUG: retesting audio")
 	CheckAudioForParticipants(t, ctx, pOut, pIn)
 
 	return outIDs, inIDs, nil
