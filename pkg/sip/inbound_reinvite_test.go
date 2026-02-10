@@ -17,9 +17,11 @@ package sip
 import (
 	"testing"
 
-	"github.com/livekit/protocol/logger"
-	"github.com/livekit/sipgo/sip"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/protocol/logger"
+	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sipgo/sip"
 )
 
 // TestHandleReinvite_MissingCSeq tests handling of re-INVITE without CSeq header
@@ -40,6 +42,14 @@ func TestHandleReinvite_MissingCSeq(t *testing.T) {
 func TestHandleReinvite_Retransmission(t *testing.T) {
 	currentSDP := []byte("v=0\r\no=- 123 456 IN IP4 1.2.3.4\r\n")
 	call := newTestInboundCall(1, currentSDP)
+
+	invite := sip.NewRequest(sip.INVITE, sip.Uri{Host: "test.com"})
+	invite.AppendHeader(&sip.CSeqHeader{
+		SeqNo:      1,
+		MethodName: sip.INVITE,
+	})
+	// Reinvite should receive the copy of the previous response.
+	call.cc.inviteOk = sip.NewResponseFromRequest(invite, sip.StatusOK, "OK", currentSDP)
 
 	req := sip.NewRequest(sip.INVITE, sip.Uri{Host: "test.com"})
 	req.AppendHeader(&sip.CSeqHeader{
@@ -119,8 +129,15 @@ func TestHandleReinvite_NoSDP(t *testing.T) {
 // newTestInboundCall creates a minimal inboundCall for testing
 func newTestInboundCall(inviteCSeq uint32, sdp []byte) *inboundCall {
 	log := logger.GetLogger()
+	srv := &Server{
+		log:  log,
+		conf: &config.Config{},
+	}
 	call := &inboundCall{
+		s: srv,
 		cc: &sipInbound{
+			log:        log,
+			s:          srv,
 			inviteCSeq: inviteCSeq,
 			lastSDP:    sdp,
 		},

@@ -1310,17 +1310,10 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 	if cseq.SeqNo == inviteCSeq {
 		// Same CSeq - this is a retransmission of the original INVITE
 		// Resend the original 200 OK if we already accepted
-		c.log().Infow("INVITE retransmission detected",
-			"cseq", cseq.SeqNo)
+		c.log().Infow("INVITE retransmission detected", "cseq", cseq.SeqNo)
 
 		// Re-send 200 OK with our current SDP
-		if sdp := c.cc.OwnSDP(); sdp != nil {
-			r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", sdp)
-			r.AppendHeader(&contentTypeHeaderSDP)
-			_ = tx.Respond(r)
-		} else {
-			c.log().Warnw("retransmission: no SDP available, not responding", nil)
-		}
+		c.cc.ResendOK(tx, req)
 		return
 	}
 
@@ -1331,37 +1324,10 @@ func (c *inboundCall) handleReinvite(req *sip.Request, tx sip.ServerTransaction)
 		"contentType", req.ContentType(),
 		"contentLength", req.ContentLength())
 
-	// Get current SDP to send in response
-	currentSDP := c.cc.OwnSDP()
-	if currentSDP == nil {
-		c.log().Errorw("no SDP available for re-INVITE response", nil)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "No SDP available", nil))
-		return
-	}
-
 	// For now, we respond with the same SDP (session refresh, no renegotiation)
 	// TODO: Support SDP renegotiation if needed in the future
 	//       This would require parsing the offer, updating media session, etc.
-
-	// Respond with 200 OK including all proper SIP headers
-	// Following the same pattern as AcceptAsKeepAlive/respondWithData
-	r := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", currentSDP)
-	r.AppendHeader(&contentTypeHeaderSDP)
-	r.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
-	if c.cc.contact != nil {
-		r.AppendHeader(c.cc.contact)
-	}
-	if c.s != nil && c.s.conf != nil {
-		c.cc.addExtraHeaders(r)
-	}
-
-	err := tx.Respond(r)
-	if err != nil {
-		c.log().Errorw("failed to respond to re-INVITE", err)
-		return
-	}
-
-	c.log().Infow("re-INVITE accepted with current SDP")
+	c.cc.AcceptAsKeepAlive(tx, req)
 }
 
 func (c *inboundCall) Close() error {
@@ -1631,8 +1597,15 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 	if c.inviteTx == nil {
 		return
 	}
+	c.respondWithDataTo(c.inviteTx, c.invite, status, reason, contentType, body)
+}
 
-	r := sip.NewResponseFromRequest(c.invite, status, reason, body)
+func (c *sipInbound) respondWithDataTo(
+	tx sip.ServerTransaction, invite *sip.Request,
+	status sip.StatusCode, reason string,
+	contentType string, body []byte,
+) {
+	r := sip.NewResponseFromRequest(invite, status, reason, body)
 	if typ := sip.ContentTypeHeader(contentType); typ != "" {
 		r.AppendHeader(&typ)
 	}
@@ -1642,7 +1615,7 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(c.contact)
 	}
 	c.addExtraHeaders(r)
-	_ = c.inviteTx.Respond(r)
+	_ = tx.Respond(r)
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -1782,8 +1755,23 @@ func (c *sipInbound) accepted(inviteOK *sip.Response) {
 	c.inviteTx = nil
 }
 
-func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
-	c.respondWithData(sip.StatusOK, "OK", "application/sdp", sdp)
+func (c *sipInbound) AcceptAsKeepAlive(tx sip.ServerTransaction, invite *sip.Request) {
+	lastSDP := c.OwnSDP()
+	if len(lastSDP) == 0 {
+		c.log.Errorw("no SDP available for re-INVITE response", nil)
+		_ = tx.Respond(sip.NewResponseFromRequest(invite, sip.StatusInternalServerError, "No SDP available", nil))
+		return
+	}
+	c.respondWithDataTo(tx, invite, sip.StatusOK, "OK", "application/sdp", lastSDP)
+	c.log.Infow("re-INVITE accepted with current SDP")
+}
+
+func (c *sipInbound) ResendOK(tx sip.ServerTransaction, invite *sip.Request) {
+	ok := c.inviteOk
+	if ok == nil {
+		return
+	}
+	_ = tx.Respond(ok)
 }
 
 func (c *sipInbound) OwnSDP() []byte {
