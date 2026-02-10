@@ -428,6 +428,8 @@ func getDispatchRulesByTrunks(ctx context.Context, lkIn *LiveKit, trunks []*live
 	return resp.Items, nil
 }
 
+type roomIDFunc func(ctx context.Context, lk *LiveKit, rule *livekit.SIPDispatchRuleInfo, req *livekit.CreateSIPParticipantRequest) (string, error)
+
 func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundRequestTestParams) (outIDs, inIDs *SIPOutboundRequestTestIDs, err error) {
 	require.Equal(t, "", params.Req.SipTrunkId, "SipTrunkId must be empty")
 	require.NotNil(t, params.Req.Trunk, "A trunk must be inlined")
@@ -451,13 +453,19 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 	ruleIn := rulesIn[0]
 	t.Logf("Expecting call in dispatch rule %q (%s)", ruleIn.Name, ruleIn.SipDispatchRuleId)
 
-	// Inbound room name is dynamic: e2e_{SipNumber}_{guid}. SipNumber is unique per test, so we
-	// create the outbound call first, then poll for a room whose name has prefix "e2e_"+SipNumber+"_".
-	indvRule, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleIndividual)
-	if !ok {
+	var getRoomID roomIDFunc
+	if _, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleIndividual); ok {
+		// Inbound room name is dynamic: e2e_{SipNumber}_{guid}. SipNumber is unique per test, so we
+		// create the outbound call first, then poll for a room whose name has prefix "e2e_"+SipNumber+"_".
+		getRoomID = getRoomFromIndividualRule
+	} else if _, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleDirect); ok {
+		// Inbound room name is fixed. Just return the name.
+		getRoomID = getRoomFromDirectRule
+		require.False(t, ok, "Using direct rule does not support concurrent tests")
+	}
+	if getRoomID == nil {
 		return nil, nil, fmt.Errorf("unsupported dispatch rule type %T", ruleIn.Rule.Rule)
 	}
-	inboundRoomPrefix := indvRule.DispatchRuleIndividual.RoomPrefix + "_" + params.Req.SipNumber + "_"
 
 	t.Logf("DEBUG: Connecting local outbound participant")
 
@@ -524,7 +532,7 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 	t.Logf("DEBUG: Finding inbound room")
 
 	// 3. Find inbound room by prefix (poll until it appears)
-	roomIn, err := findRoomByNamePrefix(ctx, lkIn, inboundRoomPrefix)
+	roomIn, err := getRoomID(ctx, lkIn, ruleIn, req)
 	if err != nil {
 		return outIDs, nil, fmt.Errorf("find inbound room: %w", err)
 	}
@@ -629,8 +637,21 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 	return outIDs, inIDs, nil
 }
 
-// findRoomByNamePrefix polls ListRooms until a room whose name has the given prefix appears, or ctx expires.
-func findRoomByNamePrefix(ctx context.Context, lk *LiveKit, prefix string) (string, error) {
+func getRoomFromDirectRule(ctx context.Context, lk *LiveKit, rule *livekit.SIPDispatchRuleInfo, req *livekit.CreateSIPParticipantRequest) (string, error) {
+	directRule, ok := rule.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleDirect)
+	if !ok {
+		return "", fmt.Errorf("invalid rule type type %T", rule.Rule.Rule)
+	}
+	return directRule.DispatchRuleDirect.RoomName, nil
+}
+
+func getRoomFromIndividualRule(ctx context.Context, lk *LiveKit, rule *livekit.SIPDispatchRuleInfo, req *livekit.CreateSIPParticipantRequest) (string, error) {
+	indvRule, ok := rule.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleIndividual)
+	if !ok {
+		return "", fmt.Errorf("invalid rule type type %T", rule.Rule.Rule)
+	}
+	inboundRoomPrefix := indvRule.DispatchRuleIndividual.RoomPrefix + "_" + req.SipNumber + "_"
+
 	const pollInterval = 250 * time.Millisecond
 	for {
 		resp, err := lk.Rooms.ListRooms(ctx, &livekit.ListRoomsRequest{})
@@ -638,7 +659,7 @@ func findRoomByNamePrefix(ctx context.Context, lk *LiveKit, prefix string) (stri
 			return "", err
 		}
 		for _, room := range resp.Rooms {
-			if strings.HasPrefix(room.Name, prefix) {
+			if strings.HasPrefix(room.Name, inboundRoomPrefix) {
 				return room.Name, nil
 			}
 		}
