@@ -604,7 +604,7 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encry
 	}
 	mc, err := answer.Apply(offer, enc)
 	if err != nil {
-		return nil, err
+		return nil, SDPError{Err: err}
 	}
 	return &MediaConf{MediaConfig: *mc}, nil
 }
