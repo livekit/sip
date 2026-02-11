@@ -383,13 +383,8 @@ Check logs for call:
 	}
 }
 
-type SIPOutboundRequestTestParams struct {
-	Req *livekit.CreateSIPParticipantRequest
-}
-
 type SIPOutboundRequestTestIDs struct {
 	CallID        string
-	SipCallID     string
 	PatricipantID string
 	RoomName      string
 	TrunkID       string
@@ -403,6 +398,16 @@ func (ids *SIPOutboundRequestTestIDs) SetFromCreateSIPParticipantResponse(resp *
 	ids.CallID = resp.SipCallId
 	ids.PatricipantID = resp.ParticipantId
 	ids.RoomName = resp.RoomName
+}
+
+func (ids *SIPOutboundRequestTestIDs) GetValues() []string {
+	return []string{
+		"callID: " + ids.CallID,
+		"patricipantID: " + ids.PatricipantID,
+		"roomName: " + ids.RoomName,
+		"trunkID: " + ids.TrunkID,
+		"location: " + ids.Location,
+	}
 }
 
 func getInboundTrunksByNumbers(ctx context.Context, lkIn *LiveKit, numbers []string) ([]*livekit.SIPInboundTrunkInfo, error) {
@@ -437,43 +442,48 @@ func getDispatchRulesByTrunks(ctx context.Context, lkIn *LiveKit, trunks []*live
 
 type roomIDFunc func(ctx context.Context, lk *LiveKit, rule *livekit.SIPDispatchRuleInfo, req *livekit.CreateSIPParticipantRequest) (string, error)
 
-func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundRequestTestParams) error {
+func secondsSince(start time.Time) int {
+	return int(time.Since(start).Seconds())
+}
+
+func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, req *livekit.CreateSIPParticipantRequest) error {
+	start := time.Now()
 	inIDs := SIPOutboundRequestTestIDs{}
 	outIDs := SIPOutboundRequestTestIDs{}
 	defer func() {
-		t.Logf("Onbound IDs: %v", outIDs)
-		t.Logf("Inbound IDs: %v", inIDs)
+		t.Logf("Onbound IDs: %v", outIDs.GetValues())
+		t.Logf("Inbound IDs: %v", inIDs.GetValues())
 	}()
 
-	require.Equal(t, "", params.Req.SipTrunkId, "SipTrunkId must be empty")
-	require.NotNil(t, params.Req.Trunk, "A trunk must be inlined")
+	require.Equal(t, "", req.SipTrunkId, "SipTrunkId must be empty")
+	require.NotNil(t, req.Trunk, "A trunk must be inlined")
 	outIDs.TrunkID = "inline"
-	require.NotEmpty(t, params.Req.Trunk.DestinationCountry, "DestinationCountry must be set")
-	outIDs.Location = params.Req.Trunk.DestinationCountry
-	require.NotEmpty(t, params.Req.Trunk.Hostname, "Hostname must be set")
-	inIDs.Location = params.Req.Trunk.Hostname
-	require.NotEmpty(t, params.Req.SipCallTo, "SipCallTo must be set")
-	require.NotEmpty(t, params.Req.RoomName, "RoomName must be set")
-	outIDs.RoomName = params.Req.RoomName
-	t.Logf("Calling from %s@%s to %s@%s", params.Req.SipNumber, params.Req.Trunk.DestinationCountry, params.Req.SipCallTo, params.Req.Trunk.Hostname)
-	t.Logf("Using outbound room %q", params.Req.RoomName)
+	require.NotEmpty(t, req.Trunk.DestinationCountry, "DestinationCountry must be set")
+	outIDs.Location = req.Trunk.DestinationCountry
+	require.NotEmpty(t, req.Trunk.Hostname, "Hostname must be set")
+	inIDs.Location = req.Trunk.Hostname
+	require.NotEmpty(t, req.SipCallTo, "SipCallTo must be set")
+	require.NotEmpty(t, req.RoomName, "RoomName must be set")
+	outIDs.RoomName = req.RoomName
 	outClosed := make(chan struct{}, 1)
 	inClosed := make(chan struct{}, 1)
 
-	trsIn, err := getInboundTrunksByNumbers(ctx, lkIn, []string{params.Req.SipCallTo})
+	t.Logf("+%ds: Getting inbound trunk", secondsSince(start))
+	trsIn, err := getInboundTrunksByNumbers(ctx, lkIn, []string{req.SipCallTo})
 	if err != nil {
 		return err
 	}
 	trIn := trsIn[0]
-	t.Logf("Expecting call in inbound trunk %q (%s, via number: %s)", trIn.Name, trIn.SipTrunkId, params.Req.SipCallTo)
 	inIDs.TrunkID = trIn.SipTrunkId
+
+	t.Logf("+%ds: Getting dispatch rule", secondsSince(start))
 	rulesIn, err := getDispatchRulesByTrunks(ctx, lkIn, trsIn)
 	if err != nil {
 		return err
 	}
 	ruleIn := rulesIn[0]
-	t.Logf("Expecting call in dispatch rule %q (%s)", ruleIn.Name, ruleIn.SipDispatchRuleId)
 
+	t.Logf("+%ds: Getting room ID function", secondsSince(start))
 	var getRoomID roomIDFunc
 	if _, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleIndividual); ok {
 		// Inbound room name is dynamic: e2e_{SipNumber}_{guid}. SipNumber is unique per test, so we
@@ -488,10 +498,8 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		return fmt.Errorf("unsupported dispatch rule type %T", ruleIn.Rule.Rule)
 	}
 
-	t.Logf("Connecting local outbound participant")
-
-	// 1. Connect local audio to outbound room
-	roomOut := params.Req.RoomName
+	t.Logf("+%ds: Connecting local outbound participant", secondsSince(start))
+	roomOut := req.RoomName
 	const identityTest = "test_probe"
 	dataOut := make(chan lksdk.DataPacket, 20)
 	dataIn := make(chan lksdk.DataPacket, 20)
@@ -514,7 +522,7 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 					},
 				},
 				OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
-					t.Logf("%v DEBUG: Outbound participant disconnected: %s", time.Now(), rp.Identity())
+					t.Logf("+%ds: Outbound participant disconnected: %s", secondsSince(start), rp.Identity())
 					if rp.Identity() != identityTest {
 						close(outClosed)
 					}
@@ -527,52 +535,47 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		_, _ = lkOut.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomOut})
 	})
 
-	t.Logf("Connecting outbound call")
-
-	// 2. Create outbound SIP participant (triggers inbound call and dynamic room creation)
-	req := &livekit.CreateSIPParticipantRequest{
-		Trunk:           params.Req.Trunk,
-		SipCallTo:       params.Req.SipCallTo,
-		SipNumber:       params.Req.SipNumber,
-		RoomName:        params.Req.RoomName,
-		MediaEncryption: params.Req.MediaEncryption,
+	t.Logf("+%ds: Connecting outbound call", secondsSince(start))
+	reqOut := &livekit.CreateSIPParticipantRequest{
+		Trunk:           req.Trunk,
+		SipCallTo:       req.SipCallTo,
+		SipNumber:       req.SipNumber,
+		RoomName:        req.RoomName,
+		MediaEncryption: req.MediaEncryption,
 	}
 	const outIdentity = "siptest_outbound"
 	const outName = "Outbound Call"
 	const outMeta = `{"test":true, "dir": "out"}`
-	req.ParticipantIdentity = outIdentity
-	req.ParticipantName = outName
-	req.ParticipantMetadata = outMeta
+	reqOut.ParticipantIdentity = outIdentity
+	reqOut.ParticipantName = outName
+	reqOut.ParticipantMetadata = outMeta
 
-	if req.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE && trIn.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE {
-		// CreateSipParticipant request ddisables encryption, that is required by trunk
-		req.WaitUntilAnswered = true // We expect this to get rejected
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if reqOut.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE && trIn.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE {
+		// CreateSipParticipant request disables encryption, that is required by trunk
+		reqOut.WaitUntilAnswered = true // We expect this to get rejected
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		resp, err := lkOut.SIP.CreateSIPParticipant(ctx, req)
+		resp, err := lkOut.SIP.CreateSIPParticipant(ctx, reqOut)
 		outIDs.SetFromCreateSIPParticipantResponse(resp)
 		if err == nil {
 			_, _ = lkOut.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
-				Room: req.RoomName, Identity: resp.ParticipantIdentity,
+				Room: reqOut.RoomName, Identity: resp.ParticipantIdentity,
 			})
 			t.Fatal("CreateSIPParticipant should have failed")
 		}
 		sipStatus := lksdk.SIPStatusFrom(err)
-		require.NotNil(t, sipStatus)
+		require.NotNil(t, sipStatus, "Expected SIP status error, got %v", err)
 		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, sipStatus.Code)
 		return nil // Success!
 	}
-	r := lkOut.CreateSIPParticipant(t, req) // Also adds cleanup!
+	r := lkOut.CreateSIPParticipant(t, reqOut) // Also adds cleanup!
 	outIDs.SetFromCreateSIPParticipantResponse(r)
 
-	t.Logf("Finding inbound room")
-
-	// 3. Find inbound room by prefix (poll until it appears)
-	subCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	t.Logf("+%ds: Finding inbound room", secondsSince(start))
+	subCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	start := time.Now()
-	roomIn, err := getRoomID(subCtx, lkIn, ruleIn, req) // Takes about 5 seconds to propagate
-	t.Logf("Found inbound room %s info in %f seconds", roomIn, time.Since(start).Seconds())
+	roomIn, err := getRoomID(subCtx, lkIn, ruleIn, reqOut) // Takes about 5-15 seconds to propagate
+	t.Logf("+%ds: Found inbound room %s", secondsSince(start), roomIn)
 	if err != nil || roomIn == "" {
 		return fmt.Errorf("failed to find inbound room: %w", err)
 	}
@@ -581,16 +584,14 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomIn})
 	})
 
-	inIdentity := "sip_" + params.Req.SipNumber
+	inIdentity := "sip_" + req.SipNumber
 	t.Cleanup(func() {
 		_, _ = lkIn.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
 			Room: roomIn, Identity: inIdentity,
 		})
 	})
 
-	t.Logf("%v DEBUG: Connecting local audio to inbound room: %s", time.Now(), roomIn)
-
-	// 4. Connect local audio to inbound room
+	t.Logf("+%ds: Connecting local audio to inbound room: %s", secondsSince(start), roomIn)
 	var readyIn sync.WaitGroup
 	readyIn.Add(1)
 	go func() {
@@ -605,8 +606,18 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 						}
 					},
 				},
+				OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
+					t.Logf("+%ds: Inbound participant connected: %s", secondsSince(start), rp.Identity())
+					if rp.Identity() != identityTest {
+						inIDs.PatricipantID = rp.SID()
+						attrs := rp.Attributes()
+						if attrs != nil {
+							inIDs.CallID = attrs[livekit.AttrSIPCallID]
+						}
+					}
+				},
 				OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
-					t.Logf("%v DEBUG: Inbound participant disconnected: %s", time.Now(), rp.Identity())
+					t.Logf("+%ds: Inbound participant disconnected: %s", secondsSince(start), rp.Identity())
 					if rp.Identity() != identityTest {
 						close(inClosed)
 					}
@@ -616,13 +627,13 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 	}()
 	readyIn.Wait()
 
-	if req.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE && trIn.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE {
+	if reqOut.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE && trIn.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE {
 		// FIXME
 		// We should be able to reject calls immediately when the SDP mismatches (on the inbound call),
 		// but today this is delayed until after attempting to answer the call.
 		// At this point both calls should be dead or dying. Verify.
-		t.Logf("%v DEBUG: Expecting call failure due to cryptography requirement mismatch", time.Now())
-		subCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		t.Logf("+%ds: Expecting call failure due to cryptography requirement mismatch", secondsSince(start))
+		subCtx, cancel = context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		select {
 		case <-outClosed:
@@ -637,50 +648,46 @@ func TestSIPOutboundRequest(t TB, ctx context.Context, lkOut, lkIn *LiveKit, par
 		return nil // Success!
 	}
 
-	t.Logf("%v DEBUG: Asserting outbound room", time.Now())
-
-	// Assert outbound room
+	t.Logf("+%ds: Asserting outbound room", secondsSince(start))
 	expAttrsOut := map[string]string{
 		livekit.AttrSIPCallID:                 r.SipCallId,
 		livekit.AttrSIPPrefix + "callTag":     AttrTestAny,
 		livekit.AttrSIPPrefix + "callIDFull":  AttrTestAny,
 		livekit.AttrSIPPrefix + "callStatus":  "active",
-		livekit.AttrSIPPrefix + "phoneNumber": params.Req.SipCallTo,
+		livekit.AttrSIPPrefix + "phoneNumber": req.SipCallTo,
 	}
-	subCtx, cancel = context.WithTimeout(ctx, 10*time.Second) // Changes take about ~5 seconds to propagate
+	subCtx, cancel = context.WithTimeout(ctx, 30*time.Second) // Changes take about ~5-15 seconds to propagate
 	defer cancel()
 	lkOut.ExpectRoomWithParticipants(t, subCtx, roomOut, []ParticipantInfo{
 		{Identity: identityTest, Kind: livekit.ParticipantInfo_STANDARD},
 		{Identity: outIdentity, Name: outName, Kind: livekit.ParticipantInfo_SIP, Metadata: outMeta, Attributes: expAttrsOut},
 	})
 
-	t.Logf("%v DEBUG: Asserting inbound room", time.Now())
-
-	// Assert inbound room
-	inName := "Phone " + params.Req.SipNumber
+	t.Logf("+%ds: Asserting inbound room", secondsSince(start))
+	inName := "Phone " + req.SipNumber
 	expAttrsIn := map[string]string{
 		livekit.AttrSIPPrefix + "callTag":          AttrTestAny,
 		livekit.AttrSIPPrefix + "callIDFull":       AttrTestAny,
 		livekit.AttrSIPPrefix + "callStatus":       "active",
-		livekit.AttrSIPPrefix + "trunkPhoneNumber": params.Req.SipCallTo,
-		livekit.AttrSIPPrefix + "phoneNumber":      params.Req.SipNumber,
+		livekit.AttrSIPPrefix + "trunkPhoneNumber": req.SipCallTo,
+		livekit.AttrSIPPrefix + "phoneNumber":      req.SipNumber,
 		livekit.AttrSIPPrefix + "trunkID":          trIn.SipTrunkId,
 		livekit.AttrSIPPrefix + "ruleID":           ruleIn.SipDispatchRuleId,
 	}
-	subCtx, cancel = context.WithTimeout(ctx, 10*time.Second) // Changes take about ~5 seconds to propagate
+	subCtx, cancel = context.WithTimeout(ctx, 30*time.Second) // Changes take about ~5-15 seconds to propagate
 	defer cancel()
 	lkIn.ExpectRoomWithParticipants(t, subCtx, roomIn, []ParticipantInfo{
 		{Identity: identityTest, Kind: livekit.ParticipantInfo_STANDARD},
 		{Identity: inIdentity, Name: inName, Kind: livekit.ParticipantInfo_SIP, Metadata: ruleIn.Metadata, Attributes: expAttrsIn},
 	})
 
-	t.Logf("%v DEBUG: testing audio", time.Now())
+	t.Logf("+%ds: testing audio", secondsSince(start))
 	CheckAudioForParticipants(t, ctx, pOut, pIn)
 
-	t.Logf("%v DEBUG: testing dtmf", time.Now())
+	t.Logf("+%ds: testing dtmf", secondsSince(start))
 	CheckDTMFForParticipants(t, ctx, pOut, pIn, dataOut, dataIn)
 
-	t.Logf("%v DEBUG: retesting audio", time.Now())
+	t.Logf("+%ds: retesting audio", secondsSince(start))
 	CheckAudioForParticipants(t, ctx, pOut, pIn)
 
 	return nil
