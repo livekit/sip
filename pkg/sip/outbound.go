@@ -389,6 +389,9 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
 				reportErr = nil
 			}
+		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
+			status, desc, reason = callRejected, "encryption-required", livekit.DisconnectReason_MEDIA_FAILURE
+			reportErr = nil
 		}
 		c.close(ctx, reportErr, status, desc, reason)
 		return err
