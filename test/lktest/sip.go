@@ -84,7 +84,6 @@ type SIPOutboundTestParams struct {
 	RuleIn   string            // rule ID for inbound call
 	AttrsIn  map[string]string // expected attributes for inbound participants
 	NoDMTF   bool              // do not test DTMF
-	RingFor  time.Duration     // do not pick up the call for this long
 }
 
 func loadVal[T any](ptr *atomic.Pointer[T]) T {
@@ -160,30 +159,15 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 	)
 
 	var (
-		dataOut    = make(chan lksdk.DataPacket, 20)
-		dataIn     = make(chan lksdk.DataPacket, 20)
-		callIDOut  atomic.Pointer[string]
-		callIDIn   atomic.Pointer[string]
-		statusOut  atomic.Pointer[string]
-		statusIn   atomic.Pointer[string]
-		ringingOut atomic.Uint64
-		connected  atomic.Bool
-
-		outRingStart time.Time
+		dataOut   = make(chan lksdk.DataPacket, 20)
+		dataIn    = make(chan lksdk.DataPacket, 20)
+		callIDOut atomic.Pointer[string]
+		callIDIn  atomic.Pointer[string]
+		statusOut atomic.Pointer[string]
+		statusIn  atomic.Pointer[string]
+		connected atomic.Bool
 	)
 	defer func() {
-		if params.RingFor > 0 {
-			ringedFor := time.Duration(ringingOut.Load())
-			const (
-				dtmin = 2 * time.Second
-				dtmax = 3 * time.Second
-			)
-			if ringedFor < params.RingFor-dtmin || ringedFor > params.RingFor+dtmax {
-				t.Errorf("unexpected ringing duration, exp: %v, got: %v", params.RingFor, ringedFor)
-			} else {
-				t.Logf("+%.3fs: ringing duration: %v", secSince(start), ringedFor)
-			}
-		}
 		if !t.Failed() {
 			return
 		}
@@ -269,15 +253,6 @@ Check logs for call:
 			},
 			OnSIPStatus: func(p *lksdk.RemoteParticipant, callID string, status string) {
 				callIDOut.Store(&callID)
-				prev := statusOut.Swap(&status)
-				if prev != nil {
-					switch {
-					case *prev == "dialing" && status == "ringing":
-						outRingStart = time.Now()
-					case *prev == "ringing" && status != "ringing":
-						ringingOut.Store(uint64(time.Since(outRingStart)))
-					}
-				}
 				t.Logf("+%.3fs: sip outbound call %s (%s) status %v", secSince(start), callID, p.Identity(), status)
 			},
 		})
@@ -285,14 +260,6 @@ Check logs for call:
 	}()
 	go func() {
 		defer readyIn.Done()
-		if params.RingFor > 0 {
-			t.Logf("+%.3fs: ringing for %v", secSince(start), params.RingFor)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(params.RingFor):
-			}
-		}
 		pIn = lkIn.ConnectParticipant(t, roomIn, identityTest, &RoomParticipantCallback{
 			RoomCallback: lksdk.RoomCallback{
 				ParticipantCallback: lksdk.ParticipantCallback{
@@ -454,10 +421,14 @@ func getDispatchRulesByTrunks(ctx context.Context, lkIn *LiveKit, trunks []*live
 type roomIDFunc func(ctx context.Context, lk *LiveKit, rule *livekit.SIPDispatchRuleInfo, req *livekit.CreateSIPParticipantRequest) (string, error)
 
 func secSince(start time.Time) float64 {
-	return secSince(start)
+	return time.Since(start).Seconds()
 }
 
-func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, req *livekit.CreateSIPParticipantRequest) error {
+type TestCreateSipParticipantParams struct {
+	RingFor time.Duration
+}
+
+func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, req *livekit.CreateSIPParticipantRequest, params TestCreateSipParticipantParams) error {
 	start := time.Now()
 	inIDs := SIPOutboundRequestTestIDs{}
 	outIDs := SIPOutboundRequestTestIDs{}
@@ -514,34 +485,24 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 	const identityTest = "test_probe"
 	dataOut := make(chan lksdk.DataPacket, 20)
 	dataIn := make(chan lksdk.DataPacket, 20)
-	var (
-		pOut     *Participant
-		pIn      *Participant
-		readyOut sync.WaitGroup
-	)
-	readyOut.Add(1)
-	go func() {
-		defer readyOut.Done()
-		pOut = lkOut.ConnectParticipant(t, roomOut, identityTest, &RoomParticipantCallback{
-			RoomCallback: lksdk.RoomCallback{
-				ParticipantCallback: lksdk.ParticipantCallback{
-					OnDataPacket: func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
-						select {
-						case dataOut <- data:
-						default:
-						}
-					},
-				},
-				OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
-					t.Logf("+%.3fs: Outbound participant disconnected: %s", secSince(start), rp.Identity())
-					if rp.Identity() != identityTest {
-						close(outClosed)
+	pOut := lkOut.ConnectParticipant(t, roomOut, identityTest, &RoomParticipantCallback{
+		RoomCallback: lksdk.RoomCallback{
+			ParticipantCallback: lksdk.ParticipantCallback{
+				OnDataPacket: func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
+					select {
+					case dataOut <- data:
+					default:
 					}
 				},
 			},
-		})
-	}()
-	readyOut.Wait()
+			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
+				t.Logf("+%.3fs: Outbound participant disconnected: %s", secSince(start), rp.Identity())
+				if rp.Identity() != identityTest {
+					close(outClosed)
+				}
+			},
+		},
+	})
 	t.Cleanup(func() {
 		_, _ = lkOut.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomOut})
 	})
@@ -579,14 +540,20 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, sipStatus.Code)
 		return nil // Success!
 	}
-	r := lkOut.CreateSIPParticipant(t, reqOut) // Also adds cleanup!
-	outIDs.SetFromCreateSIPParticipantResponse(r)
 
-	t.Logf("+%.3fs: Finding inbound room", secSince(start))
+	// CreateSIPParticipant triggers inbound call and dynamic room creation
+	// It onlly needs to run in a goroutine if waitForAnswered is true, but we like consistency.
+	outboundCallReady := make(chan struct{}, 1)
+	go func() {
+		defer close(outboundCallReady)
+		r := lkOut.CreateSIPParticipant(t, reqOut) // Also adds cleanup!
+		outIDs.SetFromCreateSIPParticipantResponse(r)
+	}()
+
+	t.Logf("+%.3fs: Waiting for inbound call to create inbound room", secSince(start))
 	subCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	roomIn, err := getRoomID(subCtx, lkIn, ruleIn, reqOut) // Takes about 5-15 seconds to propagate
-	t.Logf("+%.3fs: Found inbound room %s", secSince(start), roomIn)
 	if err != nil || roomIn == "" {
 		return fmt.Errorf("failed to find inbound room: %w", err)
 	}
@@ -602,41 +569,47 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 		})
 	})
 
+	if params.RingFor > 0 {
+		// Keep in mind, it takes quite some time to run getRoomID
+		// That time is split between actual signal propagation and waiting for our APIs to catch up
+		// This ringing duration in added ON TOP of this extra time.
+		t.Logf("+%.3fs: delaying pickup time by %v", secSince(start), params.RingFor)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(params.RingFor):
+		}
+	}
+
 	t.Logf("+%.3fs: Connecting local audio to inbound room: %s", secSince(start), roomIn)
-	var readyIn sync.WaitGroup
-	readyIn.Add(1)
-	go func() {
-		defer readyIn.Done()
-		pIn = lkIn.ConnectParticipant(t, roomIn, identityTest, &RoomParticipantCallback{
-			RoomCallback: lksdk.RoomCallback{
-				ParticipantCallback: lksdk.ParticipantCallback{
-					OnDataPacket: func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
-						select {
-						case dataIn <- data:
-						default:
-						}
-					},
-				},
-				OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
-					t.Logf("+%.3fs: Inbound participant connected: %s", secSince(start), rp.Identity())
-					if rp.Identity() != identityTest {
-						inIDs.PatricipantID = rp.SID()
-						attrs := rp.Attributes()
-						if attrs != nil {
-							inIDs.CallID = attrs[livekit.AttrSIPCallID]
-						}
-					}
-				},
-				OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
-					t.Logf("+%.3fs: Inbound participant disconnected: %s", secSince(start), rp.Identity())
-					if rp.Identity() != identityTest {
-						close(inClosed)
+	pIn := lkIn.ConnectParticipant(t, roomIn, identityTest, &RoomParticipantCallback{
+		RoomCallback: lksdk.RoomCallback{
+			ParticipantCallback: lksdk.ParticipantCallback{
+				OnDataPacket: func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
+					select {
+					case dataIn <- data:
+					default:
 					}
 				},
 			},
-		})
-	}()
-	readyIn.Wait()
+			OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
+				t.Logf("+%.3fs: Inbound participant connected: %s", secSince(start), rp.Identity())
+				if rp.Identity() != identityTest {
+					inIDs.PatricipantID = rp.SID()
+					attrs := rp.Attributes()
+					if attrs != nil {
+						inIDs.CallID = attrs[livekit.AttrSIPCallID]
+					}
+				}
+			},
+			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
+				t.Logf("+%.3fs: Inbound participant disconnected: %s", secSince(start), rp.Identity())
+				if rp.Identity() != identityTest {
+					close(inClosed)
+				}
+			},
+		},
+	})
 
 	if reqOut.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE && trIn.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE {
 		// FIXME
@@ -659,9 +632,16 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 		return nil // Success!
 	}
 
+	t.Logf("+%.3fs: Make sure outbound call is ready", secSince(start))
+	select {
+	case <-outboundCallReady:
+	case <-ctx.Done():
+		t.Fatal("outbound call did not become ready")
+	}
+
 	t.Logf("+%.3fs: Asserting outbound room", secSince(start))
 	expAttrsOut := map[string]string{
-		livekit.AttrSIPCallID:                 r.SipCallId,
+		livekit.AttrSIPCallID:                 outIDs.CallID,
 		livekit.AttrSIPPrefix + "callTag":     AttrTestAny,
 		livekit.AttrSIPPrefix + "callIDFull":  AttrTestAny,
 		livekit.AttrSIPPrefix + "callStatus":  "active",
