@@ -702,8 +702,8 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 		p.packetCount.Add(1)
 		p.stats.Packets.Add(1)
 		if n > rtp.MTUSize {
-			overflow = true
 			if !overflow {
+				overflow = true
 				log.Errorw("RTP packet is larger than MTU limit", nil, "payloadSize", n)
 			}
 			p.stats.IgnoredPackets.Add(1)
