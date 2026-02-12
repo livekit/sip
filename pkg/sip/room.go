@@ -324,7 +324,12 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 					var out msdk.PCM16Writer = mTrack
 					if rconf.LogSignalChanges {
-						out, _ = NewSignalLogger(log, track.ID(), out)
+						var err error
+						out, err = NewSignalLogger(log, track.ID(), out)
+						if err != nil {
+							log.Errorw("cannot create signal logger", err)
+							return
+						}
 					}
 
 					codec, err := opus.Decode(out, channels, log)

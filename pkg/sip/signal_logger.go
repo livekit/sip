@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	DefaultSignalMultiplier = float64(2)      // Singnal needs to be at least 2 times the noise floor to be detected.
+	DefaultSignalMultiplier = float64(2)      // Signal needs to be at least 2 times the noise floor to be detected.
 	DefaultNoiseFloor       = float64(25)     // Use a low noise floor; The purpose is to detect any kind of signal, not just voice.
 	DefaultHangoverDuration = 1 * time.Second // Duration of silence that needs to elapse before we no longer consider it a signal.
 )
@@ -38,7 +38,7 @@ type SignalLogger struct {
 	name             string
 	hangoverDuration time.Duration // Time to stay in "signal" state after last signal to avoid flip-flopping.
 	signalMultiplier float64       // Threshold multiplier for signal to be detected.
-	noiseFloor       float64       // Moveing average of noise floor.
+	noiseFloor       float64       // Moving average of noise floor.
 
 	// State
 	lastSignalTime time.Time
@@ -88,10 +88,6 @@ func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, opti
 		hangoverDuration: DefaultHangoverDuration,
 		signalMultiplier: DefaultSignalMultiplier,
 		noiseFloor:       DefaultNoiseFloor,
-		lastSignalTime:   time.Time{},
-		lastIsSignal:     false,
-		framesProcessed:  0,
-		stateChanges:     0,
 	}
 	for _, option := range options {
 		if err := option(s); err != nil {
