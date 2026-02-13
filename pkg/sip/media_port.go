@@ -775,6 +775,7 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.logSignalChanges {
 		audioOut, err = NewSignalLogger(p.log, "mixed", audioOut)
 		if err != nil {
+			audioOut.Close() // need to close since it's not linked to the port yet
 			return err
 		}
 	}
