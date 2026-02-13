@@ -21,7 +21,6 @@ import (
 	"net"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -87,8 +86,6 @@ type outboundCall struct {
 	lkRoom   RoomInterface
 	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
 	sipConf  sipOutboundConfig
-
-	terminated atomic.Bool
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
@@ -512,16 +509,20 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 }
 
 func (c *outboundCall) stopSIP(ctx context.Context, reason string) {
+	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
+	defer cancel()
 	go func() {
-		time.Sleep(5 * time.Minute)
-		if !c.terminated.Load() {
+		select {
+		case <-termCtx.Done():
+			return
+		case <-time.After(5 * time.Minute):
 			c.mon.CallTerminationFailure()
 			c.log.Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
 		}
 	}()
+
 	c.mon.CallTerminate(reason)
 	c.cc.Close(ctx)
-	c.terminated.Store(true)
 }
 
 func (c *outboundCall) setStatus(v CallStatus) {
@@ -772,9 +773,8 @@ type sipOutbound struct {
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
 
-	referCseq  uint32
-	referDone  chan error
-	terminated atomic.Bool
+	referCseq uint32
+	referDone chan error
 }
 
 func (c *sipOutbound) From() sip.Uri {

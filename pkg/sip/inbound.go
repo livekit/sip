@@ -599,7 +599,6 @@ type inboundCall struct {
 	joinDur     func() time.Duration
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
-	terminated  atomic.Bool
 	started     core.Fuse
 	stats       Stats
 	jitterBuf   bool
@@ -1130,9 +1129,13 @@ func (c *inboundCall) printStats(log logger.Logger) {
 
 // close should only be called from handleInvite.
 func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, reason string) {
+	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
+	defer cancel()
 	go func() {
-		time.Sleep(5 * time.Minute)
-		if !c.terminated.Load() {
+		select {
+		case <-termCtx.Done():
+			return
+		case <-time.After(5 * time.Minute):
 			c.mon.CallTerminationFailure()
 			c.log().Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
 		}
@@ -1193,7 +1196,6 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 	}
 
 	c.cancel()
-	c.terminated.Store(true)
 }
 
 func (c *inboundCall) closeWithTimeout(ctx context.Context, isError bool) {

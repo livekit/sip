@@ -336,7 +336,7 @@ func (m *Monitor) InviteReqRaw(dir CallDir) {
 func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 	return &CallMonitor{
 		m:        m,
-		dir:      dir,
+		dir:      dir.String(),
 		fromHost: fromHost,
 		toHost:   toHost,
 	}
@@ -344,7 +344,7 @@ func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 
 type CallMonitor struct {
 	m          *Monitor
-	dir        CallDir
+	dir        string
 	fromHost   string
 	toHost     string
 	started    atomic.Bool
@@ -352,7 +352,7 @@ type CallMonitor struct {
 }
 
 func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
-	out := prometheus.Labels{"dir": c.dir.String()}
+	out := prometheus.Labels{"dir": c.dir}
 	for k, v := range l {
 		out[k] = v
 	}
@@ -360,7 +360,7 @@ func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
 }
 
 func (c *CallMonitor) labels(l prometheus.Labels) prometheus.Labels {
-	out := prometheus.Labels{"dir": c.dir.String(), "to": c.toHost}
+	out := prometheus.Labels{"dir": c.dir, "to": c.toHost}
 	for k, v := range l {
 		out[k] = v
 	}
@@ -405,7 +405,7 @@ func (c *CallMonitor) CallTerminate(reason string) {
 }
 
 func (c *CallMonitor) CallTerminationFailure() {
-	c.m.callsTerminationFailures.With(c.labels(prometheus.Labels{})).Inc()
+	c.m.callsTerminationFailures.With(c.labelsShort(nil)).Inc()
 }
 
 func (c *CallMonitor) RTPPacketSend(payloadType string) {
