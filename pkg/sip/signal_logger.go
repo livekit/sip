@@ -24,9 +24,6 @@ import (
 )
 
 const (
-	// int16Max is the maximum absolute value for int16 (32768); used for dBFS reference.
-	int16Max = 1 << 15
-
 	// DefaultInitialNoiseFloorDB is the default noise floor in dBFS.
 	DefaultInitialNoiseFloorDB = -50
 	// DefaultHangoverDuration is how long we stay in "signal" after level drops below exit threshold.
@@ -140,7 +137,7 @@ func (s *SignalLogger) Close() error {
 }
 
 // rmsToDBFS computes RMS of the frame then converts to dBFS: 10*log10(mean(square)/MAX^2).
-// Uses int16Max (32768) as reference. Returns a value <= 0; silence approaches -inf, so we clamp to minDBFS.
+// Uses math.MaxInt16 (32767) as reference. Returns a value <= 0; silence approaches -inf, so we clamp to minDBFS.
 func (s *SignalLogger) rmsToDBFS(sample msdk.PCM16Sample, minDBFS float64) float64 {
 	if len(sample) == 0 {
 		return minDBFS
@@ -151,7 +148,7 @@ func (s *SignalLogger) rmsToDBFS(sample msdk.PCM16Sample, minDBFS float64) float
 		sumSq += x * x
 	}
 	meanSq := float64(sumSq) / float64(len(sample))
-	refSq := float64(int16Max) * float64(int16Max)
+	refSq := float64(math.MaxInt16) * float64(math.MaxInt16)
 	if meanSq <= 0 {
 		return minDBFS
 	}

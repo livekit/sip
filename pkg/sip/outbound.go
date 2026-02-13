@@ -20,7 +20,7 @@ import (
 	"math"
 	"net"
 	"sort"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -91,7 +91,7 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
-	signalLoggingEnabled := strings.EqualFold(sipConf.featureFlags[signalLoggingFeatureFlag], "true")
+	signalLoggingEnabled, _ := strconv.ParseBool(sipConf.featureFlags[signalLoggingFeatureFlag])
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
