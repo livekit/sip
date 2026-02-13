@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,6 +88,22 @@ type RoomStats struct {
 		Time             time.Time
 		PublishedSamples uint64
 	}
+}
+
+func tokenAttrsForJoin(attrs map[string]string) map[string]string {
+	if len(attrs) == 0 {
+		return nil
+	}
+
+	// Include all SIP-scoped attrs in the token so SIP headers (sip.h.*) are
+	// available with the first participant state instead of a later attr update.
+	tokenAttrs := make(map[string]string, len(attrs))
+	for k, v := range attrs {
+		if strings.HasPrefix(k, livekit.AttrSIPPrefix) {
+			tokenAttrs[k] = v
+		}
+	}
+	return tokenAttrs
 }
 
 func (s *RoomStats) Load() RoomStatsSnapshot {
@@ -383,19 +400,8 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 	if rconf.Token == "" {
 		// TODO: Remove this code path, always sign tokens on LiveKit server.
-		//       For now, match Cloud behavior and do not send extra attrs in the token.
-		tokenAttrs := make(map[string]string, len(partConf.Attributes))
-		for _, k := range []string{
-			livekit.AttrSIPCallID,
-			livekit.AttrSIPTrunkID,
-			livekit.AttrSIPDispatchRuleID,
-			livekit.AttrSIPTrunkNumber,
-			livekit.AttrSIPPhoneNumber,
-		} {
-			if v, ok := partConf.Attributes[k]; ok {
-				tokenAttrs[k] = v
-			}
-		}
+		// Include SIP attrs directly in token so consumers can use them on first join.
+		tokenAttrs := tokenAttrsForJoin(partConf.Attributes)
 		var err error
 		rconf.Token, err = sip.BuildSIPToken(sip.SIPTokenParams{
 			APIKey:                conf.ApiKey,

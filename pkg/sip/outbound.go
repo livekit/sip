@@ -613,7 +613,9 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 			ringing = true
 			c.setStatus(CallRinging)
 		}
-		c.setExtraAttrs(nil, 0, nil, hdrs)
+		// Map all SIP headers from provisional responses (1xx) to participant
+		// attributes early, so they are accessible before the call connects.
+		c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, nil, hdrs)
 	})
 	// Update SIPCallInfo with the SIP Call-ID after Invite
 	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
