@@ -16,6 +16,7 @@ package sip
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	msdk "github.com/livekit/media-sdk"
@@ -23,22 +24,36 @@ import (
 )
 
 const (
-	DefaultSignalMultiplier = float64(2)      // Signal needs to be at least 2 times the noise floor to be detected.
-	DefaultNoiseFloor       = float64(25)     // Use a low noise floor; The purpose is to detect any kind of signal, not just voice.
-	DefaultHangoverDuration = 1 * time.Second // Duration of silence that needs to elapse before we no longer consider it a signal.
+	// int16Max is the maximum absolute value for int16 (32768); used for dBFS reference.
+	int16Max = 1 << 15
+
+	// DefaultInitialNoiseFloorDB is the initial noise floor in dBFS for adaptive tracking.
+	DefaultInitialNoiseFloorDB = -50
+	// DefaultHangoverDuration is how long we stay in "signal" after level drops below exit threshold.
+	DefaultHangoverDuration = 1 * time.Second
+	// DefaultEnterVoiceOffsetDB is the default offset above noise floor to enter voice (hysteresis high).
+	DefaultEnterVoiceOffsetDB = 10
+	// DefaultExitVoiceOffsetDB is the default offset above noise floor to exit voice (hysteresis low).
+	DefaultExitVoiceOffsetDB = 5
+	// DefaultNoiseFloorUpdateMaxDB is the default: only adapt noise floor when current level is below noiseFloor + this.
+	DefaultNoiseFloorUpdateMaxDB = 5
+
+	// minDBFS clamps very quiet frames to avoid -inf in dBFS.
+	minDBFS = -100
 )
 
-// Keeps an internal state of whether we're currently transmitting signal (voice or noise), or silence.
-// This implements msdk.PCM16Writer to inspect decoded packet content.
-// Used to log changes betweem those states.
+// SignalLogger keeps internal state of whether we're in voice or silence, using RMS → dBFS,
+// an adaptive noise floor, and hysteresis. It implements msdk.PCM16Writer and logs state changes.
 type SignalLogger struct {
 	// Configuration
-	log              logger.Logger
-	next             msdk.PCM16Writer
-	name             string
-	hangoverDuration time.Duration // Time to stay in "signal" state after last signal to avoid flip-flopping.
-	signalMultiplier float64       // Threshold multiplier for signal to be detected.
-	noiseFloor       float64       // Moving average of noise floor.
+	log                   logger.Logger
+	next                  msdk.PCM16Writer
+	name                  string
+	hangoverDuration      time.Duration
+	noiseFloor            float64 // Adaptive noise floor in dBFS.
+	enterVoiceOffsetDB    float64 // Offset above noise floor to enter voice (hysteresis high).
+	exitVoiceOffsetDB     float64 // Offset above noise floor to exit voice (hysteresis low).
+	noiseFloorUpdateMaxDB float64 // Only adapt noise floor when current level is below noiseFloor + this.
 
 	// State
 	lastSignalTime time.Time
@@ -51,22 +66,10 @@ type SignalLogger struct {
 
 type SignalLoggerOption func(*SignalLogger) error
 
-func WithSignalMultiplier(signalMultiplier float64) SignalLoggerOption {
+// WithNoiseFloor sets the initial noise floor in dBFS (e.g. -40). Adaptive updates apply after.
+func WithNoiseFloor(noiseFloorDB float64) SignalLoggerOption {
 	return func(s *SignalLogger) error {
-		if signalMultiplier <= 1 {
-			return fmt.Errorf("signal multiplier must be greater than 1")
-		}
-		s.signalMultiplier = signalMultiplier
-		return nil
-	}
-}
-
-func WithNoiseFloor(noiseFloor float64) SignalLoggerOption {
-	return func(s *SignalLogger) error {
-		if noiseFloor <= 0 {
-			return fmt.Errorf("noise floor min must be positive")
-		}
-		s.noiseFloor = noiseFloor
+		s.noiseFloor = max(noiseFloorDB, -60) // anything below -60 dBFS is almost never realistic for a live phone line
 		return nil
 	}
 }
@@ -74,20 +77,56 @@ func WithNoiseFloor(noiseFloor float64) SignalLoggerOption {
 func WithHangoverDuration(hangoverDuration time.Duration) SignalLoggerOption {
 	return func(s *SignalLogger) error {
 		if hangoverDuration <= 0 {
-			return fmt.Errorf("hangover duration must be positive")
+			return fmt.Errorf("hangover duration must be positive, got %s", hangoverDuration)
 		}
 		s.hangoverDuration = hangoverDuration
 		return nil
 	}
 }
+
+// WithEnterVoiceOffsetDB sets the offset (dB) above noise floor to enter voice. Default is DefaultEnterVoiceOffsetDB.
+func WithEnterVoiceOffsetDB(db float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if db <= 0 {
+			return fmt.Errorf("enterVoiceOffsetDB must be positive, got %g", db)
+		}
+		s.enterVoiceOffsetDB = db
+		return nil
+	}
+}
+
+// WithExitVoiceOffsetDB sets the offset (dB) above noise floor to exit voice. Default is DefaultExitVoiceOffsetDB.
+func WithExitVoiceOffsetDB(db float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if db <= 0 {
+			return fmt.Errorf("exitVoiceOffsetDB must be positive, got %g", db)
+		}
+		s.exitVoiceOffsetDB = db
+		return nil
+	}
+}
+
+// WithNoiseFloorUpdateMaxDB sets the max offset (dB) above noise floor for adaptation; only update when current < noiseFloor+this. Default is DefaultNoiseFloorUpdateMaxDB.
+func WithNoiseFloorUpdateMaxDB(db float64) SignalLoggerOption {
+	return func(s *SignalLogger) error {
+		if db <= 0 {
+			return fmt.Errorf("noiseFloorUpdateMaxDB must be positive, got %g", db)
+		}
+		s.noiseFloorUpdateMaxDB = db
+		return nil
+	}
+}
+
 func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, options ...SignalLoggerOption) (msdk.PCM16Writer, error) {
 	s := &SignalLogger{
-		log:              log,
-		next:             next,
-		name:             name,
-		hangoverDuration: DefaultHangoverDuration,
-		signalMultiplier: DefaultSignalMultiplier,
-		noiseFloor:       DefaultNoiseFloor,
+		log:                   log,
+		next:                  next,
+		name:                  name,
+		hangoverDuration:      DefaultHangoverDuration,
+		noiseFloor:            DefaultInitialNoiseFloorDB,
+		enterVoiceOffsetDB:    DefaultEnterVoiceOffsetDB,
+		exitVoiceOffsetDB:     DefaultExitVoiceOffsetDB,
+		noiseFloorUpdateMaxDB: DefaultNoiseFloorUpdateMaxDB,
 	}
 	for _, option := range options {
 		if err := option(s); err != nil {
@@ -112,46 +151,69 @@ func (s *SignalLogger) Close() error {
 	return s.next.Close()
 }
 
-// Calculates the mean absolute deviation of the frame.
-func (s *SignalLogger) MeanAbsoluteDeviation(sample msdk.PCM16Sample) float64 {
+// rmsToDBFS computes RMS of the frame then converts to dBFS: 10*log10(mean(square)/MAX^2).
+// Uses int16Max (32768) as reference. Returns a value <= 0; silence approaches -inf, so we clamp to minDBFS.
+func (s *SignalLogger) rmsToDBFS(sample msdk.PCM16Sample, minDBFS float64) float64 {
 	if len(sample) == 0 {
-		return 0
+		return minDBFS
 	}
-	var totalAbs int64
+	var sumSq int64
 	for _, v := range sample {
-		if v < 0 {
-			totalAbs += int64(-v)
-		} else {
-			totalAbs += int64(v)
-		}
+		x := int64(v)
+		sumSq += x * x
 	}
-	return float64(totalAbs) / float64(len(sample))
+	meanSq := float64(sumSq) / float64(len(sample))
+	refSq := float64(int16Max) * float64(int16Max)
+	if meanSq <= 0 {
+		return minDBFS
+	}
+	db := 10 * math.Log10(meanSq/refSq)
+	if db < minDBFS {
+		return minDBFS
+	}
+	return db
+}
+
+// updateNoiseFloor adapts the noise floor only when current_dB < noiseFloor + noiseFloorUpdateMaxDB.
+func (s *SignalLogger) updateNoiseFloor(currentDB float64) {
+	if currentDB < s.noiseFloor+s.noiseFloorUpdateMaxDB {
+		s.noiseFloor = 0.95*s.noiseFloor + 0.05*currentDB
+	}
 }
 
 func (s *SignalLogger) WriteSample(sample msdk.PCM16Sample) error {
-	currentEnergy := s.MeanAbsoluteDeviation(sample)
+	currentDB := s.rmsToDBFS(sample, minDBFS)
+
+	s.updateNoiseFloor(currentDB)
+
+	enterThreshold := s.noiseFloor + s.enterVoiceOffsetDB
+	exitThreshold := s.noiseFloor + s.exitVoiceOffsetDB
 
 	now := time.Now()
-	isSignal := currentEnergy > (s.noiseFloor * s.signalMultiplier)
-	if isSignal {
+	aboveEnter := currentDB > enterThreshold
+	belowExit := currentDB < exitThreshold
+
+	if aboveEnter {
 		s.lastSignalTime = now
 	}
 
 	s.framesProcessed++
-	if s.framesProcessed > 10 { // Don't log any changes at first
-		if isSignal && isSignal != s.lastIsSignal { // silence -> signal: Immediate transition
-			s.lastIsSignal = true
-			s.stateChanges++
-			s.log.Infow("signal changed", "name", s.name, "signal", isSignal, "stateChanges", s.stateChanges)
-		} else if !isSignal && isSignal != s.lastIsSignal { // signal -> silence: Only after hangover
-			if now.Sub(s.lastSignalTime) >= s.hangoverDuration {
-				s.lastIsSignal = false
-				s.stateChanges++
-				s.log.Infow("signal changed", "name", s.name, "signal", isSignal, "stateChanges", s.stateChanges)
-			}
-		}
-	} else {
-		s.lastIsSignal = isSignal
+	if s.framesProcessed <= 10 {
+		s.lastIsSignal = aboveEnter
+		return s.next.WriteSample(sample)
 	}
+
+	if aboveEnter && !s.lastIsSignal {
+		s.lastIsSignal = true
+		s.stateChanges++
+		s.log.Infow("signal changed", "name", s.name, "signal", true, "stateChanges", s.stateChanges, "dBFS", currentDB, "noiseFloor", s.noiseFloor)
+	} else if belowExit && s.lastIsSignal {
+		if now.Sub(s.lastSignalTime) >= s.hangoverDuration {
+			s.lastIsSignal = false
+			s.stateChanges++
+			s.log.Infow("signal changed", "name", s.name, "signal", false, "stateChanges", s.stateChanges, "dBFS", currentDB, "noiseFloor", s.noiseFloor)
+		}
+	}
+
 	return s.next.WriteSample(sample)
 }
