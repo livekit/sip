@@ -74,11 +74,10 @@ func TestSignalLogger_initialization(t *testing.T) {
 		require.Equal(t, DefaultHangoverDuration, sl.hangoverDuration)
 		require.InDelta(t, float64(DefaultEnterVoiceOffsetDB), sl.enterVoiceOffsetDB, 0.01)
 		require.InDelta(t, float64(DefaultExitVoiceOffsetDB), sl.exitVoiceOffsetDB, 0.01)
-		require.InDelta(t, float64(DefaultNoiseFloorUpdateMaxDB), sl.noiseFloorUpdateMaxDB, 0.01)
 	})
 
 	t.Run("with valid options", func(t *testing.T) {
-		out, err := NewSignalLogger(log, "incoming", next, WithNoiseFloor(-60), WithHangoverDuration(2*time.Second), WithEnterVoiceOffsetDB(9), WithExitVoiceOffsetDB(4), WithNoiseFloorUpdateMaxDB(4))
+		out, err := NewSignalLogger(log, "incoming", next, WithNoiseFloor(-60), WithHangoverDuration(2*time.Second), WithEnterVoiceOffsetDB(9), WithExitVoiceOffsetDB(4))
 		sl, ok := out.(*SignalLogger)
 		require.True(t, ok)
 		require.NoError(t, err)
@@ -87,7 +86,6 @@ func TestSignalLogger_initialization(t *testing.T) {
 		require.Equal(t, 2*time.Second, sl.hangoverDuration)
 		require.Equal(t, 9.0, sl.enterVoiceOffsetDB)
 		require.Equal(t, 4.0, sl.exitVoiceOffsetDB)
-		require.Equal(t, 4.0, sl.noiseFloorUpdateMaxDB)
 	})
 
 	t.Run("with invalid options", func(t *testing.T) {
@@ -100,9 +98,9 @@ func TestSignalLogger_initialization(t *testing.T) {
 		_, err = NewSignalLogger(log, "incoming", next, WithExitVoiceOffsetDB(-1))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "exitVoiceOffsetDB must be positive, got -1")
-		_, err = NewSignalLogger(log, "incoming", next, WithNoiseFloorUpdateMaxDB(-1))
+		_, err = NewSignalLogger(log, "incoming", next, WithNoiseFloor(-101))
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "noiseFloorUpdateMaxDB must be positive, got -1")
+		require.Contains(t, err.Error(), "noise floor must be >= -100 dBFS, got -101")
 	})
 }
 

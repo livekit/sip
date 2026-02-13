@@ -27,7 +27,7 @@ const (
 	// int16Max is the maximum absolute value for int16 (32768); used for dBFS reference.
 	int16Max = 1 << 15
 
-	// DefaultInitialNoiseFloorDB is the initial noise floor in dBFS for adaptive tracking.
+	// DefaultInitialNoiseFloorDB is the default noise floor in dBFS.
 	DefaultInitialNoiseFloorDB = -50
 	// DefaultHangoverDuration is how long we stay in "signal" after level drops below exit threshold.
 	DefaultHangoverDuration = 1 * time.Second
@@ -35,25 +35,22 @@ const (
 	DefaultEnterVoiceOffsetDB = 10
 	// DefaultExitVoiceOffsetDB is the default offset above noise floor to exit voice (hysteresis low).
 	DefaultExitVoiceOffsetDB = 5
-	// DefaultNoiseFloorUpdateMaxDB is the default: only adapt noise floor when current level is below noiseFloor + this.
-	DefaultNoiseFloorUpdateMaxDB = 5
 
 	// minDBFS clamps very quiet frames to avoid -inf in dBFS.
 	minDBFS = -100
 )
 
-// SignalLogger keeps internal state of whether we're in voice or silence, using RMS → dBFS,
-// an adaptive noise floor, and hysteresis. It implements msdk.PCM16Writer and logs state changes.
+// SignalLogger keeps internal state of whether we're in voice or silence, using RMS → dBFS
+// and a fixed noise floor with hysteresis. It implements msdk.PCM16Writer and logs state changes.
 type SignalLogger struct {
 	// Configuration
-	log                   logger.Logger
-	next                  msdk.PCM16Writer
-	name                  string
-	hangoverDuration      time.Duration
-	noiseFloor            float64 // Adaptive noise floor in dBFS.
-	enterVoiceOffsetDB    float64 // Offset above noise floor to enter voice (hysteresis high).
-	exitVoiceOffsetDB     float64 // Offset above noise floor to exit voice (hysteresis low).
-	noiseFloorUpdateMaxDB float64 // Only adapt noise floor when current level is below noiseFloor + this.
+	log                logger.Logger
+	next               msdk.PCM16Writer
+	name               string
+	hangoverDuration   time.Duration
+	noiseFloor         float64 // Noise floor in dBFS (fixed, not adaptive).
+	enterVoiceOffsetDB float64 // Offset above noise floor to enter voice (hysteresis high).
+	exitVoiceOffsetDB  float64 // Offset above noise floor to exit voice (hysteresis low).
 
 	// State
 	lastSignalTime time.Time
@@ -66,10 +63,13 @@ type SignalLogger struct {
 
 type SignalLoggerOption func(*SignalLogger) error
 
-// WithNoiseFloor sets the initial noise floor in dBFS (e.g. -40). Adaptive updates apply after.
+// WithNoiseFloor sets the noise floor in dBFS (e.g. -40). Must be >= minDBFS.
 func WithNoiseFloor(noiseFloorDB float64) SignalLoggerOption {
 	return func(s *SignalLogger) error {
-		s.noiseFloor = max(noiseFloorDB, -60) // anything below -60 dBFS is almost never realistic for a live phone line
+		if noiseFloorDB < minDBFS {
+			return fmt.Errorf("noise floor must be >= %g dBFS, got %g", float64(minDBFS), noiseFloorDB)
+		}
+		s.noiseFloor = noiseFloorDB
 		return nil
 	}
 }
@@ -106,27 +106,15 @@ func WithExitVoiceOffsetDB(db float64) SignalLoggerOption {
 	}
 }
 
-// WithNoiseFloorUpdateMaxDB sets the max offset (dB) above noise floor for adaptation; only update when current < noiseFloor+this. Default is DefaultNoiseFloorUpdateMaxDB.
-func WithNoiseFloorUpdateMaxDB(db float64) SignalLoggerOption {
-	return func(s *SignalLogger) error {
-		if db <= 0 {
-			return fmt.Errorf("noiseFloorUpdateMaxDB must be positive, got %g", db)
-		}
-		s.noiseFloorUpdateMaxDB = db
-		return nil
-	}
-}
-
 func NewSignalLogger(log logger.Logger, name string, next msdk.PCM16Writer, options ...SignalLoggerOption) (msdk.PCM16Writer, error) {
 	s := &SignalLogger{
-		log:                   log,
-		next:                  next,
-		name:                  name,
-		hangoverDuration:      DefaultHangoverDuration,
-		noiseFloor:            DefaultInitialNoiseFloorDB,
-		enterVoiceOffsetDB:    DefaultEnterVoiceOffsetDB,
-		exitVoiceOffsetDB:     DefaultExitVoiceOffsetDB,
-		noiseFloorUpdateMaxDB: DefaultNoiseFloorUpdateMaxDB,
+		log:                log,
+		next:               next,
+		name:               name,
+		hangoverDuration:   DefaultHangoverDuration,
+		noiseFloor:         DefaultInitialNoiseFloorDB,
+		enterVoiceOffsetDB: DefaultEnterVoiceOffsetDB,
+		exitVoiceOffsetDB:  DefaultExitVoiceOffsetDB,
 	}
 	for _, option := range options {
 		if err := option(s); err != nil {
@@ -174,17 +162,8 @@ func (s *SignalLogger) rmsToDBFS(sample msdk.PCM16Sample, minDBFS float64) float
 	return db
 }
 
-// updateNoiseFloor adapts the noise floor only when current_dB < noiseFloor + noiseFloorUpdateMaxDB.
-func (s *SignalLogger) updateNoiseFloor(currentDB float64) {
-	if currentDB < s.noiseFloor+s.noiseFloorUpdateMaxDB {
-		s.noiseFloor = 0.95*s.noiseFloor + 0.05*currentDB
-	}
-}
-
 func (s *SignalLogger) WriteSample(sample msdk.PCM16Sample) error {
 	currentDB := s.rmsToDBFS(sample, minDBFS)
-
-	s.updateNoiseFloor(currentDB)
 
 	enterThreshold := s.noiseFloor + s.enterVoiceOffsetDB
 	exitThreshold := s.noiseFloor + s.exitVoiceOffsetDB
