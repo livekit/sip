@@ -518,6 +518,18 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 }
 
 func (c *outboundCall) stopSIP(ctx context.Context, reason string) {
+	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
+	defer cancel()
+	go func() {
+		select {
+		case <-termCtx.Done():
+			return
+		case <-time.After(5 * time.Minute):
+			c.mon.CallTerminationFailure()
+			c.log.Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
+		}
+	}()
+
 	c.mon.CallTerminate(reason)
 	c.cc.Close(ctx)
 }

@@ -1140,6 +1140,18 @@ func (c *inboundCall) printStats(log logger.Logger) {
 
 // close should only be called from handleInvite.
 func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, reason string) {
+	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
+	defer cancel()
+	go func() {
+		select {
+		case <-termCtx.Done():
+			return
+		case <-time.After(5 * time.Minute):
+			c.mon.CallTerminationFailure()
+			c.log().Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
+		}
+	}()
+
 	ctx = context.WithoutCancel(ctx)
 	if !c.done.CompareAndSwap(false, true) {
 		return
