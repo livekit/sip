@@ -788,3 +788,164 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	// Verify we received the critical 487 response
 	require.True(t, invite487Received, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
 }
+
+// TestSameCallIDForAuthFlow verifies that the same LiveKit call ID is assigned to both
+// the initial INVITE (without auth) and the subsequent INVITE (with auth)
+func TestSameCallIDForAuthFlow(t *testing.T) {
+	const (
+		fromUser = "test@example.com"
+		toUser   = "agent@example.com"
+		username = "testuser"
+		password = "testpass"
+		callID   = "same-call-id@test.com"
+		fromTag  = "fixed-from-tag-12345"
+	)
+
+	var capturedCallIDs []string
+	var mu sync.Mutex
+
+	log := logger.NewTestLoggerLevel(t, 1)
+
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			// Capture the LiveKit call ID from the first request
+			mu.Lock()
+			capturedCallIDs = append(capturedCallIDs, call.LkCallId)
+			mu.Unlock()
+
+			log.Infow("GetAuthCredentials called", "callID", call.LkCallId)
+
+			return AuthInfo{
+				Result:   AuthPassword,
+				Username: username,
+				Password: password,
+			}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{
+				Result: DispatchNoRuleReject,
+				// No room config needed for reject
+			}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// No-op for tests to avoid async logging issues
+		},
+	}
+
+	// Create service with authentication enabled
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	s, err := NewService("", &config.Config{
+		HideInboundPort: false, // Enable authentication
+		SIPPort:         sipPort,
+		SIPPortListen:   sipPort,
+		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	require.NoError(t, err)
+	require.NotNil(t, s)
+
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+	t.Cleanup(s.Stop)
+
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent(fromUser),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	)
+	require.NoError(t, err)
+
+	sipClient, err := sipgo.NewClient(sipUserAgent)
+	require.NoError(t, err)
+
+	offer, err := sdp.NewOffer(localIP, 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+
+	inviteFromHeader := sip.FromHeader{
+		DisplayName: fromUser,
+		Address:     sip.Uri{User: fromUser, Host: sipServerAddress},
+		Params:      sip.NewParams().Add("tag", fromTag), // Key bit here
+	}
+
+	// Create first INVITE request (without auth)
+	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
+	inviteRequest1 := sip.NewRequest(sip.INVITE, inviteRecipient)
+	inviteRequest1.SetDestination(sipServerAddress)
+	inviteRequest1.SetBody(offerData)
+	inviteRequest1.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	inviteRequest1.AppendHeader(sip.NewHeader("Call-ID", callID))
+	inviteRequest1.AppendHeader(&inviteFromHeader)
+
+	tx1, err := sipClient.TransactionRequest(inviteRequest1)
+	require.NoError(t, err)
+	t.Cleanup(tx1.Terminate)
+
+	// Should receive 100 Trying first, then 407 Unauthorized
+	res1 := getResponseOrFail(t, tx1)
+	require.Equal(t, sip.StatusCode(100), res1.StatusCode, "First request should receive 100 Trying")
+	res1 = getResponseOrFail(t, tx1)
+	require.Equal(t, sip.StatusCode(407), res1.StatusCode, "First request should receive 407 Unauthorized")
+
+	// Get the To tag from the 407 response
+	toHeader := res1.To()
+	require.NotNil(t, toHeader, "407 response should have To header")
+	_, ok := toHeader.Params.Get("tag")
+	require.True(t, ok, "407 response To header should have tag parameter")
+
+	// Get the challenge from first response
+	authHeader1 := res1.GetHeader("Proxy-Authenticate")
+	require.NotNil(t, authHeader1, "First response should have Proxy-Authenticate header")
+	challenge1 := authHeader1.Value()
+
+	// Parse the challenge to extract nonce and realm
+	challenge, err := digest.ParseChallenge(challenge1)
+	require.NoError(t, err, "Should be able to parse challenge")
+
+	// Compute the digest response using the challenge and credentials
+	cred, err := digest.Digest(challenge, digest.Options{
+		Method:   "INVITE",
+		URI:      inviteRecipient.String(),
+		Username: username,
+		Password: password,
+	})
+	require.NoError(t, err, "Should be able to compute digest response")
+
+	// Create second INVITE request (with auth) using the SAME Call-ID, From tag, and To tag
+	inviteRequest2 := sip.NewRequest(sip.INVITE, inviteRecipient)
+	inviteRequest2.SetDestination(sipServerAddress)
+	inviteRequest2.SetBody(offerData)
+	inviteRequest2.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	inviteRequest2.AppendHeader(sip.NewHeader("Call-ID", callID))
+	inviteRequest2.AppendHeader(sip.NewHeader("Proxy-Authorization", cred.String()))
+	inviteRequest2.AppendHeader(&inviteFromHeader)
+
+	tx2, err := sipClient.TransactionRequest(inviteRequest2)
+	require.NoError(t, err)
+	t.Cleanup(tx2.Terminate)
+
+	// Should receive 100 Trying first, then proceed with authentication
+	res2 := getResponseOrFail(t, tx2)
+	require.Equal(t, sip.StatusCode(100), res2.StatusCode, "Second request should receive 100 Trying")
+
+	// Wait a bit for the handler to be called
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify we captured exactly 2 call IDs
+	mu.Lock()
+	require.Len(t, capturedCallIDs, 2, "Should have captured 2 call IDs")
+	require.Equal(t, capturedCallIDs[0], capturedCallIDs[1], "Both requests should have the same LiveKit call ID")
+	require.NotEmpty(t, capturedCallIDs[0], "Call ID should not be empty")
+	require.Contains(t, capturedCallIDs[0], "SCL_", "Call ID should have SCL_ prefix")
+	mu.Unlock()
+
+	t.Logf("First call ID: %s", capturedCallIDs[0])
+	t.Logf("Second call ID: %s", capturedCallIDs[1])
+}
