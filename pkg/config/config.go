@@ -93,6 +93,7 @@ type Config struct {
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 	ListenIP      string `yaml:"listen_ip"`
 
+	UDPMaxPayload int `yaml:"udp_max_payload"`
 	// if different from signaling IP
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
