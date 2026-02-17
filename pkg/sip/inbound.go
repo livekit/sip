@@ -313,20 +313,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 	tr := callTransportFromReq(req)
 
-	var call *inboundCall
-	getHeaders := func(headers map[string]string) map[string]string {
-		c := call
-		if c == nil || len(c.attrsToHdr) == 0 {
-			return headers
-		}
-		r := c.lkRoom.Room()
-		if r == nil {
-			return headers
-		}
-		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
-	}
-
-	cc, err := s.newInbound(req, tx, src, getHeaders)
+	cc, err := s.newInbound(req, tx, src)
 	if err != nil {
 		s.log.Errorw("invalid invite", err)
 		if !s.conf.HideInboundPort {
@@ -460,7 +447,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		// ok
 	}
 
-	call = s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
+	call := s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
+	cc.SetCall(call)
 	call.joinDur = joinDur
 	return call.handleInvite(call.ctx, tid, req, r.TrunkID, s.conf)
 }
@@ -1428,7 +1416,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 }
 
-func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort, getHeaders setHeadersFunc) (*sipInbound, error) {
+func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
 	sipCallIDHdr := invite.CallID()
 	if sipCallIDHdr == nil {
 		return nil, errors.New("no Call-ID header in INVITE")
@@ -1491,9 +1479,8 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 		contact: &sip.ContactHeader{
 			Address: *contact.GetContactURI(),
 		},
-		cancelled:  make(chan struct{}),
-		referDone:  make(chan error), // Do not buffer the channel to avoid reading a result for an old request
-		setHeaders: getHeaders,
+		cancelled: make(chan struct{}),
+		referDone: make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 	}
 	if h := invite.CSeq(); h != nil {
 		c.inviteCSeq = h.SeqNo
@@ -1528,7 +1515,22 @@ type sipInbound struct {
 	referCseq       uint32
 	ringing         chan struct{}
 	acked           core.Fuse
-	setHeaders      setHeadersFunc
+	call            *inboundCall
+}
+
+func (c *sipInbound) SetCall(call *inboundCall) {
+	c.call = call
+}
+
+func (c *sipInbound) fillHeaders(headers map[string]string) map[string]string {
+	if c == nil || c.call == nil || len(c.call.attrsToHdr) == 0 {
+		return headers
+	}
+	r := c.call.lkRoom.Room()
+	if r == nil {
+		return headers
+	}
+	return AttrsToHeaders(r.LocalParticipant.Attributes(), c.call.attrsToHdr, headers)
 }
 
 func (c *sipInbound) Drop() {
@@ -1860,10 +1862,8 @@ func (c *sipInbound) sendBye(ctx context.Context) {
 	defer span.End()
 	// This function is for clients, so we need to swap src and dest
 	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
-	if c.setHeaders != nil {
-		for k, v := range c.setHeaders(nil) {
-			r.AppendHeader(sip.NewHeader(k, v))
-		}
+	for k, v := range c.fillHeaders(nil) {
+		r.AppendHeader(sip.NewHeader(k, v))
 	}
 
 	c.setCSeq(r)
@@ -1887,10 +1887,8 @@ func (c *sipInbound) sendStatus(ctx context.Context, code sip.StatusCode, status
 		status = sipStatus(code)
 	}
 	r := sip.NewResponseFromRequest(c.invite, code, status, nil)
-	if c.setHeaders != nil {
-		for k, v := range c.setHeaders(nil) {
-			r.AppendHeader(sip.NewHeader(k, v))
-		}
+	for k, v := range c.fillHeaders(nil) {
+		r.AppendHeader(sip.NewHeader(k, v))
 	}
 	_ = c.inviteTx.Respond(r)
 	c.drop()
@@ -1916,9 +1914,7 @@ func (c *sipInbound) newReferReq(transferTo string, headers map[string]string) (
 	if from == nil {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "no From URI in invite")
 	}
-	if c.setHeaders != nil {
-		headers = c.setHeaders(headers)
-	}
+	headers = c.fillHeaders(headers)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
 	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers)
