@@ -437,6 +437,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
 		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
+			// Store (call-ID + from tag) to (to tag) mapping
+			s.cmu.Lock()
+			s.provisionalInvites.Add(fmt.Sprintf("%s:%s", cc.SIPCallID(), cc.Tag()), cc.ID())
+			s.cmu.Unlock()
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
@@ -1447,8 +1451,17 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	}
 	toTag, ok := toHdr.Params.Get("tag")
 	if !ok || toTag == "" {
-		// No to-tag means a new dialog is being created. Generate a local tag
-		toTag = lksip.NewCallID()
+		// Check if the call-ID + from tag is in the provisional invites cache
+		s.cmu.Lock()
+		cahcedTag, ok := s.provisionalInvites.Get(fmt.Sprintf("%s:%s", sipCallID, fromTag))
+		s.cmu.Unlock()
+		if ok && cahcedTag != "" {
+			// Use the cached tag to reuse the originally assigned SCL ID
+			toTag = string(cahcedTag)
+		} else {
+			// New dialog is being created. Generate a local tag
+			toTag = lksip.NewCallID()
+		}
 		toHdr.Params.Add("tag", toTag)
 	}
 

@@ -142,11 +142,12 @@ type Server struct {
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
 
-	closing     core.Fuse
-	cmu         sync.RWMutex
-	byRemoteTag map[RemoteTag]*inboundCall
-	byLocalTag  map[LocalTag]*inboundCall
-	byCallID    map[string]*inboundCall
+	closing            core.Fuse
+	cmu                sync.RWMutex
+	byRemoteTag        map[RemoteTag]*inboundCall
+	byLocalTag         map[LocalTag]*inboundCall
+	byCallID           map[string]*inboundCall
+	provisionalInvites *expirable.LRU[string, LocalTag]
 
 	infos struct {
 		sync.Mutex
@@ -180,15 +181,16 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:         log,
-		conf:        conf,
-		region:      region,
-		mon:         mon,
-		getIOClient: getIOClient,
-		getRoom:     DefaultGetRoomFunc,
-		byRemoteTag: make(map[RemoteTag]*inboundCall),
-		byLocalTag:  make(map[LocalTag]*inboundCall),
-		byCallID:    make(map[string]*inboundCall),
+		log:                log,
+		conf:               conf,
+		region:             region,
+		mon:                mon,
+		getIOClient:        getIOClient,
+		getRoom:            DefaultGetRoomFunc,
+		byRemoteTag:        make(map[RemoteTag]*inboundCall),
+		byLocalTag:         make(map[LocalTag]*inboundCall),
+		byCallID:           make(map[string]*inboundCall),
+		provisionalInvites: expirable.NewLRU[string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	for _, option := range options {
 		option(s)
