@@ -723,7 +723,6 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 			p.stats.IgnoredPackets.Add(1)
 			continue
 		}
-		p.stats.InputPackets.Add(1)
 		err = hnd.HandleRTP(&h, buf[:n])
 		if err != nil {
 			if pipeline == "" {
@@ -743,6 +742,7 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 			}
 			continue
 		}
+		p.stats.InputPackets.Add(1)
 		errorCnt = 0
 		pipeline = ""
 	}
