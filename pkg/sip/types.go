@@ -235,22 +235,6 @@ func getTagFrom(params sip.HeaderParams) (RemoteTag, bool) {
 	return RemoteTag(tag), true
 }
 
-func LoggerWithParams(log logger.Logger, c Signaling) logger.Logger {
-	if a := c.From(); a.Host != "" {
-		log = log.WithValues("fromHost", a.Host, "fromUser", a.User)
-	}
-	if a := c.To(); a.Host != "" {
-		log = log.WithValues("toHost", a.Host, "toUser", a.User)
-	}
-	if tag := c.Tag(); tag != "" {
-		log = log.WithValues("sipTag", tag)
-	}
-	if cid := c.SIPCallID(); cid != "" {
-		log = log.WithValues("sipCallID", cid)
-	}
-	return log
-}
-
 func LoggerWithHeaders(log logger.Logger, c Signaling) logger.Logger {
 	headers := c.RemoteHeaders()
 	for hdr, name := range headerToLog {
