@@ -38,7 +38,7 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 			return nil, err
 		}
 	} else if conf.NAT1To1IP != "" {
-		ip, err := netip.ParseAddr(conf.NAT1To1IP)
+		ip, err := resolveAddrOrHost(conf.NAT1To1IP)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +55,7 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 			return nil, err
 		}
 	} else if conf.MediaNAT1To1IP != "" && conf.MediaNAT1To1IP != conf.NAT1To1IP {
-		ip, err := netip.ParseAddr(conf.MediaNAT1To1IP)
+		ip, err := resolveAddrOrHost(conf.MediaNAT1To1IP)
 		if err != nil {
 			return nil, err
 		}
@@ -79,6 +79,24 @@ func getPublicIP() (netip.Addr, error) {
 	}
 	logger.Warnw("could not resolve external IP", err)
 	return netip.Addr{}, errors.Errorf("could not resolve external IP: %v", err)
+}
+
+func resolveAddrOrHost(addrOrHost string) (netip.Addr, error) {
+	// Try parsing as a literal IP address first.
+	if ip, err := netip.ParseAddr(addrOrHost); err == nil {
+		return ip, nil
+	}
+	// Fall back to DNS resolution for domain names.
+	ips, err := net.LookupHost(addrOrHost)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("failed to resolve %q: %w", addrOrHost, err)
+	}
+	for _, ipStr := range ips {
+		if ip, err := netip.ParseAddr(ipStr); err == nil && ip.Is4() {
+			return ip, nil
+		}
+	}
+	return netip.Addr{}, fmt.Errorf("no IPv4 address found for %q", addrOrHost)
 }
 
 func getLocalIP(localNet string) (netip.Addr, error) {
