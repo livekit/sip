@@ -439,7 +439,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
-			s.provisionalInvites.Add(fmt.Sprintf("%s:%s", cc.SIPCallID(), cc.Tag()), cc.ID())
+			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
 			s.cmu.Unlock()
 			cmon.InviteErrorShort("unauthorized")
 			// handleInviteAuth will generate the SIP Response as needed
@@ -1453,11 +1453,11 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	if !ok || toTag == "" {
 		// Check if the call-ID + from tag is in the provisional invites cache
 		s.cmu.Lock()
-		cahcedTag, ok := s.provisionalInvites.Get(fmt.Sprintf("%s:%s", sipCallID, fromTag))
+		cachedTag, ok := s.provisionalInvites.Get([2]string{sipCallID, fromTag})
 		s.cmu.Unlock()
-		if ok && cahcedTag != "" {
+		if ok && cachedTag != "" {
 			// Use the cached tag to reuse the originally assigned SCL ID
-			toTag = string(cahcedTag)
+			toTag = string(cachedTag)
 		} else {
 			// New dialog is being created. Generate a local tag
 			toTag = lksip.NewCallID()

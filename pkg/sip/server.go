@@ -147,7 +147,7 @@ type Server struct {
 	byRemoteTag        map[RemoteTag]*inboundCall
 	byLocalTag         map[LocalTag]*inboundCall
 	byCallID           map[string]*inboundCall
-	provisionalInvites *expirable.LRU[string, LocalTag]
+	provisionalInvites *expirable.LRU[[2]string, LocalTag]
 
 	infos struct {
 		sync.Mutex
@@ -190,7 +190,7 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		byRemoteTag:        make(map[RemoteTag]*inboundCall),
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		byCallID:           make(map[string]*inboundCall),
-		provisionalInvites: expirable.NewLRU[string, LocalTag](maxCallCache, nil, callCacheTTL),
+		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	for _, option := range options {
 		option(s)
