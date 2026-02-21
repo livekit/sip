@@ -28,6 +28,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -60,6 +61,9 @@ type RoomStatsSnapshot struct {
 	PublishedSamples uint64  `json:"published_samples"`
 	PublishTX        float64 `json:"publish_tx"`
 
+	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
+	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
+
 	Closed bool `json:"closed"`
 }
 
@@ -70,6 +74,9 @@ type RoomStats struct {
 
 	rtpStats    rtpCountingStats
 	dataPackets atomic.Uint64
+
+	JitterBufferPacketsLost    atomic.Uint64
+	JitterBufferPacketsDropped atomic.Uint64
 
 	Mixer mixer.Stats
 
@@ -84,17 +91,19 @@ type RoomStats struct {
 
 func (s *RoomStats) Load() RoomStatsSnapshot {
 	return RoomStatsSnapshot{
-		InputPackets:   s.rtpStats.packets.Load(),
-		InputBytes:     s.rtpStats.bytes.Load(),
-		Resets:         s.rtpStats.resets.Load(),
-		Gaps:           s.rtpStats.gaps.Load(),
-		GapsSum:        s.rtpStats.gapsSum.Load(),
-		Late:           s.rtpStats.late.Load(),
-		LateSum:        s.rtpStats.lateSum.Load(),
-		DelayedPackets: s.rtpStats.delayedPackets.Load(),
-		DelayedSum:     s.rtpStats.delayedSum.Load(),
-		RapidPackets:   s.rtpStats.rapidPackets.Load(),
-		DataPackets:    s.dataPackets.Load(),
+		InputPackets:               s.rtpStats.packets.Load(),
+		InputBytes:                 s.rtpStats.bytes.Load(),
+		Resets:                     s.rtpStats.resets.Load(),
+		Gaps:                       s.rtpStats.gaps.Load(),
+		GapsSum:                    s.rtpStats.gapsSum.Load(),
+		Late:                       s.rtpStats.late.Load(),
+		LateSum:                    s.rtpStats.lateSum.Load(),
+		DelayedPackets:             s.rtpStats.delayedPackets.Load(),
+		DelayedSum:                 s.rtpStats.delayedSum.Load(),
+		RapidPackets:               s.rtpStats.rapidPackets.Load(),
+		DataPackets:                s.dataPackets.Load(),
+		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
+		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
 
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
@@ -341,7 +350,10 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](codec))
 					if conf.EnableJitterBuffer {
-						h = rtp.HandleJitter(h)
+						h = rtp.HandleJitter(h, jitter.WithPacketLossStatsHandler(func(st *jitter.BufferStats) {
+							r.stats.JitterBufferPacketsLost.Store(st.PacketsLost)
+							r.stats.JitterBufferPacketsDropped.Store(st.PacketsDropped)
+						}))
 					}
 
 					h = newRTPStreamStats(h, &r.stats.rtpStats)
