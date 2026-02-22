@@ -1357,17 +1357,27 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []msdk.PCM16Sample) 
 }
 
 func (c *inboundCall) handleDTMF(tone dtmf.Event) {
+	log := c.log()
+	log.Infow("DTMF received from phone", "digit", string(tone.Digit), "code", tone.Code, "forwardDTMF", c.forwardDTMF.Load())
+
 	if c.forwardDTMF.Load() {
-		_ = c.lkRoom.SendData(&livekit.SipDTMF{
+		err := c.lkRoom.SendData(&livekit.SipDTMF{
 			Code:  uint32(tone.Code),
 			Digit: string([]byte{tone.Digit}),
 		}, lksdk.WithDataPublishReliable(true))
+		if err != nil {
+			log.Warnw("Failed to forward DTMF to room", err, "digit", string(tone.Digit))
+		} else {
+			log.Infow("DTMF forwarded to room successfully", "digit", string(tone.Digit))
+		}
 		return
 	}
+	log.Debugw("DTMF not forwarded (forwardDTMF=false), buffering for PIN", "digit", string(tone.Digit))
 	// We should have enough buffer here.
 	select {
 	case c.dtmf <- tone:
 	default:
+		log.Warnw("DTMF buffer full, dropping tone", nil, "digit", string(tone.Digit))
 	}
 }
 
