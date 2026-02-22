@@ -124,6 +124,9 @@ type Config struct {
 		// InboundWaitACK forces SIP to wait for an ACK to 200 OK before proceeding with the call.
 		InboundWaitACK bool `yaml:"inbound_wait_ack"`
 	} `yaml:"experimental"`
+
+	// AllowCustomFromHostname allows the FROM header to be set to a custom hostname.
+	AllowCustomFromHostname bool `yaml:"allow_custom_from_hostname"`
 }
 
 func NewConfig(confString string) (*Config, error) {

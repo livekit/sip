@@ -123,3 +123,85 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 
 	cancel()
 }
+func TestCreateSIPParticipant_CustomFromHostname(t *testing.T) {
+	t.Run("when allowCustomFromHostname is false", func(t *testing.T) {
+		customFromHost := "custom-from.example.com"
+
+		client := NewOutboundTestClient(t, TestClientConfig{})
+		client.conf.AllowCustomFromHostname = false
+
+		req := MinimalCreateSIPParticipantRequest()
+		req.FromHostname = customFromHost
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			_, _ = client.CreateSIPParticipant(ctx, req)
+		}()
+
+		var sipClient *testSIPClient
+		select {
+		case sipClient = <-createdClients:
+			t.Cleanup(func() { _ = sipClient.Close() })
+		case <-time.After(100 * time.Millisecond):
+			require.Fail(t, "expected client to be created")
+			return
+		}
+
+		var tr *transactionRequest
+		select {
+		case tr = <-sipClient.transactions:
+			t.Cleanup(func() { tr.transaction.Terminate() })
+		case <-time.After(500 * time.Millisecond):
+			require.Fail(t, "expected transaction request to be created")
+			return
+		}
+
+		require.NotNil(t, tr)
+		require.NotNil(t, tr.req)
+		require.NotNil(t, tr.req.From())
+		require.NotEqual(t, customFromHost, tr.req.From().Address.Host)
+
+		require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, sip.StatusBusyHere, "Busy Here", nil)))
+	})
+
+	t.Run("when allowCustomFromHostname is true", func(t *testing.T) {
+		customFromHost := "custom-from.example.com"
+
+		client := NewOutboundTestClient(t, TestClientConfig{})
+		client.conf.AllowCustomFromHostname = true
+
+		req := MinimalCreateSIPParticipantRequest()
+		req.FromHostname = customFromHost
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			_, _ = client.CreateSIPParticipant(ctx, req)
+		}()
+
+		var sipClient *testSIPClient
+		select {
+		case sipClient = <-createdClients:
+			t.Cleanup(func() { _ = sipClient.Close() })
+		case <-time.After(100 * time.Millisecond):
+			require.Fail(t, "expected client to be created")
+			return
+		}
+
+		var tr *transactionRequest
+		select {
+		case tr = <-sipClient.transactions:
+			t.Cleanup(func() { tr.transaction.Terminate() })
+		case <-time.After(500 * time.Millisecond):
+			require.Fail(t, "expected transaction request to be created")
+			return
+		}
+
+		require.NotNil(t, tr)
+		require.NotNil(t, tr.req)
+		require.NotNil(t, tr.req.From())
+		require.Equal(t, customFromHost, tr.req.From().Address.Host)
+		require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, sip.StatusBusyHere, "Busy Here", nil)))
+	})
+}
