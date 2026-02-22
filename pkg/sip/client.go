@@ -172,6 +172,9 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 }
 
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
+	if c.conf.AllowCustomFromHostname {
+		req.Hostname = req.FromHostname
+	}
 	if c.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
 	}
