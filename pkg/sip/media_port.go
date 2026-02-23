@@ -856,9 +856,9 @@ func (p *MediaPort) setupInput() {
 	}
 	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.stats.MuxStats)
 	if p.jitterEnabled {
-		hnd = rtp.HandleJitter(hnd, jitter.WithPacketLossStatsHandler(func(st *jitter.BufferStats) {
-			p.stats.JitterBufferPacketsLost.Store(st.PacketsLost)
-			p.stats.JitterBufferPacketsDropped.Store(st.PacketsDropped)
+		hnd = rtp.HandleJitter(hnd, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
+			p.stats.JitterBufferPacketsLost.Store(packetsLost)
+			p.stats.JitterBufferPacketsDropped.Store(packetsDropped)
 		}))
 	}
 	p.hnd.Store(&hnd)
