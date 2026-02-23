@@ -53,6 +53,7 @@ type PortStatsSnapshot struct {
 	Packets        uint64 `json:"packets"`
 	IgnoredPackets uint64 `json:"packets_ignored"`
 	InputPackets   uint64 `json:"packets_input"`
+	FailedPackets  uint64 `json:"packets_failed"`
 
 	MuxPackets        uint64 `json:"mux_packets"`
 	MuxBytes          uint64 `json:"mux_bytes"`
@@ -90,6 +91,7 @@ type PortStats struct {
 	Packets        atomic.Uint64
 	IgnoredPackets atomic.Uint64
 	InputPackets   atomic.Uint64
+	FailedPackets  atomic.Uint64
 
 	MuxStats rtpCountingStats
 
@@ -126,6 +128,7 @@ func (s *PortStats) Load() PortStatsSnapshot {
 		Packets:                    s.Packets.Load(),
 		IgnoredPackets:             s.IgnoredPackets.Load(),
 		InputPackets:               s.InputPackets.Load(),
+		FailedPackets:              s.FailedPackets.Load(),
 		MuxPackets:                 s.MuxStats.packets.Load(),
 		MuxBytes:                   s.MuxStats.bytes.Load(),
 		MuxResets:                  s.MuxStats.resets.Load(),
@@ -745,6 +748,7 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 			)
 			log.Debugw("handle RTP failed", "error", err)
 			errorCnt++
+			p.stats.FailedPackets.Add(1)
 			if errorCnt >= maxErrors {
 				log.Errorw("killing RTP loop due to persisted errors", err)
 				return
