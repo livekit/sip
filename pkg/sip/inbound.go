@@ -698,6 +698,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if disp.DispatchRuleID != "" {
 		c.appendLogValues("sipRule", disp.DispatchRuleID)
 	}
+	for key, value := range disp.FeatureFlags {
+		c.appendLogValues("featureFlag_"+key, value)
+	}
+	for _, feature := range disp.EnabledFeatures {
+		c.appendLogValues(feature.String(), "true")
+	}
 
 	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
 		info.TrunkId = disp.TrunkID
