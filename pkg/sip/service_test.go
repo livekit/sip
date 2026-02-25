@@ -998,15 +998,34 @@ func TestCreateSIPParticipantAffinity_WithMaxCalls(t *testing.T) {
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
 	// 0 active, max 100 => 1 - 0/100 = 1.0
 	require.InDelta(t, float32(1.0), got, 0.001)
+}
 
-	// Add 50 outbound calls
-	for i := 0; i < 50; i++ {
+func TestCreateSIPParticipantAffinity_WithMaxCalls_PartialLoad(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 100})
+
+	// Add 25 outbound calls before first measurement
+	for i := 0; i < 25; i++ {
 		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
 	}
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 25 active, max 100 => 1 - 25/100 = 0.75
+	require.InDelta(t, float32(0.75), got, 0.001)
 
+	// Add 25 more (50 total)
+	for i := 25; i < 50; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
 	got = s.CreateSIPParticipantAffinity(context.Background(), nil)
 	// 50 active, max 100 => 1 - 50/100 = 0.5
 	require.InDelta(t, float32(0.5), got, 0.001)
+
+	// Add 49 more (99 total, just under capacity)
+	for i := 50; i < 99; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+	got = s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 99 active, max 100 => 1 - 99/100 = 0.01
+	require.InDelta(t, float32(0.01), got, 0.001)
 }
 
 func TestCreateSIPParticipantAffinity_AtCapacity(t *testing.T) {
