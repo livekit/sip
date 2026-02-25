@@ -949,3 +949,100 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 	t.Logf("First call ID: %s", capturedCallIDs[0])
 	t.Logf("Second call ID: %s", capturedCallIDs[1])
 }
+
+// newServiceForAffinity creates a minimal Service with initialized client/server maps
+// suitable for testing CreateSIPParticipantAffinity without network setup.
+func newServiceForAffinity(conf *config.Config) *Service {
+	cli := &Client{
+		conf:        conf,
+		activeCalls: make(map[LocalTag]*outboundCall),
+	}
+	srv := &Server{
+		conf:        conf,
+		byRemoteTag: make(map[RemoteTag]*inboundCall),
+	}
+	return &Service{
+		conf: conf,
+		cli:  cli,
+		srv:  srv,
+	}
+}
+
+func TestCreateSIPParticipantAffinity_NoConfig_NoCalls(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{})
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 1 / (1 + 0) = 1.0
+	require.InDelta(t, float32(1.0), got, 0.001)
+}
+
+func TestCreateSIPParticipantAffinity_NoConfig_WithCalls(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{})
+
+	// Add 4 outbound calls
+	for i := 0; i < 4; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+	// Add 5 inbound calls
+	for i := 0; i < 5; i++ {
+		s.srv.byRemoteTag[RemoteTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+	}
+
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 1 / (1 + 9) = 0.1
+	require.InDelta(t, float32(0.1), got, 0.001)
+}
+
+func TestCreateSIPParticipantAffinity_WithMaxCalls(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 100})
+
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 0 active, max 100 => 1 - 0/100 = 1.0
+	require.InDelta(t, float32(1.0), got, 0.001)
+
+	// Add 50 outbound calls
+	for i := 0; i < 50; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+
+	got = s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 50 active, max 100 => 1 - 50/100 = 0.5
+	require.InDelta(t, float32(0.5), got, 0.001)
+}
+
+func TestCreateSIPParticipantAffinity_AtCapacity(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 10})
+
+	for i := 0; i < 10; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	require.Equal(t, float32(0), got)
+}
+
+func TestCreateSIPParticipantAffinity_OverCapacity(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 10})
+
+	for i := 0; i < 15; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	require.Equal(t, float32(0), got)
+}
+
+func TestCreateSIPParticipantAffinity_MixedInboundOutbound(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 20})
+
+	// 6 outbound + 4 inbound = 10 total
+	for i := 0; i < 6; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+	for i := 0; i < 4; i++ {
+		s.srv.byRemoteTag[RemoteTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+	}
+
+	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
+	// 10 active, max 20 => 1 - 10/20 = 0.5
+	require.InDelta(t, float32(0.5), got, 0.001)
+}

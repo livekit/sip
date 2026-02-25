@@ -312,8 +312,14 @@ func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCre
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
-	// TODO: scale affinity based on a number or active calls?
-	return 0.5
+	active := float64(s.ActiveCalls().Total())
+	if max := s.conf.MaxActiveCalls; max > 0 {
+		if active >= float64(max) {
+			return 0
+		}
+		return float32(1 - active/float64(max))
+	}
+	return float32(1 / (1 + active))
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
