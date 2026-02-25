@@ -1046,3 +1046,66 @@ func TestCreateSIPParticipantAffinity_MixedInboundOutbound(t *testing.T) {
 	// 10 active, max 20 => 1 - 10/20 = 0.5
 	require.InDelta(t, float32(0.5), got, 0.001)
 }
+
+func TestCreateSIPParticipantAffinity_TrunkWhitelist_Allowed(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{
+		SIPTrunkIds: []string{"trunk-a", "trunk-b"},
+	})
+
+	req := &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "trunk-a"}
+	got := s.CreateSIPParticipantAffinity(context.Background(), req)
+	// Trunk is whitelisted, 0 active calls, no max => 1/(1+0) = 1.0
+	require.InDelta(t, float32(1.0), got, 0.001)
+}
+
+func TestCreateSIPParticipantAffinity_TrunkWhitelist_Rejected(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{
+		SIPTrunkIds: []string{"trunk-a", "trunk-b"},
+	})
+
+	req := &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "trunk-c"}
+	got := s.CreateSIPParticipantAffinity(context.Background(), req)
+	require.Equal(t, float32(0), got)
+}
+
+func TestCreateSIPParticipantAffinity_TrunkWhitelist_EmptyTrunkId(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{
+		SIPTrunkIds: []string{"trunk-a"},
+	})
+
+	req := &rpc.InternalCreateSIPParticipantRequest{}
+	got := s.CreateSIPParticipantAffinity(context.Background(), req)
+	// Empty trunk ID is not in the whitelist
+	require.Equal(t, float32(0), got)
+}
+
+func TestCreateSIPParticipantAffinity_TrunkWhitelist_EmptyList(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{})
+
+	// No whitelist configured, any trunk ID should work
+	req := &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "any-trunk"}
+	got := s.CreateSIPParticipantAffinity(context.Background(), req)
+	require.InDelta(t, float32(1.0), got, 0.001)
+}
+
+func TestCreateSIPParticipantAffinity_TrunkWhitelist_WithMaxCalls(t *testing.T) {
+	s := newServiceForAffinity(&config.Config{
+		SIPTrunkIds:    []string{"trunk-a"},
+		MaxActiveCalls: 100,
+	})
+
+	// Add 50 calls
+	for i := 0; i < 50; i++ {
+		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+	}
+
+	// Whitelisted trunk: should get normal affinity
+	req := &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "trunk-a"}
+	got := s.CreateSIPParticipantAffinity(context.Background(), req)
+	require.InDelta(t, float32(0.5), got, 0.001)
+
+	// Non-whitelisted trunk: 0 regardless of load
+	req = &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "trunk-x"}
+	got = s.CreateSIPParticipantAffinity(context.Background(), req)
+	require.Equal(t, float32(0), got)
+}

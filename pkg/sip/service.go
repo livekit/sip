@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -312,6 +313,9 @@ func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCre
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
+	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
+		return 0
+	}
 	active := float64(s.ActiveCalls().Total())
 	if max := s.conf.MaxActiveCalls; max > 0 {
 		if active >= float64(max) {
