@@ -316,14 +316,14 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
 		return 0
 	}
-	active := float64(s.ActiveCalls().Total())
-	if max := s.conf.MaxActiveCalls; max > 0 {
-		if active >= float64(max) {
+	active := float32(s.ActiveCalls().Total())
+	if max := float32(s.conf.MaxActiveCalls); max > 0 {
+		if active >= max {
 			return 0
 		}
-		return float32(1 - active/float64(max))
+		return 1 - active/max
 	}
-	return float32(1 / (1 + active))
+	return 1 / (1 + active)
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
