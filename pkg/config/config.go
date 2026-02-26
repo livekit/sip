@@ -108,6 +108,10 @@ type Config struct {
 	HideInboundPort bool `yaml:"hide_inbound_port"`
 	// AddRecordRoute forces SIP to add Record-Route headers to the responses.
 	AddRecordRoute bool `yaml:"add_record_route"`
+	// DisableOutboundCalls prevents creation of new outbound SIP calls.
+	// When enabled, CreateSIPParticipant requests will be rejected.
+	// The client component still runs to handle responses (e.g., BYE) for inbound calls.
+	DisableOutboundCalls bool `yaml:"disable_outbound_calls"`
 
 	// AudioDTMF forces SIP to generate audio DTMF tones in addition to digital.
 	AudioDTMF              bool    `yaml:"audio_dtmf"`

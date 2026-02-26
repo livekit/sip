@@ -182,6 +182,13 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	return st
 }
 
+// StartDrain stops accepting new SIP calls (both inbound and outbound) but keeps existing calls
+// and listeners open. This allows the service to gracefully drain while completing ongoing calls.
+func (s *Service) StartDrain() {
+	s.cli.StartDrain()
+	s.srv.StartDrain()
+}
+
 func (s *Service) Stop() {
 	s.cli.Stop()
 	s.srv.Stop()
@@ -307,11 +314,18 @@ func (s *Service) Start() error {
 }
 
 func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	if s.conf.DisableOutboundCalls {
+		return nil, psrpc.NewErrorf(psrpc.Unimplemented, "outbound calls are disabled on this instance")
+	}
 	resp, err := s.cli.CreateSIPParticipant(ctx, req)
 	return resp, siperrors.ApplySIPStatus(err)
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
+	if s.conf.DisableOutboundCalls {
+		// Return 0 affinity when outbound calls are disabled to prevent routing to this instance
+		return 0
+	}
 	// TODO: scale affinity based on a number or active calls?
 	return 0.5
 }

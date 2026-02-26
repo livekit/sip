@@ -138,6 +138,12 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 	return nil
 }
 
+// StartDrain stops accepting new outbound call requests but keeps existing calls open.
+// This allows the client to gracefully drain while completing ongoing calls.
+func (c *Client) StartDrain() {
+	c.closing.Break()
+}
+
 func (c *Client) Stop() {
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Client.Stop")

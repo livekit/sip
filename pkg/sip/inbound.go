@@ -303,6 +303,13 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			info.EndedAtNs = time.Now().UnixNano()
 		})
 	}()
+	// Reject new INVITE requests if server is shutting down
+	if s.closing.IsBroken() {
+		s.mon.InviteReqRaw(stats.Inbound)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable - Server Shutting Down", nil))
+		s.log.Infow("rejecting INVITE, server is shutting down", "fromIP", req.Source(), "toIP", req.Destination())
+		return psrpc.NewError(psrpc.Unavailable, errors.New("server is shutting down"))
+	}
 	s.mon.InviteReqRaw(stats.Inbound)
 
 	src, err := netip.ParseAddrPort(req.Source())

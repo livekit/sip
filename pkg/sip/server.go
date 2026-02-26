@@ -337,6 +337,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 	return nil
 }
 
+// StartDrain stops accepting new INVITE requests but keeps existing calls and listeners open.
+// This allows the server to gracefully drain while completing ongoing calls.
+func (s *Server) StartDrain() {
+	s.closing.Break()
+}
+
 func (s *Server) Stop() {
 	s.closing.Break()
 	s.cmu.Lock()
