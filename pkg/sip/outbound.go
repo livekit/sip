@@ -346,6 +346,9 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 		if tag := c.cc.Tag(); tag != "" {
 			delete(c.c.byRemote, tag)
 		}
+		if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
+			delete(c.c.byCallID, sipCallID)
+		}
 		c.c.cmu.Unlock()
 
 		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
@@ -655,6 +658,9 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 
 	c.c.cmu.Lock()
 	c.c.byRemote[c.cc.Tag()] = c
+	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
+		c.c.byCallID[sipCallID] = c
+	}
 	c.c.cmu.Unlock()
 
 	c.mon.InviteAccept()
@@ -956,6 +962,32 @@ authLoop:
 	}
 
 	return c.inviteOk.Body(), nil
+}
+
+// AcceptReInvite responds to a mid-dialog re-INVITE (e.g. session refresh) with 200 OK + our SDP.
+func (c *sipOutbound) AcceptReInvite(req *sip.Request, tx sip.ServerTransaction) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Use our original SDP offer as the response body
+	var sdpBody []byte
+	if c.invite != nil {
+		sdpBody = c.invite.Body()
+	}
+	if len(sdpBody) == 0 {
+		c.log.Errorw("no SDP available for outbound re-INVITE response", nil)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "No SDP available", nil))
+		return
+	}
+
+	resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", sdpBody)
+	resp.AppendHeader(&contentTypeHeaderSDP)
+	resp.AppendHeader(c.contact)
+	if err := tx.Respond(resp); err != nil {
+		c.log.Errorw("failed to respond to re-INVITE", err)
+	} else {
+		c.log.Infow("outbound re-INVITE accepted with current SDP")
+	}
 }
 
 func (c *sipOutbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {

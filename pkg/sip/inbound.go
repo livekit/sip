@@ -320,8 +320,15 @@ func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 				return
 			}
 
-			// To tag present but not found in our dialogs
-			// This could be a stray request for a dialog that already ended
+			// To tag present but not found in our (inbound) dialogs.
+			// This could be a re-INVITE for an outbound call, delegate to the client.
+			if s.sipUnhandled != nil && s.sipUnhandled(req, tx) {
+				log.Info("mid-dialog re-INVITE handled by client",
+					"toTag", toTag)
+				return
+			}
+
+			// Not handled by client either - stray request for a dialog that already ended
 			log.Warn("INVITE with unknown To tag, treating as new call",
 				"toTag", toTag)
 		}
