@@ -29,6 +29,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/livekit/sipgo/transport"
+
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	msdk "github.com/livekit/media-sdk"
@@ -73,6 +75,9 @@ type GetIOInfoClient func(projectID string) rpc.IOInfoClient
 func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
+	}
+	if conf.UDPMaxPayload > 0 {
+		transport.UDPMTUSize = conf.UDPMaxPayload
 	}
 	if conf.MediaTimeout <= 0 {
 		conf.MediaTimeout = defaultMediaTimeout
@@ -175,6 +180,13 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	s.srv.cmu.Unlock()
 
 	return st
+}
+
+// StartDrain stops accepting new SIP calls (both inbound and outbound) but keeps existing calls
+// and listeners open. This allows the service to gracefully drain while completing ongoing calls.
+func (s *Service) StartDrain() {
+	s.cli.StartDrain()
+	s.srv.StartDrain()
 }
 
 func (s *Service) Stop() {
@@ -302,11 +314,18 @@ func (s *Service) Start() error {
 }
 
 func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	if s.conf.DisableOutboundCalls {
+		return nil, psrpc.NewErrorf(psrpc.Unimplemented, "outbound calls are disabled on this instance")
+	}
 	resp, err := s.cli.CreateSIPParticipant(ctx, req)
 	return resp, siperrors.ApplySIPStatus(err)
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
+	if s.conf.DisableOutboundCalls {
+		// Return 0 affinity when outbound calls are disabled to prevent routing to this instance
+		return 0
+	}
 	// TODO: scale affinity based on a number or active calls?
 	return 0.5
 }

@@ -31,6 +31,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
@@ -52,6 +53,7 @@ type PortStatsSnapshot struct {
 	Packets        uint64 `json:"packets"`
 	IgnoredPackets uint64 `json:"packets_ignored"`
 	InputPackets   uint64 `json:"packets_input"`
+	FailedPackets  uint64 `json:"packets_failed"`
 
 	MuxPackets        uint64 `json:"mux_packets"`
 	MuxBytes          uint64 `json:"mux_bytes"`
@@ -78,6 +80,9 @@ type PortStatsSnapshot struct {
 	DTMFPackets uint64 `json:"dtmf_packets"`
 	DTMFBytes   uint64 `json:"dtmf_bytes"`
 
+	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
+	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
+
 	Closed bool `json:"closed"`
 }
 
@@ -86,6 +91,7 @@ type PortStats struct {
 	Packets        atomic.Uint64
 	IgnoredPackets atomic.Uint64
 	InputPackets   atomic.Uint64
+	FailedPackets  atomic.Uint64
 
 	MuxStats rtpCountingStats
 
@@ -103,6 +109,9 @@ type PortStats struct {
 	DTMFPackets atomic.Uint64
 	DTMFBytes   atomic.Uint64
 
+	JitterBufferPacketsLost    atomic.Uint64
+	JitterBufferPacketsDropped atomic.Uint64
+
 	Closed atomic.Bool
 
 	mu   sync.Mutex
@@ -115,31 +124,34 @@ type PortStats struct {
 
 func (s *PortStats) Load() PortStatsSnapshot {
 	return PortStatsSnapshot{
-		Streams:           s.Streams.Load(),
-		Packets:           s.Packets.Load(),
-		IgnoredPackets:    s.IgnoredPackets.Load(),
-		InputPackets:      s.InputPackets.Load(),
-		MuxPackets:        s.MuxStats.packets.Load(),
-		MuxBytes:          s.MuxStats.bytes.Load(),
-		MuxResets:         s.MuxStats.resets.Load(),
-		MuxGaps:           s.MuxStats.gaps.Load(),
-		MuxGapsSum:        s.MuxStats.gapsSum.Load(),
-		MuxLate:           s.MuxStats.late.Load(),
-		MuxLateSum:        s.MuxStats.lateSum.Load(),
-		MuxRapidPackets:   s.MuxStats.rapidPackets.Load(),
-		MuxDelayedPackets: s.MuxStats.delayedPackets.Load(),
-		MuxDelayedSum:     s.MuxStats.delayedSum.Load(),
-		AudioPackets:      s.AudioPackets.Load(),
-		AudioBytes:        s.AudioBytes.Load(),
-		AudioInFrames:     s.AudioInFrames.Load(),
-		AudioInSamples:    s.AudioInSamples.Load(),
-		AudioOutFrames:    s.AudioOutFrames.Load(),
-		AudioOutSamples:   s.AudioOutSamples.Load(),
-		AudioRX:           math.Float64frombits(s.AudioRX.Load()),
-		AudioTX:           math.Float64frombits(s.AudioTX.Load()),
-		DTMFPackets:       s.DTMFPackets.Load(),
-		DTMFBytes:         s.DTMFBytes.Load(),
-		Closed:            s.Closed.Load(),
+		Streams:                    s.Streams.Load(),
+		Packets:                    s.Packets.Load(),
+		IgnoredPackets:             s.IgnoredPackets.Load(),
+		InputPackets:               s.InputPackets.Load(),
+		FailedPackets:              s.FailedPackets.Load(),
+		MuxPackets:                 s.MuxStats.packets.Load(),
+		MuxBytes:                   s.MuxStats.bytes.Load(),
+		MuxResets:                  s.MuxStats.resets.Load(),
+		MuxGaps:                    s.MuxStats.gaps.Load(),
+		MuxGapsSum:                 s.MuxStats.gapsSum.Load(),
+		MuxLate:                    s.MuxStats.late.Load(),
+		MuxLateSum:                 s.MuxStats.lateSum.Load(),
+		MuxRapidPackets:            s.MuxStats.rapidPackets.Load(),
+		MuxDelayedPackets:          s.MuxStats.delayedPackets.Load(),
+		MuxDelayedSum:              s.MuxStats.delayedSum.Load(),
+		AudioPackets:               s.AudioPackets.Load(),
+		AudioBytes:                 s.AudioBytes.Load(),
+		AudioInFrames:              s.AudioInFrames.Load(),
+		AudioInSamples:             s.AudioInSamples.Load(),
+		AudioOutFrames:             s.AudioOutFrames.Load(),
+		AudioOutSamples:            s.AudioOutSamples.Load(),
+		AudioRX:                    math.Float64frombits(s.AudioRX.Load()),
+		AudioTX:                    math.Float64frombits(s.AudioTX.Load()),
+		DTMFPackets:                s.DTMFPackets.Load(),
+		DTMFBytes:                  s.DTMFBytes.Load(),
+		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
+		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
+		Closed:                     s.Closed.Load(),
 	}
 }
 
@@ -281,6 +293,7 @@ type MediaOptions struct {
 	EnableJitterBuffer  bool
 	NoInputResample     bool
 	IgnorePreanswerData bool
+	LogSignalChanges    bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -321,6 +334,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		mediaTimeout:     mediaTimeout,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
+		logSignalChanges: opts.LogSignalChanges,
 		port:             newUDPConn(log, conn),
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
@@ -357,6 +371,7 @@ type MediaPort struct {
 	stats            *PortStats
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
+	logSignalChanges bool
 
 	mu           sync.Mutex
 	conf         *MediaConf
@@ -604,7 +619,7 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encry
 	}
 	mc, err := answer.Apply(offer, enc)
 	if err != nil {
-		return nil, err
+		return nil, SDPError{Err: err}
 	}
 	return &MediaConf{MediaConfig: *mc}, nil
 }
@@ -702,8 +717,8 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 		p.packetCount.Add(1)
 		p.stats.Packets.Add(1)
 		if n > rtp.MTUSize {
-			overflow = true
 			if !overflow {
+				overflow = true
 				log.Errorw("RTP packet is larger than MTU limit", nil, "payloadSize", n)
 			}
 			p.stats.IgnoredPackets.Add(1)
@@ -720,7 +735,6 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 			p.stats.IgnoredPackets.Add(1)
 			continue
 		}
-		p.stats.InputPackets.Add(1)
 		err = hnd.HandleRTP(&h, buf[:n])
 		if err != nil {
 			if pipeline == "" {
@@ -734,12 +748,14 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 			)
 			log.Debugw("handle RTP failed", "error", err)
 			errorCnt++
+			p.stats.FailedPackets.Add(1)
 			if errorCnt >= maxErrors {
 				log.Errorw("killing RTP loop due to persisted errors", err)
 				return
 			}
 			continue
 		}
+		p.stats.InputPackets.Add(1)
 		errorCnt = 0
 		pipeline = ""
 	}
@@ -768,6 +784,13 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	audioOut := p.conf.Audio.Codec.EncodeRTP(p.audioOutRTP)
 	if p.stats != nil {
 		audioOut = newMediaWriterCount(audioOut, &p.stats.AudioOutFrames, &p.stats.AudioOutSamples)
+	}
+	if p.logSignalChanges {
+		audioOut, err = NewSignalLogger(p.log, "mixed", audioOut)
+		if err != nil {
+			audioOut.Close() // need to close since it's not linked to the port yet
+			return err
+		}
 	}
 
 	if p.conf.Audio.DTMFType != 0 {
@@ -802,6 +825,14 @@ func (p *MediaPort) setupInput() {
 	if p.stats != nil {
 		audioWriter = newMediaWriterCount(audioWriter, &p.stats.AudioInFrames, &p.stats.AudioInSamples)
 	}
+	if p.logSignalChanges {
+		signalLogger, err := NewSignalLogger(p.log, "input", audioWriter)
+		if err != nil {
+			p.log.Errorw("failed to create signal logger", err)
+		} else {
+			audioWriter = signalLogger
+		}
+	}
 	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
 	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
 	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.RTPClockRate, codecInfo.SampleRate, p.log)
@@ -825,7 +856,10 @@ func (p *MediaPort) setupInput() {
 	}
 	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.stats.MuxStats)
 	if p.jitterEnabled {
-		hnd = rtp.HandleJitter(hnd)
+		hnd = rtp.HandleJitter(hnd, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
+			p.stats.JitterBufferPacketsLost.Store(packetsLost)
+			p.stats.JitterBufferPacketsDropped.Store(packetsDropped)
+		}))
 	}
 	p.hnd.Store(&hnd)
 }

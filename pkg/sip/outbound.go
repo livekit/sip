@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -90,6 +91,7 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
+	signalLoggingEnabled, _ := strconv.ParseBool(sipConf.featureFlags[signalLoggingFeatureFlag])
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -98,6 +100,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 	jitterBuf := SelectValueBool(conf.EnableJitterBuffer, conf.EnableJitterBufferProb)
 	room.JitterBuf = jitterBuf
+	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
@@ -142,6 +145,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
 		EnableJitterBuffer:  call.jitterBuf,
+		LogSignalChanges:    signalLoggingEnabled,
 		Stats:               &call.stats.Port,
 		NoInputResample:     !RoomResample,
 		IgnorePreanswerData: true,
@@ -389,6 +393,9 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
 				reportErr = nil
 			}
+		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
+			status, desc, reason = callRejected, "encryption-required", livekit.DisconnectReason_MEDIA_FAILURE
+			reportErr = nil
 		}
 		c.close(ctx, reportErr, status, desc, reason)
 		return err
@@ -511,6 +518,18 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 }
 
 func (c *outboundCall) stopSIP(ctx context.Context, reason string) {
+	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
+	defer cancel()
+	go func() {
+		select {
+		case <-termCtx.Done():
+			return
+		case <-time.After(5 * time.Minute):
+			c.mon.CallTerminationFailure()
+			c.log.Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
+		}
+	}()
+
 	c.mon.CallTerminate(reason)
 	c.cc.Close(ctx)
 }

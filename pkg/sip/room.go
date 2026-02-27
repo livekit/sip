@@ -28,6 +28,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -60,6 +61,9 @@ type RoomStatsSnapshot struct {
 	PublishedSamples uint64  `json:"published_samples"`
 	PublishTX        float64 `json:"publish_tx"`
 
+	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
+	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
+
 	Closed bool `json:"closed"`
 }
 
@@ -70,6 +74,9 @@ type RoomStats struct {
 
 	rtpStats    rtpCountingStats
 	dataPackets atomic.Uint64
+
+	JitterBufferPacketsLost    atomic.Uint64
+	JitterBufferPacketsDropped atomic.Uint64
 
 	Mixer mixer.Stats
 
@@ -84,17 +91,19 @@ type RoomStats struct {
 
 func (s *RoomStats) Load() RoomStatsSnapshot {
 	return RoomStatsSnapshot{
-		InputPackets:   s.rtpStats.packets.Load(),
-		InputBytes:     s.rtpStats.bytes.Load(),
-		Resets:         s.rtpStats.resets.Load(),
-		Gaps:           s.rtpStats.gaps.Load(),
-		GapsSum:        s.rtpStats.gapsSum.Load(),
-		Late:           s.rtpStats.late.Load(),
-		LateSum:        s.rtpStats.lateSum.Load(),
-		DelayedPackets: s.rtpStats.delayedPackets.Load(),
-		DelayedSum:     s.rtpStats.delayedSum.Load(),
-		RapidPackets:   s.rtpStats.rapidPackets.Load(),
-		DataPackets:    s.dataPackets.Load(),
+		InputPackets:               s.rtpStats.packets.Load(),
+		InputBytes:                 s.rtpStats.bytes.Load(),
+		Resets:                     s.rtpStats.resets.Load(),
+		Gaps:                       s.rtpStats.gaps.Load(),
+		GapsSum:                    s.rtpStats.gapsSum.Load(),
+		Late:                       s.rtpStats.late.Load(),
+		LateSum:                    s.rtpStats.lateSum.Load(),
+		DelayedPackets:             s.rtpStats.delayedPackets.Load(),
+		DelayedSum:                 s.rtpStats.delayedSum.Load(),
+		RapidPackets:               s.rtpStats.rapidPackets.Load(),
+		DataPackets:                s.dataPackets.Load(),
+		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
+		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
 
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
@@ -179,13 +188,14 @@ type ParticipantConfig struct {
 }
 
 type RoomConfig struct {
-	WsUrl       string
-	Token       string
-	RoomName    string
-	Participant ParticipantConfig
-	RoomPreset  string
-	RoomConfig  *livekit.RoomConfiguration
-	JitterBuf   bool
+	WsUrl            string
+	Token            string
+	RoomName         string
+	Participant      ParticipantConfig
+	RoomPreset       string
+	RoomConfig       *livekit.RoomConfiguration
+	JitterBuf        bool
+	LogSignalChanges bool
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -321,7 +331,17 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer log.Infow("track closed")
 					defer mTrack.Close()
 
-					codec, err := opus.Decode(mTrack, channels, log)
+					var out msdk.PCM16Writer = mTrack
+					if rconf.LogSignalChanges {
+						var err error
+						out, err = NewSignalLogger(log, track.ID(), out)
+						if err != nil {
+							log.Errorw("cannot create signal logger", err)
+							return
+						}
+					}
+
+					codec, err := opus.Decode(out, channels, log)
 					if err != nil {
 						log.Errorw("cannot create opus decoder", err)
 						return
@@ -330,7 +350,10 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 
 					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](codec))
 					if conf.EnableJitterBuffer {
-						h = rtp.HandleJitter(h)
+						h = rtp.HandleJitter(h, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
+							r.stats.JitterBufferPacketsLost.Store(packetsLost)
+							r.stats.JitterBufferPacketsDropped.Store(packetsDropped)
+						}))
 					}
 
 					h = newRTPStreamStats(h, &r.stats.rtpStats)

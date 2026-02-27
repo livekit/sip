@@ -21,7 +21,7 @@ func NewService(conf *IntegrationConfig, bus psrpc.MessageBus) (*service.Service
 	if err != nil {
 		return nil, err
 	}
-	svc := service.NewService(conf.Config, logger.GetLogger(), sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
+	svc := service.NewService(conf.Config, logger.GetLogger(), sipsrv, sipsrv.Stop, sipsrv.StartDrain, sipsrv.ActiveCalls, psrpcClient, bus, mon)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
