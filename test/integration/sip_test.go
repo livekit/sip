@@ -99,7 +99,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		t.Fatal(err)
 	}
 
-	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcCli, bus, mon)
+	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.StartDrain, sipsrv.ActiveCalls, psrpcCli, bus, mon)
 	sipsrv.SetHandler(svc)
 	t.Cleanup(func() {
 		svc.Stop(true)
