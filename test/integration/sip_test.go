@@ -1068,3 +1068,97 @@ func TestSIPOutboundRouteHeader(t *testing.T) {
 		t.Fatal("No message received on route target within timeout - Route header processing is not working correctly")
 	}
 }
+
+// TestSIPReInvite verifies that mid-dialog re-INVITEs are properly handled.
+// A siptest.Client dials into the LiveKit SIP server, establishes a call,
+// then sends a re-INVITE (simulating a session refresh from the remote party).
+// The test asserts the re-INVITE gets a 200 OK and the call remains active.
+func TestSIPReInvite(t *testing.T) {
+	lk := runLiveKit(t)
+
+	const (
+		clientID = "reinvite-cli"
+		roomName = "test-reinvite"
+		meta     = `{"test":true}`
+	)
+
+	r := lk.ConnectWithAudio(t, roomName, "test", &lksdk.RoomCallback{})
+	srv := runSIPServer(t, lk)
+
+	nc := srv.CreateTrunkAndDirect(t, &livekit.SIPInboundTrunkInfo{
+		Numbers: []string{serverNumber},
+	}, roomName, "", meta, nil)
+
+	byeReceived := make(chan struct{})
+
+	cli := runClient(t, nc, srv.IP, clientID, clientNumber, false, nil, nil, func() {
+		close(byeReceived)
+	}, nil)
+
+	// Send audio so we don't trigger media timeout.
+	mctx, mcancel := context.WithCancel(context.Background())
+	defer mcancel()
+	go cli.SendSilence(mctx)
+
+	// Wait for the SIP participant to join the room.
+	ctx, cancel := context.WithTimeout(context.Background(), participantsJoinTimeout)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
+		{Identity: "test"},
+		{
+			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
+			Attributes: map[string]string{
+				"sip.callID":           lktest.AttrTestAny,
+				"sip.callStatus":       "active",
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
+			},
+		},
+	})
+
+	// Wait for WebRTC to stabilize.
+	time.Sleep(webrtcSetupDelay)
+
+	// Send a mid-dialog re-INVITE (simulating session refresh from remote SBC).
+	t.Log("Sending re-INVITE")
+	resp, err := cli.SendReInvite()
+	require.NoError(t, err, "re-INVITE should not fail")
+	require.Equal(t, 200, int(resp.StatusCode), "re-INVITE should be accepted with 200 OK")
+
+	// Verify the response contains SDP.
+	require.NotEmpty(t, resp.Body(), "re-INVITE response should contain SDP")
+	ctHeader := resp.GetHeader("Content-Type")
+	require.NotNil(t, ctHeader, "re-INVITE response should have Content-Type")
+	require.Equal(t, "application/sdp", ctHeader.Value())
+
+	t.Log("re-INVITE accepted, verifying call is still active")
+
+	// Verify the call is still active after the re-INVITE.
+	ctx, cancel = context.WithTimeout(context.Background(), participantsJoinTimeout)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, []lktest.ParticipantInfo{
+		{Identity: "test"},
+		{
+			Identity: "sip_" + clientNumber,
+			Kind:     livekit.ParticipantInfo_SIP,
+			Attributes: map[string]string{
+				"sip.callStatus": "active",
+			},
+		},
+	})
+
+	// Clean up: disconnect and verify participant leaves.
+	mcancel()
+	cli.Close()
+	r.Disconnect()
+
+	ctx, cancel = context.WithTimeout(context.Background(), participantsLeaveTimeout)
+	defer cancel()
+	lk.ExpectRoomWithParticipants(t, ctx, roomName, nil)
+}

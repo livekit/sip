@@ -783,6 +783,72 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	return nil
 }
 
+// SendReInvite sends a mid-dialog re-INVITE to the remote party (e.g. session refresh).
+// Returns the SIP response received from the server.
+func (c *Client) SendReInvite() (*sip.Response, error) {
+	if c.inviteReq == nil || c.inviteResp == nil {
+		return nil, fmt.Errorf("no active dialog to send re-INVITE")
+	}
+	c.log.Debug("sending re-INVITE")
+
+	offer, err := c.createOffer()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SDP offer: %w", err)
+	}
+
+	// Build a new INVITE request within the existing dialog.
+	// Use the same recipient, Call-ID, From/To as the original dialog.
+	req := sip.NewRequest(sip.INVITE, c.inviteReq.Recipient)
+	req.SetDestination(c.inviteReq.Destination())
+	req.SetBody(offer)
+
+	// Copy dialog headers from original request/response
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<sip:livekit@%s:%d>", c.conf.IP, c.conf.Port)))
+
+	// Reuse From header (our tag)
+	req.AppendHeader(c.inviteReq.From())
+
+	// Reuse To header with the remote's tag from the 200 OK response
+	req.AppendHeader(c.inviteResp.To())
+
+	// Reuse Call-ID
+	callIDHdr := sip.CallIDHeader(c.inviteReq.CallID().Value())
+	req.AppendHeader(&callIDHdr)
+
+	// Bump CSeq
+	cseq := c.lastCSeq.Add(1)
+	req.AppendHeader(&sip.CSeqHeader{
+		SeqNo:      cseq,
+		MethodName: sip.INVITE,
+	})
+
+	// Copy Route headers from the established dialog
+	for _, h := range c.inviteReq.GetHeaders("Route") {
+		req.AppendHeader(h)
+	}
+
+	tx, err := c.sipClient.TransactionRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf("re-INVITE transaction failed: %w", err)
+	}
+	defer tx.Terminate()
+
+	resp, err := getResponse(tx)
+	if err != nil {
+		return nil, fmt.Errorf("re-INVITE response error: %w", err)
+	}
+
+	// ACK the response
+	if resp.StatusCode == sip.StatusOK {
+		if err := c.sipClient.WriteRequest(sip.NewAckRequest(req, resp, nil)); err != nil {
+			c.log.Error("failed to ACK re-INVITE response", "error", err)
+		}
+	}
+
+	return resp, nil
+}
+
 func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {
 	cnt := 0
 	for {
