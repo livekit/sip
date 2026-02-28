@@ -1146,9 +1146,17 @@ func TestSIPReInvite(t *testing.T) {
 		{Identity: "test"},
 		{
 			Identity: "sip_" + clientNumber,
+			Name:     "Phone " + clientNumber,
 			Kind:     livekit.ParticipantInfo_SIP,
+			Metadata: meta,
 			Attributes: map[string]string{
-				"sip.callStatus": "active",
+				"sip.callID":           lktest.AttrTestAny,
+				"sip.callStatus":       "active",
+				"sip.trunkPhoneNumber": serverNumber,
+				"sip.phoneNumber":      clientNumber,
+				"sip.ruleID":           nc.RuleID,
+				"sip.trunkID":          nc.TrunkID,
+				"lktest.id":            clientID,
 			},
 		},
 	})
