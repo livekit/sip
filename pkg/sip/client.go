@@ -356,7 +356,7 @@ func (c *Client) onInvite(req *sip.Request, tx sip.ServerTransaction) bool {
 		return false
 	}
 	call.log.Infow("re-INVITE from remote for outbound call", "sipCallID", callID)
-	call.cc.AcceptReInvite(req, tx)
+	call.handleReInvite(req, tx)
 	return true
 }
 

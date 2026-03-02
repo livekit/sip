@@ -624,6 +624,11 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encry
 	return &MediaConf{MediaConfig: *mc}, nil
 }
 
+// SetMediaDst updates the RTP destination address for mid-call changes (e.g., re-INVITE with new media address after transfer).
+func (p *MediaPort) SetMediaDst(addr netip.AddrPort) {
+	p.port.SetDst(addr)
+}
+
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
 func (p *MediaPort) SetOffer(offerData []byte, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
 	offer, err := sdp.ParseOffer(offerData)

@@ -22,6 +22,28 @@ import (
 	"github.com/livekit/sip/test/lktest"
 )
 
+// getAudioMedia returns the first audio media description from the SDP, or nil.
+func getAudioMedia(sd *sdp.SessionDescription) *sdp.MediaDescription {
+	for _, m := range sd.MediaDescriptions {
+		if m.MediaName.Media == "audio" {
+			return m
+		}
+	}
+	return nil
+}
+
+// getSDPDirection extracts the direction attribute from a media description.
+// Returns "sendrecv" if no direction attribute is found (RFC 3264 default).
+func getSDPDirection(media *sdp.MediaDescription) string {
+	for _, attr := range media.Attributes {
+		switch attr.Key {
+		case "sendonly", "recvonly", "sendrecv", "inactive":
+			return attr.Key
+		}
+	}
+	return "sendrecv"
+}
+
 // dialogState captures the SIP dialog established by the UAS OnInvite handler.
 type dialogState struct {
 	req  *sip.Request
@@ -362,6 +384,15 @@ func TestSIPOutboundReInvite(t *testing.T) {
 		"response SDP origin session ID must differ from request SDP — "+
 			"same session ID means we echoed the carrier's SDP")
 
+	// Verify SDP direction: request has no direction (defaults to sendrecv),
+	// so response should have sendrecv as the complement.
+	respAudio := getAudioMedia(respSDP)
+	require.NotNil(t, respAudio, "response SDP should have audio media")
+	respDir := getSDPDirection(respAudio)
+	t.Logf("re-INVITE response SDP direction: %s", respDir)
+	require.Equal(t, "sendrecv", respDir,
+		"response direction should be sendrecv (complement of default sendrecv)")
+
 	// ACK the 200 OK.
 	ackReq := sip.NewAckRequest(reinviteReq, resp, nil)
 	err = uas.client.WriteRequest(ackReq)
@@ -537,6 +568,14 @@ func TestSIPOutboundReInviteCallDrop(t *testing.T) {
 		"re-INVITE 200 OK must contain LiveKit's SDP, not the carrier's")
 	require.NotEqual(t, reinviteSDP.Origin.SessionID, respSDP.Origin.SessionID,
 		"response SDP origin session ID must differ from request SDP")
+
+	// Verify SDP direction handling
+	respAudio := getAudioMedia(respSDP)
+	require.NotNil(t, respAudio, "response SDP should have audio media")
+	respDir := getSDPDirection(respAudio)
+	t.Logf("re-INVITE response SDP direction: %s", respDir)
+	require.Equal(t, "sendrecv", respDir,
+		"response direction should be sendrecv (complement of default sendrecv)")
 
 	// ACK the 200 OK
 	ackReq := sip.NewAckRequest(reinviteReq, resp, nil)

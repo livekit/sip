@@ -17,6 +17,7 @@ package sip
 import (
 	"testing"
 
+	psdp "github.com/pion/sdp/v3"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/protocol/logger"
@@ -152,12 +153,19 @@ func TestOutboundReInviteSDPNotEchoed(t *testing.T) {
 	require.Len(t, tx.responses, 1, "should send one response")
 	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode, "should respond with 200 OK")
 
-	// Critical: response must contain OUR SDP, not the carrier's
+	// Critical: response must contain OUR SDP, not the carrier's.
+	// Note: handleReInvite re-marshals the SDP (to set direction), so we compare
+	// parsed fields rather than exact bytes.
 	respBody := tx.responses[0].Body()
-	require.Equal(t, ourSDP, respBody, "response SDP must be our SDP, not the carrier's")
-	require.NotEqual(t, carrierSDP, respBody, "response must NOT echo the carrier's SDP")
 	require.Contains(t, string(respBody), "s=LiveKit", "response SDP should have our session name")
 	require.NotContains(t, string(respBody), "s=DNL-SWITCH", "response SDP must not have carrier's session name")
+
+	// Parse and verify our IP is in the response, not the carrier's
+	respSDP := new(psdp.SessionDescription)
+	err := respSDP.Unmarshal(respBody)
+	require.NoError(t, err)
+	require.Contains(t, string(respBody), "157.55.199.120", "response should contain our IP")
+	require.NotContains(t, string(respBody), "152.188.164.198", "response must not contain carrier's media IP")
 }
 
 // TestOutboundAcceptReInviteNoSDP tests that AcceptReInvite responds with 500
@@ -222,4 +230,134 @@ func TestOnRequestRoutesInviteToClient(t *testing.T) {
 	require.True(t, handled, "OnRequest should handle INVITE for known outbound call")
 	require.Len(t, tx.responses, 1, "should send one response")
 	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode, "should respond with 200 OK")
+}
+
+// TestHandleReInviteHold tests that handleReInvite responds with recvonly
+// when the carrier sends a hold re-INVITE with sendonly.
+func TestHandleReInviteHold(t *testing.T) {
+	ourSDP := []byte("v=0\r\no=- 123 456 IN IP4 157.55.199.120\r\ns=LiveKit\r\n" +
+		"c=IN IP4 157.55.199.120\r\nt=0 0\r\n" +
+		"m=audio 19839 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n" +
+		"a=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\n")
+	carrierHoldSDP := []byte("v=0\r\no=- 149197 630265 IN IP4 152.188.164.136\r\ns=DNL-SWITCH\r\n" +
+		"c=IN IP4 0.0.0.0\r\nt=0 0\r\n" +
+		"m=audio 27530 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n" +
+		"a=rtpmap:101 telephone-event/8000\r\na=sendonly\r\n")
+
+	_, call := newTestOutboundCall("test-hold", "SCL_hold", ourSDP)
+
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Host: "local.com"})
+	callIDHeader := sip.CallIDHeader("test-hold")
+	req.AppendHeader(&callIDHeader)
+	req.AppendHeader(&sip.CSeqHeader{SeqNo: 2, MethodName: sip.INVITE})
+	req.SetBody(carrierHoldSDP)
+
+	tx := &testServerTransaction{}
+	call.handleReInvite(req, tx)
+
+	require.Len(t, tx.responses, 1, "should send one response")
+	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode, "should respond with 200 OK")
+
+	respBody := tx.responses[0].Body()
+	respSDP := new(psdp.SessionDescription)
+	err := respSDP.Unmarshal(respBody)
+	require.NoError(t, err)
+
+	// Response must have recvonly (complement of sendonly)
+	dir := getMediaDirection(respSDP)
+	require.Equal(t, "recvonly", dir, "response direction should be recvonly for hold")
+
+	// Response must contain our session name and IP
+	require.Contains(t, string(respBody), "s=LiveKit")
+	require.Contains(t, string(respBody), "157.55.199.120")
+}
+
+// TestHandleReInviteResume tests that handleReInvite responds with sendrecv
+// when the carrier sends a resume re-INVITE with sendrecv.
+func TestHandleReInviteResume(t *testing.T) {
+	ourSDP := []byte("v=0\r\no=- 123 456 IN IP4 157.55.199.120\r\ns=LiveKit\r\n" +
+		"c=IN IP4 157.55.199.120\r\nt=0 0\r\n" +
+		"m=audio 19839 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n" +
+		"a=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\n")
+	carrierResumeSDP := []byte("v=0\r\no=- 149197 630266 IN IP4 152.188.164.136\r\ns=DNL-SWITCH\r\n" +
+		"c=IN IP4 152.188.164.198\r\nt=0 0\r\n" +
+		"m=audio 27530 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\n" +
+		"a=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\n")
+
+	_, call := newTestOutboundCall("test-resume", "SCL_resume", ourSDP)
+
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Host: "local.com"})
+	callIDHeader := sip.CallIDHeader("test-resume")
+	req.AppendHeader(&callIDHeader)
+	req.AppendHeader(&sip.CSeqHeader{SeqNo: 3, MethodName: sip.INVITE})
+	req.SetBody(carrierResumeSDP)
+
+	tx := &testServerTransaction{}
+	call.handleReInvite(req, tx)
+
+	require.Len(t, tx.responses, 1, "should send one response")
+	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode, "should respond with 200 OK")
+
+	respBody := tx.responses[0].Body()
+	respSDP := new(psdp.SessionDescription)
+	err := respSDP.Unmarshal(respBody)
+	require.NoError(t, err)
+
+	// Response must have sendrecv (complement of sendrecv)
+	dir := getMediaDirection(respSDP)
+	require.Equal(t, "sendrecv", dir, "response direction should be sendrecv for resume")
+}
+
+// TestHandleReInviteNoSDP tests that handleReInvite falls back to AcceptReInvite
+// when the re-INVITE has no SDP body (session refresh).
+func TestHandleReInviteNoSDP(t *testing.T) {
+	ourSDP := []byte("v=0\r\no=- 123 456 IN IP4 157.55.199.120\r\ns=LiveKit\r\n" +
+		"c=IN IP4 157.55.199.120\r\nt=0 0\r\n" +
+		"m=audio 19839 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
+
+	_, call := newTestOutboundCall("test-nossdp", "SCL_nosdp", ourSDP)
+
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Host: "local.com"})
+	callIDHeader := sip.CallIDHeader("test-nossdp")
+	req.AppendHeader(&callIDHeader)
+	// No body set — session refresh
+
+	tx := &testServerTransaction{}
+	call.handleReInvite(req, tx)
+
+	require.Len(t, tx.responses, 1, "should send one response")
+	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode, "should respond with 200 OK")
+
+	// Falls back to AcceptReInvite which returns exact ownSDP
+	require.Equal(t, ourSDP, tx.responses[0].Body(), "should respond with original SDP unchanged")
+}
+
+// TestHandleReInviteInactive tests that handleReInvite responds with inactive
+// when the carrier sends an inactive direction.
+func TestHandleReInviteInactive(t *testing.T) {
+	ourSDP := []byte("v=0\r\no=- 123 456 IN IP4 157.55.199.120\r\ns=LiveKit\r\n" +
+		"c=IN IP4 157.55.199.120\r\nt=0 0\r\n" +
+		"m=audio 19839 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=sendrecv\r\n")
+	carrierSDP := []byte("v=0\r\no=- 149197 630265 IN IP4 152.188.164.136\r\ns=DNL-SWITCH\r\n" +
+		"c=IN IP4 0.0.0.0\r\nt=0 0\r\n" +
+		"m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=inactive\r\n")
+
+	_, call := newTestOutboundCall("test-inactive", "SCL_inactive", ourSDP)
+
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Host: "local.com"})
+	callIDHeader := sip.CallIDHeader("test-inactive")
+	req.AppendHeader(&callIDHeader)
+	req.AppendHeader(&sip.CSeqHeader{SeqNo: 2, MethodName: sip.INVITE})
+	req.SetBody(carrierSDP)
+
+	tx := &testServerTransaction{}
+	call.handleReInvite(req, tx)
+
+	require.Len(t, tx.responses, 1)
+	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode)
+
+	respSDP := new(psdp.SessionDescription)
+	err := respSDP.Unmarshal(tx.responses[0].Body())
+	require.NoError(t, err)
+	require.Equal(t, "inactive", getMediaDirection(respSDP), "response direction should be inactive")
 }
