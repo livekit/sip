@@ -43,12 +43,17 @@ func newTestOutboundCall(callID string, localTag LocalTag, sdpOffer []byte) (*Cl
 		Address: sip.Uri{Host: "local.com", Port: 5060},
 	}
 
+	// Store ownSDP as an independent copy, just like Invite() does
+	ownSDP := make([]byte, len(sdpOffer))
+	copy(ownSDP, sdpOffer)
+
 	out := &sipOutbound{
 		log:     log,
 		c:       c,
 		id:      localTag,
 		callID:  callID,
 		invite:  invite,
+		ownSDP:  ownSDP,
 		contact: contactHeader,
 	}
 
@@ -122,6 +127,37 @@ func TestOutboundReInviteNoCallID(t *testing.T) {
 
 	require.False(t, handled, "INVITE without Call-ID should not be handled")
 	require.Len(t, tx.responses, 0, "should not send any response")
+}
+
+// TestOutboundReInviteSDPNotEchoed verifies that AcceptReInvite responds with
+// OUR SDP, not the carrier's SDP from the re-INVITE request. Echoing the
+// carrier's SDP back would tell them to loop audio to themselves.
+func TestOutboundReInviteSDPNotEchoed(t *testing.T) {
+	ourSDP := []byte("v=0\r\no=- 123 456 IN IP4 157.55.199.120\r\ns=LiveKit\r\nc=IN IP4 157.55.199.120\r\nt=0 0\r\nm=audio 19839 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\n")
+	carrierSDP := []byte("v=0\r\no=- 149197 630265 IN IP4 152.188.164.136\r\ns=DNL-SWITCH\r\nc=IN IP4 152.188.164.198\r\nt=0 0\r\nm=audio 27530 RTP/AVP 0 101\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\n")
+
+	c, _ := newTestOutboundCall("test-call-sdp", "SCL_sdptest", ourSDP)
+
+	// Build a re-INVITE with the carrier's SDP (session refresh from carrier)
+	req := sip.NewRequest(sip.INVITE, sip.Uri{Host: "local.com"})
+	callIDHeader := sip.CallIDHeader("test-call-sdp")
+	req.AppendHeader(&callIDHeader)
+	req.AppendHeader(&sip.CSeqHeader{SeqNo: 2, MethodName: sip.INVITE})
+	req.SetBody(carrierSDP)
+
+	tx := &testServerTransaction{}
+	handled := c.onInvite(req, tx)
+
+	require.True(t, handled, "re-INVITE should be handled")
+	require.Len(t, tx.responses, 1, "should send one response")
+	require.Equal(t, sip.StatusOK, tx.responses[0].StatusCode, "should respond with 200 OK")
+
+	// Critical: response must contain OUR SDP, not the carrier's
+	respBody := tx.responses[0].Body()
+	require.Equal(t, ourSDP, respBody, "response SDP must be our SDP, not the carrier's")
+	require.NotEqual(t, carrierSDP, respBody, "response must NOT echo the carrier's SDP")
+	require.Contains(t, string(respBody), "s=LiveKit", "response SDP should have our session name")
+	require.NotContains(t, string(respBody), "s=DNL-SWITCH", "response SDP must not have carrier's session name")
 }
 
 // TestOutboundAcceptReInviteNoSDP tests that AcceptReInvite responds with 500

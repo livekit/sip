@@ -335,6 +335,33 @@ func TestSIPOutboundReInvite(t *testing.T) {
 	require.NotNil(t, ctHeader, "re-INVITE response should have Content-Type")
 	require.Equal(t, "application/sdp", ctHeader.Value())
 
+	// Critical: verify the SDP in the 200 OK is the SIP service's SDP,
+	// NOT the UAS's SDP echoed back. Echoing the carrier's SDP tells them
+	// to loop audio to themselves.
+	respSDP := new(sdp.SessionDescription)
+	err = respSDP.Unmarshal(resp.Body())
+	require.NoError(t, err, "re-INVITE response should contain valid SDP")
+
+	reinviteSDP := new(sdp.SessionDescription)
+	err = reinviteSDP.Unmarshal(reinviteReq.Body())
+	require.NoError(t, err, "re-INVITE request should contain valid SDP")
+
+	t.Logf("re-INVITE request SDP session: %q, origin: %s", reinviteSDP.SessionName, reinviteSDP.Origin.UnicastAddress)
+	t.Logf("re-INVITE response SDP session: %q, origin: %s", respSDP.SessionName, respSDP.Origin.UnicastAddress)
+
+	// The response SDP must be LiveKit's, not the UAS's
+	require.Equal(t, "LiveKit", string(respSDP.SessionName),
+		"re-INVITE 200 OK must contain LiveKit's SDP (s=LiveKit), not the carrier's")
+	require.NotEqual(t, "TestUAS", string(respSDP.SessionName),
+		"re-INVITE 200 OK must NOT echo the carrier's SDP back")
+
+	// Verify the response SDP origin differs from the request SDP
+	// (i.e., we're not echoing the same SDP back).
+	// Note: In local tests both may share the same IP, so compare session IDs instead.
+	require.NotEqual(t, reinviteSDP.Origin.SessionID, respSDP.Origin.SessionID,
+		"response SDP origin session ID must differ from request SDP — "+
+			"same session ID means we echoed the carrier's SDP")
+
 	// ACK the 200 OK.
 	ackReq := sip.NewAckRequest(reinviteReq, resp, nil)
 	err = uas.client.WriteRequest(ackReq)
@@ -475,7 +502,7 @@ func TestSIPOutboundReInviteCallDrop(t *testing.T) {
 
 	t.Log("Sending re-INVITE from UAS to outbound call (with matching inbound trunk)")
 
-	tx, _, err := uas.sendReInvite(t, dlg, remoteNumber)
+	tx, reinviteReq, err := uas.sendReInvite(t, dlg, remoteNumber)
 	require.NoError(t, err, "re-INVITE transaction should not fail")
 	defer tx.Terminate()
 
@@ -494,6 +521,27 @@ func TestSIPOutboundReInviteCallDrop(t *testing.T) {
 		t.Fatal("Timeout waiting for re-INVITE response — " +
 			"the re-INVITE was silently dropped (no matching inbound trunk path)")
 	}
+
+	// Verify the SDP in the 200 OK is the SIP service's SDP, not the UAS's echoed back.
+	require.NotEmpty(t, resp.Body(), "re-INVITE response should contain SDP")
+	respSDP := new(sdp.SessionDescription)
+	err = respSDP.Unmarshal(resp.Body())
+	require.NoError(t, err, "re-INVITE response should contain valid SDP")
+
+	reinviteSDP := new(sdp.SessionDescription)
+	err = reinviteSDP.Unmarshal(reinviteReq.Body())
+	require.NoError(t, err, "re-INVITE request should contain valid SDP")
+
+	t.Logf("re-INVITE response SDP session: %q, origin: %s", respSDP.SessionName, respSDP.Origin.UnicastAddress)
+	require.Equal(t, "LiveKit", string(respSDP.SessionName),
+		"re-INVITE 200 OK must contain LiveKit's SDP, not the carrier's")
+	require.NotEqual(t, reinviteSDP.Origin.SessionID, respSDP.Origin.SessionID,
+		"response SDP origin session ID must differ from request SDP")
+
+	// ACK the 200 OK
+	ackReq := sip.NewAckRequest(reinviteReq, resp, nil)
+	err = uas.client.WriteRequest(ackReq)
+	require.NoError(t, err, "ACK for re-INVITE should not fail")
 
 	// If we got here with a 200 OK (fix is present), verify the call is still active.
 	ctx, cancel = context.WithTimeout(context.Background(), participantsJoinTimeout)

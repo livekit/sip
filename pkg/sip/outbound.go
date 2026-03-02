@@ -784,6 +784,7 @@ type sipOutbound struct {
 	callID     string
 	invite     *sip.Request
 	inviteOk   *sip.Response
+	ownSDP     []byte // our SDP offer, stored separately to avoid stale request body references
 	to         *sip.ToHeader
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
@@ -936,6 +937,11 @@ authLoop:
 	}
 
 	c.invite, c.inviteOk = req, resp
+	// Store our SDP offer as an independent copy. We cannot rely on c.invite.Body()
+	// because sipgo's Body() returns a reference to the request's internal buffer,
+	// which may become stale after the transaction is terminated.
+	c.ownSDP = make([]byte, len(sdpOffer))
+	copy(c.ownSDP, sdpOffer)
 	toHeader = resp.To()
 	if toHeader == nil {
 		return nil, errors.New("no To header in INVITE response")
@@ -969,16 +975,20 @@ func (c *sipOutbound) AcceptReInvite(req *sip.Request, tx sip.ServerTransaction)
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Use our original SDP offer as the response body
-	var sdpBody []byte
-	if c.invite != nil {
-		sdpBody = c.invite.Body()
-	}
+	// Use our stored SDP offer (independent copy, not from the request object).
+	// We must respond with OUR media info so the remote knows where to send audio.
+	// Using the request body or stale references would echo the remote's SDP back,
+	// causing the remote to loop audio to itself.
+	sdpBody := c.ownSDP
 	if len(sdpBody) == 0 {
 		c.log.Errorw("no SDP available for outbound re-INVITE response", nil)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusInternalServerError, "No SDP available", nil))
 		return
 	}
+
+	c.log.Debugw("outbound re-INVITE SDP",
+		"responseSDP", string(sdpBody),
+		"requestSDP", string(req.Body()))
 
 	resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", sdpBody)
 	resp.AppendHeader(&contentTypeHeaderSDP)
@@ -1118,6 +1128,7 @@ func (c *sipOutbound) sendCancel(ctx context.Context) {
 func (c *sipOutbound) drop() {
 	c.invite = nil
 	c.inviteOk = nil
+	c.ownSDP = nil
 	c.nextCSeq = 0
 }
 
