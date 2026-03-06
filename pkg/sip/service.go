@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -312,8 +313,17 @@ func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCre
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
-	// TODO: scale affinity based on a number or active calls?
-	return 0.5
+	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
+		return 0
+	}
+	active := float32(s.ActiveCalls().Total())
+	if max := float32(s.conf.MaxActiveCalls); max > 0 {
+		if active >= max {
+			return 0
+		}
+		return 1 - active/max
+	}
+	return 1 / (1 + active)
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
