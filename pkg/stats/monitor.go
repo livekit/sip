@@ -72,6 +72,7 @@ type Monitor struct {
 	durCall                  *prometheus.HistogramVec
 	durJoin                  *prometheus.HistogramVec
 	durCheck                 *prometheus.HistogramVec
+	durStartRinging          *prometheus.HistogramVec
 	cpuLoad                  prometheus.Gauge
 	sdpSize                  *prometheus.HistogramVec
 	nodeAvailable            prometheus.GaugeFunc
@@ -210,6 +211,15 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Subsystem:   "sip",
 		Name:        "dur_check_sec",
 		Help:        "SIP call check duration (from INVITE to an initial dispatch response)",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+		Buckets:     durBucketsOp,
+	}, []string{"dir"}))
+
+	m.durStartRinging = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "dur_start_ringing_sec",
+		Help:        "Duration from INVITE received to 180 Ringing sent",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
@@ -426,6 +436,10 @@ func (c *CallMonitor) CallDur() func() time.Duration {
 
 func (c *CallMonitor) CheckDur() prometheus.Observer {
 	return c.m.durCheck.With(c.labelsShort(nil))
+}
+
+func (c *CallMonitor) StartRingingDur() prometheus.Observer {
+	return c.m.durStartRinging.With(c.labelsShort(nil))
 }
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
