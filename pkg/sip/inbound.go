@@ -349,7 +349,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	checkDur := cmon.CheckDur()
 	checked := func() {
 		checkDurOnce.Do(func() {
-			checkDur.Observe(time.Since(start).Seconds())
+			checkDur(time.Since(start))
 		})
 	}
 	defer checked()
@@ -380,7 +380,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 	}
 
+	tauth := cmon.StageDurTimer("get-auth")
 	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
+	tauth()
 	checked()
 	if err != nil {
 		cmon.InviteErrorShort("auth-error")
@@ -682,12 +684,14 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	c.cc.StartRinging()
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
+	tdisp := c.mon.StageDurTimer("eval-dispatch")
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
 		TrunkID: trunkID,
 		Call:    c.call,
 		Pin:     "",
 		NoPin:   false,
 	})
+	tdisp()
 	if disp.ProjectID != "" {
 		c.appendLogValues("projectID", disp.ProjectID)
 		c.projectID = disp.ProjectID
@@ -754,7 +758,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			log.Infow("no offer type specified")
 		}
 		rawSDP := req.Body()
+		tmedia := c.mon.StageDurTimer("start-media")
 		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, disp.EnabledFeatures, disp.FeatureFlags)
+		tmedia()
 		if err != nil {
 			log = log.WithValues("sdp", string(rawSDP))
 			isError := true
@@ -790,13 +796,16 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
 	acceptCall := func(answerData []byte) (bool, error) {
+		defer c.mon.StageDurTimer("call-accept")()
 		headers := disp.Headers
 		c.attrsToHdr = disp.AttributesToHeaders
 		if r := c.lkRoom.Room(); r != nil {
 			headers = AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
 		}
 		c.log().Infow("Accepting the call", "headers", headers)
+		taccept := c.mon.StageDurTimer("sip-accept")
 		err := c.cc.Accept(ctx, answerData, headers)
+		taccept()
 		if errors.Is(err, errNoACK) {
 			c.log().Errorw("Call accepted, but no ACK received", err)
 			c.closeWithNoACK(ctx)
@@ -871,7 +880,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		c.close(ctx, true, callDropped, "publish-failed")
 		return errors.Wrap(err, "publishing track to room failed")
 	}
+	tsub := c.mon.StageDurTimer("track-subscribe")
 	c.lkRoom.Subscribe()
+	tsub()
 	if !pinPrompt {
 		c.log().Infow("Waiting for track subscription(s)")
 		// For dispatches without pin, we first wait for LK participant to become available,
@@ -1001,6 +1012,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 }
 
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
+	defer c.mon.StageDurTimer("wait-media")()
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitMedia")
 	defer span.End()
 	// Wait for either a first RTP packet or a predefined delay.
@@ -1035,6 +1047,7 @@ func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
 func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) (bool, error) {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitSubscribe")
 	defer span.End()
+	defer c.mon.StageDurTimer("wait-subscribe")()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -1146,6 +1159,7 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 	if !c.done.CompareAndSwap(false, true) {
 		return
 	}
+	defer c.mon.StageDurTimer("close")
 	c.stats.Closed.Store(true)
 	sipCode, sipStatus := status.SIPStatus()
 	log := c.log().WithValues("status", sipCode, "reason", reason)
@@ -1298,12 +1312,16 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	default:
 	}
 
+	treg := c.mon.StageDurTimer("lk-reg-transfer")
 	err := c.s.RegisterTransferSIPParticipant(LocalTag(c.cc.ID()), c)
+	treg()
 	if err != nil {
 		return err
 	}
 
+	tconn := c.mon.StageDurTimer("lk-connect")
 	err = c.lkRoom.Connect(c.s.conf, rconf)
+	tconn()
 	if err != nil {
 		return err
 	}
@@ -1311,6 +1329,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 }
 
 func (c *inboundCall) publishTrack() error {
+	defer c.mon.StageDurTimer("track-publish")()
 	local, err := c.lkRoom.NewParticipantTrack(RoomSampleRate)
 	if err != nil {
 		_ = c.lkRoom.Close()
@@ -1321,6 +1340,7 @@ func (c *inboundCall) publishTrack() error {
 }
 
 func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status CallStatus) error {
+	defer c.mon.StageDurTimer("join-room")()
 	if c.joinDur != nil {
 		c.joinDur()
 	}
