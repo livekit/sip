@@ -159,7 +159,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
 		call.close(ctx, errors.Wrap(err, "room join failed"), callDropped, "join-failed", livekit.DisconnectReason_UNKNOWN_REASON)
-		return nil, fmt.Errorf("update room failed: %w", err)
+		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
 
 	c.cmu.Lock()
@@ -393,9 +393,14 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
 				reportErr = nil
 			}
+		} else if errors.Is(err, sdp.ErrNoCommonMedia) {
+			status, desc, reason = callRejected, "no-common-codec", livekit.DisconnectReason_MEDIA_FAILURE
+			reportErr = nil
+			err = psrpc.NewError(psrpc.InvalidArgument, err)
 		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
 			status, desc, reason = callRejected, "encryption-required", livekit.DisconnectReason_MEDIA_FAILURE
 			reportErr = nil
+			err = psrpc.NewError(psrpc.InvalidArgument, err)
 		}
 		c.close(ctx, reportErr, status, desc, reason)
 		return err
