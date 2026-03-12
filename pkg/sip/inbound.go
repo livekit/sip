@@ -468,7 +468,7 @@ func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 }
 
 func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(&req.MessageData)
+	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		return
 	}
@@ -483,7 +483,7 @@ func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 }
 
 func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(&req.MessageData)
+	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
 		return
@@ -546,7 +546,7 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 }
 
 func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(&req.MessageData)
+	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
 		return

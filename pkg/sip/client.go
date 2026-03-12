@@ -328,7 +328,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
 	defer span.End()
-	tag, _ := GetLocalTagUAS(&req.MessageData)
+	tag, _ := GetLocalTagUAS(req)
 	c.cmu.Lock()
 	call := c.activeCalls[tag]
 	c.cmu.Unlock()
@@ -348,7 +348,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 }
 
 func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
-	tag, _ := GetLocalTagUAS(&req.MessageData)
+	tag, _ := GetLocalTagUAS(req)
 	c.cmu.Lock()
 	call := c.activeCalls[tag]
 	c.cmu.Unlock()
