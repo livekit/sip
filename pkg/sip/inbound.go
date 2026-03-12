@@ -81,10 +81,6 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
-func generateNonce(sipCallID string) string {
-	return fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
-}
-
 type inboundCallInfo struct {
 	sync.Mutex
 	cseq        uint32
@@ -126,19 +122,19 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 	}
 }
 
-func (s *Server) getCallInfo(id LocalTag) *inboundCallInfo {
-	c, _ := s.infos.byLocalTag.Get(id)
+func (s *Server) getCallInfo(id string) *inboundCallInfo {
+	c, _ := s.infos.byCallID.Get(id)
 	if c != nil {
 		return c
 	}
 	s.infos.Lock()
 	defer s.infos.Unlock()
-	c, _ = s.infos.byLocalTag.Get(id)
+	c, _ = s.infos.byCallID.Get(id)
 	if c != nil {
 		return c
 	}
 	c = &inboundCallInfo{}
-	s.infos.byLocalTag.Add(id, c)
+	s.infos.byCallID.Add(id, c)
 	return c
 }
 
@@ -191,7 +187,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
-			Nonce:     generateNonce(sipCallID),
+			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
 			Algorithm: "MD5",
 		}
 
@@ -335,7 +331,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	log.Infow("processing invite")
 
 	s.cmu.RLock()
-	existing := s.byLocalTag[cc.ID()]
+	existing := s.byCallID[cc.SIPCallID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength())
@@ -441,7 +437,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			// We will send password request anyway, so might as well signal that the progress is made.
 			cc.Processing()
 		}
-		s.getCallInfo(cc.ID()).countInvite(log, req)
+		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
 		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
@@ -453,7 +449,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		// ok
 	case AuthAccept:
-		s.getCallInfo(cc.ID()).countInvite(log, req)
+		s.getCallInfo(cc.SIPCallID()).countInvite(log, req)
 		// ok
 	}
 
@@ -468,12 +464,12 @@ func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 }
 
 func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(&req.MessageData)
+	tag, err := getFromTag(req)
 	if err != nil {
 		return
 	}
 	s.cmu.RLock()
-	c := s.byLocalTag[tag]
+	c := s.byRemoteTag[tag]
 	s.cmu.RUnlock()
 	if c == nil {
 		return
@@ -483,14 +479,14 @@ func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 }
 
 func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(&req.MessageData)
+	tag, err := getFromTag(req)
 	if err != nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
 	s.cmu.RLock()
-	c := s.byLocalTag[tag]
+	c := s.byRemoteTag[tag]
 	s.cmu.RUnlock()
 	if c != nil {
 		c.cc.AcceptBye(req, tx)
@@ -546,14 +542,14 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 }
 
 func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(&req.MessageData)
+	tag, err := getFromTag(req)
 	if err != nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
 	s.cmu.RLock()
-	c := s.byLocalTag[tag]
+	c := s.byRemoteTag[tag]
 	s.cmu.RUnlock()
 	if c != nil {
 		c.log().Infow("NOTIFY")
@@ -635,7 +631,9 @@ func (s *Server) newInboundCall(
 	c.lkRoom = s.getRoom(c.log(), &c.stats.Room)
 	c.ctx, c.cancel = context.WithCancel(ctx)
 	s.cmu.Lock()
+	s.byRemoteTag[cc.Tag()] = c
 	s.byLocalTag[cc.ID()] = c
+	s.byCallID[cc.SIPCallID()] = c
 	s.cmu.Unlock()
 	return c
 }
@@ -1191,7 +1189,9 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 		c.callDur()
 	}
 	c.s.cmu.Lock()
+	delete(c.s.byRemoteTag, c.cc.Tag())
 	delete(c.s.byLocalTag, c.cc.ID())
+	delete(c.s.byCallID, c.cc.SIPCallID())
 	c.s.cmu.Unlock()
 
 	c.s.DeregisterTransferSIPParticipant(c.cc.ID())

@@ -170,7 +170,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	s.cli.cmu.Unlock()
 
 	s.srv.cmu.Lock()
-	samples, total = sampleMap(5, s.srv.byLocalTag, func(v *inboundCall) string {
+	samples, total = sampleMap(5, s.srv.byRemoteTag, func(v *inboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
