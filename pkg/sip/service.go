@@ -451,7 +451,7 @@ func (s *Service) validateCallProvider(state *CallState) error {
 
 	// Check if provider is internal and prevent transfer is enabled
 	if state.callInfo.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && state.callInfo.ProviderInfo.PreventTransfer {
-		return psrpc.NewErrorf(psrpc.InvalidArgument, "we don't yet support transfers for this phone number type")
+		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
 	}
 
 	return nil
