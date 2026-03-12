@@ -81,6 +81,10 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
+func generateNonce(sipCallID string) string {
+	return fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
+}
+
 type inboundCallInfo struct {
 	sync.Mutex
 	cseq        uint32
@@ -187,7 +191,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
 			Realm:     UserAgent,
-			Nonce:     fmt.Sprintf("%d", time.Now().UnixMicro()),
+			Nonce:     generateNonce(sipCallID),
 			Algorithm: "MD5",
 		}
 
@@ -331,7 +335,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	log.Infow("processing invite")
 
 	s.cmu.RLock()
-	existing := s.byCallID[cc.SIPCallID()]
+	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength())
