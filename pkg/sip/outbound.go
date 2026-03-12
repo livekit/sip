@@ -343,9 +343,6 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())
-		if tag := c.cc.Tag(); tag != "" {
-			delete(c.c.byRemote, tag)
-		}
 		c.c.cmu.Unlock()
 
 		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
@@ -652,10 +649,6 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err = c.media.SetConfig(mc); err != nil {
 		return err
 	}
-
-	c.c.cmu.Lock()
-	c.c.byRemote[c.cc.Tag()] = c
-	c.c.cmu.Unlock()
 
 	c.mon.InviteAccept()
 	c.media.EnableOut()

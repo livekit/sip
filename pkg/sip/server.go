@@ -144,14 +144,12 @@ type Server struct {
 
 	closing            core.Fuse
 	cmu                sync.RWMutex
-	byRemoteTag        map[RemoteTag]*inboundCall
 	byLocalTag         map[LocalTag]*inboundCall
-	byCallID           map[string]*inboundCall
 	provisionalInvites *expirable.LRU[[2]string, LocalTag]
 
 	infos struct {
 		sync.Mutex
-		byCallID *expirable.LRU[string, *inboundCallInfo]
+		byLocalTag *expirable.LRU[LocalTag, *inboundCallInfo]
 	}
 
 	handler Handler
@@ -187,15 +185,13 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		mon:                mon,
 		getIOClient:        getIOClient,
 		getRoom:            DefaultGetRoomFunc,
-		byRemoteTag:        make(map[RemoteTag]*inboundCall),
 		byLocalTag:         make(map[LocalTag]*inboundCall),
-		byCallID:           make(map[string]*inboundCall),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	for _, option := range options {
 		option(s)
 	}
-	s.infos.byCallID = expirable.NewLRU[string, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
+	s.infos.byLocalTag = expirable.NewLRU[LocalTag, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
 	s.initMediaRes()
 	return s
 }
@@ -340,8 +336,8 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 func (s *Server) Stop() {
 	s.closing.Break()
 	s.cmu.Lock()
-	calls := maps.Values(s.byRemoteTag)
-	s.byRemoteTag = make(map[RemoteTag]*inboundCall)
+	calls := maps.Values(s.byLocalTag)
+	s.byLocalTag = make(map[LocalTag]*inboundCall)
 	s.cmu.Unlock()
 	for _, c := range calls {
 		_ = c.Close()

@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	sipgo "github.com/emiago/sipgo/sip"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -203,28 +204,16 @@ func (u URI) ToSIPUri() *livekit.SIPUri {
 type LocalTag string
 type RemoteTag string
 
-func getFromTag(r *sip.Request) (RemoteTag, error) {
-	from := r.From()
-	if from == nil {
-		return "", errors.New("no From on Request")
-	}
-	tag, ok := getTagFrom(from.Params)
-	if !ok {
-		return "", errors.New("no tag in From on Request")
-	}
-	return tag, nil
-}
-
-func getToTag(r *sip.Response) (RemoteTag, error) {
+func GetLocalTagUAS(r *sipgo.MessageData) (LocalTag, error) {
 	to := r.To()
 	if to == nil {
-		return "", errors.New("no To on Response")
+		return "", errors.New("no To on Request")
 	}
 	tag, ok := getTagFrom(to.Params)
 	if !ok {
-		return "", errors.New("no tag in To on Response")
+		return "", errors.New("no tag in To on Request")
 	}
-	return tag, nil
+	return LocalTag(tag), nil
 }
 
 func getTagFrom(params sip.HeaderParams) (RemoteTag, bool) {

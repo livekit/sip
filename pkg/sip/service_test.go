@@ -985,8 +985,8 @@ func newServiceForAffinity(conf *config.Config) *Service {
 		activeCalls: make(map[LocalTag]*outboundCall),
 	}
 	srv := &Server{
-		conf:        conf,
-		byRemoteTag: make(map[RemoteTag]*inboundCall),
+		conf:       conf,
+		byLocalTag: make(map[LocalTag]*inboundCall),
 	}
 	return &Service{
 		conf: conf,
@@ -1011,7 +1011,7 @@ func TestCreateSIPParticipantAffinity_NoConfig_WithCalls(t *testing.T) {
 	}
 	// Add 5 inbound calls
 	for i := 0; i < 5; i++ {
-		s.srv.byRemoteTag[RemoteTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1085,7 +1085,7 @@ func TestCreateSIPParticipantAffinity_MixedInboundOutbound(t *testing.T) {
 		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
 	}
 	for i := 0; i < 4; i++ {
-		s.srv.byRemoteTag[RemoteTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
