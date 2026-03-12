@@ -46,6 +46,17 @@ func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
 	return nil
 }
 
+func getFinalResponseOrFail(t *testing.T, tx sip.ClientTransaction, req *sip.Request) *sip.Response {
+	var res *sip.Response
+	for {
+		res = getResponseOrFail(t, tx)
+		if res.StatusCode >= 200 {
+			break
+		}
+	}
+	return res
+}
+
 func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
 	select {
 	case res := <-tx.Responses():
@@ -65,11 +76,27 @@ type TestHandler struct {
 }
 
 func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
-	return h.GetAuthCredentialsFunc(ctx, call)
+	if h.GetAuthCredentialsFunc != nil {
+		return h.GetAuthCredentialsFunc(ctx, call)
+	}
+	return AuthInfo{Result: AuthAccept}, nil
 }
 
 func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispatch {
-	return h.DispatchCallFunc(ctx, info)
+	if h.DispatchCallFunc != nil {
+		return h.DispatchCallFunc(ctx, info)
+	}
+	identity := fmt.Sprintf("test-participant-%s", info.Call.SipCallId)
+	return CallDispatch{
+		Result: DispatchAccept,
+		Room: RoomConfig{
+			RoomName: "test-room",
+			Participant: ParticipantConfig{
+				Identity: identity,
+				Name:     identity,
+			},
+		},
+	}
 }
 
 func (h TestHandler) GetMediaProcessor(_ []livekit.SIPFeature, _ map[string]string) msdk.PCM16Processor {
@@ -958,8 +985,8 @@ func newServiceForAffinity(conf *config.Config) *Service {
 		activeCalls: make(map[LocalTag]*outboundCall),
 	}
 	srv := &Server{
-		conf:        conf,
-		byRemoteTag: make(map[RemoteTag]*inboundCall),
+		conf:       conf,
+		byLocalTag: make(map[LocalTag]*inboundCall),
 	}
 	return &Service{
 		conf: conf,
@@ -984,7 +1011,7 @@ func TestCreateSIPParticipantAffinity_NoConfig_WithCalls(t *testing.T) {
 	}
 	// Add 5 inbound calls
 	for i := 0; i < 5; i++ {
-		s.srv.byRemoteTag[RemoteTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1058,7 +1085,7 @@ func TestCreateSIPParticipantAffinity_MixedInboundOutbound(t *testing.T) {
 		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
 	}
 	for i := 0; i < 4; i++ {
-		s.srv.byRemoteTag[RemoteTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
