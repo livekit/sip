@@ -193,6 +193,31 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if strings.ContainsAny(req.Address, ";=") {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "address must not contain parameters")
 	}
+	// Deduplicate psrpc retries: if a call with this ID is already in progress, wait for it.
+	c.cmu.Lock()
+	if existing, ok := c.activeCalls[LocalTag(req.SipCallId)]; ok {
+		c.cmu.Unlock()
+		p := existing.Participant()
+		info := &rpc.InternalCreateSIPParticipantResponse{
+			ParticipantId:       p.ID,
+			ParticipantIdentity: p.Identity,
+			SipCallId:           req.SipCallId,
+		}
+		if !req.WaitUntilAnswered {
+			return info, nil
+		}
+		// Wait for the existing call to finish dialing.
+		select {
+		case <-existing.started.Watch():
+			return info, nil
+		case <-existing.Closed():
+			return nil, psrpc.NewErrorf(psrpc.Internal, "existing call closed before answering")
+		case <-ctx.Done():
+			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "timed out waiting for existing call")
+		}
+	}
+	c.cmu.Unlock()
+
 	log := c.log
 	if req.ProjectId != "" {
 		log = log.WithValues("projectID", req.ProjectId)
@@ -282,7 +307,12 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		call.DialAsync(ctx)
 		return info, nil
 	}
-	if err := call.Dial(ctx); err != nil {
+	// Detach Dial from the RPC context deadline. Use ringing timeout + buffer
+	// so the SIP INVITE has enough time to complete without being killed by Twirp.
+	dialTimeout := sipConf.ringingTimeout + 10*time.Second
+	dialCtx, dialCancel := context.WithTimeout(context.WithoutCancel(ctx), dialTimeout)
+	defer dialCancel()
+	if err := call.Dial(dialCtx); err != nil {
 		return nil, err
 	}
 	go call.WaitClose(context.WithoutCancel(ctx))
