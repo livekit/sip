@@ -29,7 +29,6 @@ import (
 	"github.com/frostbyte73/core"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/icholy/digest"
-	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
@@ -137,20 +136,15 @@ type Server struct {
 	getIOClient  GetIOInfoClient
 	getRoom      GetRoomFunc
 	sipListeners []io.Closer
-	sipUnhandled RequestHandler
+
+	callCache *CallCache
 
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
 
 	closing            core.Fuse
 	cmu                sync.RWMutex
-	byLocalTag         map[LocalTag]*inboundCall
 	provisionalInvites *expirable.LRU[[2]string, LocalTag]
-
-	infos struct {
-		sync.Mutex
-		byLocalTag *expirable.LRU[LocalTag, *inboundCallInfo]
-	}
 
 	handler Handler
 	conf    *config.Config
@@ -174,6 +168,12 @@ func WithGetRoomServer(fn GetRoomFunc) ServerOption {
 	}
 }
 
+func WithServerCallCache(cache *CallCache) ServerOption {
+	return func(s *Server) {
+		s.callCache = cache
+	}
+}
+
 func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ServerOption) *Server {
 	if log == nil {
 		log = logger.GetLogger()
@@ -185,13 +185,14 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		mon:                mon,
 		getIOClient:        getIOClient,
 		getRoom:            DefaultGetRoomFunc,
-		byLocalTag:         make(map[LocalTag]*inboundCall),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	for _, option := range options {
 		option(s)
 	}
-	s.infos.byLocalTag = expirable.NewLRU[LocalTag, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
+	if s.callCache == nil {
+		s.callCache = NewCallCache(s.log)
+	}
 	s.initMediaRes()
 	return s
 }
@@ -274,9 +275,9 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 	return nil
 }
 
-type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
+type RequestHandler func(req *sip.Request, tx sip.ServerTransaction)
 
-func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
+func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config) error {
 	s.sconf = sc
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
@@ -299,13 +300,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 		return err
 	}
 
-	s.sipSrv.OnOptions(s.onOptions)
-	s.sipSrv.OnInvite(s.onInvite)
-	s.sipSrv.OnAck(s.onAck)
-	s.sipSrv.OnBye(s.onBye)
-	s.sipSrv.OnNotify(s.onNotify)
-	s.sipSrv.OnNoRoute(s.OnNoRoute)
-	s.sipUnhandled = unhandled
+	s.sipSrv.OnOptions(s.onRequest)
+	s.sipSrv.OnInvite(s.onRequest)
+	s.sipSrv.OnAck(s.onRequest)
+	s.sipSrv.OnBye(s.onRequest)
+	s.sipSrv.OnNotify(s.onRequest)
+	s.sipSrv.OnNoRoute(s.onRequest)
 
 	listenIP := s.conf.ListenIP
 	if listenIP == "" {
@@ -336,11 +336,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 func (s *Server) Stop() {
 	s.closing.Break()
 	s.cmu.Lock()
-	calls := maps.Values(s.byLocalTag)
-	s.byLocalTag = make(map[LocalTag]*inboundCall)
+	calls := s.callCache
+	s.callCache = NewCallCache(s.log)
 	s.cmu.Unlock()
-	for _, c := range calls {
-		_ = c.Close()
+	err := calls.CloseAllInbound() // TODO: remove when we take care of the cleanup path
+	if err != nil {
+		s.log.Errorw("error closing active server calls", err)
 	}
 	if s.sipSrv != nil {
 		_ = s.sipSrv.Close()
@@ -348,6 +349,7 @@ func (s *Server) Stop() {
 	for _, l := range s.sipListeners {
 		_ = l.Close()
 	}
+	s.callCache.Close()
 }
 
 func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {

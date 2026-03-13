@@ -162,9 +162,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		return nil, fmt.Errorf("update room failed: %w", err)
 	}
 
-	c.cmu.Lock()
-	defer c.cmu.Unlock()
-	c.activeCalls[id] = call
+	c.callCache.Add(call) // This is interesting. Previously we were adding "call", but the thing complient with the Signaling interface is call.cc
 	return call, nil
 }
 
@@ -341,10 +339,7 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 		}
 		c.lkRoomIn = nil
 
-		c.c.cmu.Lock()
-		delete(c.c.activeCalls, c.cc.ID())
-		c.c.cmu.Unlock()
-
+		c.c.callCache.Remove(c.cc.ID())
 		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
 
 		// Call the handler asynchronously to avoid blocking
@@ -680,8 +675,8 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
-	ctx, span := Tracer.Start(ctx, "sip.outbound.transferCall")
+func (c *outboundCall) TransferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+	ctx, span := Tracer.Start(ctx, "sip.outbound.TransferCall")
 	defer span.End()
 	var err error
 
@@ -716,7 +711,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		}()
 	}
 
-	err = c.cc.transferCall(ctx, transferTo, headers)
+	err = c.cc.TransferCall(ctx, transferTo, headers)
 	if err != nil {
 		c.log.Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
@@ -824,6 +819,10 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 		return nil
 	}
 	return c.inviteOk.Headers()
+}
+
+func (c *sipOutbound) IsOutbound() bool {
+	return true
 }
 
 func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) ([]byte, error) {
@@ -1088,7 +1087,7 @@ func (c *sipOutbound) Drop() {
 	c.drop()
 }
 
-func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, headers map[string]string) error {
+func (c *sipOutbound) TransferCall(ctx context.Context, transferTo string, headers map[string]string) error {
 	c.mu.Lock()
 
 	if c.invite == nil || c.inviteOk == nil {

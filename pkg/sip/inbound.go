@@ -85,63 +85,6 @@ func generateNonce(sipCallID string) string {
 	return fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
 }
 
-type inboundCallInfo struct {
-	sync.Mutex
-	cseq        uint32
-	cseqAuth    uint32
-	invites     uint32
-	invitesAuth uint32
-}
-
-func inviteHasAuth(r *sip.Request) bool {
-	return r.GetHeader("Proxy-Authorization") != nil ||
-		r.GetHeader("Authorization") != nil
-}
-
-func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
-	hasAuth := inviteHasAuth(req)
-	cseq := req.CSeq()
-	if cseq == nil {
-		return
-	}
-	c.Lock()
-	defer c.Unlock()
-	cseqPtr := &c.cseq
-	countPtr := &c.invites
-	name := "invite"
-	if hasAuth {
-		cseqPtr = &c.cseqAuth
-		countPtr = &c.invitesAuth
-		name = "invite with auth"
-	}
-	if *cseqPtr == 0 {
-		*cseqPtr = cseq.SeqNo
-	}
-	if cseq.SeqNo > *cseqPtr {
-		return // reinvite
-	}
-	*countPtr++
-	if *countPtr > 1 {
-		log.Warnw("remote appears to be retrying an "+name, nil, "invites", *countPtr, "cseq", *cseqPtr)
-	}
-}
-
-func (s *Server) getCallInfo(id LocalTag) *inboundCallInfo {
-	c, _ := s.infos.byLocalTag.Get(id)
-	if c != nil {
-		return c
-	}
-	s.infos.Lock()
-	defer s.infos.Unlock()
-	c, _ = s.infos.byLocalTag.Get(id)
-	if c != nil {
-		return c
-	}
-	c = &inboundCallInfo{}
-	s.infos.byLocalTag.Add(id, c)
-	return c
-}
-
 func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	s.imu.Lock()
 	defer s.imu.Unlock()
@@ -281,12 +224,8 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	return true
 }
 
-func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	// Error processed in defer
-	_ = s.processInvite(req, tx)
-}
-
-func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
+// Process a new inbound call. Existing calls already handle in-dialog INVITE requests
+func (s *Server) processInvite(log logger.Logger, req *sip.Request, tx sip.ServerTransaction) (retErr error) {
 	start := time.Now()
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Server.processInvite")
@@ -317,7 +256,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 	tr := callTransportFromReq(req)
 
-	cc, err := s.newInbound(req, tx, src)
+	cc, err := s.newInbound(log, req, tx, src)
 	if err != nil {
 		s.log.Errorw("invalid invite", err)
 		if !s.conf.HideInboundPort {
@@ -329,23 +268,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
 	}
 	tid := traceid.FromGUID(string(cc.ID()))
-	log := cc.log.WithValues("transport", tr, "tid", tid.String())
+	log = cc.log.WithValues("transport", tr, "tid", tid.String())
 	cc.log = log
 
 	log.Infow("processing invite")
 
-	s.cmu.RLock()
-	existing := s.byLocalTag[cc.ID()]
-	s.cmu.RUnlock()
-	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength())
-		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
-		return nil
-	}
-
 	from, to := cc.From(), cc.To()
-
 	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
 	cmon.InviteReq()
 	defer cmon.SessionDur()()
@@ -441,7 +369,6 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			// We will send password request anyway, so might as well signal that the progress is made.
 			cc.Processing()
 		}
-		s.getCallInfo(cc.ID()).countInvite(log, req)
 		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
@@ -453,7 +380,6 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		// ok
 	case AuthAccept:
-		s.getCallInfo(cc.ID()).countInvite(log, req)
 		// ok
 	}
 
@@ -463,115 +389,123 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	return call.handleInvite(call.ctx, tid, req, r.TrunkID, s.conf)
 }
 
-func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
-}
+func (s *Server) ValidateRequest(req *sip.Request) (bool, logger.Logger) {
+	valid := true
 
-func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(req)
-	if err != nil {
-		return
-	}
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
-	if c == nil {
-		return
-	}
-	c.log().Infow("ACK from remote")
-	c.cc.AcceptAck(req, tx)
-}
-
-func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(req)
-	if err != nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
-		return
+	if req.Via() == nil {
+		valid = false
 	}
 
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
-	if c != nil {
-		c.cc.AcceptBye(req, tx)
-		var (
-			reason    ReasonHeader
-			rawReason string
-		)
-		if h := req.GetHeader("Reason"); h != nil {
-			rawReason = h.Value()
-			reason, err = ParseReasonHeader(rawReason)
-			if err != nil {
-				c.log().Warnw("cannot parse reason header", err, "reason-raw", rawReason)
+	sipCallID := ""
+	sipCallIDHdr := req.CallID()
+	if sipCallIDHdr == nil {
+		valid = false
+	} else {
+		sipCallID = sipCallIDHdr.Value()
+		if sipCallID == "" {
+			valid = false
+		}
+	}
+
+	cseq := req.CSeq()
+	if cseq == nil {
+		valid = false
+	}
+
+	fromHost := ""
+	fromTag := ""
+	fromHdr := req.From()
+	if fromHdr == nil {
+		valid = false
+	} else {
+		fromHost = strings.TrimSpace(fromHdr.Address.Host)
+		fromParams := fromHdr.Params
+		if fromHost == "" || fromParams == nil {
+			valid = false
+		} else {
+			fromTag, _ = fromParams.Get("tag")
+			if fromTag == "" {
+				valid = false
 			}
 		}
-		c.log().Infow("BYE from remote",
-			"reason-type", reason.Type,
-			"reason-cause", reason.Cause,
-			"reason-text", reason.Text,
-			"reason-raw", rawReason,
-		)
-		c.Bye(reason)
-		return
 	}
-	ok := false
-	if s.sipUnhandled != nil {
-		ok = s.sipUnhandled(req, tx)
+
+	toHost := ""
+	toTag := ""
+	toHdr := req.To()
+	if toHdr == nil {
+		valid = false
+	} else {
+		toHost = strings.TrimSpace(toHdr.Address.Host)
+		toParams := toHdr.Params
+		if toHost == "" || toParams == nil {
+			valid = false
+		} else {
+			toTag, _ = toParams.Get("tag")
+		}
 	}
-	if !ok {
-		s.log.Infow("BYE for non-existent call", "sipTag", tag)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
-	}
+
+	return valid, s.log.WithValues(
+		"callID", toTag,
+		"sipTag", fromTag,
+		"sipCallID", sipCallID,
+		"fromHost", fromHost,
+		"toHost", toHost,
+	)
 }
 
-func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	callID := ""
-	if h := req.CallID(); h != nil {
-		callID = h.Value()
+func (s *Server) onRequest(_ *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	isValid, log := s.ValidateRequest(req)
+	if !isValid {
+		log.Warnw("Invalid request", nil)
+		tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Request", nil))
+		return
 	}
-	from := ""
-	if h := req.From(); h != nil {
-		from = h.Address.String()
+	switch req.Method {
+	case sip.OPTIONS:
+	case sip.PRACK:
+		tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+		return
+	case sip.INVITE:
+	case sip.ACK:
+	case sip.BYE:
+	case sip.NOTIFY:
+		break
+	default:
+		log.Infow("Inbound SIP request not handled")
+		tx.Respond(sip.NewResponseFromRequest(req, 405, "Method Not Allowed", nil))
 	}
-	to := ""
-	if h := req.To(); h != nil {
-		to = h.Address.String()
-	}
-	s.log.Infow("Inbound SIP request not handled",
-		"method", req.Method.String(),
-		"sipCallID", callID,
-		"from", from,
-		"to", to)
-	tx.Respond(sip.NewResponseFromRequest(req, 405, "Method Not Allowed", nil))
-}
 
-func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, err := GetLocalTagUAS(req)
-	if err != nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
+	localTag, err := GetLocalTagUAS(req)
+	if err != nil { // No local tag - out of dialog request
+		if req.Method == sip.INVITE {
+			s.processInvite(log, req, tx)
+			return
+		}
+		log.Warnw("Invalid request", err)
+		tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad Request", nil))
 		return
 	}
 
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
-	if c != nil {
-		c.log().Infow("NOTIFY")
-		err := c.cc.handleNotify(req, tx)
-
-		code, msg := sipCodeAndMessageFromError(err)
-
-		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
-
+	call := s.callCache.Get(localTag)
+	if call == nil {
+		log.Warnw("Call not found", nil)
+		tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call Leg Does Not Exist", nil))
 		return
 	}
-	ok := false
-	if s.sipUnhandled != nil {
-		ok = s.sipUnhandled(req, tx)
-	}
-	if !ok {
-		s.log.Infow("NOTIFY for non-existent call")
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
+	log = call.Log()
+
+	log.Infow("Received in-dialog request", "method", req.Method, "cseq", req.CSeq().SeqNo)
+	ctx := context.Background() // Currenty philosophy is we don't stop processing SIP when closing
+	switch req.Method {
+	case sip.INVITE:
+		call.OnInvite(ctx, req, tx)
+	case sip.ACK:
+		call.OnAck(ctx, req, tx)
+	case sip.BYE:
+		call.OnBye(ctx, req, tx)
+	case sip.NOTIFY:
+		call.OnNotify(ctx, req, tx)
 	}
 }
 
@@ -634,9 +568,7 @@ func (s *Server) newInboundCall(
 	// we need it created earlier so that the audio mixer is available for pin prompts
 	c.lkRoom = s.getRoom(c.log(), &c.stats.Room)
 	c.ctx, c.cancel = context.WithCancel(ctx)
-	s.cmu.Lock()
-	s.byLocalTag[cc.ID()] = c
-	s.cmu.Unlock()
+	s.callCache.Add(c)
 	return c
 }
 
@@ -1190,9 +1122,7 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 	if c.callDur != nil {
 		c.callDur()
 	}
-	c.s.cmu.Lock()
-	delete(c.s.byLocalTag, c.cc.ID())
-	c.s.cmu.Unlock()
+	c.s.callCache.Remove(c.cc.ID())
 
 	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
 
@@ -1391,7 +1321,7 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+func (c *inboundCall) TransferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
 	var err error
 
 	tID := c.state.StartTransfer(ctx, transferTo)
@@ -1440,32 +1370,12 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 }
 
-func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
-	sipCallIDHdr := invite.CallID()
-	if sipCallIDHdr == nil {
-		return nil, errors.New("no Call-ID header in INVITE")
-	}
-	sipCallID := sipCallIDHdr.Value()
-	if sipCallID == "" {
-		return nil, errors.New("no Call-ID header in INVITE")
-	}
+func (s *Server) newInbound(log logger.Logger, invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
+	// Callid, From, To, CSeq, were already validated, just need to catch the to-tag
+	callID := invite.CallID().Value()
 	fromHdr := invite.From()
-	if fromHdr == nil {
-		return nil, errors.New("no From header in INVITE")
-	}
-	fromParams := fromHdr.Params
-	if fromParams == nil {
-		return nil, errors.New("no tag in From in INVITE")
-	}
-	fromTag, ok := fromParams.Get("tag")
-	if !ok || fromTag == "" {
-		return nil, errors.New("no tag in From in INVITE")
-	}
+	fromTag, _ := fromHdr.Params.Get("tag")
 	toHdr := invite.To()
-	if toHdr == nil {
-		return nil, errors.New("no To header in INVITE")
-	}
-
 	if toHdr.Params == nil {
 		toHdr.Params = sip.NewParams()
 	}
@@ -1473,7 +1383,7 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	if !ok || toTag == "" {
 		// Check if the call-ID + from tag is in the provisional invites cache
 		s.cmu.Lock()
-		cachedTag, ok := s.provisionalInvites.Get([2]string{sipCallID, fromTag})
+		cachedTag, ok := s.provisionalInvites.Get([2]string{callID, fromTag})
 		s.cmu.Unlock()
 		if ok && cachedTag != "" {
 			// Use the cached tag to reuse the originally assigned SCL ID
@@ -1487,18 +1397,6 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 
 	legTr := legTransportFromReq(invite)
 	contact := s.ContactURI(legTr)
-	log := s.log.WithValues(
-		"callID", toTag,
-		"traceID", traceid.FromGUID(toTag),
-		"sipCallID", sipCallID,
-		"fromIP", src.Addr().String(),
-		"toIP", invite.Destination(),
-		"fromHost", fromHdr.Address.Host,
-		"fromUser", fromHdr.Address.User,
-		"toHost", toHdr.Address.Host,
-		"toUser", toHdr.Address.User,
-		"sipTag", fromTag,
-	)
 	c := &sipInbound{
 		s:         s,
 		id:        LocalTag(toTag),
@@ -1507,7 +1405,7 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 		to:        toHdr,
 		from:      fromHdr,
 		tag:       RemoteTag(fromTag),
-		sipCallID: sipCallID,
+		sipCallID: callID,
 		legTr:     legTr,
 		contact: &sip.ContactHeader{
 			Address: *contact.GetContactURI(),
@@ -1519,6 +1417,13 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 		c.inviteCSeq = h.SeqNo
 		c.nextRequestCSeq = h.SeqNo + 1
 	}
+	log = log.WithValues(
+		"traceID", traceid.FromGUID(toTag),
+		"fromIP", src.Addr().String(),
+		"toIP", invite.Destination(),
+		"fromUser", fromHdr.Address.User,
+		"toUser", toHdr.Address.User,
+	)
 	log = LoggerWithHeaders(log, c)
 	c.log = log
 
@@ -1657,6 +1562,14 @@ func (c *sipInbound) RemoteHeaders() Headers {
 		return nil
 	}
 	return c.invite.Headers()
+}
+
+func (c *sipInbound) IsOutbound() bool {
+	return false
+}
+
+func (c *sipInbound) State() *CallState {
+	return c.call.state
 }
 
 func (c *sipInbound) Processing() {

@@ -123,10 +123,18 @@ type Signaling interface {
 	SIPCallID() string
 	RemoteHeaders() Headers
 
+	IsOutbound() bool
+
+	State() *CallState
+	LocalSDP() []byte // Can retrun nil if not available
+
 	WriteRequest(req *sip.Request) error
 	Transaction(req *sip.Request) (sip.ClientTransaction, error)
 
-	Drop()
+	Close() error // Semd BYE/CANCEL to properly terminate the call
+	Drop()        // Drop the call without any communication with remote party
+
+	TransferCall(context.Context, string, map[string]string, bool) error
 }
 
 func transportFromURI(u *sip.Uri) Transport {

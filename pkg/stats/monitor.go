@@ -482,16 +482,25 @@ func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
 }
 
 func (m *Monitor) TransferStarted(dir CallDir) {
+	if m == nil {
+		return // Convenience for tests
+	}
 	m.transfersTotal.WithLabelValues(dir.String()).Inc()
 	m.transfersActive.WithLabelValues(dir.String()).Inc()
 }
 
 func (m *Monitor) TransferSucceeded(dir CallDir) {
+	if m == nil {
+		return // Convenience for tests
+	}
 	m.transfersSucceeded.WithLabelValues(dir.String()).Inc()
 	m.transfersActive.WithLabelValues(dir.String()).Dec()
 }
 
 func (m *Monitor) TransferFailed(dir CallDir, reason string, changeActive bool) {
+	if m == nil {
+		return // Convenience for tests
+	}
 	m.transfersFailed.WithLabelValues(dir.String(), reason).Inc()
 	if changeActive {
 		m.transfersActive.WithLabelValues(dir.String()).Dec()

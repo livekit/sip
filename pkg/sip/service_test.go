@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-kit/log"
 	"github.com/go-logr/logr"
 	"github.com/icholy/digest"
 	msdk "github.com/livekit/media-sdk"
@@ -981,12 +982,11 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 // suitable for testing CreateSIPParticipantAffinity without network setup.
 func newServiceForAffinity(conf *config.Config) *Service {
 	cli := &Client{
-		conf:        conf,
-		activeCalls: make(map[LocalTag]*outboundCall),
+		conf: conf,
 	}
 	srv := &Server{
-		conf:       conf,
-		byLocalTag: make(map[LocalTag]*inboundCall),
+		conf:      conf,
+		callCache: NewCallCache(log.NewNopLogger()),
 	}
 	return &Service{
 		conf: conf,
@@ -1007,11 +1007,13 @@ func TestCreateSIPParticipantAffinity_NoConfig_WithCalls(t *testing.T) {
 
 	// Add 4 outbound calls
 	for i := 0; i < 4; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 	// Add 5 inbound calls
 	for i := 0; i < 5; i++ {
-		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		c := &inboundCall{cc: &sipInbound{id: LocalTag(fmt.Sprintf("in-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1032,7 +1034,8 @@ func TestCreateSIPParticipantAffinity_WithMaxCalls_PartialLoad(t *testing.T) {
 
 	// Add 25 outbound calls before first measurement
 	for i := 0; i < 25; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
 	// 25 active, max 100 => 1 - 25/100 = 0.75
@@ -1040,7 +1043,8 @@ func TestCreateSIPParticipantAffinity_WithMaxCalls_PartialLoad(t *testing.T) {
 
 	// Add 25 more (50 total)
 	for i := 25; i < 50; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 	got = s.CreateSIPParticipantAffinity(context.Background(), nil)
 	// 50 active, max 100 => 1 - 50/100 = 0.5
@@ -1048,7 +1052,8 @@ func TestCreateSIPParticipantAffinity_WithMaxCalls_PartialLoad(t *testing.T) {
 
 	// Add 49 more (99 total, just under capacity)
 	for i := 50; i < 99; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 	got = s.CreateSIPParticipantAffinity(context.Background(), nil)
 	// 99 active, max 100 => 1 - 99/100 = 0.01
@@ -1059,7 +1064,8 @@ func TestCreateSIPParticipantAffinity_AtCapacity(t *testing.T) {
 	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 10})
 
 	for i := 0; i < 10; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1070,7 +1076,8 @@ func TestCreateSIPParticipantAffinity_OverCapacity(t *testing.T) {
 	s := newServiceForAffinity(&config.Config{MaxActiveCalls: 10})
 
 	for i := 0; i < 15; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1082,10 +1089,12 @@ func TestCreateSIPParticipantAffinity_MixedInboundOutbound(t *testing.T) {
 
 	// 6 outbound + 4 inbound = 10 total
 	for i := 0; i < 6; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 	for i := 0; i < 4; i++ {
-		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		c := &inboundCall{cc: &sipInbound{id: LocalTag(fmt.Sprintf("in-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1142,7 +1151,8 @@ func TestCreateSIPParticipantAffinity_TrunkWhitelist_WithMaxCalls(t *testing.T) 
 
 	// Add 50 calls
 	for i := 0; i < 50; i++ {
-		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
+		c := &outboundCall{cc: &sipOutbound{id: LocalTag(fmt.Sprintf("out-%d", i))}}
+		s.srv.callCache.Add(c.cc)
 	}
 
 	// Whitelisted trunk: should get normal affinity

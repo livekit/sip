@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
-	"golang.org/x/exp/maps"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -61,9 +60,9 @@ type Client struct {
 
 	sipCli SIPClient
 
-	closing     core.Fuse
-	cmu         sync.Mutex
-	activeCalls map[LocalTag]*outboundCall
+	closing   core.Fuse
+	cmu       sync.Mutex
+	callCache *CallCache
 
 	handler      Handler
 	getIOClient  GetIOInfoClient
@@ -89,6 +88,14 @@ func WithGetRoomClient(fn GetRoomFunc) ClientOption {
 	}
 }
 
+func WithClientCallCache(callCache *CallCache) ClientOption {
+	return func(c *Client) {
+		if callCache != nil {
+			c.callCache = callCache
+		}
+	}
+}
+
 func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ClientOption) *Client {
 	if log == nil {
 		log = logger.GetLogger()
@@ -101,10 +108,12 @@ func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats
 		getIOClient:  getIOClient,
 		getSipClient: DefaultGetSipClientFunc,
 		getRoom:      DefaultGetRoomFunc,
-		activeCalls:  make(map[LocalTag]*outboundCall),
 	}
 	for _, option := range options {
 		option(c)
+	}
+	if c.callCache == nil {
+		c.callCache = NewCallCache(c.log)
 	}
 	return c
 }
@@ -141,13 +150,17 @@ func (c *Client) Stop() {
 	ctx, span := Tracer.Start(ctx, "sip.Client.Stop")
 	defer span.End()
 	c.closing.Break()
+
 	c.cmu.Lock()
-	calls := maps.Values(c.activeCalls)
-	c.activeCalls = make(map[LocalTag]*outboundCall)
+	calls := c.callCache
+	c.callCache = NewCallCache(c.log)
 	c.cmu.Unlock()
-	for _, call := range calls {
-		call.Close(ctx)
+
+	err := calls.CloseAllOutbound() // TODO: remove when we take care of the cleanup path
+	if err != nil {
+		c.log.Errorw("error closing active client calls", err)
 	}
+
 	if c.sipCli != nil {
 		c.sipCli.Close()
 		c.sipCli = nil
@@ -339,19 +352,12 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
 		return false
 	}
-	call.log.Infow("BYE from remote")
-	go func(call *outboundCall) {
-		call.cc.AcceptBye(req, tx)
-		call.CloseWithReason(ctx, CallHangup, "bye", livekit.DisconnectReason_CLIENT_INITIATED)
-	}(call)
-	return true
+
 }
 
 func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
-	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	call := c.callCache.Get(tag)
 	if call == nil {
 		return false
 	}

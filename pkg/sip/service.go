@@ -140,47 +140,8 @@ func (st ActiveCalls) Total() int {
 	return st.Outbound + st.Inbound
 }
 
-func sampleMap[K comparable, V any](limit int, m map[K]V, sample func(v V) string) ([]string, int) {
-	total := len(m)
-	var out []string
-	for _, v := range m {
-		if s := sample(v); s != "" {
-			out = append(out, s)
-		}
-		limit--
-		if limit <= 0 {
-			break
-		}
-	}
-	return out, total
-}
-
 func (s *Service) ActiveCalls() ActiveCalls {
-	st := ActiveCalls{}
-
-	s.cli.cmu.Lock()
-	samples, total := sampleMap(5, s.cli.activeCalls, func(v *outboundCall) string {
-		if v == nil || v.cc == nil {
-			return "<nil>"
-		}
-		return string(v.cc.id)
-	})
-	st.Outbound = total
-	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.cli.cmu.Unlock()
-
-	s.srv.cmu.Lock()
-	samples, total = sampleMap(5, s.srv.byLocalTag, func(v *inboundCall) string {
-		if v == nil || v.cc == nil {
-			return "<nil>"
-		}
-		return string(v.cc.id)
-	})
-	st.Inbound = total
-	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.srv.cmu.Unlock()
-
-	return st
+	return s.srv.callCache.ActiveCalls()
 }
 
 func (s *Service) Stop() {
@@ -300,7 +261,7 @@ func (s *Service) Start() error {
 	}
 	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
 	// Thus, all unhandled transactions will be checked by the client.
-	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
+	if err := s.srv.Start(ua, s.sconf, tlsConf); err != nil {
 		return err
 	}
 	s.log.Debugw("sip service ready")
@@ -316,7 +277,7 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
 		return 0
 	}
-	active := float32(s.ActiveCalls().Total())
+	active := float32(s.srv.callCache.Total())
 	if max := float32(s.conf.MaxActiveCalls); max > 0 {
 		if active >= max {
 			return 0
@@ -387,60 +348,34 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 }
 
 func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) error {
-	// Look for call both in client (outbound) and server (inbound)
-	s.cli.cmu.Lock()
-	out := s.cli.activeCalls[LocalTag(callID)]
-	s.cli.cmu.Unlock()
-
-	if out != nil {
-		s.mon.TransferStarted(stats.Outbound)
-		err := out.transferCall(ctx, transferTo, headers, dialtone)
-		if err != nil {
-			s.mon.TransferFailed(stats.Outbound, extractTransferErrorReason(err), true)
-			return err
-		}
-		s.mon.TransferSucceeded(stats.Outbound)
-		return nil
+	call := s.srv.callCache.Get(LocalTag(callID))
+	if call == nil {
+		s.mon.TransferFailed(stats.Inbound, "unknown_call", false)
+		return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 	}
 
-	s.srv.cmu.Lock()
-	in := s.srv.byLocalTag[LocalTag(callID)]
-	s.srv.cmu.Unlock()
-
-	if in != nil {
-		s.mon.TransferStarted(stats.Inbound)
-		err := in.transferCall(ctx, transferTo, headers, dialtone)
-		if err != nil {
-			s.mon.TransferFailed(stats.Inbound, extractTransferErrorReason(err), true)
-			return err
-		}
-		s.mon.TransferSucceeded(stats.Inbound)
-		return nil
+	direction := stats.Inbound
+	if call.IsOutbound() {
+		direction = stats.Outbound
 	}
-
-	err := psrpc.NewErrorf(psrpc.NotFound, "unknown call")
-	s.mon.TransferFailed(stats.Inbound, "unknown_call", false)
-	return err
+	s.mon.TransferStarted(direction)
+	err := call.TransferCall(ctx, transferTo, headers)
+	if err != nil {
+		s.mon.TransferFailed(direction, extractTransferErrorReason(err), true)
+		if ok := err.(psrpc.Error); !ok {
+			s.log.Warnw("Returning something other than a psrpc error", err)
+		}
+		return err
+	}
+	s.mon.TransferSucceeded(direction)
+	return nil
 }
 
 func (s *Service) checkInternalProviderRequest(ctx context.Context, callID string) error {
-	// Look for call both in client (outbound) and server (inbound)
-	s.cli.cmu.Lock()
-	out := s.cli.activeCalls[LocalTag(callID)]
-	s.cli.cmu.Unlock()
-
-	if out != nil {
-		return s.validateCallProvider(out.state)
+	call := s.srv.callCache.Get(LocalTag(callID))
+	if call != nil {
+		return s.validateCallProvider(call.State())
 	}
-
-	s.srv.cmu.Lock()
-	in := s.srv.byLocalTag[LocalTag(callID)]
-	s.srv.cmu.Unlock()
-
-	if in != nil {
-		return s.validateCallProvider(in.state)
-	}
-
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 }
 
