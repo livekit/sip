@@ -566,21 +566,24 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 }
 
 func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
-	ctx, span := Tracer.Start(ctx, "sip.outbound.sipSignal")
+	// Detach from parent context (RPC/psrpc timeout) to prevent
+	// premature CANCEL during ringing. Use only ringingTimeout.
+	sigCtx := context.WithoutCancel(ctx)
+
+	sigCtx, span := Tracer.Start(sigCtx, "sip.outbound.sipSignal")
 	defer span.End()
 
 	if c.sipConf.ringingTimeout > 0 {
 		var cancel func()
-		ctx, cancel = context.WithTimeout(ctx, c.sipConf.ringingTimeout)
+		sigCtx, cancel = context.WithTimeout(sigCtx, c.sipConf.ringingTimeout)
 		defer cancel()
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	sigCtx, cancel := context.WithCancel(sigCtx)
 	defer cancel()
 	go func() {
 		select {
-		case <-ctx.Done():
-			// parent context cancellation or success
+		case <-sigCtx.Done():
 			return
 		case <-c.Disconnected():
 		case <-c.Closed():
@@ -605,7 +608,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
 	ringing := false
-	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
+	sdpResp, err := c.cc.Invite(sigCtx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
 		if code == sip.StatusOK {
 			return // is set separately
 		}
@@ -637,7 +640,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		} else {
 			c.mon.InviteError("other")
 		}
-		c.cc.Close(ctx)
+		c.cc.Close(sigCtx)
 		c.log.Infow("SIP invite failed", "error", err)
 		return err
 	}
@@ -658,7 +661,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.mon.InviteAccept()
 	c.media.EnableOut()
 	c.media.EnableTimeout(true)
-	err = c.cc.AckInviteOK(ctx)
+	err = c.cc.AckInviteOK(sigCtx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
 		return err

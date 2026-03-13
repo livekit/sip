@@ -282,7 +282,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		call.DialAsync(ctx)
 		return info, nil
 	}
-	if err := call.Dial(context.WithoutCancel(ctx)); err != nil {
+	if err := call.Dial(ctx); err != nil {
 		return nil, err
 	}
 	go call.WaitClose(context.WithoutCancel(ctx))
