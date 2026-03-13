@@ -585,7 +585,6 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		select {
 		case <-sigCtx.Done():
 			return
-		case <-c.Disconnected():
 		case <-c.Closed():
 		}
 		cancel()
