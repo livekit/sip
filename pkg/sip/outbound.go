@@ -994,6 +994,9 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.AppendHeader(sip.NewHeader(authHeaderName, authHeader))
 	}
 	for _, h := range headers {
+		if req.GetHeader(h.Name()) != nil {
+			req.RemoveHeader(h.Name())
+		}
 		req.AppendHeader(h)
 	}
 
