@@ -17,9 +17,9 @@ require (
 	github.com/livekit/psrpc v0.7.1
 	github.com/livekit/server-sdk-go/v2 v2.11.4-0.20251016050252-63f7c8381817
 	github.com/livekit/sipgo v0.13.2-0.20260119120547-800bcd1b7184
-	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
+	github.com/mjibson/go-dsp v1.0.0
 	github.com/ory/dockertest/v3 v3.12.0
-	github.com/pion/rtp v1.8.23
+	github.com/pion/rtp/v2 v2.0.0
 	github.com/pion/sdp/v3 v3.0.16
 	github.com/pion/webrtc/v4 v4.1.6
 	github.com/pkg/errors v0.9.1
