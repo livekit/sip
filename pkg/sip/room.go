@@ -253,7 +253,7 @@ func (r *Room) Room() *lksdk.Room {
 }
 
 func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
-	log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID())
+	log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID())
 	log.Debugw("participant joined")
 	switch rp.Kind() {
 	case lksdk.ParticipantSIP:
@@ -266,12 +266,12 @@ func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
 }
 
 func (r *Room) participantLeft(rp *lksdk.RemoteParticipant) {
-	log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID())
+	log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID())
 	log.Debugw("participant left")
 }
 
 func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
+	log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
 	if pub.Kind() != lksdk.TrackKindAudio {
 		log.Debugw("skipping non-audio track")
 		return
@@ -296,7 +296,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	roomCallback := &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
-			log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID())
+			log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID())
 			if !r.subscribe.Load() {
 				log.Debugw("skipping participant join event - subscribed flag not set")
 				return // will subscribe later
@@ -308,7 +308,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 		},
 		ParticipantCallback: lksdk.ParticipantCallback{
 			OnTrackPublished: func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
+				log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", pub.SID(), "trackName", pub.Name())
 				if !r.subscribe.Load() {
 					log.Debugw("skipping track publish event - subscribed flag not set")
 					return // will subscribe later
@@ -316,7 +316,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 				r.subscribeTo(pub, rp)
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				log := r.roomLog.WithValues("participant", rp.Identity(), "pID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
+				log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 				if !r.ready.IsBroken() {
 					log.Warnw("ignoring track, room not ready", nil)
 					return
@@ -373,7 +373,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 				}
 			},
 			OnTrackUnsubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "pID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
+				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
 		OnDisconnected: func() {
@@ -424,7 +424,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	r.room = room
 	r.p.ID = r.room.LocalParticipant.SID()
 	r.p.Identity = r.room.LocalParticipant.Identity()
-	r.log = r.log.WithValues("room", r.room.Name(), "roomID", r.room.SID(), "participant", r.p.Identity, "pID", r.p.ID)
+	r.log = r.log.WithValues("room", r.room.Name(), "roomID", r.room.SID(), "participant", r.p.Identity, "participantID", r.p.ID)
 	r.log.Infow("SIP participant joined room")
 	room.LocalParticipant.SetAttributes(partConf.Attributes)
 	r.ready.Break()
