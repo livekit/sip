@@ -780,9 +780,9 @@ type sipOutbound struct {
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
 
-	referCseq  uint32
-	referDone  chan error
-	inviteCSeq uint32
+	referCseq        uint32
+	referDone        chan error
+	latestInviteCSeq uint32
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -826,14 +826,14 @@ func (c *sipOutbound) SIPCallID() string {
 func (c *sipOutbound) InviteCSeq() uint32 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.inviteCSeq
+	return c.latestInviteCSeq
 }
 
 func (c *sipOutbound) RecordInvite(cseq uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cseq > c.inviteCSeq {
-		c.inviteCSeq = cseq
+	if cseq > c.latestInviteCSeq {
+		c.latestInviteCSeq = cseq
 	}
 }
 

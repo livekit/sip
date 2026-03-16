@@ -348,7 +348,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			sdp := oc.cc.OwnSDP()
 			if len(sdp) != 0 {
-				oc.log.Infow("accepting reinvite reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 				oc.cc.RecordInvite(newCSeq)
 				cc.AcceptAsKeepAlive(sdp)
 				return nil
