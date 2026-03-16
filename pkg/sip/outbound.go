@@ -780,8 +780,9 @@ type sipOutbound struct {
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
 
-	referCseq uint32
-	referDone chan error
+	referCseq  uint32
+	referDone  chan error
+	inviteCSeq uint32
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -820,6 +821,36 @@ func (c *sipOutbound) SIPCallID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.callID
+}
+
+func (c *sipOutbound) InviteCSeq() uint32 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inviteCSeq
+}
+
+func (c *sipOutbound) RecordInvite(cseq uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cseq > c.inviteCSeq {
+		c.inviteCSeq = cseq
+	}
+}
+
+// OwnSDP returns the SDP offer we sent in the initial INVITE (for reinvite 200 OK).
+func (c *sipOutbound) OwnSDP() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.invite == nil {
+		return nil
+	}
+	body := c.invite.Body()
+	if len(body) == 0 {
+		return nil
+	}
+	out := make([]byte, len(body))
+	copy(out, body)
+	return out
 }
 
 func (c *sipOutbound) RemoteHeaders() Headers {

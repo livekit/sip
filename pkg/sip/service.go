@@ -86,12 +86,13 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if conf.MediaTimeoutInitial <= 0 {
 		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
 	}
+	cli := NewClient(region, conf, log, mon, getIOClient)
 	s := &Service{
 		conf:             conf,
 		log:              log,
 		mon:              mon,
-		cli:              NewClient(region, conf, log, mon, getIOClient),
-		srv:              NewServer(region, conf, log, mon, getIOClient),
+		cli:              cli,
+		srv:              NewServer(region, conf, log, mon, getIOClient, WithClient(cli)),
 		pendingTransfers: make(map[transferKey]chan struct{}),
 	}
 	var err error
