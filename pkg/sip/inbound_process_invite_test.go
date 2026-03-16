@@ -64,14 +64,14 @@ func (it *InboundTest) NewInvite(t *testing.T, callID string, cseq uint32, offer
 	return inviteReq, offer
 }
 
-func (it *InboundTest) NewInviteWithToTag(t *testing.T, callID string, cseq uint32, toTag string, offer []byte) (*sip.Request, []byte) {
+func (it *InboundTest) NewInviteWithToTag(t *testing.T, callID string, cseq uint32, toTag LocalTag, offer []byte) (*sip.Request, []byte) {
 	inviteReq, offer := it.NewInvite(t, callID, cseq, offer)
 	to := inviteReq.To()
 	if to.Params == nil {
 		to.Params = sip.NewParams()
 	}
 	to.Params.Remove("tag")
-	to.Params.Add("tag", toTag)
+	to.Params.Add("tag", string(toTag))
 	return inviteReq, offer
 }
 
@@ -223,37 +223,34 @@ func TestProcessInvite_ReinviteOutbound(t *testing.T) {
 	offer, answer, localSDP := it.RegisterOutboundCallForReinvite(t, localTag)
 
 	// Re-INVITE for the outbound call: To tag = our local tag, CSeq > 0 (InviteCSeq)
-	req, _ := it.NewInviteWithToTag(t, "reinvite-outbound@test", 1, string(localTag), offer)
+	req, _ := it.NewInviteWithToTag(t, "reinvite-outbound@test", 1, localTag, offer)
 	resp := it.TransactionRequest(t, req)
 	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 	require.Equal(t, localSDP, resp.Body(), "reinvite 200 OK should return local SDP")
 
 	// Second reinvite: CSeq 2 (still accepted as reinvite)
-	req2, _ := it.NewInviteWithToTag(t, "reinvite-outbound-2@test", 2, string(localTag), answer)
+	req2, _ := it.NewInviteWithToTag(t, "reinvite-outbound-2@test", 2, localTag, answer)
 	resp2 := it.TransactionRequest(t, req2)
 	require.Equal(t, sip.StatusCode(200), resp2.StatusCode, "reinvite for outbound call should get 200 OK")
 	require.Equal(t, localSDP, resp2.Body(), "reinvite 200 OK should return local SDP")
 }
 
-func TestProcessInvite_ReinviteOutbound_UnknownTagNotTreatedAsReinvite(t *testing.T) {
-	// Server has a Client but no active call for tag "unknown-tag".
-	// INVITE with To tag "unknown-tag" should not be accepted as outbound reinvite;
-	// it goes through normal inbound flow (and will need auth/dispatch etc.).
+func TestProcessInvite_ReinviteOutbound_Miss(t *testing.T) {
 	it := NewInboundTest(t)
 
-	localTag := "unknown-tag"
-	sdpOffer, err := sdp.NewOffer(it.addr.Addr(), 0xB0B, sdp.EncryptionNone)
-	require.NoError(t, err)
-	offerBytes, err := sdpOffer.SDP.Marshal()
-	require.NoError(t, err)
+	outboundTag1 := LocalTag("outbound-call-1")
+	outboundTag2 := LocalTag("outbound-call-2")
+	_, answer, localSDP := it.RegisterOutboundCallForReinvite(t, outboundTag1)
 
-	// Do NOT register an outbound call for localTag. Send re-INVITE with that To tag.
-	req, _ := it.NewInviteWithToTag(t, "reinvite-unknown@test", 1, localTag, offerBytes)
+	// Control
+	req, _ := it.NewInviteWithToTag(t, "reinvite-outbound@test", 1, outboundTag1, answer)
 	resp := it.TransactionRequest(t, req)
-	// Should still get 200 (normal inbound flow accepts the call), but body is the
-	// answer from the handler, not our offer (we didn't register an outbound call).
-	require.Equal(t, sip.StatusCode(200), resp.StatusCode)
-	// Answer from room is different from our offer (we sent offer, handler returns answer)
-	require.NotEmpty(t, resp.Body())
-	require.NotEqual(t, offerBytes, resp.Body(), "unknown tag should not get outbound reinvite keepalive (our offer)")
+	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
+	require.Equal(t, localSDP, resp.Body(), "reinvite 200 OK should return local SDP")
+
+	// Experiment
+	req2, _ := it.NewInviteWithToTag(t, "reinvite-outbound-miss@test", 1, outboundTag2, answer)
+	resp2 := it.TransactionRequest(t, req2)
+	require.Equal(t, sip.StatusCode(200), resp2.StatusCode, "reinvite for outbound call should get 200 OK")
+	require.NotEqual(t, localSDP, resp2.Body(), "reinvite 200 OK should not return local SDP of existing call")
 }
