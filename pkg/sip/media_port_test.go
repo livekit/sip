@@ -227,7 +227,7 @@ func TestMediaPort(t *testing.T) {
 
 					t.Logf("SDP answer:\n%s", string(answerData))
 
-					mc, err := m1.SetAnswer(offer, answerData, tconf.Encrypted)
+					mc, _, err := m1.SetAnswer(offer, answerData, tconf.Encrypted)
 					require.NoError(t, err)
 
 					err = m1.SetConfig(mc)
@@ -383,7 +383,7 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 	answerData, err := answer.SDP.Marshal()
 	require.NoError(t, err)
 
-	mc1, err := m1.SetAnswer(offer, answerData, sdp.EncryptionNone)
+	mc1, _, err := m1.SetAnswer(offer, answerData, sdp.EncryptionNone)
 	require.NoError(t, err)
 
 	err = m1.SetConfig(mc1)

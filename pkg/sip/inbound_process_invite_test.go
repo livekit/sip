@@ -155,22 +155,38 @@ func NewInboundTest(t *testing.T) *InboundTest {
 
 // RegisterOutboundCallForReinvite registers a fake outbound call so that a re-INVITE
 // with the given localTag (To tag) is accepted as outbound reinvite and answered with sdpOffer.
-// Requires it.LiveKitClient != nil (use NewInboundTestWithClient).
-func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag LocalTag, sdpOffer []byte) {
+func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag LocalTag) (offer, answer, localSDP []byte) {
 	t.Helper()
+
+	sdpOffer, err := sdp.NewOffer(netip.MustParseAddr("1.2.3.4"), 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offer, err = sdpOffer.SDP.Marshal()
+	require.NoError(t, err)
+	sdpAnswer, _, err := sdpOffer.Answer(netip.MustParseAddr("4.3.2.1"), 0xB00, sdp.EncryptionNone)
+	require.NoError(t, err)
+	answer, err = sdpAnswer.SDP.Marshal()
+	require.NoError(t, err)
+	_, localSDP, err = sdpAnswer.ApplyWithLocal(sdpOffer, sdp.EncryptionNone)
+	require.NoError(t, err)
+
 	log := logger.NewTestLogger(t).WithValues("callID", localTag)
 	from := CreateURIFromUserAndAddress("out", it.addr.String(), TransportUDP)
 	contact := CreateURIFromUserAndAddress("out", it.addr.String(), TransportUDP)
 	so := it.LiveKitClient.newOutbound(log, localTag, from, contact, nil, nil)
-	inviteWithBody := sip.NewRequest(sip.INVITE, sip.Uri{User: "to", Host: it.addr.String()})
-	inviteWithBody.SetBody(sdpOffer)
+	fauxInvite := sip.NewRequest(sip.INVITE, sip.Uri{User: "to", Host: it.addr.String()})
+	fauxInvite.SetBody(offer)
+	faux200 := sip.NewResponseFromRequest(fauxInvite, sip.StatusOK, "OK", answer)
 	so.mu.Lock()
-	so.invite = inviteWithBody
+	so.invite = fauxInvite
+	so.inviteOk = faux200
+	so.localSDP = localSDP
 	so.mu.Unlock()
 	oc := &outboundCall{cc: so, log: log}
 	it.LiveKitClient.cmu.Lock()
 	it.LiveKitClient.activeCalls[localTag] = oc
 	it.LiveKitClient.cmu.Unlock()
+
+	return offer, answer, localSDP
 }
 
 func TestProcessInvite_Reinvite(t *testing.T) {
@@ -203,43 +219,20 @@ func TestProcessInvite_Reinvite(t *testing.T) {
 func TestProcessInvite_ReinviteOutbound(t *testing.T) {
 	it := NewInboundTest(t)
 
-	localTag := LocalTag("out-reinvite-1")
-	sdpOffer, err := sdp.NewOffer(it.addr.Addr(), 0xB0B, sdp.EncryptionNone)
-	require.NoError(t, err)
-	offerBytes, err := sdpOffer.SDP.Marshal()
-	require.NoError(t, err)
-
-	it.RegisterOutboundCallForReinvite(t, localTag, offerBytes)
+	localTag := LocalTag("out-reinvite-2")
+	offer, answer, localSDP := it.RegisterOutboundCallForReinvite(t, localTag)
 
 	// Re-INVITE for the outbound call: To tag = our local tag, CSeq > 0 (InviteCSeq)
-	req, _ := it.NewInviteWithToTag(t, "reinvite-outbound@test", 1, string(localTag), offerBytes)
+	req, _ := it.NewInviteWithToTag(t, "reinvite-outbound@test", 1, string(localTag), offer)
 	resp := it.TransactionRequest(t, req)
 	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
-	require.Equal(t, offerBytes, resp.Body(), "reinvite 200 OK should return our offer (keepalive)")
-}
-
-func TestProcessInvite_ReinviteOutbound_HigherCSeq(t *testing.T) {
-	it := NewInboundTest(t)
-
-	localTag := LocalTag("out-reinvite-2")
-	sdpOffer, err := sdp.NewOffer(it.addr.Addr(), 0xB0B, sdp.EncryptionNone)
-	require.NoError(t, err)
-	offerBytes, err := sdpOffer.SDP.Marshal()
-	require.NoError(t, err)
-
-	it.RegisterOutboundCallForReinvite(t, localTag, offerBytes)
-
-	// First reinvite: CSeq 1
-	req1, _ := it.NewInviteWithToTag(t, "reinvite-outbound-2@test", 1, string(localTag), offerBytes)
-	resp1 := it.TransactionRequest(t, req1)
-	require.Equal(t, sip.StatusCode(200), resp1.StatusCode)
-	require.Equal(t, offerBytes, resp1.Body())
+	require.Equal(t, localSDP, resp.Body(), "reinvite 200 OK should return local SDP")
 
 	// Second reinvite: CSeq 2 (still accepted as reinvite)
-	req2, _ := it.NewInviteWithToTag(t, "reinvite-outbound-2@test", 2, string(localTag), offerBytes)
+	req2, _ := it.NewInviteWithToTag(t, "reinvite-outbound-2@test", 2, string(localTag), answer)
 	resp2 := it.TransactionRequest(t, req2)
-	require.Equal(t, sip.StatusCode(200), resp2.StatusCode)
-	require.Equal(t, offerBytes, resp2.Body())
+	require.Equal(t, sip.StatusCode(200), resp2.StatusCode, "reinvite for outbound call should get 200 OK")
+	require.Equal(t, localSDP, resp2.Body(), "reinvite 200 OK should return local SDP")
 }
 
 func TestProcessInvite_ReinviteOutbound_UnknownTagNotTreatedAsReinvite(t *testing.T) {

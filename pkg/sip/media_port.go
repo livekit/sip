@@ -611,17 +611,18 @@ func (p *MediaPort) NewOffer(encrypted sdp.Encryption) (*sdp.Offer, error) {
 	return sdp.NewOffer(p.externalIP, p.Port(), encrypted)
 }
 
-// SetAnswer decodes and applies SDP answer for offer from NewOffer. SetConfig must be called with the decoded configuration.
-func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encryption) (*MediaConf, error) {
+// SetAnswer decodes and applies SDP answer for offer from NewOffer.
+// SetConfig must be called with the decoded configuration.
+func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encryption) (*MediaConf, []byte, error) {
 	answer, err := sdp.ParseAnswer(answerData)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	mc, err := answer.Apply(offer, enc)
+	mc, localSDP, err := answer.ApplyWithLocal(offer, enc)
 	if err != nil {
-		return nil, SDPError{Err: err}
+		return nil, nil, SDPError{Err: err}
 	}
-	return &MediaConf{MediaConfig: *mc}, nil
+	return &MediaConf{MediaConfig: *mc}, localSDP, nil
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
