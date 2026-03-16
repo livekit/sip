@@ -24,7 +24,7 @@ on:
 
 jobs:
   test:
-    runs-on: namespace-profile-8vcpu-cache
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6

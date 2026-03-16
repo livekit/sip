@@ -1,0 +1,70 @@
+name: "Build and Publish Docker Image to ECR"
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "dev"
+      - "dev.*"
+    branches:
+      - dev
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  IMAGE_NAME: livekit-sip
+  IMAGE_PLATFORM: linux/arm64
+  AWS_REGION: eu-central-1
+
+jobs:
+  build-and-push:
+    name: "Build and publish Docker image"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: "Configure AWS credentials"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ vars.AWS_ECR_ROLE }}
+          role-session-name: GitHubActions-${{ github.repository_owner }}-${{ github.event.repository.name }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: "Login to Amazon ECR"
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: "Extract metadata (tags, labels)"
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/tags/dev' }}
+            type=match,pattern=^dev\.(.+),group=0
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.description=${{ github.event.head_commit.message }}
+
+      - name: "Build and push Docker image"
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          context: .
+          file: ./build/sip/Dockerfile
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ env.IMAGE_PLATFORM }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
