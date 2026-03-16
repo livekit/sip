@@ -64,7 +64,6 @@ type Client struct {
 	closing     core.Fuse
 	cmu         sync.Mutex
 	activeCalls map[LocalTag]*outboundCall
-	byRemote    map[RemoteTag]*outboundCall
 
 	handler      Handler
 	getIOClient  GetIOInfoClient
@@ -103,7 +102,6 @@ func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats
 		getSipClient: DefaultGetSipClientFunc,
 		getRoom:      DefaultGetRoomFunc,
 		activeCalls:  make(map[LocalTag]*outboundCall),
-		byRemote:     make(map[RemoteTag]*outboundCall),
 	}
 	for _, option := range options {
 		option(c)
@@ -146,7 +144,6 @@ func (c *Client) Stop() {
 	c.cmu.Lock()
 	calls := maps.Values(c.activeCalls)
 	c.activeCalls = make(map[LocalTag]*outboundCall)
-	c.byRemote = make(map[RemoteTag]*outboundCall)
 	c.cmu.Unlock()
 	for _, call := range calls {
 		call.Close(ctx)
@@ -264,6 +261,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		ringingTimeout:  req.RingingTimeout.AsDuration(),
 		maxCallDuration: req.MaxCallDuration.AsDuration(),
 		enabledFeatures: req.EnabledFeatures,
+		featureFlags:    req.FeatureFlags,
 		mediaEncryption: enc,
 		displayName:     req.DisplayName,
 	}
@@ -330,9 +328,9 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
 	defer span.End()
-	tag, _ := getFromTag(req)
+	tag, _ := GetLocalTagUAS(req)
 	c.cmu.Lock()
-	call := c.byRemote[tag]
+	call := c.activeCalls[tag]
 	c.cmu.Unlock()
 	if call == nil {
 		if tag != "" {
@@ -350,9 +348,9 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 }
 
 func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
-	tag, _ := getFromTag(req)
+	tag, _ := GetLocalTagUAS(req)
 	c.cmu.Lock()
-	call := c.byRemote[tag]
+	call := c.activeCalls[tag]
 	c.cmu.Unlock()
 	if call == nil {
 		return false

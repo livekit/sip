@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -62,6 +63,7 @@ type sipOutboundConfig struct {
 	ringingTimeout  time.Duration
 	maxCallDuration time.Duration
 	enabledFeatures []livekit.SIPFeature
+	featureFlags    map[string]string
 	mediaEncryption sdp.Encryption
 	displayName     *string
 }
@@ -89,6 +91,7 @@ type outboundCall struct {
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
+	signalLoggingEnabled, _ := strconv.ParseBool(sipConf.featureFlags[signalLoggingFeatureFlag])
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -97,6 +100,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 	jitterBuf := SelectValueBool(conf.EnableJitterBuffer, conf.EnableJitterBufferProb)
 	room.JitterBuf = jitterBuf
+	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
@@ -141,8 +145,10 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
 		EnableJitterBuffer:  call.jitterBuf,
+		LogSignalChanges:    signalLoggingEnabled,
 		Stats:               &call.stats.Port,
 		NoInputResample:     !RoomResample,
+		IgnorePreanswerData: true,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(ctx, errors.Wrap(err, "media failed"), callDropped, "media-failed", livekit.DisconnectReason_UNKNOWN_REASON)
@@ -153,7 +159,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
 		call.close(ctx, errors.Wrap(err, "room join failed"), callDropped, "join-failed", livekit.DisconnectReason_UNKNOWN_REASON)
-		return nil, fmt.Errorf("update room failed: %w", err)
+		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
 
 	c.cmu.Lock()
@@ -337,9 +343,6 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		c.c.cmu.Lock()
 		delete(c.c.activeCalls, c.cc.ID())
-		if tag := c.cc.Tag(); tag != "" {
-			delete(c.c.byRemote, tag)
-		}
 		c.c.cmu.Unlock()
 
 		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
@@ -387,6 +390,14 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
 				reportErr = nil
 			}
+		} else if errors.Is(err, sdp.ErrNoCommonMedia) {
+			status, desc, reason = callRejected, "no-common-codec", livekit.DisconnectReason_MEDIA_FAILURE
+			reportErr = nil
+			err = psrpc.NewError(psrpc.FailedPrecondition, err)
+		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
+			status, desc, reason = callRejected, "encryption-required", livekit.DisconnectReason_MEDIA_FAILURE
+			reportErr = nil
+			err = psrpc.NewError(psrpc.FailedPrecondition, err)
 		}
 		c.close(ctx, reportErr, status, desc, reason)
 		return err
@@ -488,10 +499,10 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
+			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "sip request timed out")
 		case <-stop:
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "canceled")
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
 		case res := <-tx.Responses():
@@ -509,6 +520,18 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 }
 
 func (c *outboundCall) stopSIP(ctx context.Context, reason string) {
+	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
+	defer cancel()
+	go func() {
+		select {
+		case <-termCtx.Done():
+			return
+		case <-time.After(5 * time.Minute):
+			c.mon.CallTerminationFailure()
+			c.log.Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
+		}
+	}()
+
 	c.mon.CallTerminate(reason)
 	c.cc.Close(ctx)
 }
@@ -627,14 +650,10 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
-	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures)
+	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags)
 	if err = c.media.SetConfig(mc); err != nil {
 		return err
 	}
-
-	c.c.cmu.Lock()
-	c.c.byRemote[c.cc.Tag()] = c
-	c.c.cmu.Unlock()
 
 	c.mon.InviteAccept()
 	c.media.EnableOut()
@@ -839,7 +858,7 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
-			return nil, fmt.Errorf("max auth retry attemps reached")
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, fmt.Errorf("max auth retry attempts reached for SIP invite"))
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
@@ -879,11 +898,11 @@ authLoop:
 		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
-			return nil, errors.New("server required auth, but no username or password was provided")
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, errors.New("sip server required auth, but no username or password was provided"))
 		}
 		headerVal := resp.GetHeader(authHeaderName)
 		if headerVal == nil {
-			return nil, errors.New("no auth header in response")
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, errors.New("no auth header in sip invite response"))
 		}
 		challengeStr := headerVal.Value()
 		challenge, err := digest.ParseChallenge(challengeStr)

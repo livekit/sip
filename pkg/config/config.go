@@ -54,6 +54,14 @@ type TLSConfig struct {
 	ListenPort int       `yaml:"port_listen"` // SIP signaling port to listen on
 	Certs      []TLSCert `yaml:"certs"`
 	KeyLog     string    `yaml:"key_log"`
+
+	MinVersion string `yaml:"min_version"` // min TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
+	MaxVersion string `yaml:"max_version"` // max TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
+
+	// CipherSuites is an optional list of cipher suite names.
+	// If not provided, Go's secure defaults are used.
+	// Note: Only applies to TLS 1.0-1.2; TLS 1.3 cipher suites are not configurable.
+	CipherSuites []string `yaml:"cipher_suites"`
 }
 
 type TCPConfig struct {
@@ -79,12 +87,15 @@ type Config struct {
 	Logging            logger.Config       `yaml:"logging"`
 	ClusterID          string              `yaml:"cluster_id"` // cluster this instance belongs to
 	MaxCpuUtilization  float64             `yaml:"max_cpu_utilization"`
+	MaxActiveCalls     int                 `yaml:"max_active_calls"`  // if set, used for affinity-based routing
+	SIPTrunkIds        []string            `yaml:"sip_trunk_ids"`     // if set, only accept calls for these trunk IDs
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
 	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
 	ListenIP      string `yaml:"listen_ip"`
 
+	UDPMaxPayload int `yaml:"udp_max_payload"`
 	// if different from signaling IP
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`

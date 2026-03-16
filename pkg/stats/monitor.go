@@ -60,24 +60,26 @@ const (
 type Monitor struct {
 	nodeID string
 
-	inviteReqRaw       prometheus.Counter
-	inviteReq          *prometheus.CounterVec
-	inviteAccept       *prometheus.CounterVec
-	inviteErr          *prometheus.CounterVec
-	callsActive        *prometheus.GaugeVec
-	callsTerminated    *prometheus.CounterVec
-	packetsRTP         *prometheus.CounterVec
-	durSession         *prometheus.HistogramVec
-	durCall            *prometheus.HistogramVec
-	durJoin            *prometheus.HistogramVec
-	durCheck           *prometheus.HistogramVec
-	cpuLoad            prometheus.Gauge
-	sdpSize            *prometheus.HistogramVec
-	nodeAvailable      prometheus.GaugeFunc
-	transfersTotal     *prometheus.CounterVec
-	transfersSucceeded *prometheus.CounterVec
-	transfersFailed    *prometheus.CounterVec
-	transfersActive    *prometheus.GaugeVec
+	inviteReqRaw             prometheus.Counter
+	inviteReq                *prometheus.CounterVec
+	inviteAccept             *prometheus.CounterVec
+	inviteErr                *prometheus.CounterVec
+	callsActive              *prometheus.GaugeVec
+	callsTerminated          *prometheus.CounterVec
+	callsTerminationFailures *prometheus.CounterVec
+	packetsRTP               *prometheus.CounterVec
+	durSession               *prometheus.HistogramVec
+	durCall                  *prometheus.HistogramVec
+	durJoin                  *prometheus.HistogramVec
+	durCheck                 *prometheus.HistogramVec
+	durStage                 *prometheus.HistogramVec
+	cpuLoad                  prometheus.Gauge
+	sdpSize                  *prometheus.HistogramVec
+	nodeAvailable            prometheus.GaugeFunc
+	transfersTotal           *prometheus.CounterVec
+	transfersSucceeded       *prometheus.CounterVec
+	transfersFailed          *prometheus.CounterVec
+	transfersActive          *prometheus.GaugeVec
 
 	cpu            *hwstats.CPUStats
 	maxUtilization float64
@@ -170,6 +172,14 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, []string{"dir", "to", "reason"}))
 
+	m.callsTerminationFailures = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "calls_termination_failures",
+		Help:        "Number of calls that failed to terminate after 5 minutes",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir"}))
+
 	m.packetsRTP = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
@@ -213,6 +223,15 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
+
+	m.durStage = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "stage_dur_sec",
+		Help:        "SIP processing stage durations (depends on 'stage' label)",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+		Buckets:     durBucketsOp,
+	}, []string{"dir", "stage"}))
 
 	m.sdpSize = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -327,7 +346,7 @@ func (m *Monitor) InviteReqRaw(dir CallDir) {
 func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 	return &CallMonitor{
 		m:        m,
-		dir:      dir,
+		dir:      dir.String(),
 		fromHost: fromHost,
 		toHost:   toHost,
 	}
@@ -335,7 +354,7 @@ func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 
 type CallMonitor struct {
 	m          *Monitor
-	dir        CallDir
+	dir        string
 	fromHost   string
 	toHost     string
 	started    atomic.Bool
@@ -343,7 +362,7 @@ type CallMonitor struct {
 }
 
 func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
-	out := prometheus.Labels{"dir": c.dir.String()}
+	out := prometheus.Labels{"dir": c.dir}
 	for k, v := range l {
 		out[k] = v
 	}
@@ -351,7 +370,7 @@ func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
 }
 
 func (c *CallMonitor) labels(l prometheus.Labels) prometheus.Labels {
-	out := prometheus.Labels{"dir": c.dir.String(), "to": c.toHost}
+	out := prometheus.Labels{"dir": c.dir, "to": c.toHost}
 	for k, v := range l {
 		out[k] = v
 	}
@@ -395,6 +414,10 @@ func (c *CallMonitor) CallTerminate(reason string) {
 	c.m.callsTerminated.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
 }
 
+func (c *CallMonitor) CallTerminationFailure() {
+	c.m.callsTerminationFailures.With(c.labelsShort(nil)).Inc()
+}
+
 func (c *CallMonitor) RTPPacketSend(payloadType string) {
 	c.m.packetsRTP.With(c.labels(prometheus.Labels{"op": "send", "payload": payloadType})).Inc()
 }
@@ -404,19 +427,50 @@ func (c *CallMonitor) RTPPacketRecv(payloadType string) {
 }
 
 func (c *CallMonitor) SessionDur() func() time.Duration {
-	return prometheus.NewTimer(c.m.durSession.With(c.labelsShort(nil))).ObserveDuration
+	t1 := prometheus.NewTimer(c.m.durSession.With(c.labelsShort(nil))).ObserveDuration
+	t2 := c.StageDurTimer("session")
+	return func() time.Duration {
+		t2()
+		return t1()
+	}
 }
 
 func (c *CallMonitor) CallDur() func() time.Duration {
-	return prometheus.NewTimer(c.m.durCall.With(c.labelsShort(nil))).ObserveDuration
+	t1 := prometheus.NewTimer(c.m.durCall.With(c.labelsShort(nil))).ObserveDuration
+	t2 := c.StageDurTimer("call")
+	return func() time.Duration {
+		t2()
+		return t1()
+	}
 }
 
-func (c *CallMonitor) CheckDur() prometheus.Observer {
-	return c.m.durCheck.With(c.labelsShort(nil))
+func (c *CallMonitor) CheckDur() func(dt time.Duration) {
+	t1 := c.m.durCheck.With(c.labelsShort(nil))
+	t2 := c.StageDur("auth-check")
+	return func(dt time.Duration) {
+		sec := dt.Seconds()
+		t1.Observe(sec)
+		t2.Observe(sec)
+	}
 }
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
-	return prometheus.NewTimer(c.m.durJoin.With(c.labelsShort(nil))).ObserveDuration
+	t1 := prometheus.NewTimer(c.m.durJoin.With(c.labelsShort(nil))).ObserveDuration
+	t2 := c.StageDurTimer("invite-to-dispatch")
+	return func() time.Duration {
+		t2()
+		return t1()
+	}
+}
+
+func (c *CallMonitor) StageDur(stage string) prometheus.Observer {
+	return c.m.durStage.With(c.labelsShort(prometheus.Labels{
+		"stage": stage,
+	}))
+}
+
+func (c *CallMonitor) StageDurTimer(stage string) func() time.Duration {
+	return prometheus.NewTimer(c.StageDur(stage)).ObserveDuration
 }
 
 func (c *CallMonitor) SDPSize(sz int, isOffer bool) {

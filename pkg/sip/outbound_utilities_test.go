@@ -132,6 +132,7 @@ func newTestRoom(log logger.Logger, st *RoomStats) RoomInterface {
 
 	// Set ready immediately (skip connection)
 	room.ready.Break()
+	room.subscribed.Break()
 	resolve.Resolve()
 
 	room.room.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid

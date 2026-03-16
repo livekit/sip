@@ -104,6 +104,7 @@ type CallDispatch struct {
 	IncludeHeaders      livekit.SIPHeaderOptions
 	AttributesToHeaders map[string]string
 	EnabledFeatures     []livekit.SIPFeature
+	FeatureFlags        map[string]string
 	RingingTimeout      time.Duration
 	MaxCallDuration     time.Duration
 	MediaEncryption     livekit.SIPMediaEncryption
@@ -119,7 +120,7 @@ type CallIdentifier struct {
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
-	GetMediaProcessor(features []livekit.SIPFeature) msdk.PCM16Processor
+	GetMediaProcessor(features []livekit.SIPFeature, featureFlags map[string]string) msdk.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
@@ -141,15 +142,14 @@ type Server struct {
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
 
-	closing     core.Fuse
-	cmu         sync.RWMutex
-	byRemoteTag map[RemoteTag]*inboundCall
-	byLocalTag  map[LocalTag]*inboundCall
-	byCallID    map[string]*inboundCall
+	closing            core.Fuse
+	cmu                sync.RWMutex
+	byLocalTag         map[LocalTag]*inboundCall
+	provisionalInvites *expirable.LRU[[2]string, LocalTag]
 
 	infos struct {
 		sync.Mutex
-		byCallID *expirable.LRU[string, *inboundCallInfo]
+		byLocalTag *expirable.LRU[LocalTag, *inboundCallInfo]
 	}
 
 	handler Handler
@@ -179,20 +179,19 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:         log,
-		conf:        conf,
-		region:      region,
-		mon:         mon,
-		getIOClient: getIOClient,
-		getRoom:     DefaultGetRoomFunc,
-		byRemoteTag: make(map[RemoteTag]*inboundCall),
-		byLocalTag:  make(map[LocalTag]*inboundCall),
-		byCallID:    make(map[string]*inboundCall),
+		log:                log,
+		conf:               conf,
+		region:             region,
+		mon:                mon,
+		getIOClient:        getIOClient,
+		getRoom:            DefaultGetRoomFunc,
+		byLocalTag:         make(map[LocalTag]*inboundCall),
+		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	for _, option := range options {
 		option(s)
 	}
-	s.infos.byCallID = expirable.NewLRU[string, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
+	s.infos.byLocalTag = expirable.NewLRU[LocalTag, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
 	s.initMediaRes()
 	return s
 }
@@ -337,8 +336,8 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 func (s *Server) Stop() {
 	s.closing.Break()
 	s.cmu.Lock()
-	calls := maps.Values(s.byRemoteTag)
-	s.byRemoteTag = make(map[RemoteTag]*inboundCall)
+	calls := maps.Values(s.byLocalTag)
+	s.byLocalTag = make(map[LocalTag]*inboundCall)
 	s.cmu.Unlock()
 	for _, c := range calls {
 		_ = c.Close()

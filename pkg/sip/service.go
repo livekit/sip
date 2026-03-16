@@ -24,10 +24,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/livekit/sipgo/transport"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -73,6 +76,9 @@ type GetIOInfoClient func(projectID string) rpc.IOInfoClient
 func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
+	}
+	if conf.UDPMaxPayload > 0 {
+		transport.UDPMTUSize = conf.UDPMaxPayload
 	}
 	if conf.MediaTimeout <= 0 {
 		conf.MediaTimeout = defaultMediaTimeout
@@ -164,7 +170,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	s.cli.cmu.Unlock()
 
 	s.srv.cmu.Lock()
-	samples, total = sampleMap(5, s.srv.byRemoteTag, func(v *inboundCall) string {
+	samples, total = sampleMap(5, s.srv.byLocalTag, func(v *inboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
@@ -259,6 +265,29 @@ func (s *Service) Start() error {
 			Certificates: certs,
 			KeyLogWriter: keyLog,
 		}
+
+		if len(tconf.CipherSuites) > 0 {
+			suits, err := parseCipherSuites(s.log, tconf.CipherSuites)
+			if err != nil {
+				return err
+			}
+			tlsConf.CipherSuites = suits
+		}
+		if tconf.MinVersion != "" {
+			minVer, err := parseTLSVersion(tconf.MinVersion)
+			if err != nil {
+				return err
+			}
+			tlsConf.MinVersion = minVer
+		}
+		if tconf.MaxVersion != "" {
+			maxVer, err := parseTLSVersion(tconf.MaxVersion)
+			if err != nil {
+				return err
+			}
+			tlsConf.MaxVersion = maxVer
+		}
+
 		ConfigureTLS(tlsConf)
 		opts = append(opts, sipgo.WithUserAgenTLSConfig(tlsConf))
 	}
@@ -284,8 +313,17 @@ func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCre
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
-	// TODO: scale affinity based on a number or active calls?
-	return 0.5
+	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
+		return 0
+	}
+	active := float32(s.ActiveCalls().Total())
+	if max := float32(s.conf.MaxActiveCalls); max > 0 {
+		if active >= max {
+			return 0
+		}
+		return 1 - active/max
+	}
+	return 1 / (1 + active)
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*emptypb.Empty, error) {
@@ -413,7 +451,7 @@ func (s *Service) validateCallProvider(state *CallState) error {
 
 	// Check if provider is internal and prevent transfer is enabled
 	if state.callInfo.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && state.callInfo.ProviderInfo.PreventTransfer {
-		return fmt.Errorf("we don't yet support transfers for this phone number type")
+		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
 	}
 
 	return nil

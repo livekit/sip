@@ -63,7 +63,7 @@ jobs:
           go test -coverpkg=./... -json -v -coverprofile=coverage2.out -covermode=atomic ./test/integration/... 2>&1 | tee -a /tmp/gotest.log | tparse
 
       - name: Upload test log
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-log
