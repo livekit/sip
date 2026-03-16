@@ -379,7 +379,7 @@ func (c *Client) Dial(ip string, host string, number string, headers map[string]
 }
 
 func (c *Client) attemptInvite(ip, host, number string, offer []byte, authHeader string, headers map[string]string, callID string) (*sip.Request, *sip.Response, error) {
-	uri := sip.Uri{User: number, Host: host, UriParams: make(sip.HeaderParams)}
+	uri := sip.Uri{User: number, Host: host}
 	uri.UriParams.Add("transport", "tcp")
 	req := sip.NewRequest(sip.INVITE, uri)
 

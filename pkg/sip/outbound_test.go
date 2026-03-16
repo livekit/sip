@@ -20,8 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/livekit/sipgo/sip"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sipgo/sip"
 )
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
@@ -33,8 +34,8 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	// 4. Make sure the ACK doesn't carry over initial Route header..
 
 	// Plumbing
-	initialRouteURI := sip.Uri{Host: "initial-header.com", UriParams: sip.HeaderParams{"lr": ""}}
-	addedRouteURI := sip.Uri{Host: "added-header.com", UriParams: sip.HeaderParams{"lr": ""}}
+	initialRouteURI := sip.Uri{Host: "initial-header.com", UriParams: sip.HeaderParams{{"lr", ""}}}
+	addedRouteURI := sip.Uri{Host: "added-header.com", UriParams: sip.HeaderParams{{"lr", ""}}}
 	initialRouteHeader := sip.RouteHeader{Address: initialRouteURI}
 	addedRouteHeader := sip.RouteHeader{Address: addedRouteURI}
 	client := NewOutboundTestClient(t, TestClientConfig{})
