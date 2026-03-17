@@ -44,7 +44,7 @@ func (it *InboundTest) NewInvite(t *testing.T, callID string, cseq uint32, offer
 			Host:   it.addr.String(),
 		},
 		Params: sip.HeaderParams{
-			"tag": fromTag,
+			{"tag", fromTag},
 		},
 	})
 	inviteReq.AppendHeader(&sip.ToHeader{
@@ -163,5 +163,5 @@ func TestProcessInvite_Reinvite(t *testing.T) {
 	resp3 := it.TransactionRequest(t, req3)
 	require.Equal(t, sip.StatusCode(200), resp3.StatusCode, "200 OK")
 	require.Equal(t, answer, string(resp3.Body()), "answer should be the same")
-	require.NotEqual(t, resp2.To().Params["tag"], resp3.To().Params["tag"], "to tag should not be the same")
+	require.NotEqual(t, resp2.To().Params.GetOr("tag", ""), resp3.To().Params.GetOr("tag", ""), "to tag should not be the same")
 }

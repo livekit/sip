@@ -11,8 +11,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/icholy/digest"
-	msdk "github.com/livekit/media-sdk"
 	"github.com/stretchr/testify/require"
+
+	msdk "github.com/livekit/media-sdk"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
@@ -899,7 +900,7 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 	inviteFromHeader := sip.FromHeader{
 		DisplayName: fromUser,
 		Address:     sip.Uri{User: fromUser, Host: sipServerAddress},
-		Params:      sip.NewParams().Add("tag", fromTag), // Key bit here
+		Params:      sip.HeaderParams{{"tag", fromTag}}, // Key bit here
 	}
 
 	// Create first INVITE request (without auth)

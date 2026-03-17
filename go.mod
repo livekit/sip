@@ -16,7 +16,7 @@ require (
 	github.com/livekit/protocol v1.45.1-0.20260310090700-2249c636c0bf
 	github.com/livekit/psrpc v0.7.1
 	github.com/livekit/server-sdk-go/v2 v2.11.4-0.20251016050252-63f7c8381817
-	github.com/livekit/sipgo v0.13.2-0.20260119120547-800bcd1b7184
+	github.com/livekit/sipgo v0.13.2-0.20260313133657-a878476450a7
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/rtp v1.8.23
@@ -71,7 +71,7 @@ require (
 	github.com/docker/docker v28.3.3+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v1.1.0 // indirect
+	github.com/emiago/sipgo v1.2.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gammazero/deque v1.1.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.4 // indirect

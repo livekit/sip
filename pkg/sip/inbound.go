@@ -1671,7 +1671,7 @@ func (c *sipInbound) sendRinging() {
 
 func (c *sipInbound) attachTag() {
 	// Set the SIP tag for following requests from us to remote (e.g. BYE).
-	c.to.Params["tag"] = string(c.id)
+	c.to.Params.Add("tag", string(c.id))
 }
 
 func (c *sipInbound) StartRinging() {
