@@ -622,7 +622,11 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encry
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
-	return &MediaConf{MediaConfig: *mc}, localSDP, nil
+	localSDPBytes, err := localSDP.Marshal()
+	if err != nil {
+		return nil, nil, err
+	}
+	return &MediaConf{MediaConfig: *mc}, localSDPBytes, nil
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.

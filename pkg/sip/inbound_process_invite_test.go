@@ -168,6 +168,8 @@ func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag Lo
 	require.NoError(t, err)
 	_, localSDP, err = sdpAnswer.ApplyWithLocal(sdpOffer, sdp.EncryptionNone)
 	require.NoError(t, err)
+	localSDPBytes, err := localSDP.Marshal()
+	require.NoError(t, err)
 
 	log := logger.NewTestLogger(t).WithValues("callID", localTag)
 	from := CreateURIFromUserAndAddress("out", it.addr.String(), TransportUDP)
@@ -179,14 +181,14 @@ func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag Lo
 	so.mu.Lock()
 	so.invite = fauxInvite
 	so.inviteOk = faux200
-	so.localSDP = localSDP
+	so.localSDP = localSDPBytes
 	so.mu.Unlock()
 	oc := &outboundCall{cc: so, log: log}
 	it.LiveKitClient.cmu.Lock()
 	it.LiveKitClient.activeCalls[localTag] = oc
 	it.LiveKitClient.cmu.Unlock()
 
-	return offer, answer, localSDP
+	return offer, answer, localSDPBytes
 }
 
 func TestProcessInvite_Reinvite(t *testing.T) {

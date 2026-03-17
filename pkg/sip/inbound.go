@@ -343,7 +343,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
-		oc := s.cli.GetActiveCall(cc.ID())
+		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			sdp := oc.cc.LocalSDP()

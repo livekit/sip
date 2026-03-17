@@ -168,7 +168,7 @@ func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return c.createSIPParticipant(ctx, req)
 }
 
-func (c *Client) GetActiveCall(tag LocalTag) *outboundCall {
+func (c *Client) getActiveCall(tag LocalTag) *outboundCall {
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
 	return c.activeCalls[tag]
