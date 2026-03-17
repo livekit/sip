@@ -155,7 +155,7 @@ func NewInboundTest(t *testing.T) *InboundTest {
 
 // RegisterOutboundCallForReinvite registers a fake outbound call so that a re-INVITE
 // with the given localTag (To tag) is accepted as outbound reinvite and answered with sdpOffer.
-func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag LocalTag) (offer, answer, localSDP []byte) {
+func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag LocalTag) (offer, answer, localSDPBytes []byte) {
 	t.Helper()
 
 	sdpOffer, err := sdp.NewOffer(netip.MustParseAddr("1.2.3.4"), 0xB0B, sdp.EncryptionNone)
@@ -166,9 +166,9 @@ func (it *InboundTest) RegisterOutboundCallForReinvite(t *testing.T, localTag Lo
 	require.NoError(t, err)
 	answer, err = sdpAnswer.SDP.Marshal()
 	require.NoError(t, err)
-	_, localSDP, err = sdpAnswer.ApplyWithLocal(sdpOffer, sdp.EncryptionNone)
+	_, localSDP, err := sdpAnswer.ApplyWithLocal(sdpOffer, sdp.EncryptionNone)
 	require.NoError(t, err)
-	localSDPBytes, err := localSDP.Marshal()
+	localSDPBytes, err = localSDP.Marshal()
 	require.NoError(t, err)
 
 	log := logger.NewTestLogger(t).WithValues("callID", localTag)
