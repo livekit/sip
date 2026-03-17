@@ -156,6 +156,8 @@ type Server struct {
 	conf    *config.Config
 	sconf   *ServiceConfig
 
+	cli *Client // optional, for outbound reinvite handling
+
 	res mediaRes
 }
 
@@ -171,6 +173,12 @@ func WithGetRoomServer(fn GetRoomFunc) ServerOption {
 		if fn != nil {
 			s.getRoom = fn
 		}
+	}
+}
+
+func WithClient(cli *Client) ServerOption {
+	return func(s *Server) {
+		s.cli = cli
 	}
 }
 

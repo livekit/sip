@@ -338,10 +338,22 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength())
 		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
+	}
+	if s.cli != nil { // Process reinvite for existing outbound calls
+		oc := s.cli.getActiveCall(cc.ID())
+		newCSeq := cc.InviteCSeq()
+		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
+			sdp := oc.cc.LocalSDP()
+			if len(sdp) != 0 {
+				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+				oc.cc.RecordInvite(newCSeq)
+				cc.AcceptAsKeepAlive(sdp)
+				return nil
+			}
+		}
 	}
 
 	from, to := cc.From(), cc.To()

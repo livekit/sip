@@ -646,7 +646,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
-	mc, err := c.media.SetAnswer(sdpOffer, sdpResp, c.sipConf.mediaEncryption)
+	mc, localSDP, err := c.media.SetAnswer(sdpOffer, sdpResp, c.sipConf.mediaEncryption)
 	if err != nil {
 		return err
 	}
@@ -654,6 +654,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err = c.media.SetConfig(mc); err != nil {
 		return err
 	}
+	c.cc.SetLocalSDP(localSDP)
 
 	c.mon.InviteAccept()
 	c.media.EnableOut()
@@ -776,12 +777,14 @@ type sipOutbound struct {
 	callID     string
 	invite     *sip.Request
 	inviteOk   *sip.Response
+	localSDP   []byte // SDP Offer, constrained by the answer
 	to         *sip.ToHeader
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
 
-	referCseq uint32
-	referDone chan error
+	referCseq        uint32
+	referDone        chan error
+	latestInviteCSeq uint32
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -820,6 +823,50 @@ func (c *sipOutbound) SIPCallID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.callID
+}
+
+func (c *sipOutbound) InviteCSeq() uint32 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.latestInviteCSeq
+}
+
+func (c *sipOutbound) RecordInvite(cseq uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cseq > c.latestInviteCSeq {
+		c.latestInviteCSeq = cseq
+	}
+}
+
+// SetLocalSDP stores the precomputed local SDP for re-INVITE (from ApplyWithLocal).
+func (c *sipOutbound) SetLocalSDP(localSDP []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.localSDP = localSDP
+}
+
+// LocalSDP returns the precomputed local SDP for re-INVITE (from ApplyWithLocal).
+func (c *sipOutbound) LocalSDP() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.localSDP
+}
+
+// Returns the original SDP offer.
+func (c *sipOutbound) OwnSDP() []byte {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.invite == nil {
+		return nil
+	}
+	body := c.invite.Body()
+	if len(body) == 0 {
+		return nil
+	}
+	out := make([]byte, len(body))
+	copy(out, body)
+	return out
 }
 
 func (c *sipOutbound) RemoteHeaders() Headers {
