@@ -190,8 +190,8 @@ type UDPConn interface {
 	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
 }
 
-func newUDPConn(log logger.Logger, conn UDPConn) *udpConn {
-	return &udpConn{UDPConn: conn, log: log, stopped: make(chan struct{})}
+func newUDPConn(log logger.Logger, conn UDPConn, symmetricRTP bool) *udpConn {
+	return &udpConn{UDPConn: conn, log: log, stopped: make(chan struct{}), symmetricRTP: symmetricRTP}
 }
 
 type udpConn struct {
@@ -199,6 +199,7 @@ type udpConn struct {
 	stopping core.Fuse
 	stopped  chan struct{}
 	log      logger.Logger
+	symmetricRTP bool
 	src      atomic.Pointer[netip.AddrPort]
 	dst      atomic.Pointer[netip.AddrPort]
 }
@@ -230,6 +231,12 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 		c.log.Infow("setting media source", "addr", addr.String())
 	} else if *prev != addr {
 		c.log.Infow("changing media source", "addr", addr.String())
+	}
+	if c.symmetricRTP {
+		dst := c.dst.Load()
+		if dst == nil || !dst.IsValid() || *dst != addr {
+			c.SetDst(addr)
+		}
 	}
 	return n, err
 }
@@ -289,6 +296,7 @@ type MediaOptions struct {
 	Ports               rtcconfig.PortRange
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
+	SymmetricRTP        bool
 	Stats               *PortStats
 	EnableJitterBuffer  bool
 	NoInputResample     bool
@@ -335,7 +343,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
 		logSignalChanges: opts.LogSignalChanges,
-		port:             newUDPConn(log, conn),
+		port:             newUDPConn(log, conn, opts.SymmetricRTP),
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,

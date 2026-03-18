@@ -542,3 +542,54 @@ func TestMediaTimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestSymmetricRTP(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil)
+		dstPtr := m1.port.dst.Load()
+		require.NotNil(t, dstPtr)
+		dst := *dstPtr
+		require.True(t, dst.IsValid())
+
+		c2 := m2.port.UDPConn.(*testUDPConn)
+		newAddr := netip.AddrPortFrom(newIP("9.9.9.9"), 9999)
+		c2.addr = newAddr
+
+		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
+		require.NoError(t, err)
+
+		select {
+		case <-m1.Received():
+		case <-time.After(time.Second):
+			t.Fatal("no media received")
+		}
+
+		curDstPtr := m1.port.dst.Load()
+		require.NotNil(t, curDstPtr)
+		require.Equal(t, dst, *curDstPtr)
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil)
+		dstPtr := m1.port.dst.Load()
+		require.NotNil(t, dstPtr)
+		require.True(t, dstPtr.IsValid())
+
+		c2 := m2.port.UDPConn.(*testUDPConn)
+		newAddr := netip.AddrPortFrom(newIP("9.9.9.9"), 9999)
+		c2.addr = newAddr
+
+		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
+		require.NoError(t, err)
+
+		select {
+		case <-m1.Received():
+		case <-time.After(time.Second):
+			t.Fatal("no media received")
+		}
+
+		curDstPtr := m1.port.dst.Load()
+		require.NotNil(t, curDstPtr)
+		require.Equal(t, newAddr, *curDstPtr)
+	})
+}
