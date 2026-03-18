@@ -251,14 +251,19 @@ func (c *udpConn) discardLoop() error {
 	for !c.stopping.IsBroken() {
 		err = c.UDPConn.SetReadDeadline(time.Now().Add(rtp.DefFrameDur))
 		if err != nil {
-			c.log.Warnw("error encountered while setting read deadline", err)
+			if !errors.Is(err, net.ErrClosed) {
+				c.log.Warnw("error encountered while setting read deadline", err)
+			}
 			break
 		}
 		_, _, err = c.ReadFromUDPAddrPort(buf)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			continue
-		}
 		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				continue
+			}
+			if errors.Is(err, net.ErrClosed) {
+				break
+			}
 			c.log.Warnw("error encountered while reading UDP packets", err)
 			break
 		}
@@ -268,7 +273,7 @@ func (c *udpConn) discardLoop() error {
 		c.log.Infow("Stopped discarding packets", "packetsDiscarded", packetsDiscarded, "error", err)
 	}
 	err = c.UDPConn.SetReadDeadline(time.Time{}) // clear deadline
-	if err != nil {
+	if err != nil && !errors.Is(err, net.ErrClosed) {
 		c.log.Warnw("error encountered while clearing read deadline", err)
 	}
 	return err
