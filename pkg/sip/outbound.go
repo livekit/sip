@@ -722,7 +722,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		}()
 	}
 
-	err = c.cc.transferCall(ctx, transferTo, headers)
+	err = c.cc.transferCall(ctx, transferTo, headers, c.closing.Watch())
 	if err != nil {
 		c.log.Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return err
@@ -1140,7 +1140,7 @@ func (c *sipOutbound) Drop() {
 	c.drop()
 }
 
-func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, headers map[string]string) error {
+func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, headers map[string]string, ctxDone <-chan struct{}) error {
 	c.mu.Lock()
 
 	if c.invite == nil || c.inviteOk == nil {
@@ -1176,6 +1176,10 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	select {
 	case <-ctx.Done():
 		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
+	case <-ctxDone:
+		// At this point, REFER was accepted, but we received a BYE, nothing to do, also not an error
+		c.log.Infow("refer canceled by BYE from remote")
+		return nil
 	case err := <-c.referDone:
 		if err != nil {
 			return err
