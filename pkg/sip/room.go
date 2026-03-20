@@ -64,6 +64,8 @@ type RoomStatsSnapshot struct {
 	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
 	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
 
+	LatencyOutRecv LatencyStatsSnapshot `json:"latency_out_recv"`
+
 	Closed bool `json:"closed"`
 }
 
@@ -77,6 +79,8 @@ type RoomStats struct {
 
 	JitterBufferPacketsLost    atomic.Uint64
 	JitterBufferPacketsDropped atomic.Uint64
+
+	LatencyOutRecv LatencyStats // measures track recv → opus decode → mixer input.
 
 	Mixer mixer.Stats
 
@@ -108,6 +112,7 @@ func (s *RoomStats) Load() RoomStatsSnapshot {
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
 		PublishTX:        math.Float64frombits(s.PublishTX.Load()),
+		LatencyOutRecv:   s.LatencyOutRecv.Load(),
 		Closed:           s.Closed.Load(),
 	}
 }
@@ -332,6 +337,9 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					defer mTrack.Close()
 
 					var out msdk.PCM16Writer = mTrack
+					// Outbound latency: measure track recv → opus decode → mixer input.
+					var outRecvLatencyEntry atomic.Int64
+					out = newLatencyPCMExit(out, &outRecvLatencyEntry, &r.stats.LatencyOutRecv)
 					if rconf.LogSignalChanges {
 						var err error
 						out, err = NewSignalLogger(log, track.ID(), out)
@@ -357,6 +365,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					}
 
 					h = newRTPStreamStats(h, &r.stats.rtpStats)
+					h = newLatencyRTPEntry(h, &outRecvLatencyEntry)
 					err = rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)

@@ -83,6 +83,9 @@ type PortStatsSnapshot struct {
 	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
 	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
 
+	LatencyInE2E LatencyStatsSnapshot `json:"latency_in_e2e"`
+	LatencyOut   LatencyStatsSnapshot `json:"latency_out"`
+
 	Closed bool `json:"closed"`
 }
 
@@ -111,6 +114,9 @@ type PortStats struct {
 
 	JitterBufferPacketsLost    atomic.Uint64
 	JitterBufferPacketsDropped atomic.Uint64
+
+	LatencyInE2E LatencyStats
+	LatencyOut   LatencyStats
 
 	Closed atomic.Bool
 
@@ -151,6 +157,8 @@ func (s *PortStats) Load() PortStatsSnapshot {
 		DTMFBytes:                  s.DTMFBytes.Load(),
 		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
 		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
+		LatencyInE2E:               s.LatencyInE2E.Load(),
+		LatencyOut:                 s.LatencyOut.Load(),
 		Closed:                     s.Closed.Load(),
 	}
 }
@@ -785,7 +793,11 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 		return err
 	}
 
+	// Latency measurement: shared timestamp between entry (PCM writer) and exit (RTP writer).
+	var outboundLatencyEntry atomic.Int64
+
 	codecInfo := p.conf.Audio.Codec.Info()
+	w = newLatencyRTPExit(w, &outboundLatencyEntry, &p.stats.LatencyOut)
 	w = newRTPStatsWriter(p.mon, p.conf.Audio.Type, p.conf.Audio.DTMFType, codecInfo.SDPName, dtmf.SDPName, w)
 	s := rtp.NewSeqWriter(w)
 	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, codecInfo.RTPClockRate)
@@ -817,6 +829,8 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 		}
 	}
 
+	audioOut = newLatencyPCMEntry(audioOut, &outboundLatencyEntry)
+
 	if w := p.audioOut.Swap(audioOut); w != nil {
 		_ = w.Close()
 	}
@@ -831,7 +845,11 @@ func (p *MediaPort) setupInput() {
 		p.audioIn.SetSampleRate(codecInfo.SampleRate)
 	}
 
+	// Latency measurement: shared timestamp between entry (RTP handler) and exit (PCM writer).
+	var inboundLatencyEntry atomic.Int64
+
 	var audioWriter msdk.PCM16Writer = p.audioIn
+	audioWriter = newLatencyPCMExit(audioWriter, &inboundLatencyEntry, &p.stats.LatencyInE2E)
 	if p.stats != nil {
 		audioWriter = newMediaWriterCount(audioWriter, &p.stats.AudioInFrames, &p.stats.AudioInSamples)
 	}
@@ -871,6 +889,8 @@ func (p *MediaPort) setupInput() {
 			p.stats.JitterBufferPacketsDropped.Store(packetsDropped)
 		}))
 	}
+
+	hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
 	p.hnd.Store(&hnd)
 }
 

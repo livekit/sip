@@ -33,7 +33,18 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/stretchr/testify/require"
+
+	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/stats"
 )
+
+func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
+	mon, err := stats.NewMonitor(&config.Config{})
+	require.NoError(t, err)
+	require.NoError(t, mon.Start(&config.Config{}))
+	t.Cleanup(mon.Stop)
+	return mon.NewCall(stats.Inbound, "test", "test")
+}
 
 type testUDPConn struct {
 	addr   netip.AddrPort
@@ -198,7 +209,7 @@ func TestMediaPort(t *testing.T) {
 
 					log := logger.GetLogger()
 
-					m1, err := NewMediaPortWith(1, log.WithName("one"), nil, c1, &MediaOptions{
+					m1, err := NewMediaPortWith(1, log.WithName("one"), newTestCallMonitor(t), c1, &MediaOptions{
 						IP:              newIP("1.1.1.1"),
 						Ports:           rtcconfig.PortRange{Start: 10000},
 						NoInputResample: true,
@@ -206,7 +217,7 @@ func TestMediaPort(t *testing.T) {
 					require.NoError(t, err)
 					defer m1.Close()
 
-					m2, err := NewMediaPortWith(2, log.WithName("two"), nil, c2, &MediaOptions{
+					m2, err := NewMediaPortWith(2, log.WithName("two"), newTestCallMonitor(t), c2, &MediaOptions{
 						IP:    newIP("2.2.2.2"),
 						Ports: rtcconfig.PortRange{Start: 20000},
 					}, tconf.Rate)
@@ -263,22 +274,22 @@ func TestMediaPort(t *testing.T) {
 					writes1 := 1
 					writes2 := 1
 					if tconf.Rate == nativeRate {
-						expChain := fmt.Sprintf("Switch(%d) -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
+						expChain := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain, w1.String())
 						require.Equal(t, expChain, w2.String())
 
-						expChain = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
+						expChain = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
 						require.Equal(t, expChain, PrintAudioInWriter(m1))
 						require.Equal(t, expChain, PrintAudioInWriter(m2))
 					} else {
-						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
+						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain, w1.String())
 						require.Equal(t, expChain, w2.String())
 
 						// This side does not resample the received audio, it uses sample rate of the RTP source.
-						expChain1 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
+						expChain1 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
 						// This side resamples the received audio to the expected sample rate.
-						expChain2 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Resample(%d->48000) -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
+						expChain2 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
 						require.Equal(t, expChain1, PrintAudioInWriter(m1))
 						require.Equal(t, expChain2, PrintAudioInWriter(m2))
 
@@ -365,11 +376,11 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 
 	var err error
 
-	m1, err = NewMediaPortWith(1, log.WithName("one"), nil, c1, opt1, rate)
+	m1, err = NewMediaPortWith(1, log.WithName("one"), newTestCallMonitor(t), c1, opt1, rate)
 	require.NoError(t, err)
 	t.Cleanup(m1.Close)
 
-	m2, err = NewMediaPortWith(2, log.WithName("two"), nil, c2, opt2, rate)
+	m2, err = NewMediaPortWith(2, log.WithName("two"), newTestCallMonitor(t), c2, opt2, rate)
 	require.NoError(t, err)
 	t.Cleanup(m2.Close)
 
@@ -393,7 +404,7 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 	require.NoError(t, err)
 
 	w2 := m2.GetAudioWriter()
-	require.Equal(t, "Switch(16000) -> G722(encode) -> RTP(16000)", w2.String())
+	require.Equal(t, "Switch(16000) -> LatencyEntry -> G722(encode) -> RTP(16000)", w2.String())
 
 	return m1, m2
 }
