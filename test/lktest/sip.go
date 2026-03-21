@@ -496,6 +496,24 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 					}
 				},
 			},
+			OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
+				t.Logf("+%.3fs: Outbound participant connected: %s", secSince(start), rp.Identity())
+				if rp.Identity() != identityTest {
+					if outIDs.PatricipantID == "" {
+						outIDs.PatricipantID = rp.SID()
+					} else if rp.SID() != "" {
+						t.Fatalf("More than one outbound participant detected: %s, %s", outIDs.PatricipantID, rp.SID())
+					}
+					attrs := rp.Attributes()
+					if attrs != nil {
+						if outIDs.CallID == "" {
+							outIDs.CallID = attrs[livekit.AttrSIPCallID]
+						} else if attrs[livekit.AttrSIPCallID] != "" {
+							t.Fatalf("More than one outbound call ID detected: %s, %s", outIDs.CallID, attrs[livekit.AttrSIPCallID])
+						}
+					}
+				}
+			},
 			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
 				t.Logf("+%.3fs: Outbound participant disconnected: %s", secSince(start), rp.Identity())
 				if rp.Identity() != identityTest {
@@ -510,11 +528,13 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 
 	t.Logf("+%.3fs: Connecting outbound call", secSince(start))
 	reqOut := &livekit.CreateSIPParticipantRequest{
-		Trunk:           req.Trunk,
-		SipCallTo:       req.SipCallTo,
-		SipNumber:       req.SipNumber,
-		RoomName:        req.RoomName,
-		MediaEncryption: req.MediaEncryption,
+		Trunk:             req.Trunk,
+		SipCallTo:         req.SipCallTo,
+		SipNumber:         req.SipNumber,
+		RoomName:          req.RoomName,
+		MediaEncryption:   req.MediaEncryption,
+		WaitUntilAnswered: req.WaitUntilAnswered,
+		RingingTimeout:    req.RingingTimeout,
 	}
 	const outIdentity = "siptest_outbound"
 	const outName = "Outbound Call"
@@ -560,7 +580,13 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 	}
 	inIDs.RoomName = roomIn
 	if params.DoNotAnswer > 0 {
-		t.Logf("+%.3fs: DoNotAnswer is set. Sleeping for %v seconds", secSince(start), params.DoNotAnswer)
+		if req.RingingTimeout == nil || req.RingingTimeout.AsDuration() <= 0 {
+			return fmt.Errorf("DoNotAnswer requires RingingTimeout so CreateSIPParticipant fails before the sleep window ends (no 3m default)")
+		}
+		if params.DoNotAnswer < req.RingingTimeout.AsDuration()+5*time.Second {
+			return fmt.Errorf("DoNotAnswer sleep should exceed RingingTimeout so outbound psrpc has finished and any cloud-io retry could have created a second room")
+		}
+		t.Logf("+%.3fs: DoNotAnswer is set. Sleeping for %v", secSince(start), params.DoNotAnswer)
 		time.Sleep(params.DoNotAnswer)
 		subCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
