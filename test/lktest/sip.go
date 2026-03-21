@@ -501,14 +501,14 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 				if rp.Identity() != identityTest {
 					if outIDs.PatricipantID == "" {
 						outIDs.PatricipantID = rp.SID()
-					} else if rp.SID() != "" {
+					} else if rp.SID() != "" && outIDs.PatricipantID != rp.SID() {
 						t.Fatalf("More than one outbound participant detected: %s, %s", outIDs.PatricipantID, rp.SID())
 					}
 					attrs := rp.Attributes()
 					if attrs != nil {
 						if outIDs.CallID == "" {
 							outIDs.CallID = attrs[livekit.AttrSIPCallID]
-						} else if attrs[livekit.AttrSIPCallID] != "" {
+						} else if attrs[livekit.AttrSIPCallID] != "" && outIDs.CallID != attrs[livekit.AttrSIPCallID] {
 							t.Fatalf("More than one outbound call ID detected: %s, %s", outIDs.CallID, attrs[livekit.AttrSIPCallID])
 						}
 					}
@@ -546,14 +546,9 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 	if reqOut.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE && trIn.MediaEncryption == livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_REQUIRE {
 		// CreateSipParticipant request disables encryption, that is required by trunk
 		reqOut.WaitUntilAnswered = true // We expect this to get rejected
-		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		resp, err := lkOut.SIP.CreateSIPParticipant(ctx, reqOut)
+		resp, err := lkOut.CreateSIPParticipantSync(t, reqOut)
 		outIDs.SetFromCreateSIPParticipantResponse(resp)
 		if err == nil {
-			_, _ = lkOut.Rooms.RemoveParticipant(context.Background(), &livekit.RoomParticipantIdentity{
-				Room: reqOut.RoomName, Identity: resp.ParticipantIdentity,
-			})
 			t.Fatal("CreateSIPParticipant should have failed")
 		}
 		sipStatus := lksdk.SIPStatusFrom(err)
@@ -567,8 +562,16 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 	outboundCallReady := make(chan struct{}, 1)
 	go func() {
 		defer close(outboundCallReady)
-		r := lkOut.CreateSIPParticipant(t, reqOut) // Also adds cleanup!
-		outIDs.SetFromCreateSIPParticipantResponse(r)
+		if params.DoNotAnswer > 0 {
+			r, err := lkOut.CreateSIPParticipantSync(t, reqOut)
+			if err == nil {
+				t.Fatal("CreateSIPParticipant should have failed")
+			}
+			outIDs.SetFromCreateSIPParticipantResponse(r)
+		} else {
+			r := lkOut.CreateSIPParticipant(t, reqOut)
+			outIDs.SetFromCreateSIPParticipantResponse(r)
+		}
 	}()
 
 	t.Logf("+%.3fs: Waiting for inbound call to create inbound room", secSince(start))
