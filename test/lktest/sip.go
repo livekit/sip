@@ -591,11 +591,11 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 		subCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		t.Logf("+%.3fs: Making sure no second inbound call created room", secSince(start))
-		roomIn, err := getRoomID(subCtx, lkIn, ruleIn, reqOut)
-		if err == nil {
-			return fmt.Errorf("second inbound call created room: %s", roomIn)
+		secondRoom, err := getRoomID(subCtx, lkIn, ruleIn, reqOut)
+		if err == nil && secondRoom != roomIn {
+			return fmt.Errorf("second inbound call created room: %s", secondRoom)
 		}
-		if err != context.Canceled {
+		if err != nil && err != context.Canceled {
 			return fmt.Errorf("unexpected status when listing rooms: %w", err)
 		}
 		t.Logf("+%.3fs: No second inbound call created room, all is well", secSince(start))
@@ -751,10 +751,17 @@ func getRoomFromIndividualRule(ctx context.Context, lk *LiveKit, rule *livekit.S
 		if err != nil {
 			return "", err
 		}
+		found := ""
 		for _, room := range resp.Rooms {
 			if strings.HasPrefix(room.Name, inboundRoomPrefix) {
-				return room.Name, nil
+				if found != "" {
+					return "", fmt.Errorf("multiple rooms found: %s, %s", found, room.Name)
+				}
+				found = room.Name
 			}
+		}
+		if found != "" {
+			return found, nil
 		}
 		select {
 		case <-ctx.Done():
