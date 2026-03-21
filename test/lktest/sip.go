@@ -425,7 +425,8 @@ func secSince(start time.Time) float64 {
 }
 
 type TestCreateSipParticipantParams struct {
-	RingFor time.Duration
+	RingFor     time.Duration
+	DoNotAnswer time.Duration // If set, do not answer the inbound call, and pause for this duration
 }
 
 func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, req *livekit.CreateSIPParticipantRequest, params TestCreateSipParticipantParams) error {
@@ -558,9 +559,22 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 		return fmt.Errorf("failed to find inbound room: %w", err)
 	}
 	inIDs.RoomName = roomIn
-	t.Cleanup(func() {
-		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomIn})
-	})
+	if params.DoNotAnswer > 0 {
+		t.Logf("+%.3fs: DoNotAnswer is set. Sleeping for %v seconds", secSince(start), params.DoNotAnswer)
+		time.Sleep(params.DoNotAnswer)
+		subCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		t.Logf("+%.3fs: Making sure no second inbound call created room", secSince(start))
+		roomIn, err := getRoomID(subCtx, lkIn, ruleIn, reqOut)
+		if err == nil {
+			return fmt.Errorf("second inbound call created room: %s", roomIn)
+		}
+		if err != context.Canceled {
+			return fmt.Errorf("unexpected status when listing rooms: %w", err)
+		}
+		t.Logf("+%.3fs: No second inbound call created room, all is well", secSince(start))
+		return nil
+	}
 
 	inIdentity := "sip_" + req.SipNumber
 	t.Cleanup(func() {
