@@ -1883,7 +1883,7 @@ func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
 		Port:            c.s.conf.SIPPort,               // This can be rewritten by transport layer
 		Params:          sip.NewParams(),
 	}
-	// NOTE: Consider lenght of branch configurable
+	// NOTE: Consider length of branch configurable
 	newvia.Params.Add("branch", sip.GenerateBranchN(16))
 
 	return newvia
