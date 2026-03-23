@@ -499,7 +499,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "sip request timed out")
+			// NOTE: psrpc.Canceled does not auto-retry, whereas psrpc.DeadlineExceeded does
+			// As long as that is the case, avoid psrpc.DeadlineExceeded to prevent hammering of destination.
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "sip request timed out")
 		case <-stop:
 			_ = tx.Cancel()
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
