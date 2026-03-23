@@ -440,7 +440,7 @@ func NewServiceTest(t *testing.T) *serviceTest {
 	addr := netip.AddrPortFrom(loopback, uint16(sipPort))
 
 	return &serviceTest{
-		TestUA:  newUATest(t, srv.log, addr),
+		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(3)),
 		Server:  srv,
 		Client:  cli,
 		Handler: handler,
