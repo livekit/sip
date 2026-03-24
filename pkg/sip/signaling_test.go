@@ -217,12 +217,12 @@ func (s *sipUATest) UnregisterSink(localTag string, method string) bool {
 	if !ok {
 		return false
 	}
-	sink, ok := dialogMethods[localTag]
+	sink, ok := dialogMethods[method]
 	if !ok {
 		return false
 	}
 	close(sink)
-	delete(dialogMethods, localTag)
+	delete(dialogMethods, method)
 	return true
 }
 
