@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -242,6 +243,14 @@ func (s *sipUATest) Address() netip.AddrPort {
 	return s.remoteAddr
 }
 
+func (s *sipUATest) LocalURI() *sip.Uri {
+	return &sip.Uri{
+		Scheme: "sip",
+		Host:   s.localAddr.Addr().String(),
+		Port:   int(s.localAddr.Port()),
+	}
+}
+
 func (s *sipUATest) NewRequest(method sip.RequestMethod, fromUser string, toUser string, callID string, cseq uint32) *sip.Request {
 	remoteURI := sip.Uri{Scheme: "sip", User: toUser, Host: s.remoteAddr.String()}
 	localURI := sip.Uri{Scheme: "sip", User: fromUser, Host: s.localAddr.Addr().String(), Port: int(s.localAddr.Port())}
@@ -265,14 +274,15 @@ func (s *sipUATest) NewRequest(method sip.RequestMethod, fromUser string, toUser
 	return req
 }
 
-func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request) *sip.Response {
+func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request, isFromUAC bool) *sip.Response {
 	t.Helper()
 	tx, err := s.Client.TransactionRequest(req)
 	require.NoError(t, err)
 	defer tx.Terminate()
 
 	resp := getFinalResponseOrFail(t, tx, req)
-	if resp.StatusCode < 300 { // Need to send ACK for 2xx, sipgo sends ACK for 3xx+
+	if req.Method == sip.INVITE && resp.StatusCode < 300 {
+		// Need to send ACK for 2xx INVITE, sipgo already sends ACK for 3xx+
 		ack := sip.NewAckRequest(req, resp, nil)
 		err = s.Client.WriteRequest(ack)
 		require.NoError(t, err)
@@ -293,6 +303,7 @@ type sipUADialogTest struct {
 	remoteCseq uint32
 	remoteSDP  []byte
 	localSDP   []byte
+	routeSet   []sip.Uri
 }
 
 func newTestCall(testUA *sipUATest, forceRemoteTag bool) *sipUADialogTest {
@@ -325,12 +336,33 @@ func (d *sipUADialogTest) SetLocalSDP(sdp []byte) {
 	d.localSDP = sdp
 }
 
+func (d *sipUADialogTest) SetRouteSet(resp *sip.Response, isUAC bool) {
+	rrHeaders := resp.GetHeaders("Record-Route")
+	routeSet := make([]sip.Uri, 0, len(rrHeaders))
+	for _, hdr := range rrHeaders {
+		rr, ok := hdr.(*sip.RecordRouteHeader)
+		if ok {
+			routeSet = append(routeSet, rr.Address)
+		}
+
+	}
+	if isUAC {
+		slices.Reverse(routeSet)
+	}
+	d.routeSet = routeSet
+}
+
 func (d *sipUADialogTest) NewRequest(method sip.RequestMethod) *sip.Request {
 	req := d.TestUA.NewRequest(method, d.localUser, d.remoteUser, d.callID, d.localCseq)
 	d.localCseq++
 	req.From().Params.Add("tag", string(d.localTag))
 	if d.remoteTag != "" {
 		req.To().Params.Add("tag", string(d.remoteTag))
+	}
+	if len(d.routeSet) > 0 {
+		for _, uri := range d.routeSet {
+			req.AppendHeader(&sip.RouteHeader{Address: uri})
+		}
 	}
 	return req
 }
@@ -451,19 +483,35 @@ func (st *serviceTest) Address() string {
 	return st.TestUA.Address().String()
 }
 
-func (st *serviceTest) CreateInboundCall(t *testing.T) (*sipUADialogTest, *inboundCall) {
+type createCallTestOption func(req *sip.Request, resp *sip.Response)
+
+func withTestHeaders(headers ...sip.Header) createCallTestOption {
+	return func(req *sip.Request, resp *sip.Response) {
+		if req != nil {
+			for _, header := range headers {
+				req.AppendHeader(sip.HeaderClone(header))
+			}
+		}
+	}
+}
+
+func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOption) (*sipUADialogTest, *inboundCall) {
 	t.Helper()
 
 	call := newTestCall(st.TestUA, false)
 	req, localSDP, err := call.Invite(nil)
 	require.NoError(t, err)
+	for _, opt := range opts {
+		opt(req, nil)
+	}
 	call.SetLocalSDP(localSDP)
-	resp := st.TestUA.TransactionRequest(t, req)
+	resp := st.TestUA.TransactionRequest(t, req, true)
 	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 	remoteTag, ok := resp.To().Params.Get("tag")
 	require.True(t, ok, "remote tag should be present")
 	call.SetRemoteTag(LocalTag(remoteTag))
 	call.SetRemoteSDP(resp.Body())
+	call.SetRouteSet(resp, true)
 
 	st.Server.cmu.Lock()
 	defer st.Server.cmu.Unlock()
@@ -476,7 +524,7 @@ func (st *serviceTest) CreateInboundCall(t *testing.T) (*sipUADialogTest, *inbou
 
 // CreateOutboundCall registers a fake outbound call so that a re-INVITE with the given localTag (To tag)
 // is accepted as outbound reinvite and answered with sdpOffer.
-func (st *serviceTest) CreateOutboundCall(t *testing.T) (*sipUADialogTest, *outboundCall) {
+func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOption) (*sipUADialogTest, *outboundCall, *sip.Request) {
 	t.Helper()
 
 	newInviteSink := st.TestUA.RegisterSink("", "INVITE")
@@ -502,6 +550,10 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T) (*sipUADialogTest, *outb
 		require.Equal(t, call.remoteUser, msg.req.From().Address.User, "remote user should be the same")
 		require.Equal(t, call.localUser, msg.req.To().Address.User, "local user should be the same")
 
+		for _, opt := range opts {
+			opt(msg.req, nil) // Simulate added headers
+		}
+
 		offer, err := sdp.ParseOffer(msg.req.Body())
 		require.NoError(t, err)
 		sdpAnswer, _, err := offer.Answer(netip.MustParseAddr("4.3.2.1"), 0xB00, sdp.EncryptionNone)
@@ -515,6 +567,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T) (*sipUADialogTest, *outb
 		call.remoteCseq = msg.req.CSeq().SeqNo
 		call.SetRemoteSDP(msg.req.Body())
 		call.SetLocalSDP(resp.Body())
+		call.SetRouteSet(resp, false)
 		reqSink = st.TestUA.RegisterSink(call.localTag, "")
 		err = msg.tx.Respond(resp)
 		require.NoError(t, err)
@@ -522,6 +575,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T) (*sipUADialogTest, *outb
 		require.Fail(t, "timeout waiting for invite")
 	}
 
+	var ackReq *sip.Request
 	select {
 	case msg := <-reqSink:
 		if msg == nil {
@@ -529,6 +583,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T) (*sipUADialogTest, *outb
 		}
 		require.Equal(t, string(sip.ACK), string(msg.req.Method), "Expecting ACK")
 		require.Equal(t, call.remoteCseq, msg.req.CSeq().SeqNo, "remote cseq should be the same")
+		ackReq = msg.req
 	case <-ctx.Done():
 		require.Fail(t, "timeout waiting for ACK")
 	}
@@ -539,7 +594,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T) (*sipUADialogTest, *outb
 	require.True(t, ok, "call should be registered")
 
 	t.Logf("outbound call: %+v", call)
-	return call, oc
+	return call, oc, ackReq
 }
 
 func TestReinvite(t *testing.T) {
@@ -552,7 +607,7 @@ func TestReinvite(t *testing.T) {
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)
 			require.NoError(t, err)
-			resp := st.TestUA.TransactionRequest(t, req)
+			resp := st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
@@ -563,7 +618,7 @@ func TestReinvite(t *testing.T) {
 			require.NoError(t, err)
 			req, _, err = call.Invite(newOfferBytes)
 			require.NoError(t, err)
-			resp = st.TestUA.TransactionRequest(t, req)
+			resp = st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 		})
@@ -576,7 +631,7 @@ func TestReinvite(t *testing.T) {
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)
 			require.NoError(t, err)
-			resp := st.TestUA.TransactionRequest(t, req)
+			resp := st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
@@ -584,7 +639,7 @@ func TestReinvite(t *testing.T) {
 			call.remoteTag = "something-else"
 			req, _, err = call.Invite(call.localSDP)
 			require.NoError(t, err)
-			resp = st.TestUA.TransactionRequest(t, req)
+			resp = st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
 		})
@@ -592,14 +647,14 @@ func TestReinvite(t *testing.T) {
 	t.Run("outbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
 			st := NewServiceTest(t)
-			call, oc := st.CreateOutboundCall(t)
+			call, oc, _ := st.CreateOutboundCall(t)
 			serverLocalSDP := oc.cc.LocalSDP()
 			require.NotEqual(t, call.localSDP, serverLocalSDP, "local and remote SDP should be different")
 
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)
 			require.NoError(t, err)
-			resp := st.TestUA.TransactionRequest(t, req)
+			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
@@ -610,20 +665,20 @@ func TestReinvite(t *testing.T) {
 			require.NoError(t, err)
 			req, _, err = call.Invite(newOfferBytes)
 			require.NoError(t, err)
-			resp = st.TestUA.TransactionRequest(t, req)
+			resp = st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 		})
 
 		t.Run("miss", func(t *testing.T) {
 			st := NewServiceTest(t)
-			call, oc := st.CreateOutboundCall(t)
+			call, oc, _ := st.CreateOutboundCall(t)
 			serverLocalSDP := oc.cc.LocalSDP()
 
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)
 			require.NoError(t, err)
-			resp := st.TestUA.TransactionRequest(t, req)
+			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
@@ -631,7 +686,7 @@ func TestReinvite(t *testing.T) {
 			call.remoteTag = "something-else"
 			req, _, err = call.Invite(call.localSDP)
 			require.NoError(t, err)
-			resp = st.TestUA.TransactionRequest(t, req)
+			resp = st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
 		})
@@ -688,7 +743,7 @@ func TestTransfer(t *testing.T) {
 			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
 			notifyReq.SetBody([]byte(sip.NewResponse(200, "OK").String()))
 
-			resp := st.TestUA.TransactionRequest(t, notifyReq)
+			resp := st.TestUA.TransactionRequest(t, notifyReq, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 
 			select {
@@ -757,7 +812,7 @@ func TestTransfer(t *testing.T) {
 			}
 
 			byeReq := call.NewRequest(sip.BYE)
-			resp := st.TestUA.TransactionRequest(t, byeReq)
+			resp := st.TestUA.TransactionRequest(t, byeReq, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 
 			select {
@@ -775,7 +830,7 @@ func TestTransfer(t *testing.T) {
 		prepFunc := func(t *testing.T) (*serviceTest, *sipUADialogTest, *outboundCall) {
 			t.Helper()
 			st := NewServiceTest(t)
-			call, oc := st.CreateOutboundCall(t)
+			call, oc, _ := st.CreateOutboundCall(t)
 			return st, call, oc
 		}
 
@@ -823,7 +878,7 @@ func TestTransfer(t *testing.T) {
 			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
 			notifyReq.SetBody([]byte(sip.NewResponse(200, "OK").String()))
 
-			resp := st.TestUA.TransactionRequest(t, notifyReq)
+			resp := st.TestUA.TransactionRequest(t, notifyReq, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 
 			select {
@@ -892,7 +947,7 @@ func TestTransfer(t *testing.T) {
 			}
 
 			byeReq := call.NewRequest(sip.BYE)
-			resp := st.TestUA.TransactionRequest(t, byeReq)
+			resp := st.TestUA.TransactionRequest(t, byeReq, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 
 			select {
@@ -903,6 +958,204 @@ func TestTransfer(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("timeout waiting for API to time return")
 			}
+		})
+	})
+}
+
+func TestRouteSet(t *testing.T) {
+	// makeRouteSetHeaders creates two Record-Route headers simulating two proxies
+	// in the signaling path. Returns the headers and the expected Route order for
+	// both UAC and UAS sides.
+	makeRouteSetHeaders := func(t *testing.T, st *serviceTest) (rrHeaders []sip.Header, expectUAS, expectUAC []string) {
+		t.Helper()
+		uri := st.TestUA.LocalURI()
+		uri1 := *uri
+		uri1.User = "proxy-user1"
+		uri1.UriParams = sip.NewParams()
+		uri1.UriParams.Add("lr", "")
+		uri1.UriParams.Add("check", "first")
+		uri2 := *uri
+		uri2.User = "proxy-user2"
+		uri2.UriParams = sip.NewParams()
+		uri2.UriParams.Add("lr", "")
+		uri2.UriParams.Add("check", "second")
+		rr1 := &sip.RecordRouteHeader{Address: uri1}
+		rr2 := &sip.RecordRouteHeader{Address: uri2}
+		// Record-Route order as seen on the wire: rr1 (topmost), rr2
+		rrHeaders = []sip.Header{rr1, rr2}
+		// UAS route set: in order (RFC 3261 §12.1.1)
+		expectUAS = []string{rr1.Value(), rr2.Value()}
+		// UAC route set: reversed (RFC 3261 §12.1.2)
+		expectUAC = []string{rr2.Value(), rr1.Value()}
+		return
+	}
+
+	// assertRouteHeaders verifies that a request carries the expected Route headers.
+	assertRouteHeaders := func(t *testing.T, req *sip.Request, expected []string) {
+		t.Helper()
+		routeHeaders := req.GetHeaders("Route")
+		require.Equal(t, len(expected), len(routeHeaders), "wrong number of Route headers")
+		for i, exp := range expected {
+			require.Equal(t, exp, routeHeaders[i].Value(), "Route header %d mismatch", i)
+		}
+	}
+
+	t.Run("inbound", func(t *testing.T) {
+		// Server is UAS for inbound calls. Route set should be in order.
+
+		t.Run("BYE", func(t *testing.T) {
+			st := NewServiceTest(t)
+			rrHeaders, expectUAS, _ := makeRouteSetHeaders(t, st)
+			call, ic := st.CreateInboundCall(t, withTestHeaders(rrHeaders...))
+
+			byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
+			defer st.TestUA.UnregisterSink(call.localTag, "BYE")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			// Close triggers server-side BYE. Run in goroutine since Close
+			// blocks until the BYE transaction completes.
+			closed := make(chan error, 1)
+			go func() {
+				defer close(closed)
+				closed <- ic.Close()
+			}()
+
+			select {
+			case msg := <-byeSink:
+				require.NotNil(t, msg)
+				require.Equal(t, sip.BYE, msg.req.Method)
+				assertRouteHeaders(t, msg.req, expectUAS)
+				_ = msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil))
+			case <-ctx.Done():
+				require.Fail(t, "timeout waiting for BYE")
+			}
+			err := <-closed
+			require.NoError(t, err)
+		})
+
+		t.Run("REFER", func(t *testing.T) {
+			st := NewServiceTest(t)
+			rrHeaders, expectUAS, _ := makeRouteSetHeaders(t, st)
+			call, ic := st.CreateInboundCall(t, withTestHeaders(rrHeaders...))
+			t.Cleanup(func() { ic.Close() })
+
+			referSink := st.TestUA.RegisterSink(call.localTag, "REFER")
+			defer st.TestUA.UnregisterSink(call.localTag, "REFER")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			transferRes := make(chan error, 1)
+			go func() {
+				defer close(transferRes)
+				err := ic.transferCall(ctx, "tel:+15551234567", nil, false)
+				if err != nil {
+					transferRes <- err
+				}
+			}()
+
+			select {
+			case msg := <-referSink:
+				require.NotNil(t, msg)
+				require.Equal(t, sip.REFER, msg.req.Method)
+				assertRouteHeaders(t, msg.req, expectUAS)
+				_ = msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil))
+			case err := <-transferRes:
+				require.Fail(t, "unexpected transfer result", err)
+			case <-ctx.Done():
+				require.Fail(t, "timeout waiting for REFER")
+			}
+
+			req := call.NewRequest(sip.BYE)
+			resp := st.TestUA.TransactionRequest(t, req, false)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+
+			err := <-transferRes
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("outbound", func(t *testing.T) {
+		// Server is UAC for outbound calls. Route set should be reversed.
+
+		t.Run("ACK", func(t *testing.T) {
+			st := NewServiceTest(t)
+			rrHeaders, _, expectUAC := makeRouteSetHeaders(t, st)
+			call, _, ackReq := st.CreateOutboundCall(t, withTestHeaders(rrHeaders...))
+			assertRouteHeaders(t, ackReq, expectUAC)
+
+			req := call.NewRequest(sip.BYE)
+			resp := st.TestUA.TransactionRequest(t, req, false)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+		})
+
+		t.Run("BYE", func(t *testing.T) {
+			st := NewServiceTest(t)
+			rrHeaders, _, expectUAC := makeRouteSetHeaders(t, st)
+			call, oc, _ := st.CreateOutboundCall(t, withTestHeaders(rrHeaders...))
+
+			byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
+			defer st.TestUA.UnregisterSink(call.localTag, "BYE")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			closed := make(chan error, 1)
+			go func() {
+				defer close(closed)
+				closed <- oc.Close(ctx)
+			}()
+
+			select {
+			case msg := <-byeSink:
+				require.NotNil(t, msg)
+				require.Equal(t, sip.BYE, msg.req.Method)
+				assertRouteHeaders(t, msg.req, expectUAC)
+				_ = msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil))
+			case <-ctx.Done():
+				require.Fail(t, "timeout waiting for BYE")
+			}
+			err := <-closed
+			require.NoError(t, err)
+		})
+
+		t.Run("REFER", func(t *testing.T) {
+			st := NewServiceTest(t)
+			rrHeaders, _, expectUAC := makeRouteSetHeaders(t, st)
+			call, oc, _ := st.CreateOutboundCall(t, withTestHeaders(rrHeaders...))
+
+			referSink := st.TestUA.RegisterSink(call.localTag, "REFER")
+			defer st.TestUA.UnregisterSink(call.localTag, "REFER")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			transferRes := make(chan error, 1)
+			go func() {
+				defer close(transferRes)
+				transferRes <- oc.transferCall(ctx, "tel:+15551234567", nil, false)
+			}()
+
+			select {
+			case msg := <-referSink:
+				require.NotNil(t, msg)
+				require.Equal(t, sip.REFER, msg.req.Method)
+				assertRouteHeaders(t, msg.req, expectUAC)
+				_ = msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil))
+			case err := <-transferRes:
+				require.Fail(t, "unexpected transfer result", err)
+			case <-ctx.Done():
+				require.Fail(t, "timeout waiting for REFER")
+			}
+
+			req := call.NewRequest(sip.BYE)
+			resp := st.TestUA.TransactionRequest(t, req, false)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+
+			err := <-transferRes
+			require.NoError(t, err)
 		})
 	})
 }
