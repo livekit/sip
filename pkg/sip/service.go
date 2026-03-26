@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -359,7 +360,8 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			ctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 			defer cdone()
 
-			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, req.Headers, req.PlayDialtone)
+			headers := maps.Clone(req.Headers) // shallow clone - string/string map. Needed to avoid mutating psrpc req
+			err := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, headers, req.PlayDialtone)
 			select {
 			case pending.Done <- err:
 			default:

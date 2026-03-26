@@ -223,6 +223,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"toUser", req.CallTo,
 	)
 
+	req.ParticipantAttributes = maps.Clone(req.ParticipantAttributes) // shallow clone - string/string map. Needed to avoid mutating psrpc req
 	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req))
 
 	defer func() {
@@ -260,7 +261,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		pass:            req.Password,
 		dtmf:            req.Dtmf,
 		dialtone:        req.PlayDialtone,
-		headers:         req.Headers,
+		headers:         maps.Clone(req.Headers), // shallow clone - string/string map. Needed to avoid mutating psrpc req
 		includeHeaders:  req.IncludeHeaders,
 		headersToAttrs:  req.HeadersToAttributes,
 		attrsToHeaders:  req.AttributesToHeaders,
