@@ -994,15 +994,6 @@ authLoop:
 			req.Recipient.Port = 5060
 		}
 	}
-
-	// We currently don't plumb the request back to caller to construct the ACK with.
-	// Thus, we need to modify the request to update any route sets.
-	for req.RemoveHeader("Route") {
-	}
-	for _, hdr := range resp.GetHeaders("Record-Route") {
-		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
-	}
-
 	return c.inviteOk.Body(), nil
 }
 
@@ -1021,7 +1012,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	if c.invite == nil || c.inviteOk == nil {
 		return errors.New("call already closed")
 	}
-	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
+	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil, true))
 }
 
 func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
@@ -1096,7 +1087,7 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 	}
 	ctx, span := Tracer.Start(ctx, "sip.outbound.sendBye")
 	defer span.End()
-	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
+	r := sip.NewByeRequest(c.invite, c.inviteOk, nil, true)
 	r.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 	if c.getHeaders != nil {
 		for k, v := range c.getHeaders(nil) {
@@ -1110,7 +1101,10 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 	}
 	c.setCSeq(r)
 	c.drop()
-	sendAndACK(ctx, c, r)
+	_, err := sendTxRequest(ctx, c, r)
+	if err != nil {
+		c.log.Errorw("error sending BYE", err)
+	}
 }
 
 func (c *sipOutbound) sendCancel(ctx context.Context) {
@@ -1160,7 +1154,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		headers = c.getHeaders(headers)
 	}
 
-	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers)
+	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers, true)
 	c.setCSeq(req)
 	cseq := req.CSeq()
 
