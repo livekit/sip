@@ -2,6 +2,7 @@
 .idea/
 bin/
 cmd/server/server
+sip-video-bridge
 
 test/config.yaml
 test/*/*.mkv
