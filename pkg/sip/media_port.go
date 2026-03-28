@@ -729,6 +729,12 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 		errorCnt int
 	)
 	for {
+		select {
+		case <-p.closed.Watch():
+			return
+		default:
+		}
+
 		h = rtp.Header{}
 		n, err := r.ReadRTP(&h, buf)
 		if err == io.EOF {
