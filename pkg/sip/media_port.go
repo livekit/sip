@@ -670,6 +670,11 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 	)
 
 	p.port.SetDst(c.Remote)
+	if p.opts.IgnorePreanswerData {
+		// this needs to happen before the SRTP session is created, otherwise the read deadline will be
+		// overwritten and we may get stuck in the discard loop
+		p.port.stopDiscarding()
+	}
 	var (
 		sess rtp.Session
 		err  error
@@ -783,9 +788,6 @@ func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
-	}
-	if p.opts.IgnorePreanswerData {
-		p.port.stopDiscarding()
 	}
 	go p.rtpLoop(tid, p.sess)
 	w, err := p.sess.OpenWriteStream()

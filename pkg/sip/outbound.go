@@ -282,7 +282,6 @@ func (c *outboundCall) Disconnected() <-chan struct{} {
 }
 
 func (c *outboundCall) Close(ctx context.Context) error {
-	c.closing.Break()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.close(ctx, nil, callDropped, "shutdown", livekit.DisconnectReason_SERVER_SHUTDOWN)
@@ -306,6 +305,7 @@ func (c *outboundCall) printStats() {
 }
 
 func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, description string, reason livekit.DisconnectReason) {
+	c.closing.Break()
 	ctx = context.WithoutCancel(ctx)
 	c.stopped.Once(func() {
 		c.stats.Closed.Store(true)
@@ -499,7 +499,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.DeadlineExceeded, "sip request timed out")
+			// NOTE: psrpc.Canceled does not auto-retry, whereas psrpc.DeadlineExceeded does
+			// As long as that is the case, avoid psrpc.DeadlineExceeded to prevent hammering of destination.
+			return nil, psrpc.NewErrorf(psrpc.Canceled, "sip request timed out")
 		case <-stop:
 			_ = tx.Cancel()
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
