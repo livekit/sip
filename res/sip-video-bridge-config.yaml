@@ -1,0 +1,31 @@
+log_level: debug
+
+sip:
+  port: 5080
+  transport:
+    - udp
+    - tcp
+  external_ip: ""
+
+rtp:
+  port_start: 20000
+  port_end: 30000
+  jitter_buffer: true
+  jitter_latency: 80ms
+  media_timeout: 15s
+  media_timeout_initial: 30s
+
+video:
+  default_codec: h264
+  max_bitrate: 1500000
+  keyframe_interval: 2s
+  h264_profile: "42e01f"
+
+transcode:
+  enabled: true
+  engine: gstreamer
+  max_concurrent: 10
+  gpu: false
+
+health_port: 8081
+prometheus_port: 6061

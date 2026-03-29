@@ -30,5 +30,38 @@ services:
         use_external_ip: true
         logging:
           level: debug
+  sip-video-bridge:
+    build:
+      context: .
+      dockerfile: build/sip-video-bridge/Dockerfile
+    network_mode: host
+    command: ["--config", "/etc/sip-video-bridge/config.yaml"]
+    environment:
+      SIP_VIDEO_BRIDGE_CONFIG_BODY: |
+        api_key: 'devkey'
+        api_secret: 'secret'
+        ws_url: 'ws://localhost:7880'
+        redis:
+          address: 'localhost:6379'
+        sip:
+          port: 5080
+          transport: [udp, tcp]
+        rtp:
+          port_start: 20000
+          port_end: 30000
+          jitter_buffer: true
+        video:
+          default_codec: h264
+          max_bitrate: 1500000
+        transcode:
+          enabled: true
+          engine: gstreamer
+          max_concurrent: 10
+        health_port: 8081
+        prometheus_port: 6061
+        log_level: debug
+    depends_on:
+        redis:
+            condition: service_started
 volumes:
   redis_data:
