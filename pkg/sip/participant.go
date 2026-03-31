@@ -45,11 +45,16 @@ var headerToLog = map[string]string{
 }
 
 var headerToAttr = map[string]string{
-	"X-Twilio-AccountSid": livekit.AttrSIPPrefix + "twilio.accountSid",
-	"X-Twilio-CallSid":    livekit.AttrSIPPrefix + "twilio.callSid",
-	"X-call_leg_id":       livekit.AttrSIPPrefix + "telnyx.callLegID",
-	"X-call_session_id":   livekit.AttrSIPPrefix + "telnyx.callSessionID",
-	"X-Lk-Test-Id":        "lktest.id",
+	"X-Twilio-AccountSid":            livekit.AttrSIPPrefix + "twilio.accountSid",
+	"X-Twilio-CallSid":               livekit.AttrSIPPrefix + "twilio.callSid",
+	"X-call_leg_id":                  livekit.AttrSIPPrefix + "telnyx.callLegID",
+	"X-call_session_id":              livekit.AttrSIPPrefix + "telnyx.callSessionID",
+	"X-Amzn-ConnectContactId":        livekit.AttrSIPPrefix + "connect.contactId",
+	"X-Amzn-ConnectInitialContactId": livekit.AttrSIPPrefix + "connect.initialContactId",
+	"X-Amzn-SourceAccount":           livekit.AttrSIPPrefix + "connect.sourceAccount",
+	"X-Amzn-SourceArn":               livekit.AttrSIPPrefix + "connect.sourceArn",
+	"X-Amzn-TargetArn":               livekit.AttrSIPPrefix + "connect.targetArn",
+	"X-Lk-Test-Id":                   "lktest.id",
 }
 
 type CallStatus int
