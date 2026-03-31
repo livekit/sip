@@ -144,6 +144,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,
+		SymmetricRTP:        c.conf.SymmetricRTP,
 		EnableJitterBuffer:  call.jitterBuf,
 		LogSignalChanges:    signalLoggingEnabled,
 		Stats:               &call.stats.Port,

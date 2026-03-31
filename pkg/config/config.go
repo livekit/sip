@@ -102,6 +102,7 @@ type Config struct {
 
 	MediaTimeout        time.Duration   `yaml:"media_timeout"`
 	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
+	SymmetricRTP        bool            `yaml:"symmetric_rtp"`
 	Codecs              map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
