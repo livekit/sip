@@ -80,6 +80,7 @@ type Config struct {
 	SIPPort            int                 `yaml:"sip_port"`        // announced SIP signaling port
 	SIPPortListen      int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	SIPHostname        string              `yaml:"sip_hostname"`
+	SIPProxy           string              `yaml:"sip_proxy"`            // optional SIP proxy address for outbound calls, e.g. "sip-proxy:5060"
 	SIPRingingInterval time.Duration       `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default '1s')
 	TCP                *TCPConfig          `yaml:"tcp"`
 	TLS                *TLSConfig          `yaml:"tls"`
@@ -87,8 +88,8 @@ type Config struct {
 	Logging            logger.Config       `yaml:"logging"`
 	ClusterID          string              `yaml:"cluster_id"` // cluster this instance belongs to
 	MaxCpuUtilization  float64             `yaml:"max_cpu_utilization"`
-	MaxActiveCalls     int                 `yaml:"max_active_calls"`  // if set, used for affinity-based routing
-	SIPTrunkIds        []string            `yaml:"sip_trunk_ids"`     // if set, only accept calls for these trunk IDs
+	MaxActiveCalls     int                 `yaml:"max_active_calls"` // if set, used for affinity-based routing
+	SIPTrunkIds        []string            `yaml:"sip_trunk_ids"`    // if set, only accept calls for these trunk IDs
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
