@@ -551,8 +551,6 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 		to = h.Address.String()
 		toTag = h.Params.GetOr("tag", "")
 	}
-
-	if h := req.To(); h != nil {
 	s.log.Infow("Inbound SIP request not handled",
 		"method", req.Method.String(),
 		"sipCallID", callID,
