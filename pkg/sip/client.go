@@ -221,6 +221,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		"fromUser", req.Number,
 		"toHost", req.Address,
 		"toUser", req.CallTo,
+		"direction", "outbound",
 	)
 
 	req.ParticipantAttributes = maps.Clone(req.ParticipantAttributes) // shallow clone - string/string map. Needed to avoid mutating psrpc req

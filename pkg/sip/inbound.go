@@ -531,7 +531,7 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 		ok = s.sipUnhandled(req, tx)
 	}
 	if !ok {
-		s.log.Infow("BYE for non-existent call", "sipTag", tag)
+		s.log.Infow("BYE for non-existent call", "callID", tag)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
 	}
 }
@@ -546,12 +546,17 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 		from = h.Address.String()
 	}
 	to := ""
+	toTag := ""
 	if h := req.To(); h != nil {
 		to = h.Address.String()
+		toTag = h.Params.GetOr("tag", "")
 	}
+
+	if h := req.To(); h != nil {
 	s.log.Infow("Inbound SIP request not handled",
 		"method", req.Method.String(),
 		"sipCallID", callID,
+		"callID", toTag,
 		"from", from,
 		"to", to)
 	tx.Respond(sip.NewResponseFromRequest(req, 405, "Method Not Allowed", nil))
@@ -1511,6 +1516,7 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 		"toHost", toHdr.Address.Host,
 		"toUser", toHdr.Address.User,
 		"sipTag", fromTag,
+		"direction", "inbound",
 	)
 	c := &sipInbound{
 		s:         s,
