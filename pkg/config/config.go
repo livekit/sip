@@ -80,7 +80,7 @@ type Config struct {
 	SIPPort            int                 `yaml:"sip_port"`        // announced SIP signaling port
 	SIPPortListen      int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	SIPHostname        string              `yaml:"sip_hostname"`
-	SIPProxy           string              `yaml:"sip_proxy"`            // optional SIP proxy address for outbound calls, e.g. "sip-proxy:5060"
+	RouteHeaders       []string            `yaml:"route_headers"`        // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
 	SIPRingingInterval time.Duration       `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default '1s')
 	TCP                *TCPConfig          `yaml:"tcp"`
 	TLS                *TLSConfig          `yaml:"tls"`

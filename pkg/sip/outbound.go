@@ -1038,9 +1038,8 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.AppendHeader(h)
 	}
 
-	if proxy := c.c.conf.SIPProxy; proxy != "" {
-		req.SetDestination(proxy)
-		req.SetTransport("TCP")
+	for _, route := range c.c.conf.RouteHeaders {
+		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
 	tx, err := c.c.sipCli.TransactionRequest(req)
