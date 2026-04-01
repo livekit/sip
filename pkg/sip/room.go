@@ -356,7 +356,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					}
 					defer codec.Close()
 
-					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](codec))
+					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn(codec))
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
 							r.stats.JitterBufferPacketsLost.Store(packetsLost)
@@ -552,7 +552,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	}); err != nil {
 		return nil, err
 	}
-	ow := msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
+	ow := msdk.FromSampleWriter[[]byte](track, sampleRate, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, channels, r.log)
 	if err != nil {
 		return nil, err
