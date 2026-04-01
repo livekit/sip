@@ -1,6 +1,6 @@
 package sip
 
 const (
-	signalLoggingFeatureFlag  = "sip.signal_logging"
-	routeHeadersFeatureFlag   = "sip.route_headers"
+	signalLoggingFeatureFlag        = "sip.signal_logging"
+	outboundRouteHeadersFeatureFlag = "sip.outbound_route_headers"
 )

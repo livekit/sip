@@ -135,8 +135,8 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
 	})
-	if sipConf.featureFlags[routeHeadersFeatureFlag] == "true" {
-		call.cc.routeHeaders = conf.RouteHeaders
+	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
+		call.cc.routeHeaders = conf.OutboundRouteHeaders
 	}
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
