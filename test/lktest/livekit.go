@@ -201,13 +201,13 @@ func (lk *LiveKit) ConnectParticipant(t TB, room, identity string, cb *RoomParti
 		inp := p.mixIn.NewInput()
 		defer inp.Close()
 
-		odec, err := opus.Decode(inp, channels, logger.GetLogger())
+		codec, err := opus.Decode(inp, channels, logger.GetLogger())
 		if err != nil {
 			return
 		}
-		defer odec.Close()
+		defer codec.Close()
 
-		h := rtp.NewNopCloser(rtp.NewMediaStreamIn[opus.Sample](odec))
+		h := rtp.NewNopCloser(rtp.NewMediaStreamIn(codec))
 		_ = rtp.HandleLoop(track, h)
 	}
 	cb.OnParticipantConnected = func(p *lksdk.RemoteParticipant) {
@@ -293,7 +293,7 @@ func (p *Participant) newAudioTrack() (msdk.Writer[msdk.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := msdk.FromSampleWriter[opus.Sample](track, RoomSampleRate, rtp.DefFrameDur)
+	ow := msdk.FromSampleWriter[[]byte](track, RoomSampleRate, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, channels, logger.GetLogger())
 	if err != nil {
 		return nil, err
