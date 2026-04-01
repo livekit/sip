@@ -88,9 +88,6 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.IP = localIP
 		conf.Log.Debug("setting local address", "ip", localIP)
 	}
-	if conf.Port == 0 {
-		conf.Port = 5060 + uint16(rand.Intn(1000))
-	}
 	if conf.Number == "" {
 		conf.Number = "1000"
 	}
@@ -177,6 +174,8 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		cli.Close()
 		return nil, err
 	}
+	// cli.conf.Port may be 0 if port was not specified, so we need to set it to the actual port.
+	cli.conf.Port = uint16(l.Addr().(*net.TCPAddr).Port)
 	cli.sipLis = l
 
 	go cli.sipServer.ServeTCP(l)
