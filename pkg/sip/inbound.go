@@ -1008,7 +1008,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mconf.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, c.call.LkCallId)
+	mconf.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()))
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}
