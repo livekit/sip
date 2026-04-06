@@ -1869,6 +1869,14 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	for req.RemoveHeader("Via") {
 	}
 	req.PrependHeader(c.generateViaHeader(req))
+
+	rrHdrs := req.GetHeaders("Record-Route")
+	for _, hdr := range rrHdrs {
+		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
+	}
+	// Remove all Record-Route headers
+	for req.RemoveHeader("Record-Route") {
+	}
 }
 
 func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
@@ -1903,7 +1911,7 @@ func (c *sipInbound) sendBye(ctx context.Context) {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.sendBye")
 	defer span.End()
 	// This function is for clients, so we need to swap src and dest
-	r := sip.NewByeRequest(c.invite, c.inviteOk, nil, false)
+	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
 	for k, v := range c.fillHeaders(nil) {
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
@@ -1911,10 +1919,7 @@ func (c *sipInbound) sendBye(ctx context.Context) {
 	c.setCSeq(r)
 	c.swapSrcDst(r)
 	c.drop()
-	_, err := sendTxRequest(ctx, c, r)
-	if err != nil {
-		c.log.Errorw("error sending BYE", err)
-	}
+	sendAndACK(ctx, c, r)
 }
 
 func (c *sipInbound) sendStatus(ctx context.Context, code sip.StatusCode, status string) {
@@ -1962,7 +1967,7 @@ func (c *sipInbound) newReferReq(transferTo string, headers map[string]string) (
 	headers = c.fillHeaders(headers)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
-	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers, false)
+	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers)
 	c.setCSeq(req)
 	c.swapSrcDst(req)
 

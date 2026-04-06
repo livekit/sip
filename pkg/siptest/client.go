@@ -349,8 +349,12 @@ func (c *Client) Dial(ip string, host string, number string, headers map[string]
 		}
 	}
 
+	for _, hdr := range resp.GetHeaders("Record-Route") {
+		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
+	}
+
 	c.mediaConn.EnableTimeout(true)
-	if err = c.sipClient.WriteRequest(sip.NewAckRequest(req, resp, nil, true)); err != nil {
+	if err = c.sipClient.WriteRequest(sip.NewAckRequest(req, resp, nil)); err != nil {
 		return err
 	}
 	ip, port, err := parseSDPAnswer(resp.Body())
@@ -412,7 +416,7 @@ func (c *Client) attemptInvite(ip, host, number string, offer []byte, authHeader
 
 func (c *Client) sendBye() {
 	c.log.Debug("sending bye")
-	req := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil, true)
+	req := sip.NewByeRequest(c.inviteReq, c.inviteResp, nil)
 	req.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 
 	cseq := c.lastCSeq.Add(1)
@@ -427,7 +431,10 @@ func (c *Client) sendBye() {
 	select {
 	case <-c.ack:
 	case <-tx.Done():
-	case <-tx.Responses():
+	case r := <-tx.Responses():
+		if r.StatusCode == 200 {
+			_ = c.sipClient.WriteRequest(sip.NewAckRequest(req, r, nil))
+		}
 	}
 }
 
