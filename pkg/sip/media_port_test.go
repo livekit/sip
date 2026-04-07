@@ -27,12 +27,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
-	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -184,7 +185,8 @@ func TestMediaPort(t *testing.T) {
 
 			sub := strings.SplitN(info.SDPName, "/", 2)
 			name := sub[0]
-			nativeRate, err := strconv.Atoi(sub[1])
+			nativeRateSDP, err := strconv.Atoi(sub[1])
+			nativeRate := nativeRateSDP
 			require.NoError(t, err)
 			switch name {
 			case "telephone-event":
@@ -209,17 +211,23 @@ func TestMediaPort(t *testing.T) {
 
 					log := logger.GetLogger()
 
+					const (
+						ip1   = "1.1.1.1"
+						ip2   = "2.2.2.2"
+						port1 = 10000
+						port2 = 20000
+					)
 					m1, err := NewMediaPortWith(1, log.WithName("one"), newTestCallMonitor(t), c1, &MediaOptions{
-						IP:              newIP("1.1.1.1"),
-						Ports:           rtcconfig.PortRange{Start: 10000},
+						IP:              newIP(ip1),
+						Ports:           rtcconfig.PortRange{Start: port1},
 						NoInputResample: true,
 					}, tconf.Rate)
 					require.NoError(t, err)
 					defer m1.Close()
 
 					m2, err := NewMediaPortWith(2, log.WithName("two"), newTestCallMonitor(t), c2, &MediaOptions{
-						IP:    newIP("2.2.2.2"),
-						Ports: rtcconfig.PortRange{Start: 20000},
+						IP:    newIP(ip2),
+						Ports: rtcconfig.PortRange{Start: port2},
 					}, tconf.Rate)
 					require.NoError(t, err)
 					defer m2.Close()
@@ -247,8 +255,10 @@ func TestMediaPort(t *testing.T) {
 					err = m2.SetConfig(conf)
 					require.NoError(t, err)
 
-					codec1 := m1.Config().Audio.Codec
-					codec2 := m2.Config().Audio.Codec
+					audio1 := m1.Config().Audio
+					audio2 := m2.Config().Audio
+					codec1 := audio1.Codec
+					codec2 := audio2.Codec
 					require.Equal(t, info.SDPName, codec1.Info().SDPName)
 					require.Equal(t, info.SDPName, codec2.Info().SDPName)
 
@@ -274,22 +284,24 @@ func TestMediaPort(t *testing.T) {
 					writes1 := 1
 					writes2 := 1
 					if tconf.Rate == nativeRate {
-						expChain := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
-						require.Equal(t, expChain, w1.String())
-						require.Equal(t, expChain, w2.String())
+						expChainBase := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit",
+							nativeRate, name, nativeRate, name, nativeRateSDP)
+						require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip2, port2), w1.String())
+						require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip1, port1), w2.String())
 
-						expChain = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
-						require.Equal(t, expChain, PrintAudioInWriter(m1))
-						require.Equal(t, expChain, PrintAudioInWriter(m2))
+						expChainBase = fmt.Sprintf("SilenceFiller(25) -> RTP(%%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", name, nativeRate, nativeRate)
+						require.Equal(t, fmt.Sprintf(expChainBase, audio1.Type), PrintAudioInWriter(m1))
+						require.Equal(t, fmt.Sprintf(expChainBase, audio2.Type), PrintAudioInWriter(m2))
 					} else {
-						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> RTP(%d)", nativeRate, name, nativeRate)
+						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> SRTPWriteStream",
+							nativeRate, name, nativeRate, name, nativeRateSDP)
 						require.Equal(t, expChain, w1.String())
 						require.Equal(t, expChain, w2.String())
 
 						// This side does not resample the received audio, it uses sample rate of the RTP source.
-						expChain1 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", nativeRate, name, nativeRate, nativeRate)
+						expChain1 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", audio1.Type, name, nativeRate, nativeRate)
 						// This side resamples the received audio to the expected sample rate.
-						expChain2 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", nativeRate, name, nativeRate)
+						expChain2 := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", audio2.Type, name, nativeRate)
 						require.Equal(t, expChain1, PrintAudioInWriter(m1))
 						require.Equal(t, expChain2, PrintAudioInWriter(m2))
 
@@ -404,7 +416,7 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 	require.NoError(t, err)
 
 	w2 := m2.GetAudioWriter()
-	require.Equal(t, "Switch(16000) -> LatencyEntry -> G722(encode) -> RTP(16000)", w2.String())
+	require.Equal(t, "Switch(16000) -> LatencyEntry -> G722(encode) -> ByteEncoder(16000) -> StatsWriter(G722/8000) -> LatencyExit -> RTPWriteStream(1.1.1.1:10000)", w2.String())
 
 	return m1, m2
 }

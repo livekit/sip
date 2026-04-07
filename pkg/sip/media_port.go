@@ -204,12 +204,12 @@ func newUDPConn(log logger.Logger, conn UDPConn, symmetricRTP bool) *udpConn {
 
 type udpConn struct {
 	UDPConn
-	stopping core.Fuse
-	stopped  chan struct{}
-	log      logger.Logger
+	stopping     core.Fuse
+	stopped      chan struct{}
+	log          logger.Logger
 	symmetricRTP bool
-	src      atomic.Pointer[netip.AddrPort]
-	dst      atomic.Pointer[netip.AddrPort]
+	src          atomic.Pointer[netip.AddrPort]
+	dst          atomic.Pointer[netip.AddrPort]
 }
 
 func (c *udpConn) GetSrc() (netip.AddrPort, bool) {
@@ -813,7 +813,7 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	p.audioOutRTP = s.NewStream(p.conf.Audio.Type, codecInfo.RTPClockRate)
 
 	// Encoding pipeline (LK PCM -> SIP RTP)
-	audioOut := p.conf.Audio.Codec.EncodeRTP(p.audioOutRTP)
+	audioOut := rtp.EncodePCM(p.audioOutRTP, p.conf.Audio.Codec)
 	if p.stats != nil {
 		audioOut = newMediaWriterCount(audioOut, &p.stats.AudioOutFrames, &p.stats.AudioOutSamples)
 	}
@@ -871,7 +871,7 @@ func (p *MediaPort) setupInput() {
 			audioWriter = signalLogger
 		}
 	}
-	audioHandler := p.conf.Audio.Codec.DecodeRTP(audioWriter, p.conf.Audio.Type)
+	audioHandler := rtp.DecodePCM(audioWriter, p.conf.Audio.Codec, p.conf.Audio.Type)
 	// Wrap the decoder with silence suppression handler to fill gaps during silence suppression
 	audioHandler = newSilenceFiller(audioHandler, audioWriter, codecInfo.RTPClockRate, codecInfo.SampleRate, p.log)
 	p.audioInHandler = audioHandler

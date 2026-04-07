@@ -18,10 +18,11 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/logger"
-	"github.com/stretchr/testify/require"
 )
 
 // Both a rtp.Handler and msdk.PCM16Writer designed to test the silence suppression handler
@@ -43,6 +44,14 @@ func WithClockRate(clockRate int) silenceSuppressionTesterOption {
 	}
 }
 
+type nopCloser struct {
+	*SilenceSuppressionTester
+}
+
+func (s nopCloser) Close() error {
+	return nil
+}
+
 func newSilenceSuppressionTester(audioSampleRate int, log logger.Logger, options ...silenceSuppressionTesterOption) *SilenceSuppressionTester {
 	tester := &SilenceSuppressionTester{
 		audioSampleRate:       audioSampleRate,
@@ -55,7 +64,7 @@ func newSilenceSuppressionTester(audioSampleRate int, log logger.Logger, options
 	for _, option := range options {
 		option(tester)
 	}
-	tester.gapFiller = newSilenceFiller(tester, tester, tester.clockRate, tester.audioSampleRate, log)
+	tester.gapFiller = newSilenceFiller(tester, nopCloser{tester}, tester.clockRate, tester.audioSampleRate, log)
 	return tester
 }
 
@@ -67,8 +76,7 @@ func (s *SilenceSuppressionTester) SampleRate() int {
 	return s.audioSampleRate
 }
 
-func (s *SilenceSuppressionTester) Close() error {
-	return nil
+func (s *SilenceSuppressionTester) Close() {
 }
 
 func (s *SilenceSuppressionTester) WriteSample(sample msdk.PCM16Sample) error {

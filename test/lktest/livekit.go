@@ -293,7 +293,7 @@ func (p *Participant) newAudioTrack() (msdk.Writer[msdk.PCM16Sample], error) {
 	}); err != nil {
 		return nil, err
 	}
-	ow := msdk.FromSampleWriter[[]byte](track, RoomSampleRate, rtp.DefFrameDur)
+	ow := msdk.FromSampleWriter[opus.Sample](track, RoomSampleRate, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, channels, logger.GetLogger())
 	if err != nil {
 		return nil, err

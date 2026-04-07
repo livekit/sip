@@ -29,7 +29,21 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
-type Writer = msdk.WriteCloser[[]byte]
+type Sample []byte
+
+func (s Sample) Size() int {
+	return len(s)
+}
+
+func (s Sample) CopyTo(dst []byte) (int, error) {
+	if len(dst) < len(s) {
+		return 0, io.ErrShortBuffer
+	}
+	n := copy(dst, s)
+	return n, nil
+}
+
+type Writer = msdk.WriteCloser[Sample]
 
 type params struct {
 	SampleRate int
@@ -95,7 +109,7 @@ func (d *decoder) SampleRate() int {
 	return d.w.SampleRate()
 }
 
-func (d *decoder) WriteSample(in []byte) error {
+func (d *decoder) WriteSample(in Sample) error {
 	if len(in) == 0 {
 		return nil
 	}
@@ -131,7 +145,7 @@ type encoder struct {
 	w     Writer
 	enc   *opus.Encoder
 	inbuf msdk.PCM16Sample
-	buf   []byte
+	buf   Sample
 
 	successiveErrorCount int
 }
@@ -192,6 +206,6 @@ func (e *encoder) Close() error {
 	return err2
 }
 
-func NewWebmWriter(w io.WriteCloser, sampleRate int, sampleDur time.Duration) msdk.WriteCloser[[]byte] {
-	return webm.NewWriter[[]byte](w, "A_OPUS", 2, sampleRate, sampleDur)
+func NewWebmWriter(w io.WriteCloser, sampleRate int, sampleDur time.Duration) msdk.WriteCloser[Sample] {
+	return webm.NewWriter[Sample](w, "A_OPUS", 2, sampleRate, sampleDur)
 }
