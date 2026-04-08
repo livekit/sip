@@ -74,21 +74,22 @@ type Config struct {
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
-	HealthPort         int                 `yaml:"health_port"`
-	PrometheusPort     int                 `yaml:"prometheus_port"`
-	PProfPort          int                 `yaml:"pprof_port"`
-	SIPPort            int                 `yaml:"sip_port"`        // announced SIP signaling port
-	SIPPortListen      int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
-	SIPHostname        string              `yaml:"sip_hostname"`
-	SIPRingingInterval time.Duration       `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default '1s')
-	TCP                *TCPConfig          `yaml:"tcp"`
-	TLS                *TLSConfig          `yaml:"tls"`
-	RTPPort            rtcconfig.PortRange `yaml:"rtp_port"`
-	Logging            logger.Config       `yaml:"logging"`
-	ClusterID          string              `yaml:"cluster_id"` // cluster this instance belongs to
-	MaxCpuUtilization  float64             `yaml:"max_cpu_utilization"`
-	MaxActiveCalls     int                 `yaml:"max_active_calls"`  // if set, used for affinity-based routing
-	SIPTrunkIds        []string            `yaml:"sip_trunk_ids"`     // if set, only accept calls for these trunk IDs
+	HealthPort           int                 `yaml:"health_port"`
+	PrometheusPort       int                 `yaml:"prometheus_port"`
+	PProfPort            int                 `yaml:"pprof_port"`
+	SIPPort              int                 `yaml:"sip_port"`        // announced SIP signaling port
+	SIPPortListen        int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
+	SIPHostname          string              `yaml:"sip_hostname"`
+	OutboundRouteHeaders []string            `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
+	SIPRingingInterval   time.Duration       `yaml:"sip_ringing_interval"`   // from 1 sec up to 60 (default '1s')
+	TCP                  *TCPConfig          `yaml:"tcp"`
+	TLS                  *TLSConfig          `yaml:"tls"`
+	RTPPort              rtcconfig.PortRange `yaml:"rtp_port"`
+	Logging              logger.Config       `yaml:"logging"`
+	ClusterID            string              `yaml:"cluster_id"` // cluster this instance belongs to
+	MaxCpuUtilization    float64             `yaml:"max_cpu_utilization"`
+	MaxActiveCalls       int                 `yaml:"max_active_calls"` // if set, used for affinity-based routing
+	SIPTrunkIds          []string            `yaml:"sip_trunk_ids"`    // if set, only accept calls for these trunk IDs
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24

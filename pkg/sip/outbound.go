@@ -135,6 +135,9 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
 	})
+	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
+		call.cc.routeHeaders = conf.OutboundRouteHeaders
+	}
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -769,11 +772,12 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, 
 }
 
 type sipOutbound struct {
-	log     logger.Logger
-	c       *Client
-	id      LocalTag
-	from    *sip.FromHeader
-	contact *sip.ContactHeader
+	log          logger.Logger
+	c            *Client
+	id           LocalTag
+	from         *sip.FromHeader
+	contact      *sip.ContactHeader
+	routeHeaders []string
 
 	mu         sync.RWMutex
 	tag        RemoteTag
@@ -994,6 +998,15 @@ authLoop:
 			req.Recipient.Port = 5060
 		}
 	}
+
+	// We currently don't plumb the request back to caller to construct the ACK with.
+	// Thus, we need to modify the request to update any route sets.
+	for req.RemoveHeader("Route") {
+	}
+	for _, hdr := range resp.GetHeaders("Record-Route") {
+		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
+	}
+
 	return c.inviteOk.Body(), nil
 }
 
@@ -1012,7 +1025,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	if c.invite == nil || c.inviteOk == nil {
 		return errors.New("call already closed")
 	}
-	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil, true))
+	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
 func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
@@ -1036,6 +1049,10 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 	for _, h := range headers {
 		req.AppendHeader(h)
+	}
+
+	for _, route := range c.routeHeaders {
+		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
 	tx, err := c.c.sipCli.TransactionRequest(req)
@@ -1087,7 +1104,7 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 	}
 	ctx, span := Tracer.Start(ctx, "sip.outbound.sendBye")
 	defer span.End()
-	r := sip.NewByeRequest(c.invite, c.inviteOk, nil, true)
+	r := sip.NewByeRequest(c.invite, c.inviteOk, nil)
 	r.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
 	if c.getHeaders != nil {
 		for k, v := range c.getHeaders(nil) {
@@ -1101,10 +1118,7 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 	}
 	c.setCSeq(r)
 	c.drop()
-	_, err := sendTxRequest(ctx, c, r)
-	if err != nil {
-		c.log.Errorw("error sending BYE", err)
-	}
+	sendAndACK(ctx, c, r)
 }
 
 func (c *sipOutbound) sendCancel(ctx context.Context) {
@@ -1154,7 +1168,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		headers = c.getHeaders(headers)
 	}
 
-	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers, true)
+	req := NewReferRequest(c.invite, c.inviteOk, c.contact, transferTo, headers)
 	c.setCSeq(req)
 	cseq := req.CSeq()
 

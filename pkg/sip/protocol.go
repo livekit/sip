@@ -194,16 +194,22 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 	}
 }
 
-func sendTxRequest(ctx context.Context, c Signaling, req *sip.Request) (*sip.Response, error) {
+func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
 	tx, err := c.Transaction(req)
 	if err != nil {
-		return nil, err
+		return
 	}
 	defer tx.Terminate()
-	return sipResponse(ctx, tx, nil, nil)
+	r, err := sipResponse(ctx, tx, nil, nil)
+	if err != nil {
+		return
+	}
+	if r.StatusCode == 200 {
+		_ = c.WriteRequest(sip.NewAckRequest(req, r, nil))
+	}
 }
 
-func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string, isUAC bool) *sip.Request {
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
 	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
@@ -214,7 +220,20 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	viaHop.Params.Add("branch", sip.GenerateBranch())
 	// }
 
-	sip.CopyRoutingHeaders(req, inviteRequest, inviteResponse, isUAC)
+	if len(inviteRequest.GetHeaders("Route")) > 0 {
+		sip.CopyHeaders("Route", inviteRequest, req)
+	} else {
+		hdrs := inviteResponse.GetHeaders("Record-Route")
+		for i := len(hdrs) - 1; i >= 0; i-- {
+			rrh, ok := hdrs[i].(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+
+			h := rrh.Clone()
+			req.AppendHeader(h)
+		}
+	}
 
 	maxForwardsHeader := sip.MaxForwardsHeader(70)
 	req.AppendHeader(&maxForwardsHeader)
