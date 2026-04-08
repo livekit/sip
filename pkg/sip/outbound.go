@@ -135,6 +135,9 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		}
 		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
 	})
+	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
+		call.cc.routeHeaders = conf.OutboundRouteHeaders
+	}
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
@@ -768,11 +771,12 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, 
 }
 
 type sipOutbound struct {
-	log     logger.Logger
-	c       *Client
-	id      LocalTag
-	from    *sip.FromHeader
-	contact *sip.ContactHeader
+	log          logger.Logger
+	c            *Client
+	id           LocalTag
+	from         *sip.FromHeader
+	contact      *sip.ContactHeader
+	routeHeaders []string
 
 	mu         sync.RWMutex
 	tag        RemoteTag
@@ -1044,6 +1048,10 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 	for _, h := range headers {
 		req.AppendHeader(h)
+	}
+
+	for _, route := range c.routeHeaders {
+		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
 	tx, err := c.c.sipCli.TransactionRequest(req)
