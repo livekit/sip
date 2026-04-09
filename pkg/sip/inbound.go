@@ -1502,7 +1502,7 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	}
 
 	legTr := legTransportFromReq(invite)
-	contact := s.ContactURI(legTr)
+	contact := s.ContactURI(legTr, src.Addr())
 	log := s.log.WithValues(
 		"callID", toTag,
 		"traceID", traceid.FromGUID(toTag),

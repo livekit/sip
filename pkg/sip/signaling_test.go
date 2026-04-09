@@ -192,6 +192,7 @@ func (s *sipUATest) serveTransport(t *testing.T, transport string) error {
 			}
 		}()
 	}
+	s.log.Infow("test signaling listening on", "transport", transport, "addr", s.localAddr.String())
 	return nil
 }
 
@@ -395,6 +396,7 @@ func (d *sipUADialogTest) CreateSipParticipantRequest() *rpc.InternalCreateSIPPa
 }
 
 type serviceTest struct {
+	log     logger.Logger
 	TestUA  *sipUATest
 	Server  *Server // Processing inbound calls and SIP
 	Client  *Client // Processing outbound calls
@@ -472,7 +474,8 @@ func NewServiceTest(t *testing.T) *serviceTest {
 	addr := netip.AddrPortFrom(loopback, uint16(sipPort))
 
 	return &serviceTest{
-		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(3)),
+		log:     log,
+		TestUA:  newUATest(t, log, addr, withUATestBuffer(3)),
 		Server:  srv,
 		Client:  cli,
 		Handler: handler,
@@ -497,6 +500,13 @@ func withTestHeaders(headers ...sip.Header) createCallTestOption {
 
 func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOption) (*sipUADialogTest, *inboundCall) {
 	t.Helper()
+	call, _, ic := st.createInboundCallWithResp(t, opts...)
+	_ = call
+	return call, ic
+}
+
+func (st *serviceTest) createInboundCallWithResp(t *testing.T, opts ...createCallTestOption) (*sipUADialogTest, *sip.Response, *inboundCall) {
+	t.Helper()
 
 	call := newTestCall(st.TestUA, false)
 	req, localSDP, err := call.Invite(nil)
@@ -519,7 +529,7 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 	require.True(t, ok, "call should be registered")
 
 	t.Logf("inbound call: %+v", call)
-	return call, ic
+	return call, resp, ic
 }
 
 // CreateOutboundCall registers a fake outbound call so that a re-INVITE with the given localTag (To tag)
@@ -1158,4 +1168,23 @@ func TestRouteSet(t *testing.T) {
 			require.NoError(t, err)
 		})
 	})
+}
+
+func TestInboundContactUsesLocalIP(t *testing.T) {
+	// When SignalingIP (external) differs from SignalingIPLocal, inbound calls
+	// received from a private source address must advertise SignalingIPLocal in
+	// the Contact header, not the external IP.
+	st := NewServiceTest(t)
+
+	// Override: set a fake external IP distinct from loopback.
+	signalingIPExternal := netip.MustParseAddr("1.2.3.4")
+	st.Server.sconf.SignalingIP = signalingIPExternal
+
+	_, resp, _ := st.createInboundCallWithResp(t)
+
+	contact := resp.Contact()
+	require.NotNil(t, contact, "200 OK must have a Contact header")
+	st.log.Infow("contact", "contact", contact.Value())
+	require.Equal(t, "127.0.0.1", contact.Address.Host,
+		"Contact should use local signaling IP for calls from private sources, got %s", contact.Address.Host)
 }

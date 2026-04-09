@@ -208,8 +208,12 @@ func (s *Server) SetHandler(handler Handler) {
 	s.handler = handler
 }
 
-func (s *Server) ContactURI(tr Transport) URI {
-	return getContactURI(s.conf, s.sconf.SignalingIP, tr)
+func (s *Server) ContactURI(tr Transport, src netip.Addr) URI {
+	ip := s.sconf.SignalingIP
+	if src.IsValid() && src.IsPrivate() && s.sconf.SignalingIPLocal.IsValid() {
+		ip = s.sconf.SignalingIPLocal
+	}
+	return getContactURI(s.conf, ip, tr)
 }
 
 func (s *Server) startUDP(addr netip.AddrPort) error {
