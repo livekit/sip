@@ -94,7 +94,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	if conf.Codec == "" {
 		conf.Codec = g711.ULawSDPName
 	}
-	codec := lksdp.CodecByName(conf.Codec).(rtp.AudioCodec)
+	codec := lksdp.CodecByName(conf.Codec).(msdk.AudioCodec)
 	cli := &Client{
 		id:         id,
 		conf:       conf,
@@ -111,7 +111,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
 	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
-	cli.audioOut, err = mixer.NewMixer(cli.audioCodec.EncodeRTP(cli.mediaAudio), rtp.DefFrameDur, 1, mixer.WithOutputChannel())
+	cli.audioOut, err = mixer.NewMixer(rtp.EncodePCM(cli.mediaAudio, cli.audioCodec), rtp.DefFrameDur, 1, mixer.WithOutputChannel())
 	if err != nil {
 		cli.Close()
 		return nil, err
@@ -188,7 +188,7 @@ type Client struct {
 	conf          ClientConfig
 	log           *slog.Logger
 	ack           chan struct{}
-	audioCodec    rtp.AudioCodec
+	audioCodec    msdk.AudioCodec
 	audioType     byte
 	mediaConn     *rtpconn.Conn
 	mux           *rtp.Mux
@@ -202,7 +202,7 @@ type Client struct {
 	sipLis        net.Listener
 	inviteReq     *sip.Request
 	inviteResp    *sip.Response
-	recordHandler atomic.Pointer[rtp.Handler]
+	recordHandler atomic.Pointer[rtp.HandlerCloser]
 	lastCSeq      atomic.Uint32
 	closed        core.Fuse
 }
@@ -278,7 +278,7 @@ func (c *Client) setupRTPReceiver() {
 
 func (c *Client) Record(w io.WriteCloser) {
 	ws := webmm.NewPCM16Writer(w, c.audioCodec.Info().SampleRate, 1, rtp.DefFrameDur)
-	h := c.audioCodec.DecodeRTP(ws, c.audioType)
+	h := rtp.DecodePCM(ws, c.audioCodec, c.audioType)
 	c.recordHandler.Store(&h)
 }
 
@@ -698,13 +698,13 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 	}
 	const framesPerSec = int(time.Second / rtp.DefFrameDur)
 	decoded := make(msdk.PCM16Sample, sampleRate/framesPerSec)
-	dec := c.audioCodec.DecodeRTP(msdk.NewPCM16BufferWriter(&decoded, sampleRate), c.audioType)
+	dec := rtp.DecodePCM(msdk.NewPCM16BufferWriter(&decoded, sampleRate), c.audioCodec, c.audioType)
 	lastLog := time.Now()
 
 	pkts := make(chan *rtp.Packet, 1)
 	done := make(chan struct{})
 
-	h := rtp.Handler(rtp.HandlerFunc(func(hdr *rtp.Header, payload []byte) error {
+	h := rtp.NewNopCloser(rtp.HandlerFunc(func(hdr *rtp.Header, payload []byte) error {
 		// Make sure er do not send on a closed channel
 		select {
 		case <-done:

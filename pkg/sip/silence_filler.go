@@ -27,18 +27,18 @@ import (
 // silenceFiller detects RTP timestamp discontinuities (silence suppression)
 // and generates silence samples to fill the gaps before passing packets to the decoder.
 type silenceFiller struct {
-	maxGapSize            int
-	encodedSink           rtp.Handler
-	pcmSink               msdk.PCM16Writer
-	rtpSamplesPerFrame    int // For gap detection (based on RTP clock rate)
-	pcmSamplesPerFrame    int // For silence generation (based on PCM output rate)
-	log                   logger.Logger
-	lastTS                atomic.Uint64
-	lastSeq               atomic.Uint64
-	packets               atomic.Uint64
-	gapCount              atomic.Uint64
-	gapSizeSum            atomic.Uint64
-	lastPrintTime         time.Time
+	maxGapSize         int
+	encodedSink        rtp.HandlerCloser
+	pcmSink            msdk.PCM16Writer
+	rtpSamplesPerFrame int // For gap detection (based on RTP clock rate)
+	pcmSamplesPerFrame int // For silence generation (based on PCM output rate)
+	log                logger.Logger
+	lastTS             atomic.Uint64
+	lastSeq            atomic.Uint64
+	packets            atomic.Uint64
+	gapCount           atomic.Uint64
+	gapSizeSum         atomic.Uint64
+	lastPrintTime      time.Time
 }
 
 type SilenceSuppressionOption func(*silenceFiller)
@@ -51,7 +51,7 @@ func WithMaxGapSize(maxGapSize int) SilenceSuppressionOption {
 	}
 }
 
-func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, rtpClockRate int, pcmSampleRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.Handler {
+func newSilenceFiller(encodedSink rtp.HandlerCloser, pcmSink msdk.PCM16Writer, rtpClockRate int, pcmSampleRate int, log logger.Logger, options ...SilenceSuppressionOption) rtp.HandlerCloser {
 	// TODO: We assume 20ms frame. We would need to adjust this when:
 	// - When we add support for other frame durations.
 	// - When we add support for re-INVITE sdp renegotiation (maybe, if we don't destroy this and start over).
@@ -73,6 +73,10 @@ func newSilenceFiller(encodedSink rtp.Handler, pcmSink msdk.PCM16Writer, rtpCloc
 		option(h)
 	}
 	return h
+}
+
+func (h *silenceFiller) Close() {
+	h.encodedSink.Close()
 }
 
 func (h *silenceFiller) String() string {

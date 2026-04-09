@@ -552,7 +552,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	}); err != nil {
 		return nil, err
 	}
-	ow := msdk.FromSampleWriter[[]byte](track, sampleRate, rtp.DefFrameDur)
+	ow := msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
 	pw, err := opus.Encode(ow, channels, r.log)
 	if err != nil {
 		return nil, err
