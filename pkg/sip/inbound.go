@@ -726,6 +726,8 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		info.RoomName = disp.Room.RoomName
 		info.ParticipantIdentity = disp.Room.Participant.Identity
 		info.ParticipantAttributes = disp.Room.Participant.Attributes
+		info.MediaEncryption = disp.MediaEncryption.String()
+		info.EnabledFeatures = disp.EnabledFeatures
 		// Set callidfull in participant attributes for backwards compatibility
 		if c.call.SipCallId != "" {
 			if info.ParticipantAttributes == nil {

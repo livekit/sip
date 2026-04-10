@@ -316,6 +316,8 @@ func (c *Client) createSIPCallInfo(req *rpc.InternalCreateSIPParticipantRequest)
 		ToUri:                 toUri.ToSIPUri(),
 		FromUri:               fromiUri.ToSIPUri(),
 		CreatedAtNs:           time.Now().UnixNano(),
+		MediaEncryption:       req.MediaEncryption.String(),
+		EnabledFeatures:       req.EnabledFeatures,
 	}
 
 	return callInfo
