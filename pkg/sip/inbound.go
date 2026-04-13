@@ -371,8 +371,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	defer checked()
 	joinDur := cmon.JoinDur()
 
+	var tryingTime time.Time
 	if !s.conf.HideInboundPort {
 		cc.Processing()
+		tryingTime = time.Now()
 	}
 
 	callInfo := &rpc.SIPCall{
@@ -452,6 +454,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if s.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
 			cc.Processing()
+			tryingTime = time.Now()
 		}
 		s.getCallInfo(cc.ID()).countInvite(log, req)
 		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
@@ -472,6 +475,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	call := s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
 	cc.SetCall(call)
 	call.joinDur = joinDur
+	call.sigTs.InviteTime = start
+	call.sigTs.TryingTime = tryingTime
 	return call.handleInvite(call.ctx, tid, req, r.TrunkID, s.conf)
 }
 
@@ -613,6 +618,7 @@ type inboundCall struct {
 	done        atomic.Bool
 	started     core.Fuse
 	stats       Stats
+	sigTs       SignalingTimestamps
 	jitterBuf   bool
 	projectID   string
 }
@@ -699,6 +705,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	}
 
 	c.cc.StartRinging()
+	c.sigTs.RingingTime = time.Now()
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	tdisp := c.mon.StageDurTimer("eval-dispatch")
@@ -825,6 +832,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		taccept := c.mon.StageDurTimer("sip-accept")
 		err := c.cc.Accept(ctx, answerData, headers)
 		taccept()
+		c.sigTs.AcceptTime = time.Now()
 		if errors.Is(err, errNoACK) {
 			c.log().Errorw("Call accepted, but no ACK received", err)
 			c.closeWithNoACK(ctx)
@@ -1186,6 +1194,7 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 	defer func() {
 		c.stats.Update()
 		c.printStats(log)
+		c.sigTs.Log(log)
 	}()
 	c.setStatus(status)
 	c.mon.CallTerminate(reason)
