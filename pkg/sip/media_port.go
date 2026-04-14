@@ -612,6 +612,12 @@ func (p *MediaPort) Config() *MediaConf {
 	return p.conf
 }
 
+// InputSampleRate returns the expected sample rate for incoming audio from SIP.
+// Must be called after SetConfig, which sets the audioIn sample rate.
+func (p *MediaPort) InputSampleRate() int {
+	return p.audioIn.SampleRate()
+}
+
 // WriteAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
 func (p *MediaPort) WriteAudioTo(w msdk.PCM16Writer) {
 	if processor := p.conf.Processor; processor != nil {
