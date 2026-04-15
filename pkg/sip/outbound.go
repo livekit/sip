@@ -80,6 +80,7 @@ type outboundCall struct {
 	stopped   core.Fuse
 	closing   core.Fuse
 	stats     Stats
+	sigTs     SignalingTimestamps
 	jitterBuf bool
 	projectID string
 
@@ -107,13 +108,15 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	if sipConf.host == "" {
 		sipConf.host = contact.GetHost()
 	}
+	now := time.Now()
 	call := &outboundCall{
 		c:         c,
 		tid:       tid,
 		log:       log,
 		sipConf:   sipConf,
 		state:     state,
-		callStart: time.Now(),
+		callStart: now,
+		sigTs:     SignalingTimestamps{APITime: now},
 		jitterBuf: jitterBuf,
 		projectID: projectID,
 	}
@@ -313,16 +316,18 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 	ctx = context.WithoutCancel(ctx)
 	c.stopped.Once(func() {
 		c.stats.Closed.Store(true)
+		log := c.log.WithValues("status", status, "reason", description)
 		defer func() {
 			c.stats.Update()
 			c.printStats()
+			c.sigTs.Log(log)
 		}()
 
 		c.setStatus(status)
 		if err != nil {
-			c.log.Warnw("Closing outbound call with error", nil, "reason", description)
+			log.Warnw("Closing outbound call with error", nil)
 		} else {
-			c.log.Infow("Closing outbound call", "reason", description)
+			log.Infow("Closing outbound call")
 		}
 		c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
 			if err != nil && info.Error == "" {
@@ -607,6 +612,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	joinDur := c.mon.JoinDur()
 
 	c.mon.InviteReq()
+	c.sigTs.InviteTime = time.Now()
 
 	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
 
@@ -615,8 +621,12 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		if code == sip.StatusOK {
 			return // is set separately
 		}
+		if code == sip.StatusTrying && c.sigTs.TryingTime.IsZero() {
+			c.sigTs.TryingTime = time.Now()
+		}
 		if !ringing && code >= sip.StatusRinging && code < sip.StatusOK {
 			ringing = true
+			c.sigTs.RingingTime = time.Now()
 			c.setStatus(CallRinging)
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
@@ -647,6 +657,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		c.log.Infow("SIP invite failed", "error", err)
 		return err
 	}
+	c.sigTs.AcceptTime = time.Now()
 	c.mon.SDPSize(len(sdpResp), false)
 	c.log.Debugw("SDP answer", "sdp", string(sdpResp))
 
@@ -670,6 +681,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		c.log.Infow("SIP accept failed", "error", err)
 		return err
 	}
+	c.sigTs.AckTime = time.Now()
 	joinDur()
 
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
