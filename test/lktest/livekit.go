@@ -319,11 +319,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 
 	ticker := time.NewTicker(rtp.DefFrameDur)
 	defer ticker.Stop()
-	i := 0
-	for {
-		if n > 0 && i >= n {
-			break
-		}
+	for i := 0; n <= 0 || i < n; i++ {
 		select {
 		case <-ctx.Done():
 			if n <= 0 {
@@ -337,7 +333,6 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 		if err := p.AudioOut.WriteSample(signal); err != nil {
 			return err
 		}
-		i++
 	}
 	return nil
 }

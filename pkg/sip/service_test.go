@@ -648,12 +648,13 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 	// The second request should either succeed (200) or get another 407 if there are issues
 	// Let's check what response we get
 	res2 = getResponseOrFail(t, tx2)
-	if res2.StatusCode == 407 {
+	switch res2.StatusCode {
+	case 407:
 		// If we get another 407, it means authentication failed
 		t.Logf("Second request got 407 again, authentication may have failed")
-	} else if res2.StatusCode == 200 {
+	case 200:
 		t.Logf("Second request succeeded with 200 OK")
-	} else {
+	default:
 		t.Logf("Second request got status: %d", res2.StatusCode)
 	}
 }

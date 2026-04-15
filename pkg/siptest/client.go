@@ -581,7 +581,7 @@ func (c *Client) createOffer() ([]byte, error) {
 	return offer.Marshal()
 }
 
-// Sends PCM audio from a webm file
+// SendAudio sends PCM audio from a webm file
 func (c *Client) SendAudio(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -665,11 +665,7 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 
 	ticker := time.NewTicker(rtp.DefFrameDur)
 	defer ticker.Stop()
-	i := 0
-	for {
-		if n > 0 && i >= n {
-			break
-		}
+	for i := 0; n <= 0 || i < n; i++ {
 		select {
 		case <-ctx.Done():
 			if n <= 0 {
@@ -683,7 +679,6 @@ func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
 		if err := wr.WriteSample(signal); err != nil {
 			return err
 		}
-		i++
 	}
 	return nil
 }

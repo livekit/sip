@@ -206,7 +206,7 @@ func (c *Config) InitLogger(values ...interface{}) error {
 	return nil
 }
 
-// To use with zap logger
+// GetLoggerValues is used with zap logger
 func (c *Config) GetLoggerValues() []interface{} {
 	if c.NodeID == "" {
 		return nil
@@ -214,7 +214,7 @@ func (c *Config) GetLoggerValues() []interface{} {
 	return []interface{}{"nodeID", c.NodeID}
 }
 
-// To use with logrus
+// GetLoggerFields is used with logrus
 func (c *Config) GetLoggerFields() logrus.Fields {
 	fields := logrus.Fields{
 		"logger": c.ServiceName,
@@ -263,7 +263,7 @@ func GetLocalIP() (netip.Addr, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return netip.Addr{}, fmt.Errorf("No local IP found")
+		return netip.Addr{}, fmt.Errorf("no local IP found")
 	}
 	return candidates[0].Addr, nil
 }

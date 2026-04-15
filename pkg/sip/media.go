@@ -191,7 +191,7 @@ func (r *rtpStatsHandler) HandleRTP(h *rtp.Header, payload []byte) error {
 	if r.mon != nil {
 		typ := r.typ
 		if typ == "" && h.PayloadType < 96 {
-			typ, _ = staticPayloadTypes[h.PayloadType]
+			typ = staticPayloadTypes[h.PayloadType]
 		}
 		if typ == "" {
 			typ = strconv.Itoa(int(h.PayloadType))
@@ -241,7 +241,7 @@ func (w *rtpStatsWriter) WriteRTP(h *prtp.Header, payload []byte) (int, error) {
 			typ = w.dtmfType
 		}
 		if typ == "" && h.PayloadType < 96 {
-			typ, _ = staticPayloadTypes[h.PayloadType]
+			typ = staticPayloadTypes[h.PayloadType]
 		}
 		if typ == "" {
 			typ = strconv.Itoa(int(h.PayloadType))

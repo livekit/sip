@@ -38,7 +38,8 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
-// An interface mirroring sipgo.Client to be able to mock it in tests.
+// SIPClient is an interface mirroring sipgo.Client to be able to mock it in tests.
+//
 // Note: *sipgo.Client implements this interface directly, so no wrapper is needed.
 type SIPClient interface {
 	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)

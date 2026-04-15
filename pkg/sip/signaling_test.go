@@ -541,9 +541,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 
 	select {
 	case msg := <-newInviteSink:
-		if msg == nil {
-			require.Fail(t, "unexpected nil message")
-		}
+		require.NotNil(t, msg, "unexpected nil message")
 		st.TestUA.UnregisterSink("", "INVITE")
 
 		require.Equal(t, string(call.remoteTag), msg.req.From().Params.GetOr("tag", ""), "remote tag should be the same")
@@ -578,9 +576,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	var ackReq *sip.Request
 	select {
 	case msg := <-reqSink:
-		if msg == nil {
-			require.Fail(t, "unexpected nil message")
-		}
+		require.NotNil(t, msg, "unexpected nil message")
 		require.Equal(t, string(sip.ACK), string(msg.req.Method), "Expecting ACK")
 		require.Equal(t, call.remoteCseq, msg.req.CSeq().SeqNo, "remote cseq should be the same")
 		ackReq = msg.req

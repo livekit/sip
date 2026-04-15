@@ -76,6 +76,8 @@ type UDPConn interface {
 	Close() error
 }
 
+// Conn represents an RTP "connection".
+//
 // Deprecated: use MediaPort instead
 type Conn struct {
 	log            logger.Logger

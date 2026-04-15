@@ -356,7 +356,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 					}
 					defer codec.Close()
 
-					var h rtp.HandlerCloser = rtp.NewNopCloser(rtp.NewMediaStreamIn(codec))
+					h := rtp.NewNopCloser(rtp.NewMediaStreamIn(codec))
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
 							r.stats.JitterBufferPacketsLost.Store(packetsLost)

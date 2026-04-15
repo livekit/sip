@@ -1,0 +1,15 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - staticcheck
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST1000" # we do not require package comment
+        - "-ST1003" # initialism
+        - "-SA1019" # allow using deprecated fields to guarantee backward compatibility
+        - "-SA4006" # must overwrite context value when creating traces, etc
+        - "-ST1015" # default case could go first, if it helps readability
+        - "-QF1008" # prefer calling methods explicitly on embedded structs
