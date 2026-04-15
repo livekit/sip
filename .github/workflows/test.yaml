@@ -27,25 +27,23 @@ jobs:
     runs-on: namespace-profile-8vcpu-cache
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Opus dependencies
         run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev libsoxr-dev
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ">=1.25"
 
       - name: Set up tparse
         run: go install github.com/mfridman/tparse@v0.17.0
 
-      - name: Static Check
-        uses: dominikh/staticcheck-action@v1
+      - name: Lint
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
-          checks: '["all", "-ST1000", "-ST1003", "-ST1016", "-ST1020", "-ST1021", "-ST1022", "-SA1019"]'
-          version: "latest"
-          install-go: false
+          version: v2.11.4
 
       - name: Test
         run: |
@@ -63,7 +61,7 @@ jobs:
           go test -coverpkg=./... -json -v -coverprofile=coverage2.out -covermode=atomic ./test/integration/... 2>&1 | tee -a /tmp/gotest.log | tparse
 
       - name: Upload test log
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: test-log
@@ -71,6 +69,6 @@ jobs:
           if-no-files-found: error
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6
         with:
           files: ./coverage.out,./coverage2.out

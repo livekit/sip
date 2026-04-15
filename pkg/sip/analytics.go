@@ -122,8 +122,6 @@ func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr er
 	}
 
 	s.cli.UpdateSIPCallState(ctx, req)
-
-	return
 }
 
 func (s *CallState) flush(ctx context.Context) {

@@ -182,35 +182,31 @@ func (s *Service) Run() error {
 
 	s.log.Debugw("service ready")
 
-	for { // nolint: gosimple
-		select {
-		case <-s.shutdown.Watch():
-			s.log.Infow("shutting down")
-			s.DeregisterCreateSIPParticipantTopic()
+	<-s.shutdown.Watch()
+	s.log.Infow("shutting down")
+	s.DeregisterCreateSIPParticipantTopic()
 
-			if !s.killed.Load() {
-				shutdownTicker := time.NewTicker(5 * time.Second)
-				defer shutdownTicker.Stop()
+	if !s.killed.Load() {
+		shutdownTicker := time.NewTicker(5 * time.Second)
+		defer shutdownTicker.Stop()
 
-				for !s.killed.Load() {
-					st := s.sipServiceActiveCalls()
-					if st.Total() == 0 {
-						break
-					}
-					slices.Sort(st.SampleIDs)
-					s.log.Infow("waiting for calls to finish",
-						"inbound", st.Inbound,
-						"outbound", st.Outbound,
-						"sample", st.SampleIDs,
-					)
-					<-shutdownTicker.C
-				}
+		for !s.killed.Load() {
+			st := s.sipServiceActiveCalls()
+			if st.Total() == 0 {
+				break
 			}
-
-			s.sipServiceStop()
-			return nil
+			slices.Sort(st.SampleIDs)
+			s.log.Infow("waiting for calls to finish",
+				"inbound", st.Inbound,
+				"outbound", st.Outbound,
+				"sample", st.SampleIDs,
+			)
+			<-shutdownTicker.C
 		}
 	}
+
+	s.sipServiceStop()
+	return nil
 }
 
 func (s *Service) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (sip.AuthInfo, error) {

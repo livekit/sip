@@ -131,5 +131,5 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 		}
 	}
 
-	return netip.Addr{}, fmt.Errorf("No local interface found")
+	return netip.Addr{}, fmt.Errorf("no local interface found")
 }

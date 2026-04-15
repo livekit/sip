@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/build"
 	"os"
@@ -64,6 +65,14 @@ func Build() error {
 	}
 
 	return run(fmt.Sprintf("go build -a -o %s/bin/sip ./cmd/livekit-sip", gopath))
+}
+
+// runs golangci-lint
+func Lint() error {
+	if _, err := exec.LookPath("golangci-lint"); err != nil {
+		return errors.New("golangci-lint is not installed, install instructions: https://golangci-lint.run/docs/welcome/install/")
+	}
+	return mageutil.Run(context.Background(), "golangci-lint run ./...")
 }
 
 func Test() error {
