@@ -113,17 +113,22 @@ func (s *Stats) Load() StatsSnapshot {
 	}
 }
 
-func (s *Stats) Log(log logger.Logger, callStart time.Time) {
+func (s *Stats) Log(log logger.Logger, callStart time.Time, verbose bool) {
 	const expectedSampleRate = RoomSampleRate
 	st := s.Load()
-	log.Infow("call statistics",
+	args := []any{
 		"stats", st,
 		"durMin", int(time.Since(callStart).Minutes()),
 		"sip_rx_ppm", ratePPM(st.Port.AudioRX, expectedSampleRate),
 		"sip_tx_ppm", ratePPM(st.Port.AudioTX, expectedSampleRate),
 		"lk_publish_ppm", ratePPM(st.Room.PublishTX, expectedSampleRate),
 		"expected_pcm_hz", expectedSampleRate,
-	)
+	}
+	if verbose {
+		log.Infow("call statistics", args...)
+	} else {
+		log.Debugw("call statistics", args...)
+	}
 }
 
 func (s *Stats) MarshalJSON() ([]byte, error) {

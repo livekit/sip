@@ -536,7 +536,7 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 		ok = s.sipUnhandled(req, tx)
 	}
 	if !ok {
-		s.log.Infow("BYE for non-existent call", "callID", tag)
+		s.log.Debugw("BYE for non-existent call", "callID", tag)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
 	}
 }
@@ -616,11 +616,12 @@ type inboundCall struct {
 	joinDur     func() time.Duration
 	forwardDTMF atomic.Bool
 	done        atomic.Bool
-	started     core.Fuse
-	stats       Stats
-	sigTs       SignalingTimestamps
-	jitterBuf   bool
-	projectID   string
+	started        core.Fuse
+	stats          Stats
+	sigTs          SignalingTimestamps
+	jitterBuf      bool
+	verboseLogging bool
+	projectID      string
 }
 
 func (s *Server) newInboundCall(
@@ -892,6 +893,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	}
 	disp.Room.JitterBuf = c.jitterBuf
 	disp.Room.LogSignalChanges, _ = strconv.ParseBool(disp.FeatureFlags[signalLoggingFeatureFlag])
+	c.verboseLogging, _ = strconv.ParseBool(disp.FeatureFlags[verboseCallLoggingFeatureFlag])
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
 	defer cancel()
 	status := CallRinging
@@ -996,6 +998,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 		SymmetricRTP:        conf.SymmetricRTP,
 		EnableJitterBuffer:  c.jitterBuf,
 		LogSignalChanges:    logSignalChanges,
+		VerboseLogging:      c.verboseLogging,
 		Stats:               &c.stats.Port,
 		NoInputResample:     !RoomResample,
 	}, RoomSampleRate)
@@ -1166,7 +1169,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 }
 
 func (c *inboundCall) printStats(log logger.Logger) {
-	c.stats.Log(log, c.callStart)
+	c.stats.Log(log, c.callStart, c.verboseLogging)
 }
 
 // close should only be called from handleInvite.

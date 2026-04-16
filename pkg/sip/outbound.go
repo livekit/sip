@@ -81,8 +81,9 @@ type outboundCall struct {
 	closing   core.Fuse
 	stats     Stats
 	sigTs     SignalingTimestamps
-	jitterBuf bool
-	projectID string
+	jitterBuf      bool
+	verboseLogging bool
+	projectID      string
 
 	mu       sync.RWMutex
 	mon      *stats.CallMonitor
@@ -93,6 +94,7 @@ type outboundCall struct {
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
 	signalLoggingEnabled, _ := strconv.ParseBool(sipConf.featureFlags[signalLoggingFeatureFlag])
+	verboseCallLogging, _ := strconv.ParseBool(sipConf.featureFlags[verboseCallLoggingFeatureFlag])
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
 	}
@@ -110,15 +112,16 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 	now := time.Now()
 	call := &outboundCall{
-		c:         c,
-		tid:       tid,
-		log:       log,
-		sipConf:   sipConf,
-		state:     state,
-		callStart: now,
-		sigTs:     SignalingTimestamps{APITime: now},
-		jitterBuf: jitterBuf,
-		projectID: projectID,
+		c:              c,
+		tid:            tid,
+		log:            log,
+		sipConf:        sipConf,
+		state:          state,
+		callStart:      now,
+		sigTs:          SignalingTimestamps{APITime: now},
+		jitterBuf:      jitterBuf,
+		verboseLogging: verboseCallLogging,
+		projectID:      projectID,
 	}
 	call.stats.Update()
 	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
@@ -153,6 +156,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		SymmetricRTP:        c.conf.SymmetricRTP,
 		EnableJitterBuffer:  call.jitterBuf,
 		LogSignalChanges:    signalLoggingEnabled,
+		VerboseLogging:      verboseCallLogging,
 		Stats:               &call.stats.Port,
 		NoInputResample:     !RoomResample,
 		IgnorePreanswerData: true,
@@ -308,7 +312,7 @@ func (c *outboundCall) closeWithTimeout(ctx context.Context) {
 }
 
 func (c *outboundCall) printStats() {
-	c.stats.Log(c.log, c.callStart)
+	c.stats.Log(c.log, c.callStart, c.verboseLogging)
 }
 
 func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, description string, reason livekit.DisconnectReason) {

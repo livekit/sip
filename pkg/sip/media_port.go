@@ -198,18 +198,19 @@ type UDPConn interface {
 	WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (int, error)
 }
 
-func newUDPConn(log logger.Logger, conn UDPConn, symmetricRTP bool) *udpConn {
-	return &udpConn{UDPConn: conn, log: log, stopped: make(chan struct{}), symmetricRTP: symmetricRTP}
+func newUDPConn(log logger.Logger, conn UDPConn, symmetricRTP bool, verboseLogging bool) *udpConn {
+	return &udpConn{UDPConn: conn, log: log, stopped: make(chan struct{}), symmetricRTP: symmetricRTP, verboseLogging: verboseLogging}
 }
 
 type udpConn struct {
 	UDPConn
-	stopping     core.Fuse
-	stopped      chan struct{}
-	log          logger.Logger
-	symmetricRTP bool
-	src          atomic.Pointer[netip.AddrPort]
-	dst          atomic.Pointer[netip.AddrPort]
+	stopping       core.Fuse
+	stopped        chan struct{}
+	log            logger.Logger
+	symmetricRTP   bool
+	verboseLogging bool
+	src            atomic.Pointer[netip.AddrPort]
+	dst            atomic.Pointer[netip.AddrPort]
 }
 
 func (c *udpConn) GetSrc() (netip.AddrPort, bool) {
@@ -227,7 +228,7 @@ func (c *udpConn) SetDst(addr netip.AddrPort) {
 		if prev == nil || !prev.IsValid() {
 			c.log.Infow("setting media destination", "addr", addr.String())
 		} else if *prev != addr {
-			c.log.Infow("changing media destination", "addr", addr.String())
+			c.logMediaChange("changing media destination", "addr", addr.String())
 		}
 	}
 }
@@ -238,7 +239,7 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 	if prev == nil || !prev.IsValid() {
 		c.log.Infow("setting media source", "addr", addr.String())
 	} else if *prev != addr {
-		c.log.Infow("changing media source", "addr", addr.String())
+		c.logMediaChange("changing media source", "addr", addr.String())
 	}
 	if c.symmetricRTP {
 		dst := c.dst.Load()
@@ -247,6 +248,14 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 		}
 	}
 	return n, err
+}
+
+func (c *udpConn) logMediaChange(msg string, args ...any) {
+	if c.verboseLogging {
+		c.log.Infow(msg, args...)
+	} else {
+		c.log.Debugw(msg, args...)
+	}
 }
 
 func (c *udpConn) Write(b []byte) (n int, err error) {
@@ -315,6 +324,7 @@ type MediaOptions struct {
 	NoInputResample     bool
 	IgnorePreanswerData bool
 	LogSignalChanges    bool
+	VerboseLogging      bool
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -356,7 +366,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		timeoutResetTick: make(chan time.Duration, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
 		logSignalChanges: opts.LogSignalChanges,
-		port:             newUDPConn(log, conn, opts.SymmetricRTP),
+		port:             newUDPConn(log, conn, opts.SymmetricRTP, opts.VerboseLogging),
 		audioOut:         msdk.NewSwitchWriter(sampleRate),
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
