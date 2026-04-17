@@ -1347,7 +1347,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	}
 
 	tconn := c.mon.StageDurTimer("lk-connect")
-	err = c.lkRoom.Connect(c.s.conf, rconf)
+	err = c.lkRoom.Connect(ctx, c.s.conf, rconf)
 	tconn()
 	if err != nil {
 		return err
