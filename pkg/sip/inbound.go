@@ -762,6 +762,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		c.cc.RespondAndDrop(sip.StatusNotFound, "Does not match Trunks or Dispatch Rules")
 		c.close(ctx, false, callDropped, "no-dispatch")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
+	case DispatchServiceUnavailable:
+		c.log().Warnw("Rejecting inbound call, dispatch evaluation failed", nil)
+		c.cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
+		c.close(ctx, true, callDropped, "dispatch-error")
+		return psrpc.NewErrorf(psrpc.Unavailable, "dispatch rule evaluation unavailable")
 	case DispatchAccept:
 		pinPrompt = false
 	case DispatchRequestPin:
@@ -1144,6 +1149,11 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				}
 				if disp.DispatchRuleID != "" {
 					c.appendLogValues("sipRule", disp.DispatchRuleID)
+				}
+				if disp.Result == DispatchServiceUnavailable {
+					c.log().Warnw("Rejecting call, dispatch evaluation failed", nil, "pin", pin, "noPin", noPin)
+					c.close(ctx, true, callDropped, "dispatch-error")
+					return disp, false, psrpc.NewErrorf(psrpc.Unavailable, "dispatch rule evaluation unavailable")
 				}
 				if disp.Result != DispatchAccept || disp.Room.RoomName == "" {
 					c.log().Infow("Rejecting call", "pin", pin, "noPin", noPin)

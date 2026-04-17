@@ -89,8 +89,9 @@ type DispatchResult int
 const (
 	DispatchAccept = DispatchResult(iota)
 	DispatchRequestPin
-	DispatchNoRuleReject // reject the call with an error
-	DispatchNoRuleDrop   // silently drop the call
+	DispatchNoRuleReject       // reject the call with an error
+	DispatchNoRuleDrop         // silently drop the call
+	DispatchServiceUnavailable // dispatch rule evaluation failed at the transport level
 )
 
 type CallDispatch struct {
