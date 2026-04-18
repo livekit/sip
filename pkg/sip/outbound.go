@@ -147,6 +147,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 
 	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
 		IP:                  c.sconf.MediaIP,
+		BindIP:              c.sconf.SignalingIPLocal,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.conf.MediaTimeout,

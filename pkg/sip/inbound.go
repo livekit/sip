@@ -990,6 +990,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
 		IP:                  c.s.sconf.MediaIP,
+		BindIP:              c.s.sconf.SignalingIPLocal,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:        c.s.conf.MediaTimeout,

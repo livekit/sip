@@ -306,6 +306,7 @@ type MediaConf struct {
 
 type MediaOptions struct {
 	IP                  netip.Addr
+	BindIP              netip.Addr
 	Ports               rtcconfig.PortRange
 	MediaTimeoutInitial time.Duration
 	MediaTimeout        time.Duration
@@ -335,7 +336,11 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		opts.Stats = &PortStats{}
 	}
 	if conn == nil {
-		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
+		bindIP := opts.BindIP
+		if !bindIP.IsValid() {
+			bindIP = netip.AddrFrom4([4]byte{0, 0, 0, 0})
+		}
+		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, bindIP)
 		if err != nil {
 			return nil, err
 		}
