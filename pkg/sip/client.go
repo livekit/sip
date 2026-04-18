@@ -66,6 +66,8 @@ type Client struct {
 	cmu         sync.Mutex
 	activeCalls map[LocalTag]*outboundCall
 
+	registrationManager *RegistrationManager
+
 	handler      Handler
 	getIOClient  GetIOInfoClient
 	getSipClient GetSipClientFunc
@@ -95,14 +97,15 @@ func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:         conf,
-		log:          log,
-		region:       region,
-		mon:          mon,
-		getIOClient:  getIOClient,
-		getSipClient: DefaultGetSipClientFunc,
-		getRoom:      DefaultGetRoomFunc,
-		activeCalls:  make(map[LocalTag]*outboundCall),
+		conf:                conf,
+		log:                 log,
+		region:              region,
+		mon:                 mon,
+		getIOClient:         getIOClient,
+		registrationManager: NewRegistrationManager(),
+		getSipClient:        DefaultGetSipClientFunc,
+		getRoom:             DefaultGetRoomFunc,
+		activeCalls:         make(map[LocalTag]*outboundCall),
 	}
 	for _, option := range options {
 		option(c)

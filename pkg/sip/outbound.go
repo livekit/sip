@@ -108,11 +108,20 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	if sipConf.host == "" {
 		sipConf.host = contact.GetHost()
 	}
-	if err := c.ensureRegistered(ctx, sipConf); err != nil {
+	regProfile, err := c.ensureRegistered(ctx, sipConf)
+	if err != nil {
+		profileName := ""
+		if regProfile != nil {
+			profileName = regProfile.ProfileName
+		}
+		if regProfile != nil && !regProfile.InviteOnRegisterFailure {
+			return nil, err
+		}
 		log.Warnw("SIP registration attempt failed, continuing without registration", err,
 			"address", sipConf.address,
 			"transport", tr,
 			"username", sipConf.user,
+			"profile", profileName,
 		)
 	}
 	now := time.Now()
