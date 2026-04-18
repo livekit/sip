@@ -25,7 +25,7 @@ func TestEnsureRegisteredHandlesDigestChallenge(t *testing.T) {
 			user:    "alice",
 			pass:    "secret",
 			featureFlags: map[string]string{
-				registrationEnabledFeatureFlag:  "true",
+				registrationEnabledFeatureFlag:   "true",
 				registrationRegistrarFeatureFlag: "sip:registrar.example.com",
 			},
 		})
@@ -149,6 +149,39 @@ func TestEnsureRegisteredCachesSuccessfulRegistration(t *testing.T) {
 		t.Fatalf("unexpected extra REGISTER transaction: %v", tx.req.Method)
 	case <-time.After(100 * time.Millisecond):
 	}
+}
+
+func TestEnsureRegisteredUISAlwaysRefreshesBeforeInvite(t *testing.T) {
+	client := NewOutboundTestClient(t, TestClientConfig{})
+	sipClient := getCreatedSIPClient(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ensureRegistered(context.Background(), sipOutboundConfig{
+			address: "pbx.uiscom.ru:5060",
+			user:    "0526470",
+			pass:    "secret",
+		})
+		done <- err
+	}()
+	tx := waitTransaction(t, sipClient)
+	ok := sip.NewResponseFromRequest(tx.req, sip.StatusOK, "OK", nil)
+	require.NoError(t, tx.transaction.SendResponse(ok))
+	require.NoError(t, <-done)
+
+	done = make(chan error, 1)
+	go func() {
+		_, err := client.ensureRegistered(context.Background(), sipOutboundConfig{
+			address: "pbx.uiscom.ru:5060",
+			user:    "0526470",
+			pass:    "secret",
+		})
+		done <- err
+	}()
+	tx = waitTransaction(t, sipClient)
+	ok = sip.NewResponseFromRequest(tx.req, sip.StatusOK, "OK", nil)
+	require.NoError(t, tx.transaction.SendResponse(ok))
+	require.NoError(t, <-done)
 }
 
 func TestEnsureRegisteredFeatureFlagOverrideWins(t *testing.T) {

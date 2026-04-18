@@ -252,6 +252,7 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	defer span.End()
 	return c.waitClose(ctx, c.tid)
 }
+
 func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)

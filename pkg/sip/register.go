@@ -24,20 +24,21 @@ const (
 )
 
 type RegistrationProfile struct {
-	ProfileName                 string
-	AutoMatchHosts              []string
-	Enabled                     bool
-	InviteOnRegisterFailure     bool
-	RegistrarURI                string
-	AuthURI                     string
-	AORUser                     string
-	AuthUsername                string
-	ContactUser                 string
-	FromDomain                  string
-	Transport                   Transport
-	Expires                     time.Duration
-	RefreshBefore               time.Duration
-	IncludePortInAuthURI        bool
+	ProfileName                    string
+	AutoMatchHosts                 []string
+	Enabled                        bool
+	InviteOnRegisterFailure        bool
+	AlwaysRefreshBeforeInvite      bool
+	RegistrarURI                   string
+	AuthURI                        string
+	AORUser                        string
+	AuthUsername                   string
+	ContactUser                    string
+	FromDomain                     string
+	Transport                      Transport
+	Expires                        time.Duration
+	RefreshBefore                  time.Duration
+	IncludePortInAuthURI           bool
 	IncludeTransportParamInAuthURI bool
 }
 
@@ -77,7 +78,7 @@ func (m *RegistrationManager) ensure(ctx context.Context, c *Client, profile *Re
 			st = &registrationState{}
 			m.states[key] = st
 		}
-		if st.inflight == nil && st.expiresAt.After(time.Now().Add(profile.RefreshBefore)) {
+		if !profile.AlwaysRefreshBeforeInvite && st.inflight == nil && st.expiresAt.After(time.Now().Add(profile.RefreshBefore)) {
 			m.mu.Unlock()
 			return nil
 		}
@@ -128,14 +129,15 @@ func (p *ResolvedRegistrationProfile) cacheKey() string {
 func defaultRegistrationProfiles() []RegistrationProfile {
 	return []RegistrationProfile{
 		{
-			ProfileName:             "uis",
-			AutoMatchHosts:          []string{"pbx.uiscom.ru"},
-			Enabled:                 true,
-			InviteOnRegisterFailure: true,
-			RegistrarURI:            "sip:pbx.uiscom.ru",
-			FromDomain:              "pbx.uiscom.ru",
-			Expires:                 defaultRegisterExpiration,
-			RefreshBefore:           defaultRegisterRefresh,
+			ProfileName:               "uis",
+			AutoMatchHosts:            []string{"pbx.uiscom.ru"},
+			Enabled:                   true,
+			InviteOnRegisterFailure:   true,
+			AlwaysRefreshBeforeInvite: true,
+			RegistrarURI:              "sip:pbx.uiscom.ru",
+			FromDomain:                "pbx.uiscom.ru",
+			Expires:                   defaultRegisterExpiration,
+			RefreshBefore:             defaultRegisterRefresh,
 		},
 		{
 			ProfileName:             "sipuni",
@@ -251,8 +253,8 @@ func resolveRegistrationProfile(sipConf sipOutboundConfig) (*ResolvedRegistratio
 
 	return &ResolvedRegistrationProfile{
 		RegistrationProfile: selected,
-		Registrar:            registrar,
-		AuthURI:              selected.AuthURI,
+		Registrar:           registrar,
+		AuthURI:             selected.AuthURI,
 	}, nil
 }
 
@@ -315,6 +317,11 @@ func overrideRegistrationProfile(profile *RegistrationProfile, flags map[string]
 	if v, ok := flags[registrationInviteFallbackFeatureFlag]; ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			profile.InviteOnRegisterFailure = b
+		}
+	}
+	if v, ok := flags[registrationAlwaysRefreshFeatureFlag]; ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			profile.AlwaysRefreshBeforeInvite = b
 		}
 	}
 }
