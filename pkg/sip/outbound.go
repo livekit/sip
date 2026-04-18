@@ -159,7 +159,6 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
-	var err error
 
 	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
 		IP:                  c.sconf.MediaIP,
