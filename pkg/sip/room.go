@@ -146,7 +146,7 @@ type ParticipantInfo struct {
 
 // RoomInterface defines the interface for room operations
 type RoomInterface interface {
-	Connect(conf *config.Config, rconf RoomConfig) error
+	Connect(ctx context.Context, conf *config.Config, rconf RoomConfig) error
 	Closed() <-chan struct{}
 	Subscribed() <-chan struct{}
 	Room() *lksdk.Room
@@ -289,7 +289,7 @@ func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemotePa
 	r.subscribed.Break()
 }
 
-func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
+func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfig) error {
 	if rconf.WsUrl == "" {
 		rconf.WsUrl = conf.WsUrl
 	}
@@ -423,7 +423,7 @@ func (r *Room) Connect(conf *config.Config, rconf RoomConfig) error {
 	}
 	room := lksdk.NewRoom(roomCallback)
 	room.SetLogger(medialogutils.NewOverrideLogger(r.log))
-	err := room.JoinWithToken(rconf.WsUrl, rconf.Token,
+	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
 		lksdk.WithAutoSubscribe(false),
 		lksdk.WithExtraAttributes(partConf.Attributes),
 	)
