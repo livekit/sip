@@ -140,8 +140,8 @@ github.com/livekit/protocol v1.45.2-0.20260403151849-8a360e8d0221 h1:loe7h+z1kOu
 github.com/livekit/protocol v1.45.2-0.20260403151849-8a360e8d0221/go.mod h1:e6QdWDkfot+M2nRh0eitJUS0ZLuwvKCsfiz2pWWSG3s=
 github.com/livekit/psrpc v0.7.1 h1:ms37az0QTD3UXIWuUC5D/SkmKOlRMVRsI261eBWu/Vw=
 github.com/livekit/psrpc v0.7.1/go.mod h1:bZ4iHFQptTkbPnB0LasvRNu/OBYXEu1NA6O5BMFo9kk=
-github.com/livekit/server-sdk-go/v2 v2.16.3-0.20260422022802-45f0f88d126d h1:AnK9O/YyJSP+8J1LYUdLD5fnlQqdMfpbcRPXy8/WB3w=
-github.com/livekit/server-sdk-go/v2 v2.16.3-0.20260422022802-45f0f88d126d/go.mod h1:/HOUG9AXJeCbMCdtw0dr37AB+3xXUlj/OLeXS/0p7rA=
+github.com/livekit/server-sdk-go/v2 v2.16.3-0.20260422031603-fe7af253c41e h1:lRPGKCSkcc70swszvo9GR9pGqLGkb4zPPlyeDCIcBJk=
+github.com/livekit/server-sdk-go/v2 v2.16.3-0.20260422031603-fe7af253c41e/go.mod h1:/HOUG9AXJeCbMCdtw0dr37AB+3xXUlj/OLeXS/0p7rA=
 github.com/livekit/sipgo v0.13.2-0.20260407210901-862b5e0eaf3f h1:08dkYJIR1GE1DNCKN7bIrgX+/nR+CttdFqcwZSYal2E=
 github.com/livekit/sipgo v0.13.2-0.20260407210901-862b5e0eaf3f/go.mod h1:aDa6mbFktNzA1D917RhFlIB5IOfNBTmrwt+/lX960j0=
 github.com/mackerelio/go-osstat v0.2.7 h1:TCavZi10wF49bT6iQZ9eT2keGZQpC69MTDfdJej5e94=
