@@ -88,7 +88,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 
 	if err != nil {
 		log.Warnw("SIP handle dispatch rule error", err)
-		return sip.CallDispatch{Result: sip.DispatchNoRuleReject}
+		return sip.CallDispatch{Result: sip.DispatchServiceUnavailable}
 	}
 	switch resp.Result {
 	default:

@@ -199,6 +199,31 @@ func TestService_AuthFailure(t *testing.T) {
 	})
 }
 
+func TestService_DispatchUnavailable(t *testing.T) {
+	const (
+		expectedFromUser = "foo"
+		expectedToUser   = "bar"
+	)
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthAccept}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{Result: DispatchServiceUnavailable}
+		},
+	}
+	testInvite(t, h, false, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(180), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(503), res.StatusCode)
+	})
+}
+
 func TestService_AuthDrop(t *testing.T) {
 	const (
 		expectedFromUser = "foo"
