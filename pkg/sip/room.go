@@ -423,10 +423,9 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	}
 	room := lksdk.NewRoom(roomCallback)
 	room.SetLogger(medialogutils.NewOverrideLogger(r.log))
-	err := room.JoinWithToken(rconf.WsUrl, rconf.Token,
+	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
 		lksdk.WithAutoSubscribe(false),
 		lksdk.WithExtraAttributes(partConf.Attributes),
-		lksdk.WithContext(ctx),
 	)
 	if err != nil {
 		return err
