@@ -1013,7 +1013,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}
-	mconf.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), c.media.InputSampleRate())
+	mconf.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
 	if mconf.Audio.DTMFType != 0 {
 		c.media.HandleDTMF(c.handleDTMF)
 	}
