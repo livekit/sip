@@ -344,10 +344,6 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	call := c.activeCalls[tag]
 	c.cmu.Unlock()
 	if call == nil {
-		if tag != "" {
-			c.log.Infow("BYE for non-existent call", "sipTag", tag)
-		}
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
 		return false
 	}
 	call.log.Infow("BYE from remote")

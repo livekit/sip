@@ -781,25 +781,25 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, disp.EnabledFeatures, disp.FeatureFlags)
 		tmedia()
 		if err != nil {
+			sipReason := sip.StatusInternalServerError
 			log = log.WithValues("sdp", string(rawSDP))
-			isError := true
 			status, reason := callDropped, "media-failed"
 			if errors.Is(err, sdp.ErrNoCommonMedia) {
 				status, reason = callMediaFailed, "no-common-codec"
-				isError = false
+				sipReason = sip.StatusBadRequest
 			} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
 				status, reason = callMediaFailed, "no-common-crypto"
-				isError = false
+				sipReason = sip.StatusBadRequest
 			} else if e := (SDPError{}); errors.As(err, &e) {
 				status, reason = callMediaFailed, "sdp-error"
-				isError = false
+				sipReason = sip.StatusBadRequest
 			}
-			if isError {
+			if sipReason >= 500 {
 				log.Errorw("Cannot start media", err)
 			} else {
 				log.Warnw("Cannot start media", err)
 			}
-			c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
+			c.cc.RespondAndDrop(sipReason, "")
 			c.close(ctx, true, status, reason)
 			return nil, err
 		}
@@ -1001,7 +1001,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 
 	answer, mconf, err := mp.SetOffer(offerData, e)
 	if err != nil {
-		return nil, SDPError{Err: err}
+		return nil, err
 	}
 	answerData, err = answer.SDP.Marshal()
 	if err != nil {
