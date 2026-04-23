@@ -794,6 +794,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		tmedia()
 		if err != nil {
 			log = log.WithValues("sdp", string(rawSDP))
+			if e := (SDPOfferParseError{}); errors.As(err, &e) {
+				log.Warnw("Invalid SDP offer", e.Err)
+				c.cc.RespondAndDrop(sip.StatusBadRequest, "Invalid SDP")
+				c.close(ctx, false, callMediaFailed, "sdp-offer-parse")
+				return nil, err
+			}
 			isError := true
 			status, reason := callDropped, "media-failed"
 			if errors.Is(err, sdp.ErrNoCommonMedia) {
@@ -991,6 +997,11 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 		return nil, err
 	}
 
+	offer, err := sdp.ParseOffer(offerData)
+	if err != nil {
+		return nil, SDPOfferParseError{Err: err}
+	}
+
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
@@ -1012,7 +1023,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	c.media.DisableOut()         // disabled until we send 200
 	c.media.SetDTMFAudio(conf.AudioDTMF)
 
-	answer, mconf, err := mp.SetOffer(offerData, e)
+	answer, mconf, err := mp.SetOffer(offer, e)
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}

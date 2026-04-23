@@ -651,11 +651,7 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encry
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
-func (p *MediaPort) SetOffer(offerData []byte, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
-	offer, err := sdp.ParseOffer(offerData)
-	if err != nil {
-		return nil, nil, err
-	}
+func (p *MediaPort) SetOffer(offer *sdp.Offer, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
 	answer, mc, err := offer.Answer(p.externalIP, p.Port(), enc)
 	if err != nil {
 		return nil, nil, err

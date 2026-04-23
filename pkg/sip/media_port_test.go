@@ -239,7 +239,7 @@ func TestMediaPort(t *testing.T) {
 
 					t.Logf("SDP offer:\n%s", string(offerData))
 
-					answer, conf, err := m2.SetOffer(offerData, tconf.Encrypted)
+					answer, conf, err := m2.SetOffer(offer, tconf.Encrypted)
 					require.NoError(t, err)
 					answerData, err := answer.SDP.Marshal()
 					require.NoError(t, err)
@@ -398,10 +398,8 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 
 	offer, err := m1.NewOffer(sdp.EncryptionNone)
 	require.NoError(t, err)
-	offerData, err := offer.SDP.Marshal()
-	require.NoError(t, err)
 
-	answer, mc2, err := m2.SetOffer(offerData, sdp.EncryptionNone)
+	answer, mc2, err := m2.SetOffer(offer, sdp.EncryptionNone)
 	require.NoError(t, err)
 	answerData, err := answer.SDP.Marshal()
 	require.NoError(t, err)
