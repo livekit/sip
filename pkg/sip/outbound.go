@@ -394,14 +394,17 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 				status, desc, reason = callRejected, "busy", livekit.DisconnectReason_USER_REJECTED
 				reportErr = nil
 			}
-		} else if errors.Is(err, sdp.ErrNoCommonMedia) {
-			status, desc, reason = callRejected, "no-common-codec", livekit.DisconnectReason_MEDIA_FAILURE
+		} else if e := (SDPError{}); errors.As(err, &e) {
+			status, reason = callRejected, livekit.DisconnectReason_MEDIA_FAILURE
 			reportErr = nil
-			err = psrpc.NewError(psrpc.FailedPrecondition, err)
-		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
-			status, desc, reason = callRejected, "encryption-required", livekit.DisconnectReason_MEDIA_FAILURE
-			reportErr = nil
-			err = psrpc.NewError(psrpc.FailedPrecondition, err)
+			err = psrpc.NewError(psrpc.FailedPrecondition, e.Err)
+			if errors.Is(e.Err, sdp.ErrNoCommonMedia) {
+				desc = "no-common-codec"
+			} else if errors.Is(e.Err, sdp.ErrNoCommonCrypto) {
+				desc = "encryption-required"
+			} else {
+				desc = "sdp-error"
+			}
 		}
 		c.close(ctx, reportErr, status, desc, reason)
 		return err
