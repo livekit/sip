@@ -670,10 +670,10 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
-	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()))
 	if err = c.media.SetConfig(mc); err != nil {
 		return err
 	}
+	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
 	c.cc.SetLocalSDP(localSDP)
 
 	c.mon.InviteAccept()

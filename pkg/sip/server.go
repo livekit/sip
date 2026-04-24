@@ -118,10 +118,14 @@ type CallIdentifier struct {
 	SipCallID string
 }
 
+type MediaProcessorOpts struct {
+	InputSampleRate int
+}
+
 type Handler interface {
 	GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCall(ctx context.Context, info *CallInfo) CallDispatch
-	GetMediaProcessor(features []livekit.SIPFeature, featureFlags map[string]string, callID string) msdk.PCM16Processor
+	GetMediaProcessor(features []livekit.SIPFeature, featureFlags map[string]string, callID string, opts MediaProcessorOpts) msdk.PCM16Processor
 
 	RegisterTransferSIPParticipantTopic(sipCallId string) error
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
