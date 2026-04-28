@@ -255,7 +255,8 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			c.log.Debugw("sending keep-alive")
 			c.state.ForceFlush(ctx)
 		case <-c.Disconnected():
-			c.CloseWithReason(ctx, callDropped, stats.Success("removed"), livekit.DisconnectReason_CLIENT_INITIATED)
+			term := terminationFromRoomDisconnect(c.lkRoom.ClosedReason())
+			c.CloseWithReason(ctx, callDropped, term, livekit.DisconnectReason_CLIENT_INITIATED)
 			return nil
 		case <-c.media.Timeout():
 			c.closeWithTimeout(ctx)

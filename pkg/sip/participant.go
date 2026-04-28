@@ -18,8 +18,31 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
+
+	"github.com/livekit/sip/pkg/stats"
 )
+
+// terminationFromRoomDisconnect classifies a call termination triggered by
+// the LiveKit room closing. The reason comes from lksdk's
+// OnDisconnectedWithReason callback. Clean leaves (customer ended the call
+// or removed the participant) count as success; connection failures and
+// unknown causes count as server_error.
+func terminationFromRoomDisconnect(reason lksdk.DisconnectionReason) stats.Termination {
+	switch reason {
+	case lksdk.LeaveRequested, lksdk.RoomClosed, lksdk.ParticipantRemoved:
+		return stats.Success("removed")
+	case lksdk.Failed:
+		return stats.ServerError("room-failed")
+	default:
+		// UserUnavailable, RejectedByUser, DuplicateIdentity, OtherReason,
+		// or empty (no reason reported by SDK). Conservative default —
+		// surface as server_error so the SLI doesn't silently absorb LK-side
+		// issues.
+		return stats.ServerError("room-disconnected")
+	}
+}
 
 const (
 	// maxCallDuration sets a global max call duration.
