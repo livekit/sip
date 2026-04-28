@@ -537,7 +537,7 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 		}
 		sipStatus := lksdk.SIPStatusFrom(err)
 		require.NotNil(t, sipStatus, "Expected SIP status error, got %v", err)
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, sipStatus.Code)
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_BAD_REQUEST, sipStatus.Code)
 		return nil // Success!
 	}
 
