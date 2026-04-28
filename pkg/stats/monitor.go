@@ -168,9 +168,9 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "calls_terminated",
-		Help:        "Number of calls terminated by SIP bridge",
+		Help:        "Number of calls terminated by SIP bridge, labeled with result classification (success | server_error | client_error)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "reason"}))
+	}, []string{"dir", "to", "result", "reason"}))
 
 	m.callsTerminationFailures = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -385,10 +385,22 @@ func (c *CallMonitor) InviteAccept() {
 	c.m.inviteAccept.With(c.labels(nil)).Inc()
 }
 
-func (c *CallMonitor) InviteErrorShort(reason string) {
-	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": reason, "to": "unknown"})).Inc()
+// InviteErrorShort records a SIP INVITE rejection that occurred before a call
+// object existed (no validated trunk). Writes to the legacy invite_error
+// counter (kept for back-compat) and routes through CallTerminate so the
+// unified calls_terminated counter has consistent classification.
+func (c *CallMonitor) InviteErrorShort(t Termination) {
+	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": t.Reason, "to": "unknown"})).Inc()
+	c.m.callsTerminated.With(c.labelsShort(prometheus.Labels{
+		"to":     "unknown",
+		"result": string(t.Result),
+		"reason": t.Reason,
+	})).Inc()
 }
 
+// InviteError records a SIP INVITE rejection after the trunk is known. Used
+// by outbound INVITE failure paths where CallTerminate also fires for the same
+// call, so this only writes to the legacy invite_error counter.
 func (c *CallMonitor) InviteError(reason string) {
 	c.m.inviteErr.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
 }
@@ -407,11 +419,14 @@ func (c *CallMonitor) CallEnd() {
 	c.m.callsActive.With(c.labels(nil)).Dec()
 }
 
-func (c *CallMonitor) CallTerminate(reason string) {
+func (c *CallMonitor) CallTerminate(t Termination) {
 	if !c.terminated.CompareAndSwap(false, true) {
 		return
 	}
-	c.m.callsTerminated.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
+	c.m.callsTerminated.With(c.labels(prometheus.Labels{
+		"result": string(t.Result),
+		"reason": t.Reason,
+	})).Inc()
 }
 
 func (c *CallMonitor) CallTerminationFailure() {

@@ -403,7 +403,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	tauth()
 	checked()
 	if err != nil {
-		cmon.InviteErrorShort("auth-error")
+		cmon.InviteErrorShort(stats.ServerError("auth-error"))
 		log.Warnw("Rejecting inbound, auth check failed", err)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
 		return psrpc.NewError(psrpc.PermissionDenied, errors.Wrap(err, "rejecting inbound, auth check failed"))
@@ -431,22 +431,22 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	switch r.Result {
 	case AuthDrop:
-		cmon.InviteErrorShort("flood")
+		cmon.InviteErrorShort(stats.ClientError("flood"))
 		log.Debugw("Dropping inbound flood")
 		cc.Drop()
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case AuthNotFound:
-		cmon.InviteErrorShort("no-rule")
+		cmon.InviteErrorShort(stats.ClientError("no-rule"))
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case AuthQuotaExceeded:
-		cmon.InviteErrorShort("quota-exceeded")
+		cmon.InviteErrorShort(stats.ClientError("quota-exceeded"))
 		log.Warnw("Rejecting inbound, quota exceeded", nil)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service temporarily unavailable")
 		return psrpc.NewErrorf(psrpc.ResourceExhausted, "quota limit exceeded")
 	case AuthNoTrunkFound:
-		cmon.InviteErrorShort("no-trunk")
+		cmon.InviteErrorShort(stats.ClientError("no-trunk"))
 		log.Warnw("Rejecting inbound, no trunk found", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "No trunk found")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk found for call")
@@ -462,7 +462,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			s.cmu.Lock()
 			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
 			s.cmu.Unlock()
-			cmon.InviteErrorShort("unauthorized")
+			cmon.InviteErrorShort(stats.ClientError("unauthorized"))
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
@@ -697,7 +697,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	c.mon.InviteAccept()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
-	defer c.close(ctx, true, callDropped, "other")
+	defer c.close(ctx, callDropped, stats.ServerError("other"))
 
 	// Extract and store the SIP call ID from the request
 	if h := req.CallID(); h != nil {
@@ -750,22 +750,22 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		err := fmt.Errorf("unexpected dispatch result: %v", disp.Result)
 		c.log().Errorw("Rejecting inbound call", err)
 		c.cc.RespondAndDrop(sip.StatusNotImplemented, "")
-		c.close(ctx, true, callDropped, "unexpected-result")
+		c.close(ctx, callDropped, stats.ServerError("unexpected-result"))
 		return psrpc.NewError(psrpc.Unimplemented, err)
 	case DispatchNoRuleDrop:
 		c.log().Debugw("Rejecting inbound flood")
 		c.cc.Drop()
-		c.close(ctx, false, callFlood, "flood")
+		c.close(ctx, callFlood, stats.ClientError("flood"))
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case DispatchNoRuleReject:
 		c.log().Infow("Rejecting inbound call, doesn't match any Dispatch Rules")
 		c.cc.RespondAndDrop(sip.StatusNotFound, "Does not match Trunks or Dispatch Rules")
-		c.close(ctx, false, callDropped, "no-dispatch")
+		c.close(ctx, callDropped, stats.ClientError("no-dispatch"))
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case DispatchServiceUnavailable:
 		c.log().Warnw("Rejecting inbound call, dispatch evaluation failed", nil)
 		c.cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
-		c.close(ctx, true, callDropped, "dispatch-error")
+		c.close(ctx, callDropped, stats.ServerError("dispatch-error"))
 		return psrpc.NewErrorf(psrpc.Unavailable, "dispatch rule evaluation unavailable")
 	case DispatchAccept:
 		pinPrompt = false
@@ -795,15 +795,15 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if err != nil {
 			sipReason := sip.StatusInternalServerError
 			log = log.WithValues("sdp", string(rawSDP))
-			status, reason := callDropped, "media-failed"
+			status, term := callDropped, stats.ServerError("media-failed")
 			if errors.Is(err, sdp.ErrNoCommonMedia) {
-				status, reason = callMediaFailed, "no-common-codec"
+				status, term = callMediaFailed, stats.ClientError("no-common-codec")
 				sipReason = sip.StatusBadRequest
 			} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
-				status, reason = callMediaFailed, "no-common-crypto"
+				status, term = callMediaFailed, stats.ClientError("no-common-crypto")
 				sipReason = sip.StatusBadRequest
 			} else if e := (SDPError{}); errors.As(err, &e) {
-				status, reason = callMediaFailed, "sdp-error"
+				status, term = callMediaFailed, stats.ClientError("sdp-error")
 				sipReason = sip.StatusBadRequest
 			}
 			if sipReason >= 500 {
@@ -812,7 +812,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 				log.Warnw("Cannot start media", err)
 			}
 			c.cc.RespondAndDrop(sipReason, "")
-			c.close(ctx, true, status, reason)
+			c.close(ctx, status, term)
 			return nil, err
 		}
 		return answerData, nil
@@ -844,7 +844,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			return false, err
 		} else if err != nil {
 			c.log().Errorw("Cannot accept the call", err)
-			c.close(ctx, true, callAcceptFailed, "accept-failed")
+			c.close(ctx, callAcceptFailed, stats.ServerError("accept-failed"))
 			return false, err
 		}
 		if !c.s.conf.Experimental.InboundWaitACK {
@@ -909,7 +909,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	// Publish our own track.
 	if err := c.publishTrack(); err != nil {
 		c.log().Errorw("Cannot publish track", err)
-		c.close(ctx, true, callDropped, "publish-failed")
+		c.close(ctx, callDropped, stats.ServerError("publish-failed"))
 		return errors.Wrap(err, "publishing track to room failed")
 	}
 	tsub := c.mon.StageDurTimer("track-subscribe")
@@ -966,7 +966,7 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 				info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
 			})
-			c.close(ctx, false, callDropped, "removed")
+			c.close(ctx, callDropped, stats.Success("removed"))
 			return nil
 		case <-c.media.Timeout():
 			return c.mediaTimeout(ctx)
@@ -1096,7 +1096,7 @@ func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) 
 	case <-c.media.Timeout():
 		return false, c.mediaTimeout(ctx)
 	case <-timer.C:
-		c.close(ctx, false, callDropped, "cannot-subscribe")
+		c.close(ctx, callDropped, stats.ServerError("cannot-subscribe"))
 		return false, psrpc.NewErrorf(psrpc.DeadlineExceeded, "room subscription timed out")
 	case <-c.lkRoom.Subscribed():
 		return true, nil
@@ -1152,13 +1152,13 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				}
 				if disp.Result == DispatchServiceUnavailable {
 					c.log().Warnw("Rejecting call, dispatch evaluation failed", nil, "pin", pin, "noPin", noPin)
-					c.close(ctx, true, callDropped, "dispatch-error")
+					c.close(ctx, callDropped, stats.ServerError("dispatch-error"))
 					return disp, false, psrpc.NewErrorf(psrpc.Unavailable, "dispatch rule evaluation unavailable")
 				}
 				if disp.Result != DispatchAccept || disp.Room.RoomName == "" {
 					c.log().Infow("Rejecting call", "pin", pin, "noPin", noPin)
 					c.playAudio(ctx, c.s.res.wrongPin)
-					c.close(ctx, false, callDropped, "wrong-pin")
+					c.close(ctx, callDropped, stats.ClientError("wrong-pin"))
 					return disp, false, psrpc.NewErrorf(psrpc.PermissionDenied, "wrong pin")
 				}
 				c.playAudio(ctx, c.s.res.roomJoin)
@@ -1168,7 +1168,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 			pin += string(b.Digit)
 			if len(pin) > pinLimit {
 				c.playAudio(ctx, c.s.res.wrongPin)
-				c.close(ctx, false, callDropped, "wrong-pin")
+				c.close(ctx, callDropped, stats.ClientError("wrong-pin"))
 				return disp, false, psrpc.NewErrorf(psrpc.PermissionDenied, "wrong pin")
 			}
 		}
@@ -1180,7 +1180,7 @@ func (c *inboundCall) printStats(log logger.Logger) {
 }
 
 // close should only be called from handleInvite.
-func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, reason string) {
+func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Termination) {
 	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
 	defer cancel()
 	go func() {
@@ -1200,15 +1200,15 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 	defer c.mon.StageDurTimer("close")
 	c.stats.Closed.Store(true)
 	sipCode, sipStatus := status.SIPStatus()
-	log := c.log().WithValues("status", sipCode, "reason", reason)
+	log := c.log().WithValues("status", sipCode, "result", string(t.Result), "reason", t.Reason)
 	defer func() {
 		c.stats.Update()
 		c.printStats(log)
 		c.sigTs.Log(log)
 	}()
 	c.setStatus(status)
-	c.mon.CallTerminate(reason)
-	isWarn := error || status == callHangupMedia
+	c.mon.CallTerminate(t)
+	isWarn := t.Result == stats.ResultServerError || status == callHangupMedia
 	if isWarn {
 		log.Warnw("Closing inbound call with error", nil)
 	} else {
@@ -1243,7 +1243,7 @@ func (c *inboundCall) close(ctx context.Context, error bool, status CallStatus, 
 				ProjectID: c.projectID,
 				CallID:    c.call.LkCallId,
 				SipCallID: c.call.SipCallId,
-			}, c.state.callInfo, reason)
+			}, c.state.callInfo, t.Reason)
 		}(c.tid)
 	}
 
@@ -1255,11 +1255,11 @@ func (c *inboundCall) closeWithTimeout(ctx context.Context, isError bool) {
 	if !isError {
 		status = callHangupMedia
 	}
-	c.close(ctx, isError, status, "media-timeout")
+	c.close(ctx, status, stats.ServerError("media-timeout"))
 }
 
 func (c *inboundCall) closeWithNoACK(ctx context.Context) {
-	c.close(ctx, true, callNoACK, "no-ack")
+	c.close(ctx, callNoACK, stats.ServerError("no-ack"))
 }
 
 func (c *inboundCall) closeWithCancelled(ctx context.Context) {
@@ -1267,7 +1267,7 @@ func (c *inboundCall) closeWithCancelled(ctx context.Context) {
 	if p := c.closeReason.Load(); p != nil {
 		reason = *p
 	}
-	c.closeWithReason(ctx, CallHangup, "cancelled", reason)
+	c.closeWithReason(ctx, CallHangup, stats.Success("cancelled"), reason)
 }
 
 func (c *inboundCall) closeWithHangup(ctx context.Context) {
@@ -1275,10 +1275,10 @@ func (c *inboundCall) closeWithHangup(ctx context.Context) {
 	if p := c.closeReason.Load(); p != nil {
 		reason = *p
 	}
-	c.closeWithReason(ctx, CallHangup, "hangup", reason)
+	c.closeWithReason(ctx, CallHangup, stats.Success("hangup"), reason)
 }
 
-func (c *inboundCall) closeWithReason(ctx context.Context, status CallStatus, reasonName string, reason ReasonHeader) {
+func (c *inboundCall) closeWithReason(ctx context.Context, status CallStatus, t stats.Termination, reason ReasonHeader) {
 	ctx = context.WithoutCancel(ctx)
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
@@ -1290,10 +1290,10 @@ func (c *inboundCall) closeWithReason(ctx context.Context, status CallStatus, re
 	})
 	if reason.Type != "" {
 		if !reason.IsNormal() {
-			reasonName = fmt.Sprintf("bye-%s-%d", strings.ToLower(reason.Type), reason.Cause)
+			t.Reason = fmt.Sprintf("bye-%s-%d", strings.ToLower(reason.Type), reason.Cause)
 		}
 	}
-	c.close(ctx, false, status, reasonName)
+	c.close(ctx, status, t)
 }
 
 func (c *inboundCall) Bye(reason ReasonHeader) {
@@ -1390,7 +1390,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status Cal
 	c.log().Infow("Joining room")
 	if err := c.createLiveKitParticipant(ctx, rconf, status); err != nil {
 		c.log().Errorw("Cannot create LiveKit participant", err)
-		c.close(ctx, true, callDropped, "participant-failed")
+		c.close(ctx, callDropped, stats.ServerError("participant-failed"))
 		return errors.Wrap(err, "cannot create LiveKit participant")
 	}
 	return nil
