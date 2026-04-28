@@ -347,13 +347,14 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 }
 
 func (s *Server) Stop() {
+	ctx := context.Background()
 	s.closing.Break()
 	s.cmu.Lock()
 	calls := maps.Values(s.byLocalTag)
 	s.byLocalTag = make(map[LocalTag]*inboundCall)
 	s.cmu.Unlock()
 	for _, c := range calls {
-		_ = c.Close()
+		c.Shutdown(ctx)
 	}
 	if s.sipSrv != nil {
 		_ = s.sipSrv.Close()

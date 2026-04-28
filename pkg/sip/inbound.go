@@ -1306,6 +1306,13 @@ func (c *inboundCall) Close() error {
 	return nil
 }
 
+// Shutdown force-closes the call as part of service shutdown, emitting a
+// server_error termination so the call is counted in the SLI denominator.
+// close() is idempotent via c.done, so concurrent paths cannot double-emit.
+func (c *inboundCall) Shutdown(ctx context.Context) {
+	c.close(ctx, callDropped, stats.ServerError("shutdown"))
+}
+
 func (c *inboundCall) closeMedia() {
 	c.lkRoom.Close()
 	if c.media != nil {
