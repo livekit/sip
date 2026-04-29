@@ -694,7 +694,7 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 		err  error
 	)
 	if c.Crypto != nil {
-		sess, err = srtp.NewSession(p.log, p.port, c.Crypto)
+		sess, err = srtp.NewSession(p.log, &srtpConn{Conn: p.port}, c.Crypto)
 	} else {
 		sess = rtp.NewSession(p.log, p.port)
 	}
