@@ -172,6 +172,10 @@ func (r *testRoom) Closed() <-chan struct{} {
 	return r.room.Closed()
 }
 
+func (r *testRoom) ClosedReason() lksdk.DisconnectionReason {
+	return r.room.ClosedReason()
+}
+
 func (r *testRoom) Subscribed() <-chan struct{} {
 	return r.room.Subscribed()
 }

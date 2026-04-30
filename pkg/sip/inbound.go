@@ -966,7 +966,7 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 				info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
 			})
-			c.close(ctx, callDropped, stats.Success("removed"))
+			c.close(ctx, callDropped, terminationFromRoomDisconnect(c.lkRoom.ClosedReason()))
 			return nil
 		case <-c.media.Timeout():
 			return c.mediaTimeout(ctx)

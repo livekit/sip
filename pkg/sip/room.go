@@ -148,6 +148,7 @@ type ParticipantInfo struct {
 type RoomInterface interface {
 	Connect(ctx context.Context, conf *config.Config, rconf RoomConfig) error
 	Closed() <-chan struct{}
+	ClosedReason() lksdk.DisconnectionReason
 	Subscribed() <-chan struct{}
 	Room() *lksdk.Room
 	Subscribe()
@@ -170,19 +171,20 @@ func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
 }
 
 type Room struct {
-	log        logger.Logger
-	roomLog    logger.Logger // deferred logger
-	room       *lksdk.Room
-	mix        *mixer.Mixer
-	out        *msdk.SwitchWriter
-	outDtmf    atomic.Pointer[dtmf.Writer]
-	p          ParticipantInfo
-	ready      core.Fuse
-	subscribe  atomic.Bool
-	subscribed core.Fuse
-	stopped    core.Fuse
-	closed     core.Fuse
-	stats      *RoomStats
+	log          logger.Logger
+	roomLog      logger.Logger // deferred logger
+	room         *lksdk.Room
+	mix          *mixer.Mixer
+	out          *msdk.SwitchWriter
+	outDtmf      atomic.Pointer[dtmf.Writer]
+	p            ParticipantInfo
+	ready        core.Fuse
+	subscribe    atomic.Bool
+	subscribed   core.Fuse
+	stopped      core.Fuse
+	closed       core.Fuse
+	closedReason atomic.Pointer[lksdk.DisconnectionReason]
+	stats        *RoomStats
 }
 
 type ParticipantConfig struct {
@@ -241,6 +243,19 @@ func (r *Room) Closed() <-chan struct{} {
 		return nil
 	}
 	return r.stopped.Watch()
+}
+
+// ClosedReason returns the LiveKit disconnect reason once Closed() has fired.
+// Returns an empty string if the room hasn't disconnected or no reason was
+// reported.
+func (r *Room) ClosedReason() lksdk.DisconnectionReason {
+	if r == nil {
+		return ""
+	}
+	if p := r.closedReason.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func (r *Room) Subscribed() <-chan struct{} {
@@ -385,7 +400,8 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
-		OnDisconnected: func() {
+		OnDisconnectedWithReason: func(reason lksdk.DisconnectionReason) {
+			r.closedReason.Store(&reason)
 			r.stopped.Break()
 		},
 	}
