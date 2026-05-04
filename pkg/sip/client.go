@@ -179,6 +179,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if c.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
 	}
+	req.Upgrade()
 	if req.CallTo == "" {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "call-to number must be set")
 	} else if req.Address == "" {
@@ -207,7 +208,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if req.SipTrunkId != "" {
 		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
-	enc, err := sdpEncryption(req.MediaEncryption)
+	mconf, err := newMediaConfig(req.Media)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +272,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		maxCallDuration: req.MaxCallDuration.AsDuration(),
 		enabledFeatures: req.EnabledFeatures,
 		featureFlags:    req.FeatureFlags,
-		mediaEncryption: enc,
+		mediaConfig:     mconf,
 		displayName:     req.DisplayName,
 	}
 	log.Infow("Creating SIP participant")

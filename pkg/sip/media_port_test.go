@@ -165,23 +165,12 @@ func newIP(v string) netip.Addr {
 }
 
 func TestMediaPort(t *testing.T) {
-	codecs := msdk.Codecs()
-	disableAll := func() {
-		for _, codec := range codecs {
-			msdk.CodecSetEnabled(codec.Info().SDPName, false)
-		}
-	}
-	defer func() {
-		for _, codec := range codecs {
-			info := codec.Info()
-			msdk.CodecSetEnabled(info.SDPName, !info.Disabled)
-		}
-	}()
-	for _, codec := range codecs {
+	codecList := msdk.Codecs()
+	for _, codec := range codecList {
 		info := codec.Info()
 		t.Run(info.SDPName, func(t *testing.T) {
-			disableAll()
-			msdk.CodecSetEnabled(info.SDPName, true)
+			codecs := msdk.NewCodecSet()
+			codecs.SetEnabled(info.SDPName, true)
 
 			sub := strings.SplitN(info.SDPName, "/", 2)
 			name := sub[0]
@@ -232,21 +221,21 @@ func TestMediaPort(t *testing.T) {
 					require.NoError(t, err)
 					defer m2.Close()
 
-					offer, err := m1.NewOffer(tconf.Encrypted)
+					offer, err := m1.NewOffer(codecs, tconf.Encrypted)
 					require.NoError(t, err)
 					offerData, err := offer.SDP.Marshal()
 					require.NoError(t, err)
 
 					t.Logf("SDP offer:\n%s", string(offerData))
 
-					answer, conf, err := m2.SetOffer(offerData, tconf.Encrypted)
+					answer, conf, err := m2.SetOffer(offerData, codecs, tconf.Encrypted)
 					require.NoError(t, err)
 					answerData, err := answer.SDP.Marshal()
 					require.NoError(t, err)
 
 					t.Logf("SDP answer:\n%s", string(answerData))
 
-					mc, _, err := m1.SetAnswer(offer, answerData, tconf.Encrypted)
+					mc, _, err := m1.SetAnswer(offer, answerData, codecs, tconf.Encrypted)
 					require.NoError(t, err)
 
 					err = m1.SetConfig(mc)
@@ -375,6 +364,8 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 	}
 	c1, c2 := newUDPPipe()
 
+	codecs := defaultCodecs
+
 	opt1.IP = newIP("1.1.1.1")
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}
 	opt1.NoInputResample = true
@@ -396,17 +387,17 @@ func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
 	require.NoError(t, err)
 	t.Cleanup(m2.Close)
 
-	offer, err := m1.NewOffer(sdp.EncryptionNone)
+	offer, err := m1.NewOffer(codecs, sdp.EncryptionNone)
 	require.NoError(t, err)
 	offerData, err := offer.SDP.Marshal()
 	require.NoError(t, err)
 
-	answer, mc2, err := m2.SetOffer(offerData, sdp.EncryptionNone)
+	answer, mc2, err := m2.SetOffer(offerData, codecs, sdp.EncryptionNone)
 	require.NoError(t, err)
 	answerData, err := answer.SDP.Marshal()
 	require.NoError(t, err)
 
-	mc1, _, err := m1.SetAnswer(offer, answerData, sdp.EncryptionNone)
+	mc1, _, err := m1.SetAnswer(offer, answerData, codecs, sdp.EncryptionNone)
 	require.NoError(t, err)
 
 	err = m1.SetConfig(mc1)

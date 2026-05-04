@@ -297,8 +297,8 @@ func AttrsToHeaders(attrs, attrToHdr, headers map[string]string) map[string]stri
 	return headers
 }
 
-func sdpEncryption(e livekit.SIPMediaEncryption) (sdp.Encryption, error) {
-	switch e {
+func sdpEncryption(e *livekit.SIPMediaEncryption) (sdp.Encryption, error) {
+	switch e.Deref() {
 	case livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_DISABLE:
 		return sdp.EncryptionNone, nil
 	case livekit.SIPMediaEncryption_SIP_MEDIA_ENCRYPT_ALLOW:

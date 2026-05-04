@@ -634,14 +634,14 @@ func (p *MediaPort) GetAudioWriter() msdk.PCM16Writer {
 }
 
 // NewOffer generates an SDP offer for the media.
-func (p *MediaPort) NewOffer(encrypted sdp.Encryption) (*sdp.Offer, error) {
-	return sdp.NewOffer(p.externalIP, p.Port(), encrypted)
+func (p *MediaPort) NewOffer(codecs *msdk.CodecSet, encrypted sdp.Encryption) (*sdp.Offer, error) {
+	return sdp.NewOfferWith(codecs, p.externalIP, p.Port(), encrypted)
 }
 
 // SetAnswer decodes and applies SDP answer for offer from NewOffer.
 // SetConfig must be called with the decoded configuration.
-func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encryption) (*MediaConf, []byte, error) {
-	answer, err := sdp.ParseAnswer(answerData)
+func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*MediaConf, []byte, error) {
+	answer, err := sdp.ParseAnswerWith(codecs, answerData)
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
@@ -657,8 +657,8 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, enc sdp.Encry
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
-func (p *MediaPort) SetOffer(offerData []byte, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
-	offer, err := sdp.ParseOffer(offerData)
+func (p *MediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
+	offer, err := sdp.ParseOfferWith(codecs, offerData)
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
