@@ -609,6 +609,7 @@ type inboundCall struct {
 	cancel      func()
 	closeReason atomic.Pointer[ReasonHeader]
 	call        *rpc.SIPCall
+	mmu         sync.Mutex
 	media       *MediaPort
 	dtmf        chan dtmf.Event // buffered
 	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
@@ -986,6 +987,8 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 }
 
 func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.SIPMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
 	mconf, err := newMediaConfig(m)
@@ -1011,9 +1014,9 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.
 		return nil, err
 	}
 	c.media = mp
-	c.media.EnableTimeout(false) // enabled once we accept the call
-	c.media.DisableOut()         // disabled until we send 200
-	c.media.SetDTMFAudio(conf.AudioDTMF)
+	mp.EnableTimeout(false) // enabled once we accept the call
+	mp.DisableOut()         // disabled until we send 200
+	mp.SetDTMFAudio(conf.AudioDTMF)
 
 	answer, mc, err := mp.SetOffer(offerData, mconf.Codecs, mconf.Encryption)
 	if err != nil {
@@ -1026,20 +1029,20 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	if err = c.media.SetConfig(mc); err != nil {
+	if err = mp.SetConfig(mc); err != nil {
 		return nil, err
 	}
 	mc.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
 	if mc.Audio.DTMFType != 0 {
-		c.media.HandleDTMF(c.handleDTMF)
+		mp.HandleDTMF(c.handleDTMF)
 	}
 
 	// Must be set earlier to send the pin prompts.
-	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
+	if w := c.lkRoom.SwapOutput(mp.GetAudioWriter()); w != nil {
 		_ = w.Close()
 	}
 	if mc.Audio.DTMFType != 0 {
-		c.lkRoom.SetDTMFOutput(c.media)
+		c.lkRoom.SetDTMFOutput(mp)
 	}
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
@@ -1318,6 +1321,8 @@ func (c *inboundCall) Shutdown(ctx context.Context) {
 
 func (c *inboundCall) closeMedia() {
 	c.lkRoom.Close()
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
 	if c.media != nil {
 		c.media.Close()
 	}
