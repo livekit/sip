@@ -109,6 +109,7 @@ type CallDispatch struct {
 	RingingTimeout      time.Duration
 	MaxCallDuration     time.Duration
 	MediaEncryption     livekit.SIPMediaEncryption
+	MediaTimeout        time.Duration
 }
 
 type CallIdentifier struct {
