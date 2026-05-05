@@ -417,12 +417,14 @@ func TestMediaTimeout(t *testing.T) {
 		timeout = time.Second / 4
 		initial = timeout * 2
 		dt      = timeout / 4
+		check   = timeout / 10
 	)
 
 	t.Run("initial", func(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
-			MediaTimeoutInitial: initial,
-			MediaTimeout:        timeout,
+			MediaTimeoutInitial:  initial,
+			MediaTimeout:         timeout,
+			timeoutCheckInterval: check,
 		}, nil)
 
 		m1.EnableTimeout(true)
@@ -443,8 +445,9 @@ func TestMediaTimeout(t *testing.T) {
 
 	t.Run("regular", func(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
-			MediaTimeoutInitial: initial,
-			MediaTimeout:        timeout,
+			MediaTimeoutInitial:  initial,
+			MediaTimeout:         timeout,
+			timeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
@@ -467,8 +470,9 @@ func TestMediaTimeout(t *testing.T) {
 
 	t.Run("no timeout", func(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
-			MediaTimeoutInitial: initial,
-			MediaTimeout:        timeout,
+			MediaTimeoutInitial:  initial,
+			MediaTimeout:         timeout,
+			timeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
@@ -488,8 +492,9 @@ func TestMediaTimeout(t *testing.T) {
 
 	t.Run("reset timeout", func(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
-			MediaTimeoutInitial: initial,
-			MediaTimeout:        timeout,
+			MediaTimeoutInitial:  initial,
+			MediaTimeout:         timeout,
+			timeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
@@ -524,8 +529,9 @@ func TestMediaTimeout(t *testing.T) {
 
 	t.Run("reset", func(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
-			MediaTimeoutInitial: initial,
-			MediaTimeout:        timeout,
+			MediaTimeoutInitial:  initial,
+			MediaTimeout:         timeout,
+			timeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
