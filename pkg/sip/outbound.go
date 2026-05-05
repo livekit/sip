@@ -108,6 +108,12 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	if sipConf.host == "" {
 		sipConf.host = contact.GetHost()
 	}
+	fromURI := URI{
+		User:      sipConf.from,
+		Host:      sipConf.host,
+		Addr:      contact.Addr,
+		Transport: tr,
+	}
 	now := time.Now()
 	call := &outboundCall{
 		c:         c,
@@ -121,23 +127,8 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		projectID: projectID,
 	}
 	call.stats.Update()
-	call.log = call.log.WithValues("jitterBuf", call.jitterBuf)
-	call.cc = c.newOutbound(log, id, URI{
-		User:      sipConf.from,
-		Host:      sipConf.host,
-		Addr:      contact.Addr,
-		Transport: tr,
-	}, contact, sipConf.displayName, func(headers map[string]string) map[string]string {
-		c := call
-		if len(c.sipConf.attrsToHeaders) == 0 {
-			return headers
-		}
-		r := c.lkRoom.Room()
-		if r == nil {
-			return headers
-		}
-		return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
-	})
+	call.cc = c.newOutbound(log, id, fromURI, contact, sipConf.displayName, call.setAttrsToHeaders)
+	call.log = call.log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", call.cc.callID)
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
 		call.cc.routeHeaders = conf.OutboundRouteHeaders
 	}
@@ -173,6 +164,17 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	defer c.cmu.Unlock()
 	c.activeCalls[id] = call
 	return call, nil
+}
+
+func (c *outboundCall) setAttrsToHeaders(headers map[string]string) map[string]string {
+	if len(c.sipConf.attrsToHeaders) == 0 {
+		return headers
+	}
+	r := c.lkRoom.Room()
+	if r == nil {
+		return headers
+	}
+	return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
 }
 
 func (c *outboundCall) ensureClosed(ctx context.Context) {
@@ -779,6 +781,7 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, 
 		log:        log,
 		c:          c,
 		id:         id,
+		callID:     guid.HashedID(string(id)),
 		from:       fromHeader,
 		contact:    contactHeader,
 		referDone:  make(chan error), // Do not buffer the channel to avoid reading a result for an old request
@@ -907,9 +910,6 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	toHeader := &sip.ToHeader{Address: *to.GetURI()}
-
-	c.callID = guid.HashedID(fmt.Sprintf("%s-%s", string(c.id), toHeader.Address.String()))
-	c.log = c.log.WithValues("sipCallID", c.callID)
 
 	var (
 		sipHeaders         Headers
