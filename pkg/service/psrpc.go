@@ -90,6 +90,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 		log.Warnw("SIP handle dispatch rule error", err)
 		return sip.CallDispatch{Result: sip.DispatchServiceUnavailable}
 	}
+	resp.Upgrade()
 	switch resp.Result {
 	default:
 		log.Errorw("SIP handle dispatch rule error", fmt.Errorf("unexpected dispatch result: %v", resp.Result))
@@ -101,11 +102,11 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 	case rpc.SIPDispatchResult_LEGACY_ACCEPT_OR_PIN:
 		if resp.RequestPin {
 			return sip.CallDispatch{
-				ProjectID:       resp.ProjectId,
-				TrunkID:         resp.SipTrunkId,
-				DispatchRuleID:  resp.SipDispatchRuleId,
-				Result:          sip.DispatchRequestPin,
-				MediaEncryption: resp.MediaEncryption,
+				ProjectID:      resp.ProjectId,
+				TrunkID:        resp.SipTrunkId,
+				DispatchRuleID: resp.SipDispatchRuleId,
+				Result:         sip.DispatchRequestPin,
+				MediaConfig:    resp.Media,
 			}
 		}
 		// TODO: finally deprecate and drop
@@ -134,7 +135,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			EnabledFeatures:     resp.EnabledFeatures,
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
-			MediaEncryption:     resp.MediaEncryption,
+			MediaConfig:         resp.Media,
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
@@ -163,14 +164,14 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			FeatureFlags:        resp.FeatureFlags,
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
-			MediaEncryption:     resp.MediaEncryption,
+			MediaConfig:         resp.Media,
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{
-			ProjectID:       resp.ProjectId,
-			Result:          sip.DispatchRequestPin,
-			TrunkID:         resp.SipTrunkId,
-			MediaEncryption: resp.MediaEncryption,
+			ProjectID:   resp.ProjectId,
+			Result:      sip.DispatchRequestPin,
+			TrunkID:     resp.SipTrunkId,
+			MediaConfig: resp.Media,
 		}
 	case rpc.SIPDispatchResult_REJECT:
 		return sip.CallDispatch{

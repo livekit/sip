@@ -369,7 +369,7 @@ func (d *sipUADialogTest) NewRequest(method sip.RequestMethod) *sip.Request {
 
 func (d *sipUADialogTest) Invite(offer []byte) (*sip.Request, []byte, error) {
 	if offer == nil {
-		sdpOffer, err := sdp.NewOffer(d.TestUA.localAddr.Addr(), 0xB0B, sdp.EncryptionNone)
+		sdpOffer, err := sdp.NewOfferWith(defaultCodecs, d.TestUA.localAddr.Addr(), 0xB0B, sdp.EncryptionNone)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -552,7 +552,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 			opt(msg.req, nil) // Simulate added headers
 		}
 
-		offer, err := sdp.ParseOffer(msg.req.Body())
+		offer, err := sdp.ParseOfferWith(defaultCodecs, msg.req.Body())
 		require.NoError(t, err)
 		sdpAnswer, _, err := offer.Answer(netip.MustParseAddr("4.3.2.1"), 0xB00, sdp.EncryptionNone)
 		require.NoError(t, err)
@@ -608,7 +608,7 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// Re-INVITE with new offer
-			newOffer, err := sdp.NewOffer(netip.MustParseAddr("9.8.7.6"), 12345, sdp.EncryptionNone)
+			newOffer, err := sdp.NewOfferWith(defaultCodecs, netip.MustParseAddr("9.8.7.6"), 12345, sdp.EncryptionNone)
 			require.NoError(t, err)
 			newOfferBytes, err := newOffer.SDP.Marshal()
 			require.NoError(t, err)
@@ -655,7 +655,7 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// Re-INVITE with new offer
-			newOffer, err := sdp.NewOffer(netip.MustParseAddr("9.8.7.6"), 12345, sdp.EncryptionNone)
+			newOffer, err := sdp.NewOfferWith(defaultCodecs, netip.MustParseAddr("9.8.7.6"), 12345, sdp.EncryptionNone)
 			require.NoError(t, err)
 			newOfferBytes, err := newOffer.SDP.Marshal()
 			require.NoError(t, err)
