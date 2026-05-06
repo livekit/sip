@@ -317,8 +317,8 @@ type MediaOptions struct {
 	IgnorePreanswerData bool
 	LogSignalChanges    bool
 
-	// timeoutCheckInterval overrides the timeout polling interval.
-	timeoutCheckInterval time.Duration
+	// TimeoutCheckInterval overrides the timeout polling interval.
+	TimeoutCheckInterval time.Duration
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -335,8 +335,8 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	if opts.MediaTimeout <= 0 {
 		opts.MediaTimeout = defaultMediaTimeout
 	}
-	if opts.timeoutCheckInterval <= 0 {
-		opts.timeoutCheckInterval = defaultMediaTimeoutCheckInterval
+	if opts.TimeoutCheckInterval <= 0 {
+		opts.TimeoutCheckInterval = defaultMediaTimeoutCheckInterval
 	}
 	if opts.Stats == nil {
 		opts.Stats = &PortStats{}
@@ -462,7 +462,7 @@ func (p *MediaPort) SetTimeout(initial, general time.Duration) {
 
 func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 	defer p.log.Infow("media timeout loop stopped")
-	ticker := time.NewTicker(p.opts.timeoutCheckInterval)
+	ticker := time.NewTicker(p.opts.TimeoutCheckInterval)
 	defer ticker.Stop()
 
 	lastLog := time.Now()
@@ -510,19 +510,19 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			}
 
 			if verbose {
-				fields := []any{
+				log := p.log.WithValues(
 					"packets", p.packetCount.Load(),
 					"since", since,
 					"timeout", timeout,
 					"isInitial", isInitial,
-				}
+				)
 				switch {
 				case startPtr == nil:
-					p.log.Infow("media timeout disabled", fields...)
+					log.Infow("media timeout disabled")
 				case isInitial:
-					p.log.Warnw("media timeout is idle for a long time", nil, fields...)
+					log.Warnw("media timeout is idle for a long time", nil)
 				default:
-					p.log.Infow("media timeout stats", fields...)
+					log.Infow("media timeout stats")
 				}
 			}
 

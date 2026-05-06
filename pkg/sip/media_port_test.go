@@ -424,7 +424,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial:  initial,
 			MediaTimeout:         timeout,
-			timeoutCheckInterval: check,
+			TimeoutCheckInterval: check,
 		}, nil)
 
 		m1.EnableTimeout(true)
@@ -447,7 +447,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial:  initial,
 			MediaTimeout:         timeout,
-			timeoutCheckInterval: check,
+			TimeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
@@ -472,7 +472,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial:  initial,
 			MediaTimeout:         timeout,
-			timeoutCheckInterval: check,
+			TimeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
@@ -494,7 +494,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial:  initial,
 			MediaTimeout:         timeout,
-			timeoutCheckInterval: check,
+			TimeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
@@ -531,7 +531,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial:  initial,
 			MediaTimeout:         timeout,
-			timeoutCheckInterval: check,
+			TimeoutCheckInterval: check,
 		}, nil)
 		m1.EnableTimeout(true)
 
