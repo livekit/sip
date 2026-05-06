@@ -1260,6 +1260,16 @@ func (c *inboundCall) closeWithTimeout(ctx context.Context, isError bool) {
 	status := callDropped
 	if !isError {
 		status = callHangupMedia
+		// Surface the media-timeout banner on the dashboard while keeping the
+		// call status as a clean disconnect — post-ACK media timeout usually
+		// means BYE was lost, not that the call itself failed. Mirror the
+		// outbound info.Error format byte-for-byte so the same dashboard
+		// trigger fires for both inbound and outbound.
+		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+			if info.Error == "" {
+				info.Error = psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout").Error()
+			}
+		})
 	}
 	c.close(ctx, status, stats.ServerError("media-timeout"))
 }
