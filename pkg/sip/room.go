@@ -16,7 +16,6 @@ package sip
 
 import (
 	"context"
-	"errors"
 	"io"
 	"math"
 	"sync"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v4"
+	"github.com/pkg/errors"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
@@ -336,19 +336,19 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 				r.subscribeTo(pub, rp)
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
-				if !r.ready.IsBroken() {
-					log.Warnw("ignoring track, room not ready", nil)
-					return
-				}
-				log.Infow("mixing track")
+				go func(rconf *RoomConfig, conf *config.Config, track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+					subscribedAt := time.Now().UnixMilli()
+					log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name(), "subscribedAt", subscribedAt)
+					if !r.ready.IsBroken() {
+						log.Warnw("ignoring track, room not ready", nil)
+						return
+					}
+					defer log.Infow("track closed", "closedAt", time.Now().UnixMilli())
 
-				go func() {
 					mTrack := r.NewTrack()
 					if mTrack == nil {
 						return // closed
 					}
-					defer log.Infow("track closed")
 					defer mTrack.Close()
 
 					var out msdk.PCM16Writer = mTrack
@@ -385,7 +385,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
 					}
-				}()
+				}(&rconf, conf, track, pub, rp)
 			},
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
