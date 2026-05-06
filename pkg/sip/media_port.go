@@ -44,9 +44,8 @@ import (
 )
 
 const (
-	defaultMediaTimeout              = 15 * time.Second
-	defaultMediaTimeoutInitial       = 30 * time.Second
-	defaultMediaTimeoutCheckInterval = time.Second
+	defaultMediaTimeout        = 15 * time.Second
+	defaultMediaTimeoutInitial = 30 * time.Second
 )
 
 type PortStatsSnapshot struct {
@@ -316,9 +315,6 @@ type MediaOptions struct {
 	NoInputResample     bool
 	IgnorePreanswerData bool
 	LogSignalChanges    bool
-
-	// TimeoutCheckInterval overrides the timeout polling interval.
-	TimeoutCheckInterval time.Duration
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -334,9 +330,6 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	}
 	if opts.MediaTimeout <= 0 {
 		opts.MediaTimeout = defaultMediaTimeout
-	}
-	if opts.TimeoutCheckInterval <= 0 {
-		opts.TimeoutCheckInterval = defaultMediaTimeoutCheckInterval
 	}
 	if opts.Stats == nil {
 		opts.Stats = &PortStats{}
@@ -360,6 +353,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		mon:              mon,
 		externalIP:       opts.IP,
 		mediaTimeout:     mediaTimeout,
+		timeoutKick:      make(chan struct{}, 1),
 		jitterEnabled:    opts.EnableJitterBuffer,
 		logSignalChanges: opts.LogSignalChanges,
 		port:             newUDPConn(log, conn, opts.SymmetricRTP),
@@ -391,6 +385,7 @@ type MediaPort struct {
 	packetCount      atomic.Uint64
 	lastPacketTime   atomic.Int64 // UnixNano of last RTP packet, 0 if none
 	mediaTimeout     <-chan struct{}
+	timeoutKick      chan struct{} // wakes timeoutLoop when the deadline may have changed
 	timeoutStart     atomic.Pointer[time.Time]
 	timeoutInitial   atomic.Pointer[time.Duration]
 	timeoutGeneral   atomic.Pointer[time.Duration]
@@ -422,9 +417,17 @@ func (p *MediaPort) EnableOut() {
 	p.audioOut.Enable()
 }
 
+func (p *MediaPort) kickTimeoutLoop() {
+	select {
+	case p.timeoutKick <- struct{}{}:
+	default: // already pending
+	}
+}
+
 func (p *MediaPort) disableTimeout() {
 	p.log.Debugw("media timeout disabled")
 	p.timeoutStart.Store(nil)
+	p.kickTimeoutLoop()
 }
 
 func (p *MediaPort) enableTimeout(initial, general time.Duration) {
@@ -446,6 +449,7 @@ func (p *MediaPort) enableTimeout(initial, general time.Duration) {
 		"initial", initial,
 		"timeout", general,
 	)
+	p.kickTimeoutLoop()
 }
 
 func (p *MediaPort) EnableTimeout(enabled bool) {
@@ -462,76 +466,84 @@ func (p *MediaPort) SetTimeout(initial, general time.Duration) {
 
 func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 	defer p.log.Infow("media timeout loop stopped")
-	ticker := time.NewTicker(p.opts.TimeoutCheckInterval)
-	defer ticker.Stop()
+
+	const disabledPark = time.Hour
+	timer := time.NewTimer(disabledPark)
+	defer timer.Stop()
 
 	lastLog := time.Now()
 	for {
 		select {
 		case <-p.closed.Watch():
 			return
-		case <-ticker.C:
-			verbose := false
-			if now := time.Now(); now.Sub(lastLog) > time.Hour {
-				verbose = true
-				lastLog = now
-			}
+		case <-p.timeoutKick:
+		case <-timer.C:
+		}
 
-			startPtr := p.timeoutStart.Load()
-			var lastPacketTime time.Time
-			if nano := p.lastPacketTime.Load(); nano > 0 {
-				lastPacketTime = time.Unix(0, nano)
-			}
+		verbose := false
+		if now := time.Now(); now.Sub(lastLog) > time.Hour {
+			verbose = true
+			lastLog = now
+		}
 
-			var (
-				isInitial bool
-				since     time.Duration
-				timeout   time.Duration
-			)
-			// First timeout could be different. Usually it's longer to allow for a call setup.
-			// In some cases it could be shorter (e.g. when we notice an issue with signaling and suspect media will fail).
-			if startPtr != nil {
-				startTime := *startPtr
-				// Initial mode: no packet has arrived since the timeout was last enabled or reset.
-				isInitial = lastPacketTime.Before(startTime)
-				if isInitial {
-					since = time.Since(startTime)
-					timeout = p.opts.MediaTimeoutInitial
-					if ptr := p.timeoutInitial.Load(); ptr != nil {
-						timeout = *ptr
-					}
-				} else {
-					since = time.Since(lastPacketTime)
-					timeout = p.opts.MediaTimeout
-					if ptr := p.timeoutGeneral.Load(); ptr != nil {
-						timeout = *ptr
-					}
-				}
-			}
-
+		startPtr := p.timeoutStart.Load()
+		if startPtr == nil {
 			if verbose {
-				log := p.log.WithValues(
-					"packets", p.packetCount.Load(),
-					"since", since,
-					"timeout", timeout,
-					"isInitial", isInitial,
-				)
-				switch {
-				case startPtr == nil:
-					log.Infow("media timeout disabled")
-				case isInitial:
-					log.Warnw("media timeout is idle for a long time", nil)
-				default:
-					log.Infow("media timeout stats")
-				}
+				p.log.Infow("media timeout disabled", "packets", p.packetCount.Load())
 			}
+			timer.Reset(disabledPark)
+			continue
+		}
+		startTime := *startPtr
 
-			if startPtr == nil || since < timeout {
-				continue
+		var lastPacketTime time.Time
+		if nano := p.lastPacketTime.Load(); nano > 0 {
+			lastPacketTime = time.Unix(0, nano)
+		}
+
+		// First timeout could be different. Usually it's longer to allow for a call setup.
+		// In some cases it could be shorter (e.g. when we notice an issue with signaling and suspect media will fail).
+		// Initial mode: no packet has arrived since the timeout was last enabled or reset.
+		isInitial := lastPacketTime.Before(startTime)
+		var (
+			deadline time.Time
+			timeout  time.Duration
+		)
+		if isInitial {
+			timeout = p.opts.MediaTimeoutInitial
+			if ptr := p.timeoutInitial.Load(); ptr != nil {
+				timeout = *ptr
 			}
+			deadline = startTime.Add(timeout)
+		} else {
+			timeout = p.opts.MediaTimeout
+			if ptr := p.timeoutGeneral.Load(); ptr != nil {
+				timeout = *ptr
+			}
+			deadline = lastPacketTime.Add(timeout)
+		}
+		remaining := time.Until(deadline)
+
+		if verbose {
+			log := p.log.WithValues(
+				"packets", p.packetCount.Load(),
+				"sinceStart", time.Since(startTime),
+				"sinceLast", time.Since(lastPacketTime),
+				"remaining", remaining,
+				"timeout", timeout,
+				"isInitial", isInitial,
+			)
+			if isInitial {
+				log.Warnw("media timeout is idle for a long time", nil)
+			} else {
+				log.Infow("media timeout stats")
+			}
+		}
+
+		if remaining <= 0 {
 			p.log.Infow("triggering media timeout",
 				"packets", p.packetCount.Load(),
-				"sinceStart", time.Since(*startPtr),
+				"sinceStart", time.Since(startTime),
 				"sinceLast", time.Since(lastPacketTime),
 				"timeout", timeout,
 				"isInitial", isInitial,
@@ -539,6 +551,7 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			timeoutCallback()
 			return
 		}
+		timer.Reset(remaining)
 	}
 }
 
