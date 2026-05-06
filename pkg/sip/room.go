@@ -336,14 +336,14 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 				r.subscribeTo(pub, rp)
 			},
 			OnTrackSubscribed: func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				go func(rconf *RoomConfig, conf *config.Config, track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+				go func() {
 					subscribedAt := time.Now().UnixMilli()
 					log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name(), "subscribedAt", subscribedAt)
 					if !r.ready.IsBroken() {
 						log.Warnw("ignoring track, room not ready", nil)
 						return
 					}
-					defer log.Infow("track closed", "closedAt", time.Now().UnixMilli())
+					defer func() { log.Infow("track closed", "closedAt", time.Now().UnixMilli()) }()
 
 					mTrack := r.NewTrack()
 					if mTrack == nil {
@@ -385,7 +385,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
 					}
-				}(&rconf, conf, track, pub, rp)
+				}()
 			},
 			OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
 				switch data := data.(type) {
