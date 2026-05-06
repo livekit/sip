@@ -790,7 +790,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		}
 		rawSDP := req.Body()
 		tmedia := c.mon.StageDurTimer("start-media")
-		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, disp.EnabledFeatures, disp.FeatureFlags)
+		answerData, err := c.runMediaConn(tid, rawSDP, enc, conf, &disp)
 		tmedia()
 		if err != nil {
 			sipReason := sip.StatusInternalServerError
@@ -939,10 +939,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 
 	c.started.Break()
 
-	return c.waitForCallEnd(ctx, ackReceived, ackTimeout)
+	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, disp.MediaTimeout)
 }
 
-func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time) error {
+func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time, mediaTimeout time.Duration) error {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitForCallEnd")
 	defer span.End()
 	// Wait for the caller to terminate the call. Send regular keep alives.
@@ -977,12 +977,18 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log().Warnw("Call accepted, but no ACK received", errNoACK)
 			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
-			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), c.s.conf.MediaTimeout)
+			if mediaTimeout <= 0 {
+				mediaTimeout = c.s.conf.MediaTimeout
+			}
+			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
 		}
 	}
 }
 
-func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit.SIPMediaEncryption, conf *config.Config, disp *CallDispatch) (answerData []byte, _ error) {
+	if disp == nil {
+		return nil, errors.New("no dispatch information provided")
+	}
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
 	e, err := sdpEncryption(enc)
@@ -992,12 +998,16 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	}
 
 	logSignalChanges := false
-	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
+	logSignalChanges, _ = strconv.ParseBool(disp.FeatureFlags[signalLoggingFeatureFlag])
+	mediaTimeout := c.s.conf.MediaTimeout
+	if disp.MediaTimeout > 0 {
+		mediaTimeout = disp.MediaTimeout
+	}
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
 		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
-		MediaTimeout:        c.s.conf.MediaTimeout,
+		MediaTimeout:        mediaTimeout,
 		SymmetricRTP:        conf.SymmetricRTP,
 		EnableJitterBuffer:  c.jitterBuf,
 		LogSignalChanges:    logSignalChanges,
@@ -1026,7 +1036,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, enc livekit
 	if err = c.media.SetConfig(mconf); err != nil {
 		return nil, err
 	}
-	mconf.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
+	mconf.Processor = c.s.handler.GetMediaProcessor(disp.EnabledFeatures, disp.FeatureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
 	if mconf.Audio.DTMFType != 0 {
 		c.media.HandleDTMF(c.handleDTMF)
 	}

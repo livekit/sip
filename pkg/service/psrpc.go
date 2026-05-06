@@ -106,6 +106,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 				DispatchRuleID:  resp.SipDispatchRuleId,
 				Result:          sip.DispatchRequestPin,
 				MediaEncryption: resp.MediaEncryption,
+				MediaTimeout:    resp.MediaTimeout.AsDuration(),
 			}
 		}
 		// TODO: finally deprecate and drop
@@ -135,6 +136,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
 			MediaEncryption:     resp.MediaEncryption,
+			MediaTimeout:        resp.MediaTimeout.AsDuration(),
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
@@ -164,6 +166,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
 			MediaEncryption:     resp.MediaEncryption,
+			MediaTimeout:        resp.MediaTimeout.AsDuration(),
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{
@@ -171,6 +174,7 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			Result:          sip.DispatchRequestPin,
 			TrunkID:         resp.SipTrunkId,
 			MediaEncryption: resp.MediaEncryption,
+			MediaTimeout:    resp.MediaTimeout.AsDuration(),
 		}
 	case rpc.SIPDispatchResult_REJECT:
 		return sip.CallDispatch{
