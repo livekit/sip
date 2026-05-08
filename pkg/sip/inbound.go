@@ -158,7 +158,13 @@ func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	return is
 }
 
-func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool) {
+// handleInviteAuth performs SIP digest authentication on an inbound INVITE.
+// The challenge return value distinguishes the normal digest handshake (where we
+// just sent the initial 407 with no credentials yet provided and expect the
+// client to retry) from a hard auth failure. Callers should treat
+// (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
+// a finalized error state.
+func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool, challenge bool) {
 	log = log.WithValues(
 		"username", username,
 		"passwordHash", hashPassword(password),
@@ -170,7 +176,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 	if username == "" || password == "" {
 		log.Debugw("Skipping authentication - no credentials provided")
-		return true
+		return true, false
 	}
 
 	if s.conf.HideInboundPort {
@@ -205,7 +211,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
 		_ = tx.Respond(res)
 		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
-		return false
+		return false, true
 	}
 
 	log.Debugw("Found Proxy-Authorization header, parsing credentials")
@@ -215,7 +221,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"headerValue", h.Value(),
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
-		return false
+		return false, false
 	}
 
 	// Set credURI and credUsername in logger early to avoid repetitive logging
@@ -230,7 +236,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"receivedUsername", cred.Username,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
-		return false
+		return false, false
 	}
 
 	// Check if we have a valid challenge state
@@ -240,7 +246,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"expectedRealm", UserAgent,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
-		return false
+		return false, false
 	}
 
 	log.Debugw("Computing digest response",
@@ -259,7 +265,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if err != nil {
 		log.Warnw("Failed to compute digest response", err)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
-		return false
+		return false, false
 	}
 
 	log.Debugw("Digest computation completed",
@@ -274,11 +280,11 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"receivedResponse", cred.Response,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
-		return false
+		return false, false
 	}
 
 	log.Infow("SIP invite authentication successful")
-	return true
+	return true, false
 }
 
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
@@ -457,12 +463,19 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			tryingTime = time.Now()
 		}
 		s.getCallInfo(cc.ID()).countInvite(log, req)
-		if !s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password) {
+		if ok, challenge := s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password); !ok {
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
 			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
 			s.cmu.Unlock()
 			cmon.InviteErrorShort(stats.ClientError("unauthorized"))
+			if challenge {
+				// We just sent the initial 407 challenge; the client is expected to
+				// retry with digest credentials. This is part of the normal SIP auth
+				// handshake, not a finalized error, so suppress the deferred state
+				// transition to avoid recording a 0-duration call.
+				state = nil
+			}
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
