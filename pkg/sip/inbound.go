@@ -66,6 +66,7 @@ const (
 	inviteOKRetryAttempts      = 5
 	inviteOKRetryAttemptsNoACK = 2
 	inviteOkAckLateTimeout     = inviteOkRetryIntervalMax
+	authChallengeTimeout       = 30 * time.Second
 )
 
 var allowHeader = sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE")
@@ -156,6 +157,24 @@ func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 	is := &inProgressInvite{sipCallID: sipCallID}
 	s.inProgressInvites = append(s.inProgressInvites, is)
 	return is
+}
+
+// scheduleAuthChallengeTimeout finalizes st as SCS_ERROR after authChallengeTimeout
+// unless authResolved is set to true (by a follow-up INVITE) before the timer fires.
+func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logger.Logger) {
+	i.authResolved.Store(false)
+	time.AfterFunc(authChallengeTimeout, func() {
+		if !i.authResolved.CompareAndSwap(false, true) {
+			return
+		}
+		log.Infow("auth challenge timed out without authenticated retry; finalizing call as error",
+			"sipCallID", i.sipCallID, "timeout", authChallengeTimeout)
+		st.Update(context.Background(), func(info *livekit.SIPCallInfo) {
+			info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+			info.Error = "auth challenge issued, no authenticated retry received"
+			info.EndedAtNs = time.Now().UnixNano()
+		})
+	})
 }
 
 // handleInviteAuth performs SIP digest authentication on an inbound INVITE.
@@ -462,6 +481,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			cc.Processing()
 			tryingTime = time.Now()
 		}
+		sipCallID := ""
+		if h := req.CallID(); h != nil {
+			sipCallID = h.Value()
+		}
+		inviteState := s.getInvite(sipCallID)
+		// New INVITE supersedes any pending 407-challenge timer for this Call-ID.
+		inviteState.authResolved.Store(true)
+
 		s.getCallInfo(cc.ID()).countInvite(log, req)
 		if ok, challenge := s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password); !ok {
 			// Store (call-ID + from tag) to (to tag) mapping
@@ -470,10 +497,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			s.cmu.Unlock()
 			cmon.InviteErrorShort(stats.ClientError("unauthorized"))
 			if challenge {
-				// We just sent the initial 407 challenge; the client is expected to
-				// retry with digest credentials. This is part of the normal SIP auth
-				// handshake, not a finalized error, so suppress the deferred state
-				// transition to avoid recording a 0-duration call.
+				// 407 sent: defer finalization to the timer or the next INVITE,
+				// not the deferred handler at the top of processInvite.
+				inviteState.scheduleAuthChallengeTimeout(state, log)
 				state = nil
 			}
 			// handleInviteAuth will generate the SIP Response as needed
