@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -167,8 +168,9 @@ type Server struct {
 }
 
 type inProgressInvite struct {
-	sipCallID string
-	challenge digest.Challenge
+	sipCallID    string
+	challenge    digest.Challenge
+	authResolved atomic.Bool
 }
 
 type ServerOption func(s *Server)
