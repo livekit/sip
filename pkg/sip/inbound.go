@@ -163,6 +163,7 @@ func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 // unless authResolved is set to true (by a follow-up INVITE) before the timer fires.
 func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logger.Logger) {
 	i.authResolved.Store(false)
+	challengedAt := time.Now()
 	time.AfterFunc(authChallengeTimeout, func() {
 		if !i.authResolved.CompareAndSwap(false, true) {
 			return
@@ -172,7 +173,8 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 		st.Update(context.Background(), func(info *livekit.SIPCallInfo) {
 			info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 			info.Error = "auth challenge issued, no authenticated retry received"
-			info.EndedAtNs = time.Now().UnixNano()
+			// EndedAtNs reflects when the call effectively ended.
+			info.EndedAtNs = challengedAt.UnixNano()
 		})
 	})
 }
