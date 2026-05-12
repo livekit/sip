@@ -1271,12 +1271,7 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 	// See: https://github.com/livekit/sip/issues/404
 	c.cc.CloseWithStatus(ctx, sipCode, sipStatus)
 	c.closeMedia()
-	var callDurFn func() time.Duration
-	c.mmu.Lock() // Make sure Server.Shutdown doesn't race handleInvite
-	callDurFn = c.callDur
-	c.callDur = nil
-	c.mmu.Unlock()
-	if callDurFn != nil {
+	if callDurFn := c.callDur; callDurFn != nil {
 		callDurFn()
 	}
 	c.s.cmu.Lock()
@@ -1452,9 +1447,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status Cal
 	if c.joinDur != nil {
 		c.joinDur()
 	}
-	c.mmu.Lock()
 	c.callDur = c.mon.CallDur()
-	c.mmu.Unlock()
 	c.appendLogValues(
 		"room", rconf.RoomName,
 		"participant", rconf.Participant.Identity,
