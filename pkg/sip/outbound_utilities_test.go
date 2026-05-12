@@ -104,8 +104,21 @@ type testRoom struct {
 	room *Room
 }
 
+type testRoomConfig struct {
+	ringForever bool
+}
+
+func newTestRoomConfig(cfg *testRoomConfig) GetRoomFunc {
+	return func(log logger.Logger, st *RoomStats) RoomInterface {
+		return newTestRoomWithConfig(log, st, cfg)
+	}
+}
+
 // newTestRoom creates a Room that skips actual LiveKit connection
-func newTestRoom(log logger.Logger, st *RoomStats) RoomInterface {
+func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig) RoomInterface {
+	if cfg == nil {
+		cfg = &testRoomConfig{}
+	}
 	if st == nil {
 		st = &RoomStats{}
 	}
@@ -132,7 +145,9 @@ func newTestRoom(log logger.Logger, st *RoomStats) RoomInterface {
 
 	// Set ready immediately (skip connection)
 	room.ready.Break()
-	room.subscribed.Break()
+	if !cfg.ringForever {
+		room.subscribed.Break()
+	}
 	resolve.Resolve()
 
 	room.room.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
@@ -516,7 +531,7 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 		cfg.GetSipClient = NewTestClientFunc
 	}
 	if cfg.GetRoom == nil {
-		cfg.GetRoom = newTestRoom
+		cfg.GetRoom = newTestRoomConfig(nil)
 	}
 	client := NewClient(cfg.Region, cfg.Config, zlogger, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
 	client.SetHandler(&TestHandler{})

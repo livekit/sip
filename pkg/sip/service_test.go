@@ -693,7 +693,7 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 		toUser   = "callee@example.com"
 	)
 
-	st := NewServiceTest(t)
+	st := NewServiceTest(t, &serviceTestConfig{GetRoom: newTestRoomConfig(&testRoomConfig{ringForever: true})})
 	loopback := netip.MustParseAddr("127.0.0.1")
 	sipServerAddress := st.Address()
 
@@ -745,14 +745,12 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 
 	// Collect responses until we get the final 487 or transaction completes
 	var responses []*sip.Response
-	var invite487Received bool
 
 	// Wait for responses with a timeout
 	timeout := time.After(time.Second)
-	transactionDone := false
 
 	// Collect responses until we get 487 or timeout
-	for !invite487Received && !transactionDone {
+	for {
 		select {
 		case res := <-tx.Responses():
 			responses = append(responses, res)
@@ -765,20 +763,16 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 			}
 			t.Logf("Received response: StatusCode=%d, CSeq method=%s", res.StatusCode, cseqMethod)
 
-			// Check if this is the 487 response to INVITE
-			if res.StatusCode == sip.StatusCode(487) {
-				// Verify this is for the INVITE (CSeq method should be INVITE)
-				require.NotNil(t, cseq, "487 response should have CSeq header")
-				if cseq != nil {
-					require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
-					invite487Received = true
-				}
+			if res.StatusCode < 200 {
+				continue
 			}
+			require.Equal(t, sip.StatusCode(487), res.StatusCode, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
+			require.NotNil(t, cseq, "487 response should have CSeq header")
+			require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
+			return // Success!
 
 		case <-tx.Done():
-			// Transaction completed, check if we got the 487 response
-			t.Logf("Transaction completed")
-			transactionDone = true
+			t.Fatal("Transaction done without receiving expected 487 response")
 
 		case <-timeout:
 			// Log all received responses for debugging
@@ -794,9 +788,6 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 			t.Fatal("Timeout waiting for 487 Request Terminated response after CANCEL")
 		}
 	}
-
-	// Verify we received the critical 487 response
-	require.True(t, invite487Received, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
 }
 
 // TestSameCallIDForAuthFlow verifies that the same LiveKit call ID is assigned to both
