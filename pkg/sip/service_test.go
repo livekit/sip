@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -692,54 +693,9 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 		toUser   = "callee@example.com"
 	)
 
-	// Handler that accepts calls and makes them ring (so we can cancel during ringing)
-	h := &TestHandler{
-		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
-			return AuthInfo{Result: AuthAccept}, nil
-		},
-		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-			// Accept the call but don't complete immediately - let it ring
-			// This simulates a call that's ringing when CANCEL is received
-			return CallDispatch{
-				Result: DispatchAccept,
-				Room: RoomConfig{
-					RoomName: "test-room",
-					Participant: ParticipantConfig{
-						Identity: "test-participant",
-					},
-				},
-				RingingTimeout: 30 * time.Second, // Long timeout so call stays ringing
-			}
-		},
-		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
-			// No-op for tests
-		},
-	}
-
-	// Create service
-	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
-	localIP, err := config.GetLocalIP()
-	require.NoError(t, err)
-
-	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
-
-	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
-	require.NoError(t, err)
-
-	log := logger.LogRLogger(logr.Discard())
-	s, err := NewService("", &config.Config{
-		HideInboundPort:    false,
-		SIPPort:            sipPort,
-		SIPPortListen:      sipPort,
-		RTPPort:            rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-		SIPRingingInterval: 1 * time.Second,
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
-	require.NoError(t, err)
-	require.NotNil(t, s)
-	t.Cleanup(s.Stop)
-
-	s.SetHandler(h)
-	require.NoError(t, s.Start())
+	st := NewServiceTest(t)
+	loopback := netip.MustParseAddr("127.0.0.1")
+	sipServerAddress := st.Address()
 
 	// Create SIP client using sipgo
 	sipUserAgent, err := sipgo.NewUA(
@@ -750,8 +706,7 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	sipClient, err := sipgo.NewClient(sipUserAgent)
 	require.NoError(t, err)
 
-	// Create SDP offer
-	offer, err := sdp.NewOfferWith(defaultCodecs, localIP, 0xB0B, sdp.EncryptionNone)
+	offer, err := sdp.NewOfferWith(defaultCodecs, loopback, 0xB0B, sdp.EncryptionNone)
 	require.NoError(t, err)
 	offerData, err := offer.SDP.Marshal()
 	require.NoError(t, err)
@@ -822,6 +777,7 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 
 		case <-tx.Done():
 			// Transaction completed, check if we got the 487 response
+			t.Logf("Transaction completed")
 			transactionDone = true
 
 		case <-timeout:
