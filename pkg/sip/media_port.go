@@ -501,10 +501,15 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			lastPacketTime = time.Unix(0, nano)
 		}
 
-		// First timeout could be different. Usually it's longer to allow for a call setup.
-		// In some cases it could be shorter (e.g. when we notice an issue with signaling and suspect media will fail).
-		// Initial mode: no packet has arrived since the timeout was last enabled or reset.
-		isInitial := lastPacketTime.Before(startTime)
+		generalTimeout := p.opts.MediaTimeout
+		if ptr := p.timeoutGeneral.Load(); ptr != nil {
+			generalTimeout = *ptr
+		}
+
+		// Initial mode: no media has ever been received on this port. Once a single
+		// RTP packet arrives, we switch to the general window regardless of any
+		// subsequent SetTimeout re-arming the startTime.
+		isInitial := lastPacketTime.IsZero()
 		var (
 			deadline time.Time
 			timeout  time.Duration
@@ -516,19 +521,21 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			}
 			deadline = startTime.Add(timeout)
 		} else {
-			timeout = p.opts.MediaTimeout
-			if ptr := p.timeoutGeneral.Load(); ptr != nil {
-				timeout = *ptr
-			}
+			timeout = generalTimeout
 			deadline = lastPacketTime.Add(timeout)
 		}
 		remaining := time.Until(deadline)
+
+		var sinceLast time.Duration
+		if !lastPacketTime.IsZero() {
+			sinceLast = time.Since(lastPacketTime)
+		}
 
 		if verbose {
 			log := p.log.WithValues(
 				"packets", p.packetCount.Load(),
 				"sinceStart", time.Since(startTime),
-				"sinceLast", time.Since(lastPacketTime),
+				"sinceLast", sinceLast,
 				"remaining", remaining,
 				"timeout", timeout,
 				"isInitial", isInitial,
@@ -544,14 +551,17 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 			p.log.Infow("triggering media timeout",
 				"packets", p.packetCount.Load(),
 				"sinceStart", time.Since(startTime),
-				"sinceLast", time.Since(lastPacketTime),
+				"sinceLast", sinceLast,
 				"timeout", timeout,
 				"isInitial", isInitial,
 			)
 			timeoutCallback()
 			return
 		}
-		timer.Reset(remaining)
+		// Cap the wake-up at the general timeout so packet arrivals during a long
+		// initial window get observed within one general interval, instead of
+		// having to wait out the full initial deadline.
+		timer.Reset(min(remaining, generalTimeout))
 	}
 }
 
