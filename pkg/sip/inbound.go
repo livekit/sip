@@ -1324,7 +1324,7 @@ func (c *inboundCall) closeWithCancelled(ctx context.Context) {
 	if p := c.closeReason.Load(); p != nil {
 		reason = *p
 	}
-	c.closeWithReason(ctx, CallHangup, stats.Success("cancelled"), reason)
+	c.closeWithReason(ctx, CallCancelled, stats.Success("cancelled"), reason)
 }
 
 func (c *inboundCall) closeWithHangup(ctx context.Context) {
@@ -1795,9 +1795,8 @@ func (c *sipInbound) StartRinging() {
 			case <-stop:
 				return
 			case r := <-cancels:
-				close(c.cancelled)
+				close(c.cancelled) // Other goroutines will respond to the primary INVITE
 				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
-				c.RespondAndDrop(sip.StatusRequestTerminated, "Request Terminated")
 				return
 			case <-ticker.C:
 			}
