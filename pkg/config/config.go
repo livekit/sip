@@ -106,10 +106,11 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
-	MediaTimeout        time.Duration   `yaml:"media_timeout"`
-	MediaTimeoutInitial time.Duration   `yaml:"media_timeout_initial"`
-	SymmetricRTP        bool            `yaml:"symmetric_rtp"`
-	Codecs              map[string]bool `yaml:"codecs"`
+	MediaTimeout         time.Duration   `yaml:"media_timeout"`
+	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
+	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
+	Codecs               map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.

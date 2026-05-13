@@ -1042,15 +1042,16 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
-		IP:                  c.s.sconf.MediaIP,
-		Ports:               conf.RTPPort,
-		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
-		MediaTimeout:        mconf.MediaTimeout,
-		SymmetricRTP:        conf.SymmetricRTP,
-		EnableJitterBuffer:  c.jitterBuf,
-		LogSignalChanges:    logSignalChanges,
-		Stats:               &c.stats.Port,
-		NoInputResample:     !RoomResample,
+		IP:                   c.s.sconf.MediaIP,
+		Ports:                conf.RTPPort,
+		MediaTimeoutInitial:  c.s.conf.MediaTimeoutInitial,
+		MediaTimeout:         mconf.MediaTimeout,
+		SymmetricRTP:         conf.SymmetricRTP,
+		IgnoreLocalAddrInSDP: c.s.conf.IgnoreLocalAddrInSDP,
+		EnableJitterBuffer:   c.jitterBuf,
+		LogSignalChanges:     logSignalChanges,
+		Stats:                &c.stats.Port,
+		NoInputResample:      !RoomResample,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
