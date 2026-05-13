@@ -66,7 +66,6 @@ type sipOutboundConfig struct {
 	featureFlags    map[string]string
 	mediaConfig     *sipMediaConfig
 	displayName     *string
-	mediaTimeout    time.Duration
 }
 
 type outboundCall struct {
@@ -137,16 +136,11 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
 	var err error
 
-	mediaTimeout := c.conf.MediaTimeout
-	if sipConf.mediaTimeout > 0 {
-		mediaTimeout = sipConf.mediaTimeout
-	}
-
 	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
 		IP:                  c.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.conf.MediaTimeoutInitial,
-		MediaTimeout:        mediaTimeout,
+		MediaTimeout:        sipConf.mediaConfig.MediaTimeout,
 		SymmetricRTP:        c.conf.SymmetricRTP,
 		EnableJitterBuffer:  call.jitterBuf,
 		LogSignalChanges:    signalLoggingEnabled,

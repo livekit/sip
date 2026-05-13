@@ -18,6 +18,7 @@ package sip
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	_ "github.com/livekit/media-sdk/all"
 	"github.com/livekit/media-sdk/dtmf"
@@ -40,7 +41,7 @@ func init() {
 	})
 }
 
-func newMediaConfig(m *livekit.SIPMediaConfig) (*sipMediaConfig, error) {
+func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*sipMediaConfig, error) {
 	enc, err := sdpEncryption(m.Encryption)
 	if err != nil {
 		return nil, err
@@ -49,15 +50,22 @@ func newMediaConfig(m *livekit.SIPMediaConfig) (*sipMediaConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	mediaTimeout := defaultTimeout
+	if m.MediaTimeout != nil && m.MediaTimeout.AsDuration() > 0 {
+		mediaTimeout = m.MediaTimeout.AsDuration()
+	}
 	return &sipMediaConfig{
-		Encryption: enc,
-		Codecs:     s,
+		Encryption:   enc,
+		Codecs:       s,
+		MediaTimeout: mediaTimeout,
 	}, nil
 }
 
 type sipMediaConfig struct {
-	Encryption sdp.Encryption
-	Codecs     *msdk.CodecSet
+	Encryption   sdp.Encryption
+	Codecs       *msdk.CodecSet
+	MediaTimeout time.Duration
 }
 
 func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {

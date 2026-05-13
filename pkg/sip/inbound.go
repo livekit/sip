@@ -983,8 +983,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	})
 
 	c.started.Break()
-
-	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, disp.MediaTimeout)
+	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, disp.MediaConfig.MediaTimeout.AsDuration())
 }
 
 func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time, mediaTimeout time.Duration) error {
@@ -1022,9 +1021,6 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log().Warnw("Call accepted, but no ACK received", errNoACK)
 			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
-			if mediaTimeout <= 0 {
-				mediaTimeout = c.s.conf.MediaTimeout
-			}
 			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
 		}
 	}
@@ -1035,7 +1031,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.
 	defer c.mmu.Unlock()
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
-	mconf, err := newMediaConfig(m)
+	mconf, err := newMediaConfig(m, c.s.conf.MediaTimeout)
 	if err != nil {
 		c.log().Errorw("Cannot create media config", err)
 		return nil, err
@@ -1043,15 +1039,11 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.
 
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
-	mediaTimeout := c.s.conf.MediaTimeout
-	if disp.MediaTimeout > 0 {
-		mediaTimeout = disp.MediaTimeout
-	}
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
 		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
-		MediaTimeout:        mediaTimeout,
+		MediaTimeout:        mconf.MediaTimeout,
 		SymmetricRTP:        conf.SymmetricRTP,
 		EnableJitterBuffer:  c.jitterBuf,
 		LogSignalChanges:    logSignalChanges,
