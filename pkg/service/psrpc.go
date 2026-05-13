@@ -164,14 +164,14 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.
 			FeatureFlags:        resp.FeatureFlags,
 			RingingTimeout:      resp.RingingTimeout.AsDuration(),
 			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
-			MediaConfig:         resp.Media,
+			MediaEncryption:     resp.MediaEncryption,
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{
-			ProjectID:   resp.ProjectId,
-			Result:      sip.DispatchRequestPin,
-			TrunkID:     resp.SipTrunkId,
-			MediaConfig: resp.Media,
+			ProjectID:       resp.ProjectId,
+			Result:          sip.DispatchRequestPin,
+			TrunkID:         resp.SipTrunkId,
+			MediaEncryption: resp.MediaEncryption,
 		}
 	case rpc.SIPDispatchResult_REJECT:
 		return sip.CallDispatch{

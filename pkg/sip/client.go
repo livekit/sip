@@ -274,6 +274,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		featureFlags:    req.FeatureFlags,
 		mediaConfig:     mconf,
 		displayName:     req.DisplayName,
+		mediaTimeout:    req.MediaTimeout.AsDuration(),
 	}
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(ctx, tid, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
