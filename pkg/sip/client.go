@@ -208,7 +208,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if req.SipTrunkId != "" {
 		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
-	mconf, err := newMediaConfig(req.Media)
+	mconf, err := newMediaConfig(req.Media, c.conf.MediaTimeout)
 	if err != nil {
 		return nil, err
 	}

@@ -761,6 +761,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if disp.MediaConfig == nil {
 		disp.MediaConfig = &livekit.SIPMediaConfig{}
 	}
+	mconf, err := newMediaConfig(disp.MediaConfig, c.s.conf.MediaTimeout)
+	if err != nil {
+		c.log().Errorw("Cannot create media config", err)
+		c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
+		c.close(ctx, callDropped, stats.ServerError("media-config-error"))
+		return psrpc.NewError(psrpc.Internal, err)
+	}
 	if disp.ProjectID != "" {
 		c.appendLogValues("projectID", disp.ProjectID)
 		c.projectID = disp.ProjectID
@@ -818,7 +825,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		pinPrompt = true
 	}
 
-	runMedia := func(m *livekit.SIPMediaConfig) ([]byte, error) {
+	runMedia := func(m *sipMediaConfig) ([]byte, error) {
 		log := c.log()
 		if h := req.ContentLength(); h != nil {
 			log = log.WithValues("contentLength", int(*h))
@@ -913,7 +920,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		// Accept the call first on the SIP side, so that we can send audio prompts.
 		// This also means we have to pick encryption setting early, before room is selected.
 		// Backend must explicitly enable encryption for pin prompts.
-		answerData, err = runMedia(disp.MediaConfig)
+		answerData, err = runMedia(mconf)
 		if err != nil {
 			return err // already sent a response
 		}
@@ -927,7 +934,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	} else {
 		// Start media with given encryption settings.
 		var err error
-		answerData, err = runMedia(disp.MediaConfig)
+		answerData, err = runMedia(mconf)
 		if err != nil {
 			return err // already sent a response
 		}
@@ -983,11 +990,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	})
 
 	c.started.Break()
-
-	return c.waitForCallEnd(ctx, ackReceived, ackTimeout)
+	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, mconf.MediaTimeout)
 }
 
-func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time) error {
+func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time, mediaTimeout time.Duration) error {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitForCallEnd")
 	defer span.End()
 	// Wait for the caller to terminate the call. Send regular keep alives.
@@ -1022,21 +1028,16 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log().Warnw("Call accepted, but no ACK received", errNoACK)
 			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
-			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), c.s.conf.MediaTimeout)
+			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
 		}
 	}
 }
 
-func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.SIPMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
-	mconf, err := newMediaConfig(m)
-	if err != nil {
-		c.log().Errorw("Cannot create media config", err)
-		return nil, err
-	}
 
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
@@ -1044,7 +1045,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, m *livekit.
 		IP:                  c.s.sconf.MediaIP,
 		Ports:               conf.RTPPort,
 		MediaTimeoutInitial: c.s.conf.MediaTimeoutInitial,
-		MediaTimeout:        c.s.conf.MediaTimeout,
+		MediaTimeout:        mconf.MediaTimeout,
 		SymmetricRTP:        conf.SymmetricRTP,
 		EnableJitterBuffer:  c.jitterBuf,
 		LogSignalChanges:    logSignalChanges,
