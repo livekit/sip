@@ -66,7 +66,7 @@ type TLSConfig struct {
 	// ALPNProtocols is an optional list of ALPN protocol names for TLS negotiation.
 	// If not provided, defaults to ["sip"]. Set to an empty list to disable ALPN.
 	// Some providers (e.g. Meta) reject the "sip" ALPN and require it to be disabled.
-	ALPNProtocols *[]string `yaml:"alpn"`
+	ALPNProtocols []string `yaml:"alpn"`
 }
 
 type TCPConfig struct {

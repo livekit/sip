@@ -66,11 +66,11 @@ var defaultALPNProtocols = []string{"sip"}
 // tlsALPNProtocols returns the ALPN protocols to use for TLS negotiation.
 // If alpn is nil (not configured), it returns the default ["sip"].
 // If alpn is non-nil, it returns the configured value (which may be empty to disable ALPN).
-func tlsALPNProtocols(alpn *[]string) []string {
+func tlsALPNProtocols(alpn []string) []string {
 	if alpn == nil {
 		return defaultALPNProtocols
 	}
-	return *alpn
+	return alpn
 }
 
 // parseCipherSuites parses cipher suite names to uint16 IDs.
