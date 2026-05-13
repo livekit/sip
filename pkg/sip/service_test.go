@@ -359,9 +359,11 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 
 			// Return password authentication required
 			return AuthInfo{
-				Result:   AuthPassword,
-				Username: username,
-				Password: password,
+				Result: AuthPassword,
+				Auth: InboundAuth{
+					Username: username,
+					Password: password,
+				},
 			}, nil
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
@@ -564,9 +566,11 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 	h := &TestHandler{
 		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
 			return AuthInfo{
-				Result:   AuthPassword,
-				Username: username,
-				Password: password,
+				Result: AuthPassword,
+				Auth: InboundAuth{
+					Username: username,
+					Password: password,
+				},
 			}, nil
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
@@ -818,9 +822,11 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 			log.Infow("GetAuthCredentials called", "callID", call.LkCallId)
 
 			return AuthInfo{
-				Result:   AuthPassword,
-				Username: username,
-				Password: password,
+				Result: AuthPassword,
+				Auth: InboundAuth{
+					Username: username,
+					Password: password,
+				},
 			}, nil
 		},
 		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
