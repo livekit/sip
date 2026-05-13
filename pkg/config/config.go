@@ -62,6 +62,11 @@ type TLSConfig struct {
 	// If not provided, Go's secure defaults are used.
 	// Note: Only applies to TLS 1.0-1.2; TLS 1.3 cipher suites are not configurable.
 	CipherSuites []string `yaml:"cipher_suites"`
+
+	// ALPNProtocols is an optional list of ALPN protocol names for TLS negotiation.
+	// If not provided, defaults to ["sip"]. Set to an empty list to disable ALPN.
+	// Some providers (e.g. Meta) reject the "sip" ALPN and require it to be disabled.
+	ALPNProtocols []string `yaml:"alpn"`
 }
 
 type TCPConfig struct {
