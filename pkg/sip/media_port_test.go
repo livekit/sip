@@ -490,7 +490,7 @@ func TestMediaTimeout(t *testing.T) {
 		}
 	})
 
-	t.Run("reset timeout", func(t *testing.T) {
+	t.Run("reset timeout after media", func(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
@@ -510,12 +510,36 @@ func TestMediaTimeout(t *testing.T) {
 			}
 		}
 
+		// Once media has flowed, SetTimeout does not re-enter the initial window —
+		// the general timeout applies relative to the last received RTP packet.
+		// Last packet arrived at most timeout/2 ago, so the timeout should fire
+		// within ~timeout from now, well before initial would elapse.
+		m1.SetTimeout(initial, timeout)
+
+		select {
+		case <-time.After(timeout + dt):
+			t.Fatal("timeout didn't trigger")
+		case <-m1.Timeout():
+		}
+	})
+
+	t.Run("reset timeout before any media", func(t *testing.T) {
+		m1, _ := newMediaPair(t, &MediaOptions{
+			MediaTimeoutInitial: initial,
+			MediaTimeout:        timeout,
+		}, nil)
+		m1.EnableTimeout(true)
+
+		// No media has ever arrived. SetTimeout re-arms startTime, and since the
+		// port has never seen an RTP packet, the new initial window applies from
+		// the moment of the SetTimeout call.
+		time.Sleep(initial / 2)
 		m1.SetTimeout(initial, timeout)
 
 		targ := time.Now().Add(initial)
 		select {
 		case <-m1.Timeout():
-			t.Fatal("initial timeout ignored")
+			t.Fatal("initial timeout fired too early")
 		case <-time.After(initial / 2):
 		}
 
