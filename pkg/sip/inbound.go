@@ -185,17 +185,20 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 // client to retry) from a hard auth failure. Callers should treat
 // (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
 // a finalized error state.
-func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from, username, password string) (ok bool, challenge bool) {
+func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool) {
+	if auth.Realm == "" {
+		auth.Realm = UserAgent
+	}
 	log = log.WithValues(
-		"username", username,
-		"passwordHash", hashPassword(password),
+		"username", auth.Username,
+		"passwordHash", hashPassword(auth.Password),
 		"method", req.Method.String(),
 		"uri", req.Recipient.String(),
 	)
 
 	log.Infow("Starting SIP invite authentication")
 
-	if username == "" || password == "" {
+	if auth.Username == "" || auth.Password == "" {
 		log.Debugw("Skipping authentication - no credentials provided")
 		return true, false
 	}
@@ -217,7 +220,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
 		inviteState.challenge = digest.Challenge{
-			Realm:     UserAgent,
+			Realm:     auth.Realm,
 			Nonce:     generateNonce(sipCallID),
 			Algorithm: "MD5",
 		}
@@ -251,9 +254,9 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	log.Debugw("Parsed credentials successfully", "cred", cred)
 
 	// Validate that the username in the request matches the expected username
-	if cred.Username != username {
+	if cred.Username != auth.Username {
 		log.Warnw("Authentication failed - username mismatch", errors.New("username mismatch"),
-			"expectedUsername", username,
+			"expectedUsername", auth.Username,
 			"receivedUsername", cred.Username,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
@@ -264,7 +267,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if inviteState.challenge.Realm == "" {
 		log.Warnw("No challenge state found for authentication attempt", errors.New("missing challenge state"),
 			"sipCallID", sipCallID,
-			"expectedRealm", UserAgent,
+			"expectedRealm", auth.Realm,
 		)
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
 		return false, false
@@ -280,7 +283,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 		Method:   req.Method.String(),
 		URI:      cred.URI,
 		Username: cred.Username,
-		Password: password,
+		Password: auth.Password,
 	})
 
 	if err != nil {
@@ -492,7 +495,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		inviteState.authResolved.Store(true)
 
 		s.getCallInfo(cc.ID()).countInvite(log, req)
-		if ok, challenge := s.handleInviteAuth(tid, log, req, tx, from.User, r.Username, r.Password); !ok {
+		if ok, challenge := s.handleInviteAuth(tid, log, req, tx, from.User, r.Auth); !ok {
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
 			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
