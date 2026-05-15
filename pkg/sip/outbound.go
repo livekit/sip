@@ -414,6 +414,25 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 			} else {
 				term = stats.ClientError("sdp-error")
 			}
+		} else {
+			var psErr psrpc.Error
+			if !errors.As(err, &psErr) {
+				var (
+					opErr   *net.OpError
+					dnsErr  *net.DNSError
+					addrErr *net.AddrError
+				)
+				switch {
+				case errors.Is(err, context.DeadlineExceeded):
+					err = psrpc.NewError(psrpc.DeadlineExceeded, err)
+				case errors.Is(err, context.Canceled):
+					err = psrpc.NewError(psrpc.Canceled, err)
+				case errors.As(err, &addrErr):
+					err = psrpc.NewError(psrpc.InvalidArgument, err)
+				case errors.As(err, &dnsErr), errors.As(err, &opErr): // opErr needs to be checked last because it wraps addrErr and dnsErr
+					err = psrpc.NewError(psrpc.Unavailable, err)
+				}
+			}
 		}
 		c.close(ctx, reportErr, status, term, reason)
 		return err
@@ -1041,7 +1060,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.invite == nil || c.inviteOk == nil {
-		return errors.New("call already closed")
+		return psrpc.NewErrorf(psrpc.Canceled, "call already closed")
 	}
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
