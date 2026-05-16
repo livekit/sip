@@ -442,6 +442,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
 		lksdk.WithAutoSubscribe(false),
 		lksdk.WithExtraAttributes(partConf.Attributes),
+		lksdk.WithDisableTURN(),
 	)
 	if err != nil {
 		return err
