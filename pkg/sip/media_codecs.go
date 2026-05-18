@@ -21,6 +21,7 @@ import (
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
+	"github.com/livekit/media-sdk/amrwb"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
@@ -38,6 +39,7 @@ func init() {
 		g711.ULawSDPName: true,
 		g722.SDPName:     true,
 		dtmf.SDPName:     true,
+		amrwb.SDPName:    false, // disable by default
 	})
 }
 
