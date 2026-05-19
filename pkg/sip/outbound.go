@@ -31,7 +31,6 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
-	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -390,52 +389,9 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 	defer c.mu.Unlock()
 	if err := c.dialSIP(ctx, tid); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
-
-		reportErr := err
-		status, term, reason := callDropped, stats.ServerError("invite-failed"), livekit.DisconnectReason_UNKNOWN_REASON
-		var e *livekit.SIPStatus
-		if errors.As(err, &e) {
-			switch int(e.Code) {
-			case int(sip.StatusTemporarilyUnavailable):
-				status, term, reason = callUnavailable, stats.ClientError("unavailable"), livekit.DisconnectReason_USER_UNAVAILABLE
-				reportErr = nil
-			case int(sip.StatusBusyHere):
-				status, term, reason = callRejected, stats.ClientError("busy"), livekit.DisconnectReason_USER_REJECTED
-				reportErr = nil
-			}
-		} else if e := (SDPError{}); errors.As(err, &e) {
-			status, reason = callRejected, livekit.DisconnectReason_MEDIA_FAILURE
-			reportErr = nil
-			err = psrpc.NewError(psrpc.FailedPrecondition, e.Err)
-			if errors.Is(e.Err, sdp.ErrNoCommonMedia) {
-				term = stats.ClientError("no-common-codec")
-			} else if errors.Is(e.Err, sdp.ErrNoCommonCrypto) {
-				term = stats.ClientError("encryption-required")
-			} else {
-				term = stats.ClientError("sdp-error")
-			}
-		} else {
-			var psErr psrpc.Error
-			if !errors.As(err, &psErr) {
-				var (
-					opErr   *net.OpError
-					dnsErr  *net.DNSError
-					addrErr *net.AddrError
-				)
-				switch {
-				case errors.Is(err, context.DeadlineExceeded):
-					err = psrpc.NewError(psrpc.DeadlineExceeded, err)
-				case errors.Is(err, context.Canceled):
-					err = psrpc.NewError(psrpc.Canceled, err)
-				case errors.As(err, &addrErr):
-					err = psrpc.NewError(psrpc.InvalidArgument, err)
-				case errors.As(err, &dnsErr), errors.As(err, &opErr): // opErr needs to be checked last because it wraps addrErr and dnsErr
-					err = psrpc.NewError(psrpc.Unavailable, err)
-				}
-			}
-		}
-		c.close(ctx, reportErr, status, term, reason)
-		return err
+		res := classifyInviteError(err)
+		c.close(ctx, res.reportErr, res.status, res.term, res.reason)
+		return res.returnErr
 	}
 	c.connectMedia()
 	c.started.Break()
@@ -536,7 +492,7 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			_ = tx.Cancel()
 			// NOTE: psrpc.Canceled does not auto-retry, whereas psrpc.DeadlineExceeded does
 			// As long as that is the case, avoid psrpc.DeadlineExceeded to prevent hammering of destination.
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "sip request timed out")
+			return nil, psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout)
 		case <-stop:
 			_ = tx.Cancel()
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
@@ -949,7 +905,7 @@ func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, hea
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, fmt.Errorf("max auth retry attempts reached for SIP invite"))
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
@@ -989,20 +945,20 @@ authLoop:
 		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, errors.New("sip server required auth, but no username or password was provided"))
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds)
 		}
 		headerVal := resp.GetHeader(authHeaderName)
 		if headerVal == nil {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, errors.New("no auth header in sip invite response"))
+			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthNoHeader)
 		}
 		challengeStr := headerVal.Value()
 		challenge, err := digest.ParseChallenge(challengeStr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid challenge %q: %w", challengeStr, err)
+			return nil, psrpc.NewErrorf(psrpc.Internal, "invalid challenge %q: %v", challengeStr, err)
 		}
 		toHeader := resp.To()
 		if toHeader == nil {
-			return nil, errors.New("no 'To' header on Response")
+			return nil, psrpc.NewErrorf(psrpc.Internal, "no 'To' header on Response")
 		}
 
 		cred, err := digest.Digest(challenge, digest.Options{
@@ -1021,12 +977,12 @@ authLoop:
 	c.invite, c.inviteOk = req, resp
 	toHeader = resp.To()
 	if toHeader == nil {
-		return nil, errors.New("no To header in INVITE response")
+		return nil, psrpc.NewErrorf(psrpc.Internal, "no To header in INVITE response")
 	}
 	var ok bool
 	c.tag, ok = getTagFrom(toHeader.Params)
 	if !ok {
-		return nil, errors.New("no tag in To header in INVITE response")
+		return nil, psrpc.NewErrorf(psrpc.Internal, "no tag in To header in INVITE response")
 	}
 
 	if cont := resp.Contact(); cont != nil {
