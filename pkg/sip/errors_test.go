@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -64,8 +65,14 @@ func TestClassifyInviteError(t *testing.T) {
 		{"Auth missing creds", psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds), callRejected, stats.ClientError("auth-failed"), livekit.DisconnectReason_USER_REJECTED, true},
 		{"Auth no header", psrpc.NewError(psrpc.FailedPrecondition, ErrAuthNoHeader), callRejected, stats.ClientError("auth-failed"), livekit.DisconnectReason_USER_REJECTED, true},
 
-		// DNS error
+		// Context cancellation / deadline
+		{"context.DeadlineExceeded", context.DeadlineExceeded, callDropped, stats.ServerError("deadline-exceeded"), livekit.DisconnectReason_UNKNOWN_REASON, true},
+		{"context.Canceled", context.Canceled, callRejected, stats.ClientError("canceled"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
+
+		// Net errors
 		{"DNS no such host", &net.DNSError{Err: "no such host", Name: "voip.example.com", IsNotFound: true}, callDropped, stats.ClientError("dns-resolution"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"AddrError missing port", &net.AddrError{Err: "missing port", Addr: "voip.example.com"}, callDropped, stats.ClientError("address-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"OpError dial refused", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, callDropped, stats.ServerError("network-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// Unknown — conservative default
 		{"Unknown error", errors.New("something broke"), callDropped, stats.ServerError("invite-failed"), livekit.DisconnectReason_UNKNOWN_REASON, true},
@@ -95,3 +102,27 @@ func TestClassifyInviteError_SDPReplacesReturnErr(t *testing.T) {
 	require.True(t, errors.Is(res.returnErr, sdp.ErrNoCommonMedia))
 }
 
+func TestClassifyInviteError_ReturnErrWrap(t *testing.T) {
+	// Refined buckets that wrap returnErr with a specific psrpc code so the
+	// RPC boundary reflects the originating failure mode instead of an
+	// auto-wrapped Internal/500.
+	cases := []struct {
+		name     string
+		err      error
+		wantCode psrpc.ErrorCode
+	}{
+		{"context.DeadlineExceeded", context.DeadlineExceeded, psrpc.DeadlineExceeded},
+		{"context.Canceled", context.Canceled, psrpc.Canceled},
+		{"*net.DNSError", &net.DNSError{Err: "no such host", Name: "voip.example.com", IsNotFound: true}, psrpc.InvalidArgument},
+		{"*net.AddrError", &net.AddrError{Err: "missing port", Addr: "voip.example.com"}, psrpc.InvalidArgument},
+		{"*net.OpError", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, psrpc.Unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := classifyInviteError(tc.err)
+			var psErr psrpc.Error
+			require.True(t, errors.As(res.returnErr, &psErr), "returnErr should be a psrpc.Error")
+			require.Equal(t, tc.wantCode, psErr.Code())
+		})
+	}
+}

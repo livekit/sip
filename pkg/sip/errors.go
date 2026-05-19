@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"context"
 	"fmt"
 	"net"
 
@@ -47,8 +48,16 @@ type inviteErrorClassification struct {
 //   - SDP negotiation failures → client_error subclasses.
 //   - Ringing-timeout / context cancel (ErrSIPRequestTimeout) → client_error
 //     "no-answer" since the callee never picked up.
-//   - DNS resolution failures → client_error "dns-resolution" (caller's
-//     trunk URI is wrong).
+//   - context.DeadlineExceeded → server_error "deadline-exceeded".
+//   - context.Canceled → client_error "canceled" (caller pulled the plug).
+//   - DNS resolution failures → client_error "dns-resolution" (trunk URI is
+//     wrong, wrapped as psrpc.InvalidArgument).
+//   - Address parsing failures (*net.AddrError) → client_error "address-error"
+//     (trunk address is malformed, wrapped as psrpc.InvalidArgument).
+//   - Generic network op errors (*net.OpError) → server_error "network-error"
+//     (trunk unreachable; ambiguous whether the cause is the customer's trunk
+//     or our outbound network — conservatively kept in server_error so SLI
+//     stays visible, wrapped as psrpc.Unavailable).
 //   - Auth failures (missing creds, max-retry, missing header) → client_error
 //     "auth-failed" (caller's trunk auth config is wrong).
 func classifyInviteError(err error) inviteErrorClassification {
@@ -123,14 +132,38 @@ func classifyInviteError(err error) inviteErrorClassification {
 		return res
 	}
 
+	// Context cancellation / deadline. Check before *net.OpError because an
+	// op error can wrap a context error, and the context cause is more
+	// informative.
+	if errors.Is(err, context.DeadlineExceeded) {
+		res.status, res.term, res.reason = callDropped, stats.ServerError("deadline-exceeded"), livekit.DisconnectReason_UNKNOWN_REASON
+		res.returnErr = psrpc.NewError(psrpc.DeadlineExceeded, err)
+		return res
+	}
+	if errors.Is(err, context.Canceled) {
+		res.status, res.term, res.reason = callRejected, stats.ClientError("canceled"), livekit.DisconnectReason_USER_UNAVAILABLE
+		res.reportErr = nil
+		res.returnErr = psrpc.NewError(psrpc.Canceled, err)
+		return res
+	}
+
+	// Specific net error types before *net.OpError (which wraps them).
+	var addrErr *net.AddrError
+	if errors.As(err, &addrErr) {
+		res.status, res.term, res.reason = callDropped, stats.ClientError("address-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+		res.returnErr = psrpc.NewError(psrpc.InvalidArgument, err)
+		return res
+	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		res.status, res.term, res.reason = callDropped, stats.ClientError("dns-resolution"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
-		// keep reportErr so the DNS detail is recorded in SIPCallInfo;
-		// wrap returnErr so callers across the RPC boundary see a 400
-		// (InvalidArgument — the trunk URI is bad) instead of an
-		// auto-wrapped Internal/500.
 		res.returnErr = psrpc.NewError(psrpc.InvalidArgument, err)
+		return res
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		res.status, res.term, res.reason = callDropped, stats.ServerError("network-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+		res.returnErr = psrpc.NewError(psrpc.Unavailable, err)
 		return res
 	}
 
