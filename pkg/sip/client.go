@@ -176,6 +176,9 @@ func (c *Client) getActiveCall(tag LocalTag) *outboundCall {
 }
 
 func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
+	if c.conf.AllowCustomFromHostname {
+		req.Hostname = req.FromHostname
+	}
 	if c.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
 	}
