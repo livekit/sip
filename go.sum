@@ -50,6 +50,8 @@ github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/dennwc/amrwb-cgo v0.0.0-20260520132032-df56718048c8 h1:UKqf4Oyvnn4xwiNXBFWJJXn6ZYktnD9lxHhYnt2lbW0=
+github.com/dennwc/amrwb-cgo v0.0.0-20260520132032-df56718048c8/go.mod h1:LjB85NWGb8sNoHWYbhbtkzLE1syqKTZT1Biks5BxNHo=
 github.com/dennwc/iters v1.2.2 h1:XH2/Etihiy9ZvPOVCR+icQXeYlhbvS7k0qro4x/2qQo=
 github.com/dennwc/iters v1.2.2/go.mod h1:M9KuuMBeyEXYTmB7EnI9SCyALFCmPWOIxn5W1L0CjGg=
 github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f h1:lO4WD4F/rVNCu3HqELle0jiPLLBs70cWOduZpkS1E78=
@@ -132,8 +134,8 @@ github.com/lithammer/shortuuid/v4 v4.2.0 h1:LMFOzVB3996a7b8aBuEXxqOBflbfPQAiVzkI
 github.com/lithammer/shortuuid/v4 v4.2.0/go.mod h1:D5noHZ2oFw/YaKCfGy0YxyE7M0wMbezmMjPdhyEFe6Y=
 github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 h1:9x+U2HGLrSw5ATTo469PQPkqzdoU7be46ryiCDO3boc=
 github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
-github.com/livekit/media-sdk v0.0.0-20260504125714-dd334c543809 h1:h0bfcFCXX3UjTnZ0bKR5c3XX+8jBEAQQ9LG30yfVnyc=
-github.com/livekit/media-sdk v0.0.0-20260504125714-dd334c543809/go.mod h1:7ssWiG+U4xnbvLih9WiZbhQP6zIKMjgXdUtIE1bm/E8=
+github.com/livekit/media-sdk v0.0.0-20260520134407-88258bfa08ca h1:j5iEoptH1ZjZWGABoEja/v+0cF0jlRkXUSnxig7TkQo=
+github.com/livekit/media-sdk v0.0.0-20260520134407-88258bfa08ca/go.mod h1:IEodVPCZ3eAscxH0GX4A+g6UbKMBon4yxeZOGgwCMrs=
 github.com/livekit/mediatransportutil v0.0.0-20260309115634-0e2e24b36ee8 h1:coWig9fKxdb/nwOaIoGUUAogso12GblAJh/9SA9hcxk=
 github.com/livekit/mediatransportutil v0.0.0-20260309115634-0e2e24b36ee8/go.mod h1:RCd46PT+6sEztld6XpkCrG1xskb0u3SqxIjy4G897Ss=
 github.com/livekit/protocol v1.45.9-0.20260518225207-2cfe2d2aa772 h1:JOlU9yyc65+qGW5os8fFgPtih89vSsGT+Dv42nzTMEw=
