@@ -2,10 +2,9 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
-
-	"github.com/pkg/errors"
 
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
@@ -69,8 +68,7 @@ func classifyInviteError(err error) inviteErrorClassification {
 		returnErr: err,
 	}
 
-	var sipStatus *livekit.SIPStatus
-	if errors.As(err, &sipStatus) {
+	if sipStatus, ok := errors.AsType[*livekit.SIPStatus](err); ok {
 		code := int(sipStatus.Code)
 		switch code {
 		case int(sip.StatusUnauthorized), int(sip.StatusProxyAuthRequired):
@@ -110,8 +108,7 @@ func classifyInviteError(err error) inviteErrorClassification {
 		return res
 	}
 
-	var sdpErr SDPError
-	if errors.As(err, &sdpErr) {
+	if sdpErr, ok := errors.AsType[SDPError](err); ok {
 		res.status, res.reason = callRejected, livekit.DisconnectReason_MEDIA_FAILURE
 		res.reportErr = nil
 		res.returnErr = psrpc.NewError(psrpc.FailedPrecondition, sdpErr.Err)
@@ -148,20 +145,17 @@ func classifyInviteError(err error) inviteErrorClassification {
 	}
 
 	// Specific net error types before *net.OpError (which wraps them).
-	var addrErr *net.AddrError
-	if errors.As(err, &addrErr) {
+	if _, ok := errors.AsType[*net.AddrError](err); ok {
 		res.status, res.term, res.reason = callDropped, stats.ClientError("address-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 		res.returnErr = psrpc.NewError(psrpc.InvalidArgument, err)
 		return res
 	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if _, ok := errors.AsType[*net.DNSError](err); ok {
 		res.status, res.term, res.reason = callDropped, stats.ClientError("dns-resolution"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 		res.returnErr = psrpc.NewError(psrpc.InvalidArgument, err)
 		return res
 	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
 		res.status, res.term, res.reason = callDropped, stats.ServerError("network-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 		res.returnErr = psrpc.NewError(psrpc.Unavailable, err)
 		return res
