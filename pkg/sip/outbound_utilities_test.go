@@ -187,7 +187,7 @@ func (r *testRoom) Closed() <-chan struct{} {
 	return r.room.Closed()
 }
 
-func (r *testRoom) ClosedReason() lksdk.DisconnectionReason {
+func (r *testRoom) ClosedReason() livekit.DisconnectReason {
 	return r.room.ClosedReason()
 }
 

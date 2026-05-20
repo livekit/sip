@@ -18,28 +18,46 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/stats"
 )
 
 // terminationFromRoomDisconnect classifies a call termination triggered by
-// the LiveKit room closing. The reason comes from lksdk's
-// OnDisconnectedWithReason callback. Clean leaves (customer ended the call
-// or removed the participant) count as success; connection failures and
-// unknown causes count as server_error.
-func terminationFromRoomDisconnect(reason lksdk.DisconnectionReason) stats.Termination {
+// the LiveKit room closing, given the raw protocol disconnect reason.
+func terminationFromRoomDisconnect(reason livekit.DisconnectReason) stats.Termination {
 	switch reason {
-	case lksdk.LeaveRequested, lksdk.RoomClosed, lksdk.ParticipantRemoved:
+	case livekit.DisconnectReason_CLIENT_INITIATED,
+		livekit.DisconnectReason_ROOM_CLOSED,
+		livekit.DisconnectReason_ROOM_DELETED,
+		livekit.DisconnectReason_PARTICIPANT_REMOVED:
 		return stats.Success("removed")
-	case lksdk.Failed:
+	case livekit.DisconnectReason_JOIN_FAILURE,
+		livekit.DisconnectReason_SIGNAL_CLOSE,
+		livekit.DisconnectReason_STATE_MISMATCH:
 		return stats.ServerError("room-failed")
+	case livekit.DisconnectReason_SERVER_SHUTDOWN:
+		return stats.ServerError("server-shutdown")
+	case livekit.DisconnectReason_CONNECTION_TIMEOUT:
+		return stats.ServerError("connection-timeout")
+	case livekit.DisconnectReason_MIGRATION:
+		return stats.ServerError("migration")
+	case livekit.DisconnectReason_SIP_TRUNK_FAILURE:
+		return stats.ServerError("sip-trunk-failure")
+	case livekit.DisconnectReason_MEDIA_FAILURE:
+		return stats.ServerError("media-failure")
+	case livekit.DisconnectReason_AGENT_ERROR:
+		return stats.ServerError("agent-error")
+	case livekit.DisconnectReason_DUPLICATE_IDENTITY:
+		return stats.ClientError("duplicate-identity")
+	case livekit.DisconnectReason_USER_UNAVAILABLE:
+		return stats.ClientError("user-unavailable")
+	case livekit.DisconnectReason_USER_REJECTED:
+		return stats.ClientError("user-rejected")
 	default:
-		// UserUnavailable, RejectedByUser, DuplicateIdentity, OtherReason,
-		// or empty (no reason reported by SDK). Conservative default —
-		// surface as server_error so the SLI doesn't silently absorb LK-side
-		// issues.
+		// UNKNOWN_REASON or any future proto value not yet listed here.
+		// Conservative — surface as server_error so the SLI doesn't
+		// silently absorb LK-side issues.
 		return stats.ServerError("room-disconnected")
 	}
 }
