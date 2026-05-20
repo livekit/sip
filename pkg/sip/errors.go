@@ -14,53 +14,60 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+// inviteFailure is the verdict for a failed outbound INVITE: how to record
+// the call, how to bucket the SLI, and which error to surface back.
+type inviteFailure struct {
+	status    CallStatus
+	term      stats.Termination
+	reason    livekit.DisconnectReason
+	reportErr error // nil skips writing SIPCallInfo.Error
+	returnErr error
+}
+
+// inviteClassifier lets an error describe its own verdict instead of
+// classifyInviteError carrying a switch over every variant. Source sites
+// wrap raw errors in these types so the classification lives next to where
+// the failure happened.
+type inviteClassifier interface {
+	error
+	ClassifyInvite() inviteFailure
+}
+
 type SDPError struct {
 	Err error
 }
 
-func (e SDPError) Error() string {
-	return e.Err.Error()
+func (e SDPError) Error() string { return e.Err.Error() }
+func (e SDPError) Unwrap() error { return e.Err }
+
+func (e SDPError) ClassifyInvite() inviteFailure {
+	res := inviteFailure{
+		status:    callRejected,
+		reason:    livekit.DisconnectReason_MEDIA_FAILURE,
+		reportErr: nil,
+		returnErr: psrpc.NewError(psrpc.FailedPrecondition, e.Err),
+	}
+	switch {
+	case errors.Is(e.Err, sdp.ErrNoCommonMedia):
+		res.term = stats.ClientError("no-common-codec")
+	case errors.Is(e.Err, sdp.ErrNoCommonCrypto):
+		res.term = stats.ClientError("encryption-required")
+	default:
+		res.term = stats.ClientError("sdp-error")
+	}
+	return res
 }
 
-func (e SDPError) Unwrap() error {
-	return e.Err
-}
+// classifyInviteError buckets an outbound INVITE error. Self-classifying
+// errors describe themselves; the residual switch covers external types we
+// can't extend (SIPStatus, net.*, context.*) and falls back to
+// ServerError("invite-failed") so unknown modes still flag the SLI.
+func classifyInviteError(err error) inviteFailure {
+	if ic, ok := errors.AsType[inviteClassifier](err); ok {
+		return ic.ClassifyInvite()
+	}
 
-// inviteErrorClassification captures everything connectSIP needs after a
-// dialSIP failure: how to record the call, how to bucket the SLI, and which
-// error (if any) to surface back to the caller and the call record.
-type inviteErrorClassification struct {
-	status    CallStatus
-	term      stats.Termination
-	reason    livekit.DisconnectReason
-	reportErr error // passed to c.close; nil means don't write to SIPCallInfo.Error
-	returnErr error // returned from connectSIP; defaults to the original err
-}
-
-// classifyInviteError buckets an outbound dialSIP error. The default is the
-// conservative ServerError("invite-failed") so that genuinely unknown failure
-// modes still get flagged. Known buckets:
-//
-//   - SIP status response from the customer's SIP trunk: 4xx → client_error,
-//     5xx → server_error with a distinct upstream label, 6xx → client_error.
-//     A handful of common codes get more specific reason labels.
-//   - SDP negotiation failures → client_error subclasses.
-//   - Ringing-timeout / context cancel (ErrSIPRequestTimeout) → client_error
-//     "no-answer" since the callee never picked up.
-//   - context.DeadlineExceeded → server_error "deadline-exceeded".
-//   - context.Canceled → client_error "canceled" (caller pulled the plug).
-//   - DNS resolution failures → client_error "dns-resolution" (trunk URI is
-//     wrong, wrapped as psrpc.InvalidArgument).
-//   - Address parsing failures (*net.AddrError) → client_error "address-error"
-//     (trunk address is malformed, wrapped as psrpc.InvalidArgument).
-//   - Generic network op errors (*net.OpError) → server_error "network-error"
-//     (trunk unreachable; ambiguous whether the cause is the customer's trunk
-//     or our outbound network — conservatively kept in server_error so SLI
-//     stays visible, wrapped as psrpc.Unavailable).
-//   - Auth failures (missing creds, max-retry, missing header) → client_error
-//     "auth-failed" (caller's trunk auth config is wrong).
-func classifyInviteError(err error) inviteErrorClassification {
-	res := inviteErrorClassification{
+	res := inviteFailure{
 		status:    callDropped,
 		term:      stats.ServerError("invite-failed"),
 		reason:    livekit.DisconnectReason_UNKNOWN_REASON,
@@ -104,21 +111,6 @@ func classifyInviteError(err error) inviteErrorClassification {
 				res.status, res.term, res.reason = callRejected, stats.ClientError(fmt.Sprintf("global-decline-%d", code)), livekit.DisconnectReason_USER_REJECTED
 				res.reportErr = nil
 			}
-		}
-		return res
-	}
-
-	if sdpErr, ok := errors.AsType[SDPError](err); ok {
-		res.status, res.reason = callRejected, livekit.DisconnectReason_MEDIA_FAILURE
-		res.reportErr = nil
-		res.returnErr = psrpc.NewError(psrpc.FailedPrecondition, sdpErr.Err)
-		switch {
-		case errors.Is(sdpErr.Err, sdp.ErrNoCommonMedia):
-			res.term = stats.ClientError("no-common-codec")
-		case errors.Is(sdpErr.Err, sdp.ErrNoCommonCrypto):
-			res.term = stats.ClientError("encryption-required")
-		default:
-			res.term = stats.ClientError("sdp-error")
 		}
 		return res
 	}
