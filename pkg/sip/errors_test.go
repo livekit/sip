@@ -55,9 +55,9 @@ func TestClassifyInviteError(t *testing.T) {
 		{"603 Global Decline", sipStatusErr(603), callRejected, stats.ClientError("global-decline-603"), livekit.DisconnectReason_USER_REJECTED, false},
 
 		// SDP errors
-		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_MEDIA_FAILURE, false},
-		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_MEDIA_FAILURE, false},
-		{"SDP other", SDPError{Err: errors.New("bad sdp")}, callRejected, stats.ClientError("sdp-error"), livekit.DisconnectReason_MEDIA_FAILURE, false},
+		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_MEDIA_FAILURE, true},
+		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_MEDIA_FAILURE, true},
+		{"SDP other", SDPError{Err: errors.New("bad sdp")}, callRejected, stats.ClientError("sdp-error"), livekit.DisconnectReason_MEDIA_FAILURE, true},
 
 		// Sentinel-based errors
 		{"SIP request timeout (no answer)", psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout), callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE, false},

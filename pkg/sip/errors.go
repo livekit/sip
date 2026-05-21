@@ -37,6 +37,8 @@ type SDPError struct {
 	Err error
 }
 
+var _ inviteClassifier = SDPError{}
+
 func (e SDPError) Error() string { return e.Err.Error() }
 func (e SDPError) Unwrap() error { return e.Err }
 
@@ -44,7 +46,7 @@ func (e SDPError) ClassifyInvite() inviteFailure {
 	res := inviteFailure{
 		status:    callRejected,
 		reason:    livekit.DisconnectReason_MEDIA_FAILURE,
-		reportErr: nil,
+		reportErr: e.Err,
 		returnErr: psrpc.NewError(psrpc.FailedPrecondition, e.Err),
 	}
 	switch {
