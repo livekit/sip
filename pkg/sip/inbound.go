@@ -365,10 +365,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	// Replay cached final rejection for retries reusing the same Call-ID +
 	// From-tag (e.g. provider-level failover after a 4xx). Skips creating
 	// a duplicate call object and the OnSessionEnd side-effects that follow.
-	if prev, ok := s.rejectedInvites.Get([2]string{cc.SIPCallID(), string(cc.Tag())}); ok {
-		log.Debugw("replaying cached INVITE rejection", "status", prev.status, "reason", prev.reason)
-		cc.RespondAndDrop(prev.status, prev.reason)
-		return nil
+	if s.rejectedInvites != nil {
+		if prev, ok := s.rejectedInvites.Get([2]string{cc.SIPCallID(), string(cc.Tag())}); ok {
+			log.Debugw("replaying cached INVITE rejection", "status", prev.status, "reason", prev.reason)
+			cc.RespondAndDrop(prev.status, prev.reason)
+			return nil
+		}
 	}
 
 	log.Infow("processing invite")
@@ -1732,7 +1734,7 @@ func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
 	// Cache the response so a retry reusing the same Call-ID + From-tag
 	// (e.g. provider failover after a 4xx) gets the cached reply replayed
 	// instead of running through the handler again.
-	if c.s != nil && status >= 300 && c.sipCallID != "" {
+	if c.s != nil && c.s.rejectedInvites != nil && status >= 300 && c.sipCallID != "" {
 		c.s.rejectedInvites.Add(
 			[2]string{c.sipCallID, string(c.tag)},
 			rejectedInviteResponse{status: status, reason: reason},
