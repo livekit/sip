@@ -112,6 +112,15 @@ func statusName(status int) string {
 	return fmt.Sprintf("status-%d", status)
 }
 
+// Sentinel errors emitted on outbound dial failure paths so callers can match
+// them with errors.Is without depending on the human-readable message.
+var (
+	ErrSIPRequestTimeout = errors.New("sip request timed out")
+	ErrAuthMaxRetry      = errors.New("max auth retry attempts reached for SIP invite")
+	ErrAuthMissingCreds  = errors.New("sip server required auth, but no username or password was provided")
+	ErrAuthNoHeader      = errors.New("no auth header in sip invite response")
+)
+
 type setHeadersFunc func(headers map[string]string) map[string]string
 
 type Signaling interface {
