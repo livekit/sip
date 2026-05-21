@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,6 +241,99 @@ func TestService_AuthDrop(t *testing.T) {
 	testInvite(t, h, true, expectedFromUser, expectedToUser, func(tx sip.ClientTransaction) {
 		expectNoResponse(t, tx)
 	})
+}
+
+// TestService_RejectedInviteCacheReplay verifies that a second INVITE
+// reusing the same Call-ID and From-tag after a final 4xx response gets
+// the cached response replayed without invoking the auth/dispatch
+// handlers a second time. This guards the dedup that absorbs
+// provider-level retries (same Call-ID + From-tag, new SIP transaction)
+// after we've already sent a terminal rejection.
+func TestService_RejectedInviteCacheReplay(t *testing.T) {
+	const (
+		fromUser = "caller@example.com"
+		toUser   = "callee@example.com"
+		callID   = "rejected-invite-replay-test@example.com"
+		fromTag  = "fixed-from-tag-replay"
+	)
+
+	var authCalls, dispatchCalls atomic.Int32
+
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			authCalls.Add(1)
+			return AuthInfo{Result: AuthAccept}, nil
+		},
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			dispatchCalls.Add(1)
+			return CallDispatch{Result: DispatchNoRuleReject}
+		},
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+			// no-op
+		},
+	}
+
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	log := logger.LogRLogger(logr.Discard())
+	s, err := NewService("", &config.Config{
+		SIPPort:       sipPort,
+		SIPPortListen: sipPort,
+		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+	t.Cleanup(s.Stop)
+
+	ua, err := sipgo.NewUA(sipgo.WithUserAgent(fromUser),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))))
+	require.NoError(t, err)
+	client, err := sipgo.NewClient(ua)
+	require.NoError(t, err)
+
+	offer, err := sdp.NewOfferWith(defaultCodecs, localIP, 0xB0B, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+
+	sendInvite := func() *sip.Response {
+		recipient := sip.Uri{User: toUser, Host: sipServerAddress}
+		req := sip.NewRequest(sip.INVITE, recipient)
+		req.SetDestination(sipServerAddress)
+		req.SetBody(offerData)
+		req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+		req.AppendHeader(sip.NewHeader("Call-ID", callID))
+		req.AppendHeader(&sip.FromHeader{
+			DisplayName: fromUser,
+			Address:     sip.Uri{User: fromUser, Host: sipServerAddress},
+			Params:      sip.HeaderParams{{K: "tag", V: fromTag}},
+		})
+		tx, err := client.TransactionRequest(req)
+		require.NoError(t, err)
+		t.Cleanup(tx.Terminate)
+		return getFinalResponseOrFail(t, tx, req)
+	}
+
+	// First INVITE: full handler invocation, 404 from DispatchNoRuleReject.
+	res1 := sendInvite()
+	require.Equal(t, sip.StatusCode(404), res1.StatusCode)
+	require.Equal(t, int32(1), authCalls.Load())
+	require.Equal(t, int32(1), dispatchCalls.Load())
+
+	// Second INVITE with the same Call-ID + From-tag should be served from
+	// the cache: same 404, but handlers must NOT be invoked again.
+	res2 := sendInvite()
+	require.Equal(t, sip.StatusCode(404), res2.StatusCode)
+	require.Equal(t, int32(1), authCalls.Load(), "auth handler must not be re-invoked on replay")
+	require.Equal(t, int32(1), dispatchCalls.Load(), "dispatch handler must not be re-invoked on replay")
 }
 
 func TestService_OnSessionEnd(t *testing.T) {

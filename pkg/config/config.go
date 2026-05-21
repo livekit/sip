@@ -116,6 +116,10 @@ type Config struct {
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
 	// Doing so hides our SIP endpoint from (a low effort) port scanners.
 	HideInboundPort bool `yaml:"hide_inbound_port"`
+	// DisableRejectedInviteCache turns off the per-server cache that replays
+	// a final INVITE rejection (keyed by Call-ID + From-tag) for retries
+	// reusing the same identifiers.
+	DisableRejectedInviteCache bool `yaml:"disable_rejected_invite_cache"`
 	// AddRecordRoute forces SIP to add Record-Route headers to the responses.
 	AddRecordRoute bool `yaml:"add_record_route"`
 

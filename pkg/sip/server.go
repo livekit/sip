@@ -157,6 +157,7 @@ type Server struct {
 	cmu                sync.RWMutex
 	byLocalTag         map[LocalTag]*inboundCall
 	provisionalInvites *expirable.LRU[[2]string, LocalTag]
+	rejectedInvites    *expirable.LRU[[2]string, rejectedInviteResponse]
 
 	infos struct {
 		sync.Mutex
@@ -176,6 +177,11 @@ type inProgressInvite struct {
 	sipCallID    string
 	challenge    digest.Challenge
 	authResolved atomic.Bool
+}
+
+type rejectedInviteResponse struct {
+	status sip.StatusCode
+	reason string
 }
 
 type ServerOption func(s *Server)
@@ -207,6 +213,10 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
+	}
+	// Initialize the rejected-invite replay cache unless explicitly disabled.
+	if !conf.DisableRejectedInviteCache {
+		s.rejectedInvites = expirable.NewLRU[[2]string, rejectedInviteResponse](maxCallCache, nil, callCacheTTL)
 	}
 	for _, option := range options {
 		option(s)
