@@ -93,13 +93,13 @@ func TestClassifyInviteError(t *testing.T) {
 	}
 }
 
-func TestClassifyInviteError_SDPReplacesReturnErr(t *testing.T) {
-	// SDP path rewraps the error as psrpc FailedPrecondition; confirm
-	// returnErr differs from the input.
+func TestClassifyInviteError_SDPGRPCStatus(t *testing.T) {
 	in := SDPError{Err: sdp.ErrNoCommonMedia}
 	res := classifyInviteError(in)
-	require.NotEqual(t, error(in), res.returnErr)
 	require.True(t, errors.Is(res.returnErr, sdp.ErrNoCommonMedia))
+	code, ok := psrpc.GetErrorCode(res.returnErr)
+	require.True(t, ok)
+	require.Equal(t, psrpc.FailedPrecondition, code)
 }
 
 func TestClassifyInviteError_ReturnErrWrap(t *testing.T) {

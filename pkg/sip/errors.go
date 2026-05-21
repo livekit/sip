@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/psrpc"
@@ -42,12 +45,18 @@ var _ inviteClassifier = SDPError{}
 func (e SDPError) Error() string { return e.Err.Error() }
 func (e SDPError) Unwrap() error { return e.Err }
 
+// GRPCStatus lets psrpc.GetErrorCode (and any gRPC-aware caller) extract the
+// failed-precondition code without manual psrpc.NewError wrapping.
+func (e SDPError) GRPCStatus() *status.Status {
+	return status.New(codes.FailedPrecondition, e.Err.Error())
+}
+
 func (e SDPError) ClassifyInvite() inviteFailure {
 	res := inviteFailure{
 		status:    callRejected,
 		reason:    livekit.DisconnectReason_MEDIA_FAILURE,
 		reportErr: e.Err,
-		returnErr: psrpc.NewError(psrpc.FailedPrecondition, e.Err),
+		returnErr: e,
 	}
 	switch {
 	case errors.Is(e.Err, sdp.ErrNoCommonMedia):
