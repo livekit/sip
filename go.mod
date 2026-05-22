@@ -9,7 +9,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20260504125714-dd334c543809
+	github.com/livekit/media-sdk v0.0.0-20260522104028-d03750ae030c
 	github.com/livekit/mediatransportutil v0.0.0-20260309115634-0e2e24b36ee8
 	github.com/livekit/protocol v1.45.9-0.20260518225207-2cfe2d2aa772
 	github.com/livekit/psrpc v0.7.1
@@ -52,6 +52,7 @@ require (
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/dennwc/amrwb-cgo v0.0.0-20260520132032-df56718048c8 // indirect
 	github.com/dennwc/iters v1.2.2 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/distribution/reference v0.6.0 // indirect

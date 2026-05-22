@@ -21,6 +21,7 @@ import (
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
+	"github.com/livekit/media-sdk/amrwb"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
@@ -37,6 +38,7 @@ func init() {
 		g711.ALawSDPName: true,
 		g711.ULawSDPName: true,
 		g722.SDPName:     true,
+		amrwb.SDPName:    false, // optional
 		dtmf.SDPName:     true,
 	})
 }
@@ -79,7 +81,25 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		s = defaultCodecs.NewSet() // inherit from default
 	}
 	for _, codec := range m.Codecs {
-		name := fmt.Sprintf("%s/%d", codec.Name, codec.Rate)
+		name := codec.Name
+		if name == "" {
+			return nil, errors.New("no codec name specified")
+		}
+		rate := codec.Rate
+		if rate == 0 {
+			// Set default rate
+			switch name {
+			case g711.ALawSDPName, g711.ULawSDPName:
+				rate = 8000
+			case g722.SDPName:
+				rate = 8000 // actually 16000, it's a know bug in the spec
+			case amrwb.SDPName:
+				rate = 16000
+			default:
+				return nil, fmt.Errorf("sample rate not specified for codec: %q", name)
+			}
+		}
+		name = fmt.Sprintf("%s/%d", name, rate)
 		s.SetEnabled(name, true)
 	}
 	return s, nil
