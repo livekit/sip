@@ -16,19 +16,20 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"errors"
 
 	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v4"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
@@ -361,14 +362,30 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 						}
 					}
 
-					codec, err := opus.Decode(out, channels, log)
-					if err != nil {
-						log.Errorw("cannot create opus decoder", err)
+					codec := track.Codec()
+					codecName := strings.TrimPrefix(codec.MimeType, "audio/")
+					var rh rtp.Handler
+					switch strings.ToLower(codecName) {
+					case "opus":
+						cw, err := opus.Decode(out, channels, log)
+						if err != nil {
+							log.Errorw("cannot create opus decoder", err)
+							return
+						}
+						defer cw.Close()
+
+						rh = rtp.NewMediaStreamIn(cw)
+					case "pcmu":
+						cw := g711.DecodeULaw(out)
+						rh = rtp.NewMediaStreamIn(cw)
+					case "pcma":
+						cw := g711.DecodeALaw(out)
+						rh = rtp.NewMediaStreamIn(cw)
+					default:
+						log.Warnw("unsupported sip room codec", nil, "codec", codec.MimeType)
 						return
 					}
-					defer codec.Close()
-
-					h := rtp.NewNopCloser(rtp.NewMediaStreamIn(codec))
+					h := rtp.NewNopCloser(rh)
 					if conf.EnableJitterBuffer {
 						h = rtp.HandleJitter(h, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
 							r.stats.JitterBufferPacketsLost.Store(packetsLost)
@@ -378,7 +395,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 
 					h = newRTPStreamStats(h, &r.stats.rtpStats)
 					h = newLatencyRTPEntry(h, &outRecvLatencyEntry)
-					err = rtp.HandleLoop(track, h)
+					err := rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
 						log.Infow("room track rtp handler returned with failure", "error", err)
 					}
