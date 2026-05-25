@@ -429,6 +429,9 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	}
 	c.lkRoom = r
 	c.lkRoomIn = local
+	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
+		return err
+	}
 	return nil
 }
 

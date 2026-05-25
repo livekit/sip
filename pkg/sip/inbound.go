@@ -1444,6 +1444,9 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	if err != nil {
 		return err
 	}
+	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
+		return err
+	}
 	return nil
 }
 
