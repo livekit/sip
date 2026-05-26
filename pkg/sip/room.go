@@ -162,6 +162,7 @@ type RoomInterface interface {
 	NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error)
 	SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error
 	NewTrack() *mixer.Input
+	RegisterRPC(method string, handler lksdk.RpcHandlerFunc) error
 }
 
 type GetRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
@@ -453,6 +454,10 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 
 	// Not subscribing to any tracks just yet!
 	return nil
+}
+
+func (r *Room) RegisterRPC(method string, handler lksdk.RpcHandlerFunc) error {
+	return r.room.RegisterRpcMethod(method, handler)
 }
 
 func (r *Room) Subscribe() {
