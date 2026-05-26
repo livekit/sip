@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -116,8 +117,21 @@ func classifyInviteError(err error) inviteFailure {
 				res.status, res.term, res.reason = callRejected, stats.ClientError(fmt.Sprintf("client-error-%d", code)), livekit.DisconnectReason_USER_UNAVAILABLE
 				res.reportErr = nil
 			case code >= 500 && code < 600:
-				res.status, res.term, res.reason = callDropped, stats.ServerError(fmt.Sprintf("upstream-server-error-%d", code)), livekit.DisconnectReason_SIP_TRUNK_FAILURE
-				// keep reportErr so 5xx detail is recorded
+				// Some upstreams (notably Twilio) return a 5xx when the customer's own trunk exceeds its configured CPS or
+				// concurrent-call cap. That's a customer-side rate limit, not upstream infrastructure breakage, so it must not count
+				// against the server-error SLI. Match on the response body — brittle, so kept narrow to the known phrases.
+				body := strings.ToLower(sipStatus.GetStatus())
+				switch {
+				case strings.Contains(body, "cps limit exceeded"):
+					res.status, res.term, res.reason = callRejected, stats.ClientError("cps-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+					// keep reportErr so the customer can see they hit their cap
+				case strings.Contains(body, "concurrent call limit exceeded"):
+					res.status, res.term, res.reason = callRejected, stats.ClientError("concurrent-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+					// keep reportErr so the customer can see they hit their cap
+				default:
+					res.status, res.term, res.reason = callDropped, stats.ServerError(fmt.Sprintf("upstream-server-error-%d", code)), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+					// keep reportErr so 5xx detail is recorded
+				}
 			case code >= 600 && code < 700:
 				res.status, res.term, res.reason = callRejected, stats.ClientError(fmt.Sprintf("global-decline-%d", code)), livekit.DisconnectReason_USER_REJECTED
 				res.reportErr = nil
