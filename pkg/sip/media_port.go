@@ -46,6 +46,8 @@ import (
 const (
 	defaultMediaTimeout        = 15 * time.Second
 	defaultMediaTimeoutInitial = 30 * time.Second
+	dstChangePrintInterval     = 10 * 1000 * 1000 * 1000 // 10 seconds, in nanoseconds
+	srcChangePrintInterval     = dstChangePrintInterval
 )
 
 type PortStatsSnapshot struct {
@@ -210,12 +212,16 @@ func newUDPConn(log logger.Logger, conn UDPConn, symmetric bool) *udpConn {
 
 type udpConn struct {
 	UDPConn
-	stopping  core.Fuse
-	stopped   chan struct{}
-	log       logger.Logger
-	symmetric atomic.Bool // send packets to the same address we receive them from
-	src       atomic.Pointer[netip.AddrPort]
-	dst       atomic.Pointer[netip.AddrPort]
+	stopping       core.Fuse
+	stopped        chan struct{}
+	log            logger.Logger
+	symmetric      atomic.Bool // send packets to the same address we receive them from
+	src            atomic.Pointer[netip.AddrPort]
+	dst            atomic.Pointer[netip.AddrPort]
+	srcChangeCount atomic.Uint64
+	dstChangeCount atomic.Uint64
+	lastSrcPrint   atomic.Int64
+	lastDstPrint   atomic.Int64
 }
 
 func (c *udpConn) SetSymmetric(enabled bool) {
@@ -235,9 +241,14 @@ func (c *udpConn) SetDst(addr netip.AddrPort) {
 	if addr.IsValid() {
 		prev := c.dst.Swap(&addr)
 		if prev == nil || !prev.IsValid() {
-			c.log.Infow("setting media destination", "addr", addr.String())
+			c.log.Infow("setting media destination", "prev", prev, "addr", addr.String())
 		} else if *prev != addr {
-			c.log.Infow("changing media destination", "addr", addr.String())
+			changeCount := c.dstChangeCount.Add(1)
+			now := time.Now().UnixNano()
+			if now-c.lastDstPrint.Load() > dstChangePrintInterval {
+				c.lastDstPrint.Store(now)
+				c.log.Infow("changing media destination", "prev", (*prev).String(), "addr", addr.String(), "count", changeCount)
+			}
 		}
 	}
 }
@@ -246,9 +257,15 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 	n, addr, err := c.ReadFromUDPAddrPort(b)
 	prev := c.src.Swap(&addr)
 	if prev == nil || !prev.IsValid() {
-		c.log.Infow("setting media source", "addr", addr.String())
+		c.log.Infow("setting media source", "prev", prev, "addr", addr.String())
 	} else if *prev != addr {
-		c.log.Infow("changing media source", "addr", addr.String())
+		changeCount := c.srcChangeCount.Add(1)
+		now := time.Now().UnixNano()
+		if now-c.lastSrcPrint.Load() > srcChangePrintInterval {
+			c.lastSrcPrint.Store(now)
+			c.srcChangeCount.Add(1)
+			c.log.Infow("changing media source", "prev", (*prev).String(), "addr", addr.String(), "count", changeCount)
+		}
 	}
 	if c.symmetric.Load() {
 		dst := c.dst.Load()
