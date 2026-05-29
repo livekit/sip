@@ -714,7 +714,7 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 		"srtp", crypto,
 	)
 
-	symmetric := p.opts.IgnoreLocalAddrInSDP && c.Remote.Addr().IsPrivate()
+	symmetric := p.opts.SymmetricRTP || (p.opts.IgnoreLocalAddrInSDP && c.Remote.Addr().IsPrivate())
 	p.port.SetDst(c.Remote)
 	if symmetric {
 		p.port.SetSymmetric(true)
@@ -739,9 +739,6 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !symmetric {
-		p.port.SetDst(c.Remote)
-	}
 	p.conf = c
 	p.sess = sess
 
