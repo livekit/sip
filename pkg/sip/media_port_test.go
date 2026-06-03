@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -184,13 +185,19 @@ func TestMediaPort(t *testing.T) {
 			codecs := msdk.NewCodecSet()
 			codecs.SetEnabled(info.SDPName, true)
 
-			sub := strings.SplitN(info.SDPName, "/", 2)
+			// SDP names are "name/rate" or, for Opus, "name/rate/channels".
+			sub := strings.Split(info.SDPName, "/")
 			codecName := sub[0]
 			nativeRateSDP, err := strconv.Atoi(sub[1])
 			nativeRate := nativeRateSDP
 			require.NoError(t, err)
 			switch codecName {
 			case "telephone-event":
+				t.SkipNow()
+			case "opus":
+				// Opus is a lossy 48kHz codec; the strict waveform-fidelity and
+				// pipeline-string assertions in this generic harness don't apply to
+				// it. Opus has dedicated coverage in media_codecs_opus_test.go.
 				t.SkipNow()
 			case "G722":
 				nativeRate *= 2 // error in RFC
@@ -454,7 +461,10 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 	}
 	c1, c2 := newUDPPipe()
 
-	codecs := defaultCodecs
+	// Pin G722 so this RTP symmetry/timeout helper stays deterministic and
+	// independent of the default codec preference (Opus is preferred by default).
+	codecs := msdk.NewCodecSet()
+	codecs.SetEnabled(g722.SDPName, true)
 
 	opt1.IP = ip1
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}

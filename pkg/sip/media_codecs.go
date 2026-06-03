@@ -39,6 +39,7 @@ func init() {
 		g711.ULawSDPName: true,
 		g722.SDPName:     true,
 		amrwb.SDPName:    false, // optional
+		OpusSDPName:      false, // opt-in via enable_opus config flag (see SetOpusEnabled)
 		dtmf.SDPName:     true,
 	})
 }
