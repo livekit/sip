@@ -16,14 +16,13 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/pkg/errors"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/psrpc"

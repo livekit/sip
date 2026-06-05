@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -31,7 +32,6 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	"github.com/pkg/errors"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
@@ -343,7 +343,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if err != nil {
 		tx.Terminate()
 		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
-		return psrpc.NewError(psrpc.MalformedRequest, errors.Wrap(err, "cannot parse source IP"))
+		return psrpc.NewError(psrpc.MalformedRequest, fmt.Errorf("cannot parse source IP: %w", err))
 	}
 	tr := callTransportFromReq(req)
 
@@ -356,7 +356,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			_ = tx.Respond(r)
 		}
 		tx.Terminate()
-		return psrpc.NewError(psrpc.InvalidArgument, errors.Wrap(err, "invite validation failed"))
+		return psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invite validation failed: %w", err))
 	}
 	tid := traceid.FromGUID(string(cc.ID()))
 	log := cc.log.WithValues("transport", tr, "tid", tid.String())
@@ -447,7 +447,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cmon.InviteErrorShort(stats.ServerError("auth-error"))
 		log.Warnw("Rejecting inbound, auth check failed", err)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
-		return psrpc.NewError(psrpc.PermissionDenied, errors.Wrap(err, "rejecting inbound, auth check failed"))
+		return psrpc.NewError(psrpc.PermissionDenied, fmt.Errorf("rejecting inbound, auth check failed: %w", err))
 	}
 	if r.ProjectID != "" {
 		log = log.WithValues("projectID", r.ProjectID)
@@ -970,13 +970,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		status = CallActive
 	}
 	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
-		return errors.Wrap(err, "failed joining room")
+		return fmt.Errorf("failed joining room: %w", err)
 	}
 	// Publish our own track.
 	if err := c.publishTrack(); err != nil {
 		c.log().Errorw("Cannot publish track", err)
 		c.close(ctx, callDropped, stats.ServerError("publish-failed"))
-		return errors.Wrap(err, "publishing track to room failed")
+		return fmt.Errorf("publishing track to room failed: %w", err)
 	}
 	tsub := c.mon.StageDurTimer("track-subscribe")
 	c.lkRoom.Subscribe()
@@ -1476,7 +1476,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status Cal
 	if err := c.createLiveKitParticipant(ctx, rconf, status); err != nil {
 		c.log().Errorw("Cannot create LiveKit participant", err)
 		c.close(ctx, callDropped, stats.ServerError("participant-failed"))
-		return errors.Wrap(err, "cannot create LiveKit participant")
+		return fmt.Errorf("cannot create LiveKit participant: %w", err)
 	}
 	return nil
 }

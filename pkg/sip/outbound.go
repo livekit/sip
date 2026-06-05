@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -26,7 +27,6 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
@@ -149,14 +149,14 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		IgnorePreanswerData:  true,
 	}, RoomSampleRate)
 	if err != nil {
-		call.close(ctx, errors.Wrap(err, "media failed"), callDropped, stats.ServerError("media-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
+		call.close(ctx, fmt.Errorf("media failed: %w", err), callDropped, stats.ServerError("media-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, err
 	}
 	call.media.SetDTMFAudio(conf.AudioDTMF)
 	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
-		call.close(ctx, errors.Wrap(err, "room join failed"), callDropped, stats.ServerError("join-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
+		call.close(ctx, fmt.Errorf("room join failed: %w", err), callDropped, stats.ServerError("join-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
 

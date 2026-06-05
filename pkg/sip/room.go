@@ -22,9 +22,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"errors"
+
 	"github.com/frostbyte73/core"
 	"github.com/pion/webrtc/v4"
-	"github.com/pkg/errors"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"

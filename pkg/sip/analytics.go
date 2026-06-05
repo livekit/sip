@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -26,7 +27,6 @@ import (
 	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
-	"github.com/pkg/errors"
 )
 
 type StateUpdater interface {
