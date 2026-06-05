@@ -187,7 +187,7 @@ func (c *outboundCall) ensureClosed(ctx context.Context) {
 		if r := c.lkRoom.Room(); r != nil {
 			if p := r.LocalParticipant; p != nil {
 				info.ParticipantIdentity = p.Identity()
-				info.ParticipantAttributes = p.Attributes()
+				info.ParticipantAttributes = p.Attributes() // clones
 			}
 		}
 		info.EndedAtNs = time.Now().UnixNano()
@@ -361,6 +361,7 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
+			info := c.state.CloneInfo()
 			go func(tid traceid.ID) {
 				ctx := context.WithoutCancel(ctx)
 				ctx, span := Tracer.Start(ctx, "sip.outbound.OnSessionEnd")
@@ -368,9 +369,9 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 				c.c.handler.OnSessionEnd(ctx, &CallIdentifier{
 					TraceID:   tid,
 					ProjectID: c.projectID,
-					CallID:    c.state.callInfo.CallId,
+					CallID:    info.CallId,
 					SipCallID: c.cc.SIPCallID(),
-				}, c.state.callInfo, t.Reason)
+				}, info, t.Reason)
 			}(c.tid)
 		}
 	})
@@ -674,7 +675,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
 		if r := c.lkRoom.Room(); r != nil {
-			info.ParticipantAttributes = r.LocalParticipant.Attributes()
+			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}
 	})
 	return nil
