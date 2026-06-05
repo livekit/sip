@@ -38,6 +38,9 @@ import (
 const (
 	DefaultSIPPort    int = 5060
 	DefaultSIPPortTLS int = 5061
+
+	// DefaultFlowIDLookupPath is the path to the bundled flow_id → number mapping file.
+	DefaultFlowIDLookupPath = "/sip/flow_id_lookup.yaml"
 )
 
 var (
@@ -119,11 +122,58 @@ type Config struct {
 	NodeID      string // Do not provide, will be overwritten
 	JaegerURL   string `yaml:"jaeger_url"` // for tracing
 
+	// FlowIDLookup maps flow_id values from the User-to-User SIP header to calling
+	// numbers used when evaluating dispatch rules.
+	FlowIDLookup map[string]string `yaml:"flow_id_lookup"`
+
 	// Experimental, these option might go away without notice.
 	Experimental struct {
 		// InboundWaitACK forces SIP to wait for an ACK to 200 OK before proceeding with the call.
 		InboundWaitACK bool `yaml:"inbound_wait_ack"`
 	} `yaml:"experimental"`
+}
+
+func (c *Config) loadFlowIDLookup() error {
+	path := os.Getenv("SIP_FLOW_ID_LOOKUP_FILE")
+	if path == "" {
+		path = DefaultFlowIDLookupPath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read flow_id_lookup file %q: %w", path, err)
+	}
+	var lookup map[string]string
+	if err := yaml.Unmarshal(data, &lookup); err != nil {
+		return fmt.Errorf("parse flow_id_lookup file %q: %w", path, err)
+	}
+	if len(lookup) == 0 {
+		return nil
+	}
+	if c.FlowIDLookup == nil {
+		c.FlowIDLookup = make(map[string]string)
+	}
+	for flowID, number := range lookup {
+		if flowID == "" || number == "" {
+			continue
+		}
+		c.FlowIDLookup[flowID] = number
+	}
+	return nil
+}
+
+// LookupFlowIDNumber returns the dispatch calling number configured for a flow_id.
+func (c *Config) LookupFlowIDNumber(flowID string) (string, bool) {
+	if c == nil || flowID == "" {
+		return "", false
+	}
+	number, ok := c.FlowIDLookup[flowID]
+	if !ok || number == "" {
+		return "", false
+	}
+	return number, true
 }
 
 func NewConfig(confString string) (*Config, error) {
@@ -174,6 +224,10 @@ func (c *Config) Init() error {
 	}
 
 	if err := c.InitLogger(); err != nil {
+		return err
+	}
+
+	if err := c.loadFlowIDLookup(); err != nil {
 		return err
 	}
 

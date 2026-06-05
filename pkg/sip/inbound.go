@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -92,6 +93,75 @@ type inboundCallInfo struct {
 func inviteHasAuth(r *sip.Request) bool {
 	return r.GetHeader("Proxy-Authorization") != nil ||
 		r.GetHeader("Authorization") != nil
+}
+
+// parseUserToUserFlowID extracts flow_id from a SIP User-to-User header value.
+// Expected payload format after decoding: "<uuid>|<flow_id>".
+func parseUserToUserFlowID(headerValue string) (string, bool) {
+	if headerValue == "" {
+		return "", false
+	}
+
+	payload, ok := decodeUserToUserPayload(headerValue)
+	if !ok {
+		return "", false
+	}
+
+	parts := strings.SplitN(payload, "|", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	flowID := strings.TrimSpace(parts[1])
+	if flowID == "" {
+		return "", false
+	}
+	return flowID, true
+}
+
+func decodeUserToUserPayload(headerValue string) (string, bool) {
+	lower := strings.ToLower(headerValue)
+	value := headerValue
+	if idx := strings.Index(value, ";"); idx >= 0 {
+		value = strings.TrimSpace(value[:idx])
+	}
+	if value == "" {
+		return "", false
+	}
+
+	switch {
+	case strings.Contains(lower, "encoding=base64"):
+		return decodeBase64UserToUser(value)
+	case strings.Contains(lower, "encoding=hex"):
+		b, err := hex.DecodeString(value)
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	default:
+		if strings.Contains(value, "|") {
+			return value, true
+		}
+		if decoded, ok := decodeBase64UserToUser(value); ok && strings.Contains(decoded, "|") {
+			return decoded, true
+		}
+		return "", false
+	}
+}
+
+func decodeBase64UserToUser(value string) (string, bool) {
+	if b, err := base64.StdEncoding.DecodeString(value); err == nil {
+		return string(b), true
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(value); err == nil {
+		return string(b), true
+	}
+	if b, err := base64.URLEncoding.DecodeString(value); err == nil {
+		return string(b), true
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(value); err == nil {
+		return string(b), true
+	}
+	return "", false
 }
 
 func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
@@ -368,6 +438,21 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		To:        ToSIPUri("", to),
 	}
 	rheaders := cc.RemoteHeaders()
+
+	if uui := rheaders.GetHeader("User-to-User"); uui != nil {
+		if flowID, ok := parseUserToUserFlowID(uui.Value()); ok {
+			dispatchNumber, mapped := s.conf.LookupFlowIDNumber(flowID)
+			if !mapped {
+				log.Warnw("unknown flow_id in User-to-User header", nil, "flowID", flowID)
+			} else {
+				originalFrom := callInfo.From.User
+				callInfo.From.User = dispatchNumber
+				log.Infow("Modified From number based on User-to-User flow ID",
+					"originalFrom", originalFrom, "newFrom", callInfo.From.User, "flowID", flowID)
+			}
+		}
+	}
+
 	s.handler.OnInboundInfo(log, callInfo, rheaders)
 	for _, h := range rheaders {
 		switch h := h.(type) {
@@ -400,8 +485,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	state = NewCallState(s.getIOClient(r.ProjectID), &livekit.SIPCallInfo{
 		CallId:        string(cc.ID()),
 		Region:        s.region,
-		FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
-		ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
+		FromUri:       CreateURIFromUserAndAddress(callInfo.From.User, src.String(), tr).ToSIPUri(),
+		ToUri:         CreateURIFromUserAndAddress(callInfo.To.User, cc.To().Host, tr).ToSIPUri(),
 		CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
 		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
 		CreatedAtNs:   time.Now().UnixNano(),

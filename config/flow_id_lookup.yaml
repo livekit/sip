@@ -1,0 +1,3 @@
+# Maps User-to-User flow_id values to dispatch calling numbers.
+# Bundled in the SIP Docker image at /sip/flow_id_lookup.yaml.
+SS_INACTIVITY: "8031136800"

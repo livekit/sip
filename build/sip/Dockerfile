@@ -52,6 +52,8 @@ RUN apt-get update && \
 # copy binary
 COPY --from=builder /workspace/livekit-sip /bin/
 
+COPY config/flow_id_lookup.yaml /sip/flow_id_lookup.yaml
+
 WORKDIR /sip
 
 # run
