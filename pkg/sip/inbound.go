@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/netip"
 	"slices"
@@ -798,7 +799,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		info.DispatchRuleId = disp.DispatchRuleID
 		info.RoomName = disp.Room.RoomName
 		info.ParticipantIdentity = disp.Room.Participant.Identity
-		info.ParticipantAttributes = disp.Room.Participant.Attributes
+		info.ParticipantAttributes = maps.Clone(disp.Room.Participant.Attributes)
 		info.MediaEncryption = disp.MediaConfig.GetEncryption().String()
 		info.EnabledFeatures = disp.EnabledFeatures
 		// Set callidfull in participant attributes for backwards compatibility
@@ -999,7 +1000,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if r := c.lkRoom.Room(); r != nil {
 			info.RoomId = r.SID()
 			info.RoomName = r.Name()
-			info.ParticipantAttributes = r.LocalParticipant.Attributes()
+			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}
 	})
 
@@ -1298,6 +1299,7 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
+		info := c.state.CloneInfo()
 		go func(tid traceid.ID) {
 			ctx := context.WithoutCancel(ctx)
 			ctx, span := Tracer.Start(ctx, "sip.inbound.OnSessionEnd")
@@ -1306,7 +1308,7 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 				ProjectID: c.projectID,
 				CallID:    c.call.LkCallId,
 				SipCallID: c.call.SipCallId,
-			}, c.state.callInfo, t.Reason)
+			}, info, t.Reason)
 		}(c.tid)
 	}
 
