@@ -20,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
