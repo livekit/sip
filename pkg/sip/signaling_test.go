@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/errors"
+	"errors"
+
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/media-sdk/sdp"
