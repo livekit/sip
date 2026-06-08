@@ -82,10 +82,14 @@ your SIP infrastructure**: set `enable_opus: true` to offer it.
   field to be `2`), but SIP media is encoded/decoded internally as **mono** —
   appropriate for telephony, and the decoder adapts to whatever channel count a
   peer actually sends.
-- When enabled, Opus is **preferred**; SIP peers that don't support it fall back
-  transparently to G722, then G711 (PCMU/PCMA). When disabled, Opus never
-  appears in SDP offers and the existing PCMU/PCMA/G722/DTMF behavior is
-  unchanged.
+- When enabled, Opus is preferred **when we answer an inbound offer** (codec
+  selection is priority-based, and Opus has the highest priority). In **outbound
+  offers** we send, codecs are currently listed static-first, so a peer that
+  selects by offer order may still pick G722/G711 — Opus is offered but not
+  guaranteed to be chosen. Either way, peers that don't support Opus fall back
+  transparently to G722, then G711 (PCMU/PCMA).
+- When disabled, Opus never appears in SDP offers and the existing
+  PCMU/PCMA/G722/DTMF behavior is unchanged.
 - The LiveKit/WebRTC side always uses Opus and is unaffected by this setting.
 
 Current limitations to be aware of before a GA rollout:

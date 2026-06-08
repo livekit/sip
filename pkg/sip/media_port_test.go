@@ -761,10 +761,40 @@ func TestSymmetricRTP(t *testing.T) {
 	})
 }
 
+// countingPCMSink is a thread-safe PCM16Writer that tracks received sample
+// count and signal energy, so a test goroutine can poll receive progress
+// without racing the media read loop.
+type countingPCMSink struct {
+	rate int
+	mu   sync.Mutex
+	n    int
+	e    int64
+}
+
+func (s *countingPCMSink) String() string  { return "counting" }
+func (s *countingPCMSink) SampleRate() int { return s.rate }
+func (s *countingPCMSink) Close() error    { return nil }
+func (s *countingPCMSink) WriteSample(d msdk.PCM16Sample) error {
+	s.mu.Lock()
+	s.n += len(d)
+	for _, v := range d {
+		s.e += int64(v) * int64(v)
+	}
+	s.mu.Unlock()
+	return nil
+}
+func (s *countingPCMSink) stats() (samples int, energy int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n, s.e
+}
+
 // TestMediaPortOpusRoundTrip drives Opus through the full MediaPort RTP path
 // (PCM -> encode -> SeqWriter/RTP -> UDP pipe -> depacketize -> decode -> PCM).
 // Opus is lossy, so we validate timestamp cadence, sample count, non-silence,
-// and absence of errors rather than exact waveforms.
+// and absence of errors rather than exact waveforms. Writes are paced by
+// polling received progress (no fixed sleeps) so the bounded UDP pipe never
+// overflows and the test is deterministic on CI.
 func TestMediaPortOpusRoundTrip(t *testing.T) {
 	enableOpusForTest(t)
 
@@ -812,8 +842,8 @@ func TestMediaPortOpusRoundTrip(t *testing.T) {
 	require.Equal(t, OpusSDPName, alice.Config().Audio.Codec.Info().SDPName, "Opus must be negotiated")
 	require.Equal(t, OpusSDPName, bob.Config().Audio.Codec.Info().SDPName)
 
-	var recv msdk.PCM16Sample
-	bob.WriteAudioTo(msdk.NewPCM16BufferWriter(&recv, rate))
+	sink := &countingPCMSink{rate: rate}
+	bob.WriteAudioTo(sink)
 
 	w := alice.GetAudioWriter()
 	const (
@@ -828,23 +858,23 @@ func TestMediaPortOpusRoundTrip(t *testing.T) {
 	tsBefore := alice.audioOutRTP.GetCurrentTimestamp()
 	for i := 0; i < frames; i++ {
 		require.NoError(t, w.WriteSample(frame))
-		// Pace writes so the 10-slot UDP pipe never overflows (which would
-		// surface as ErrShortWrite) and Bob's read loop keeps draining.
-		time.Sleep(10 * time.Millisecond)
+		// Pace writes by waiting for this frame to be received/decoded before
+		// sending the next. This keeps the bounded (10-slot) UDP pipe from
+		// overflowing without any fixed sleep, and makes the test deterministic.
+		want := (i + 1) * frameLen
+		require.Eventually(t, func() bool {
+			got, _ := sink.stats()
+			return got >= want
+		}, 5*time.Second, time.Millisecond, "timed out waiting for frame %d to be decoded", i+1)
 	}
 	tsAfter := alice.audioOutRTP.GetCurrentTimestamp()
 
 	// Timestamp cadence: 48kHz clock advances exactly 960 ticks per 20ms packet.
+	// This is synchronous on the send side and independent of receive timing.
 	require.Equal(t, uint32(frames*frameLen), tsAfter-tsBefore, "RTP timestamp cadence must be 960/frame")
 
-	time.Sleep(200 * time.Millisecond) // let Bob drain
-	bob.Close()                        // flush decode pipeline
-
-	require.NotEmpty(t, recv, "Opus must decode to PCM on the receiver")
-	require.InDelta(t, frames*frameLen, len(recv), float64(3*frameLen), "decoded sample count should track frames sent")
-	var energy int64
-	for _, s := range recv {
-		energy += int64(s) * int64(s)
-	}
+	// All frames decoded (contiguous stream, no loss), and the audio is non-silent.
+	gotSamples, energy := sink.stats()
+	require.GreaterOrEqual(t, gotSamples, frames*frameLen, "all sent frames should decode to PCM")
 	require.Positive(t, energy, "decoded Opus audio must be non-silent")
 }
