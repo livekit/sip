@@ -24,7 +24,6 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/config"
-	"github.com/pkg/errors"
 )
 
 func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
@@ -78,7 +77,7 @@ func getPublicIP() (netip.Addr, error) {
 		}
 	}
 	logger.Warnw("could not resolve external IP", err)
-	return netip.Addr{}, errors.Errorf("could not resolve external IP: %v", err)
+	return netip.Addr{}, fmt.Errorf("could not resolve external IP: %v", err)
 }
 
 func getLocalIP(localNet string) (netip.Addr, error) {

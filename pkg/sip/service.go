@@ -481,12 +481,13 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID strin
 }
 
 func (s *Service) validateCallProvider(state *CallState) error {
-	if state == nil || state.callInfo == nil || state.callInfo.ProviderInfo == nil {
+	info := state.Info()
+	if state == nil || info == nil || info.ProviderInfo == nil {
 		return nil // No provider info to validate
 	}
 
 	// Check if provider is internal and prevent transfer is enabled
-	if state.callInfo.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && state.callInfo.ProviderInfo.PreventTransfer {
+	if info.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && info.ProviderInfo.PreventTransfer {
 		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
 	}
 

@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -26,7 +27,6 @@ import (
 
 	"github.com/frostbyte73/core"
 	"github.com/icholy/digest"
-	"github.com/pkg/errors"
 	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
@@ -149,14 +149,14 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		IgnorePreanswerData:  true,
 	}, RoomSampleRate)
 	if err != nil {
-		call.close(ctx, errors.Wrap(err, "media failed"), callDropped, stats.ServerError("media-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
+		call.close(ctx, fmt.Errorf("media failed: %w", err), callDropped, stats.ServerError("media-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, err
 	}
 	call.media.SetDTMFAudio(conf.AudioDTMF)
 	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
-		call.close(ctx, errors.Wrap(err, "room join failed"), callDropped, stats.ServerError("join-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
+		call.close(ctx, fmt.Errorf("room join failed: %w", err), callDropped, stats.ServerError("join-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
 		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
 
@@ -187,7 +187,7 @@ func (c *outboundCall) ensureClosed(ctx context.Context) {
 		if r := c.lkRoom.Room(); r != nil {
 			if p := r.LocalParticipant; p != nil {
 				info.ParticipantIdentity = p.Identity()
-				info.ParticipantAttributes = p.Attributes()
+				info.ParticipantAttributes = p.Attributes() // clones
 			}
 		}
 		info.EndedAtNs = time.Now().UnixNano()
@@ -361,6 +361,7 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
+			info := c.state.CloneInfo()
 			go func(tid traceid.ID) {
 				ctx := context.WithoutCancel(ctx)
 				ctx, span := Tracer.Start(ctx, "sip.outbound.OnSessionEnd")
@@ -368,9 +369,9 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 				c.c.handler.OnSessionEnd(ctx, &CallIdentifier{
 					TraceID:   tid,
 					ProjectID: c.projectID,
-					CallID:    c.state.callInfo.CallId,
+					CallID:    info.CallId,
 					SipCallID: c.cc.SIPCallID(),
-				}, c.state.callInfo, t.Reason)
+				}, info, t.Reason)
 			}(c.tid)
 		}
 	})
@@ -674,7 +675,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
 		if r := c.lkRoom.Room(); r != nil {
-			info.ParticipantAttributes = r.LocalParticipant.Attributes()
+			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}
 	})
 	return nil

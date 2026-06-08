@@ -16,9 +16,11 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/protocol/livekit"
@@ -26,7 +28,6 @@ import (
 	"github.com/livekit/protocol/utils"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
-	"github.com/pkg/errors"
 )
 
 type StateUpdater interface {
@@ -36,6 +37,8 @@ type StateUpdater interface {
 func NewCallState(cli StateUpdater, initial *livekit.SIPCallInfo) *CallState {
 	if initial == nil {
 		initial = &livekit.SIPCallInfo{}
+	} else {
+		initial = proto.CloneOf(initial)
 	}
 	s := &CallState{
 		cli:           cli,
@@ -52,6 +55,20 @@ type CallState struct {
 	callInfo      *livekit.SIPCallInfo
 	transferInfos map[string]*livekit.SIPTransferInfo
 	dirty         bool
+}
+
+func (s *CallState) Info() *livekit.SIPCallInfo {
+	if s == nil {
+		return nil
+	}
+	return s.callInfo
+}
+
+func (s *CallState) CloneInfo() *livekit.SIPCallInfo {
+	if s == nil {
+		return nil
+	}
+	return proto.CloneOf(s.callInfo)
 }
 
 func (s *CallState) DeferUpdate(update func(info *livekit.SIPCallInfo)) {
