@@ -62,9 +62,46 @@ prometheus_port: port used to collect prometheus metrics. Used for autoscaling
 log_level: debug, info, warn, or error (default info)
 sip_port: port to listen and send SIP traffic (default 5060)
 rtp_port: port to listen and send RTP traffic (default 10000-20000)
+enable_opus: offer the Opus codec for SIP media (default false, experimental)
+opus: # optional Opus encoder tuning, only used when enable_opus is true
+  bitrate: target bitrate in bits/sec, e.g. 24000 (0 = libopus default)
+  complexity: encoder complexity 1-10 (0 = libopus default)
+  fec: enable in-band Forward Error Correction (default false)
+  packet_loss_percent: expected packet loss 0-100, tunes FEC (default 0)
 ```
 
 The config file can be added to a mounted volume with its location passed in the SIP_CONFIG_FILE env var, or its body can be passed in the SIP_CONFIG_BODY env var.
+
+#### Codecs
+
+PCMU, PCMA, G722, and DTMF are negotiated by default. Opus support is **disabled
+by default and should be enabled only after validating interoperability with
+your SIP infrastructure**: set `enable_opus: true` to offer it.
+
+- Opus is advertised as `opus/48000/2` (48 kHz, RFC 7587 requires the channel
+  field to be `2`), but SIP media is encoded/decoded internally as **mono** —
+  appropriate for telephony, and the decoder adapts to whatever channel count a
+  peer actually sends.
+- When enabled, Opus is **preferred**; SIP peers that don't support it fall back
+  transparently to G722, then G711 (PCMU/PCMA). When disabled, Opus never
+  appears in SDP offers and the existing PCMU/PCMA/G722/DTMF behavior is
+  unchanged.
+- The LiveKit/WebRTC side always uses Opus and is unaffected by this setting.
+
+Current limitations to be aware of before a GA rollout:
+
+- **Live interoperability validation is required** with your SIP stack
+  (e.g. FreeSWITCH, Asterisk, and any cloud SIP trunk) before relying on Opus in
+  production.
+- **No mid-call codec renegotiation:** the negotiated codec is fixed for the
+  duration of a call; re-INVITEs are treated as keep-alives that replay the
+  original SDP.
+- **No Opus `fmtp` attributes** (e.g. `useinbandfec`, `minptime`, `stereo`) are
+  signaled yet; peers use RFC 7587 defaults.
+- **No PLC/FEC loss recovery for local packet loss:** missing/suppressed frames
+  are filled with silence (the same treatment as the other codecs).
+- **Fallback:** when Opus is not negotiated, calls use G722 or G711 exactly as
+  before.
 
 ### Using the SIP service
 

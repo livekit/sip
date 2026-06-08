@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"math"
 	"net/netip"
 	"strings"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/logger"
 
@@ -314,4 +316,149 @@ func TestNoCommonCodecFailsGracefully(t *testing.T) {
 	caller := callerOffering(amrwb.SDPName)
 	_, err := answerCodecFor(t, caller, defaultCodecs)
 	require.Error(t, err, "no common codec must return an error, not panic")
+}
+
+// An Opus-only offer must be accepted with Opus when Opus is enabled.
+func TestOpusOnlyOfferSelectedWhenEnabled(t *testing.T) {
+	enableOpusForTest(t)
+
+	caller := callerOffering(OpusSDPName)
+	audio, err := answerCodecFor(t, caller, defaultCodecs)
+	require.NoError(t, err)
+	require.Equal(t, OpusSDPName, audio.Codec.Info().SDPName)
+}
+
+// An Opus-only offer must be rejected gracefully when Opus is disabled (no
+// common codec) — never crash, never silently pick Opus.
+func TestOpusOnlyOfferRejectedWhenDisabled(t *testing.T) {
+	SetOpusEnabled(false)
+
+	caller := callerOffering(OpusSDPName)
+	_, err := answerCodecFor(t, caller, defaultCodecs)
+	require.Error(t, err, "Opus-only offer must be rejected when Opus is disabled")
+}
+
+// Our SDP answer must reuse the payload type the peer assigned to Opus (which
+// may be anything in the dynamic range, e.g. 111), not a fixed value.
+func TestOpusAnswerEchoesPeerPayloadType(t *testing.T) {
+	enableOpusForTest(t)
+
+	const peerOpusPT = 111
+	// Minimal inbound offer with Opus at PT 111 and PCMU at 0.
+	offerSDP := "v=0\r\n" +
+		"o=- 1 1 IN IP4 1.2.3.4\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 1.2.3.4\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 5004 RTP/AVP 111 0\r\n" +
+		"a=rtpmap:111 opus/48000/2\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n" +
+		"a=sendrecv\r\n"
+
+	offer, err := sdp.ParseOfferWith(defaultCodecs, []byte(offerSDP))
+	require.NoError(t, err)
+
+	ip := netip.MustParseAddr("1.2.3.4")
+	answer, mc, err := offer.Answer(ip, 20000, sdp.EncryptionNone)
+	require.NoError(t, err)
+
+	// Opus selected, and the negotiated type echoes the peer's PT.
+	require.Equal(t, OpusSDPName, mc.Audio.Codec.Info().SDPName)
+	require.Equal(t, byte(peerOpusPT), mc.Audio.Type)
+
+	// The emitted answer SDP must carry the same rtpmap PT.
+	answerBytes, err := answer.SDP.Marshal()
+	require.NoError(t, err)
+	require.Contains(t, strings.ToLower(string(answerBytes)), "rtpmap:111 opus/48000/2")
+}
+
+// Our outbound Opus offer must use a dynamic payload type (RFC 3551: 96-127).
+func TestOpusOfferIsDynamicPayloadType(t *testing.T) {
+	enableOpusForTest(t)
+
+	desc, _, err := sdp.OfferMediaWith(defaultCodecs, 12345, sdp.EncryptionNone)
+	require.NoError(t, err)
+
+	var found bool
+	for _, c := range desc.Codecs {
+		if c.Codec != nil && c.Codec.Info().SDPName == OpusSDPName {
+			found = true
+			require.GreaterOrEqual(t, c.Type, byte(96), "Opus PT must be in the dynamic range")
+			require.LessOrEqual(t, c.Type, byte(127), "Opus PT must be in the dynamic range")
+		}
+	}
+	require.True(t, found, "Opus must be present in the offer when enabled")
+}
+
+// captureWriter is a WriteCloser[opus.Sample] sink used to capture encoded Opus
+// packets in tests.
+type captureWriter struct {
+	rate    int
+	onWrite func(opus.Sample)
+}
+
+func (c *captureWriter) String() string  { return "capture" }
+func (c *captureWriter) SampleRate() int { return c.rate }
+func (c *captureWriter) Close() error    { return nil }
+func (c *captureWriter) WriteSample(s opus.Sample) error {
+	c.onWrite(s)
+	return nil
+}
+
+// A timestamp gap with no sequence gap (DTX / silence suppression) must be
+// filled with silence, and the decoder must recover and decode the next packet.
+// Note: true packet *loss* (a sequence-number gap) is not concealed today — the
+// silence filler only fills suppressed-silence timestamp gaps.
+func TestOpusPacketLossSilenceFill(t *testing.T) {
+	enableOpusForTest(t)
+
+	const (
+		rate     = 48000
+		frameLen = rate / 50 // 960 samples = 20ms
+	)
+	opusCodec, ok := sdp.CodecByNameWith(defaultCodecs, OpusSDPName).(msdk.AudioCodec)
+	require.True(t, ok, "opus must be an AudioCodec when enabled")
+
+	// Produce one real Opus packet by encoding a single frame and capturing it.
+	var pkt opus.Sample
+	sink := &captureWriter{rate: rate, onWrite: func(s opus.Sample) {
+		if pkt == nil {
+			pkt = append(opus.Sample(nil), s...)
+		}
+	}}
+	enc, err := opus.EncodeWith(sink, opus.EncodeOptions{Channels: 1}, logger.GetLogger())
+	require.NoError(t, err)
+	sig := make(msdk.PCM16Sample, frameLen)
+	for i := range sig {
+		sig[i] = int16(8000 * math.Sin(2*math.Pi*10*float64(i)/float64(frameLen)))
+	}
+	require.NoError(t, enc.WriteSample(sig))
+	require.NoError(t, enc.Close())
+	require.NotEmpty(t, pkt, "should have captured one Opus packet")
+
+	// Build the decode chain with the silence filler, as MediaPort does.
+	var out msdk.PCM16Sample
+	pcm := msdk.NewPCM16BufferWriter(&out, rate)
+	dec := rtp.DecodePCM(pcm, opusCodec, 111)
+	filler := newSilenceFiller(dec, pcm, rate, rate, logger.GetLogger())
+
+	// Packet 1 decodes to one frame.
+	require.NoError(t, filler.HandleRTP(&rtp.Header{SequenceNumber: 1, Timestamp: 0}, pkt))
+	require.Equal(t, frameLen, len(out), "first packet decodes to one frame")
+
+	// Packet 2: sequential seq, but timestamp jumps by two frames (one frame of
+	// silence suppressed). The filler inserts one silence frame, then decodes.
+	require.NoError(t, filler.HandleRTP(&rtp.Header{SequenceNumber: 2, Timestamp: uint32(2 * frameLen)}, pkt))
+	require.Equal(t, 3*frameLen, len(out), "one silence frame + one decoded frame appended")
+
+	// The inserted gap is silence; the decoded frames carry signal energy.
+	var silenceEnergy, signalEnergy int64
+	for _, s := range out[frameLen : 2*frameLen] {
+		silenceEnergy += int64(s) * int64(s)
+	}
+	for _, s := range out[2*frameLen:] {
+		signalEnergy += int64(s) * int64(s)
+	}
+	require.Zero(t, silenceEnergy, "gap must be filled with silence")
+	require.Positive(t, signalEnergy, "decoder must recover after silence fill")
 }

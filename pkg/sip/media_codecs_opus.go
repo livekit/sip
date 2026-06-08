@@ -57,6 +57,14 @@ func currentOpusOptions() opus.EncodeOptions {
 	return opus.EncodeOptions{Channels: opusChannels}
 }
 
+// TODO(opus, experimental): before marking Opus GA:
+//   - Advertise Opus fmtp params for better SBC interop, e.g.
+//     "a=fmtp:<pt> useinbandfec=1;minptime=10;stereo=0". media-sdk's sdp package
+//     currently emits/parses only rtpmap (+DTMF fmtp), so this needs support
+//     there or a local post-processing step on the generated SDP.
+//   - Validate live interop with FreeSWITCH, Asterisk, and at least one cloud
+//     SIP trunk (Twilio/Telnyx), covering Opus offer/answer, hold/resume, and
+//     transfer. Unit tests cover negotiation/RTP but not real endpoints.
 func init() {
 	msdk.RegisterCodec(msdk.NewAudioCodec(msdk.CodecInfo{
 		SDPName:      OpusSDPName,
@@ -76,6 +84,11 @@ func init() {
 //   - the media-sdk GlobalCodecs set, used by any global/deprecated code path.
 //
 // When disabled, Opus appears in neither, so it is never offered or selected.
+//
+// TODO(opus): defaultCodecs is a plain map with no mutex. This is safe today
+// because SetOpusEnabled is called once during Service.Start, before any call
+// is accepted. If config hot-reload is ever added, mutating defaultCodecs while
+// calls read it concurrently would be a data race; guard it then.
 func SetOpusEnabled(enabled bool) {
 	defaultCodecs.SetEnabled(OpusSDPName, enabled)
 	msdk.CodecSetEnabled(OpusSDPName, enabled)
