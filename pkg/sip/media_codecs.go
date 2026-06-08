@@ -35,11 +35,11 @@ var defaultCodecs = msdk.NewCodecSet()
 
 func init() {
 	defaultCodecs.SetEnabledMap(map[string]bool{
-		g711.ALawSDPName: true,
-		g711.ULawSDPName: true,
-		g722.SDPName:     true,
-		amrwb.SDPName:    false, // optional
-		dtmf.SDPName:     true,
+		g711.ALawSDPNameAndRate: true,
+		g711.ULawSDPNameAndRate: true,
+		g722.SDPNameAndRate:     true,
+		amrwb.SDPNameAndRate:    false, // optional
+		dtmf.SDPNameAndRate:     true,
 	})
 }
 
@@ -89,11 +89,11 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		if rate == 0 {
 			// Set default rate
 			switch name {
-			case g711.ALawSDPName, g711.ULawSDPName:
+			case g711.ALawSDPNameOnly, g711.ULawSDPNameOnly:
 				rate = 8000
-			case g722.SDPName:
+			case g722.SDPNameOnly:
 				rate = 8000 // actually 16000, it's a know bug in the spec
-			case amrwb.SDPName:
+			case amrwb.SDPNameOnly:
 				rate = 16000
 			default:
 				return nil, fmt.Errorf("sample rate not specified for codec: %q", name)

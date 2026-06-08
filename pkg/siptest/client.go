@@ -92,7 +92,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.Number = "1000"
 	}
 	if conf.Codec == "" {
-		conf.Codec = g711.ULawSDPName
+		conf.Codec = g711.ULawSDPNameAndRate
 	}
 	codec := lksdp.CodecByName(conf.Codec).(msdk.AudioCodec)
 	cli := &Client{
@@ -572,7 +572,7 @@ func (c *Client) createOffer() ([]byte, error) {
 				},
 				Attributes: []sdp.Attribute{
 					{Key: "rtpmap", Value: fmt.Sprintf("%d %s", c.audioType, c.audioCodec.Info().SDPName)},
-					{Key: "rtpmap", Value: "101 " + dtmf.SDPName},
+					{Key: "rtpmap", Value: "101 " + dtmf.SDPNameAndRate},
 				},
 			},
 		},

@@ -13,7 +13,7 @@ import (
 
 const (
 	to    = 15550100000
-	codec = g711.ULawSDPName
+	codec = g711.ULawSDPNameAndRate
 )
 
 var num atomic.Int64
