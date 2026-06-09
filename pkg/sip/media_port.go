@@ -363,7 +363,8 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		opts.Stats = &PortStats{}
 	}
 	if conn == nil {
-		c, err := rtp.ListenUDPPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
+		// use an even RTP port (RFC 3550); some gateways misroute media when offered an odd one
+		c, err := rtp.ListenUDPEvenPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
 		if err != nil {
 			return nil, err
 		}
