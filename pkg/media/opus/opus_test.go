@@ -194,3 +194,104 @@ func TestFECPassthrough(t *testing.T) {
 	require.NoError(t, enc.Close())
 	require.Equal(t, frames*frame, len(out))
 }
+
+// Closing the encoder with a non-frame-aligned tail must flush a final packet
+// (zero-padded up to a full frame) instead of erroring on a partial frame.
+func TestOpusFlushPadsPartialFrame(t *testing.T) {
+	const rate = 48000
+
+	c := &sampleCollector{rate: rate}
+	enc, err := EncodeWith(c, EncodeOptions{Channels: 1}, logger.GetLogger())
+	require.NoError(t, err)
+
+	// 1000 samples is not a multiple of one 20ms frame (960 @ 48kHz): one full
+	// frame is emitted immediately, leaving 40 samples buffered.
+	in := make(msdk.PCM16Sample, 1000)
+	for i := range in {
+		in[i] = int16(4000 * (i % 50))
+	}
+	require.NoError(t, enc.WriteSample(in))
+	require.Equal(t, 1, c.packets, "one full frame should be emitted before close")
+
+	// Close must flush the 40-sample remainder as a zero-padded final frame.
+	require.NoError(t, enc.Close())
+	require.Equal(t, 2, c.packets, "Close must flush the padded trailing partial frame")
+	require.Positive(t, c.bytes, "flushed frame must carry encoded bytes")
+}
+
+// A stereo Opus packet decoded with a mono target must be downmixed to a single
+// mono frame (channel-adaptive decode), and the result must be non-silent.
+func TestOpusDecodeStereoToMono(t *testing.T) {
+	const (
+		rate       = 48000
+		perChannel = rate / 50 // 960 samples/channel = 20ms
+	)
+
+	// Build a genuine stereo Opus packet with a raw 2-channel encoder.
+	enc, err := hopus.NewEncoder(rate, 2, hopus.AppAudio)
+	require.NoError(t, err)
+	stereo := make([]int16, perChannel*2) // interleaved L/R
+	for i := 0; i < perChannel; i++ {
+		v := int16(5000 * (i % 60))
+		stereo[2*i] = v   // L
+		stereo[2*i+1] = v // R
+	}
+	pkt := make([]byte, 4000)
+	n, err := enc.Encode(stereo, pkt)
+	require.NoError(t, err)
+	pkt = pkt[:n]
+
+	// Decode with a mono target; the decoder should detect 2 channels and downmix.
+	var out msdk.PCM16Sample
+	sink := msdk.NewPCM16BufferWriter(&out, rate)
+	dec, err := DecodeWith(sink, 1, logger.GetLogger())
+	require.NoError(t, err)
+	require.NoError(t, dec.WriteSample(Sample(pkt)))
+
+	require.Equal(t, perChannel, len(out), "stereo packet must downmix to one mono frame")
+	var energy int64
+	for _, s := range out {
+		energy += int64(s) * int64(s)
+	}
+	require.Positive(t, energy, "downmixed audio must be non-silent")
+}
+
+// The decoder must tolerate a small run of corrupt packets without returning an
+// error, then recover and decode a subsequent valid packet.
+func TestOpusDecodeToleratesCorruptPackets(t *testing.T) {
+	const (
+		rate     = 48000
+		frameLen = rate / 50 // 960
+	)
+
+	var out msdk.PCM16Sample
+	sink := msdk.NewPCM16BufferWriter(&out, rate)
+	dec, err := DecodeWith(sink, 1, logger.GetLogger())
+	require.NoError(t, err)
+
+	// Single-byte code-3 packet (TOC lower 2 bits = 3): a code-3 frame requires
+	// at least 2 bytes, so libopus returns OPUS_INVALID_PACKET. The mono `s` bit
+	// (bit 2) is 0, so per-packet channel detection still succeeds and we reach
+	// the decode-tolerance path. Five corrupt packets is exactly the tolerated
+	// threshold (a 6th would return an error).
+	corrupt := []Sample{
+		{0x03}, {0x03}, {0x03}, {0x03}, {0x03},
+	}
+	for i, pkt := range corrupt {
+		require.NoError(t, dec.WriteSample(pkt), "corrupt packet %d must be tolerated, not error", i)
+	}
+	require.Empty(t, out, "corrupt packets must not produce PCM")
+
+	// A valid packet afterwards must decode and reset the tolerance counter.
+	venc, err := hopus.NewEncoder(rate, 1, hopus.AppVoIP)
+	require.NoError(t, err)
+	sig := make([]int16, frameLen)
+	for i := range sig {
+		sig[i] = int16(4000 * (i % 50))
+	}
+	buf := make([]byte, 4000)
+	vn, err := venc.Encode(sig, buf)
+	require.NoError(t, err)
+	require.NoError(t, dec.WriteSample(Sample(buf[:vn])))
+	require.Equal(t, frameLen, len(out), "decoder must recover and decode a valid packet")
+}
