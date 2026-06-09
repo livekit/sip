@@ -928,7 +928,7 @@ func (p *MediaPort) setupInput() {
 	if p.conf.Audio.DTMFType != 0 {
 		mux.Register(
 			p.conf.Audio.DTMFType, newRTPHandlerCount(
-				newRTPStatsHandler(p.mon, dtmf.SDPName, rtp.HandlerFunc(p.dtmfHandler)),
+				newRTPStatsHandler(p.mon, dtmf.SDPNameAndRate, rtp.HandlerFunc(p.dtmfHandler)),
 				&p.stats.DTMFPackets, &p.stats.DTMFBytes,
 			),
 		)

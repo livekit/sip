@@ -39,7 +39,7 @@ var (
 	filePathPlay = flag.String("play", "audio.mkv", "play audio")
 	filePathSave = flag.String("save", "save.mkv", "save incoming audio to file")
 	sendDTMF     = flag.String("dtmf", "", "send DTMF sequence")
-	codec        = flag.String("codec", g711.ULawSDPName, "audio codec")
+	codec        = flag.String("codec", g711.ULawSDPNameAndRate, "audio codec")
 )
 
 func main() {

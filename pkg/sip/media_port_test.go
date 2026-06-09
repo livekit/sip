@@ -464,7 +464,7 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 	// Pin G722 so this RTP symmetry/timeout helper stays deterministic and
 	// independent of the default codec preference (Opus is preferred by default).
 	codecs := msdk.NewCodecSet()
-	codecs.SetEnabled(g722.SDPName, true)
+	codecs.SetEnabled(g722.SDPNameAndRate, true)
 
 	opt1.IP = ip1
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}

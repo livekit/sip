@@ -88,8 +88,8 @@ func TestOpusPreferredInSelection(t *testing.T) {
 	enableOpusForTest(t)
 
 	opusC := sdp.CodecByNameWith(defaultCodecs, OpusSDPName).(msdk.AudioCodec)
-	ulawC := sdp.CodecByNameWith(defaultCodecs, g711.ULawSDPName).(msdk.AudioCodec)
-	g722C := sdp.CodecByNameWith(defaultCodecs, g722.SDPName).(msdk.AudioCodec)
+	ulawC := sdp.CodecByNameWith(defaultCodecs, g711.ULawSDPNameAndRate).(msdk.AudioCodec)
+	g722C := sdp.CodecByNameWith(defaultCodecs, g722.SDPNameAndRate).(msdk.AudioCodec)
 	require.NotNil(t, opusC)
 	require.NotNil(t, ulawC)
 	require.NotNil(t, g722C)
@@ -215,13 +215,13 @@ func TestG711FallbackWhenOpusDisabled(t *testing.T) {
 	SetOpusEnabled(false)
 
 	caller := msdk.NewCodecSet()
-	caller.SetEnabled(g711.ULawSDPName, true)
+	caller.SetEnabled(g711.ULawSDPNameAndRate, true)
 	caller.SetEnabled(OpusSDPName, true) // caller advertises Opus...
 
 	audio, err := answerCodecFor(t, caller, defaultCodecs)
 	require.NoError(t, err)
 	// ...but we must not select it while disabled.
-	require.Equal(t, g711.ULawSDPName, audio.Codec.Info().SDPName)
+	require.Equal(t, g711.ULawSDPNameAndRate, audio.Codec.Info().SDPName)
 }
 
 // With Opus enabled on our side, a caller offering only PCMU must fall back to
@@ -232,7 +232,7 @@ func TestG711FallbackWhenCallerNoOpus(t *testing.T) {
 
 	// Positive control: when the caller offers Opus, we negotiate Opus.
 	withOpus := msdk.NewCodecSet()
-	withOpus.SetEnabled(g711.ULawSDPName, true)
+	withOpus.SetEnabled(g711.ULawSDPNameAndRate, true)
 	withOpus.SetEnabled(OpusSDPName, true)
 	audio, err := answerCodecFor(t, withOpus, defaultCodecs)
 	require.NoError(t, err)
@@ -240,10 +240,10 @@ func TestG711FallbackWhenCallerNoOpus(t *testing.T) {
 
 	// A PCMU-only caller must fall back to PCMU, not a phantom Opus selection.
 	ulawOnly := msdk.NewCodecSet()
-	ulawOnly.SetEnabled(g711.ULawSDPName, true)
+	ulawOnly.SetEnabled(g711.ULawSDPNameAndRate, true)
 	audio, err = answerCodecFor(t, ulawOnly, defaultCodecs)
 	require.NoError(t, err)
-	require.Equal(t, g711.ULawSDPName, audio.Codec.Info().SDPName)
+	require.Equal(t, g711.ULawSDPNameAndRate, audio.Codec.Info().SDPName)
 }
 
 // callerOffering builds a single-codec caller set for scenario tests.
@@ -267,9 +267,9 @@ func TestLegacyCodecScenariosOpusDisabled(t *testing.T) {
 		wantSDP string
 		wantPT  byte // RFC 3551 static payload type
 	}{
-		{"PCMU inbound", callerOffering(g711.ULawSDPName), g711.ULawSDPName, 0},
-		{"PCMA inbound", callerOffering(g711.ALawSDPName), g711.ALawSDPName, 8},
-		{"G722 inbound", callerOffering(g722.SDPName), g722.SDPName, 9},
+		{"PCMU inbound", callerOffering(g711.ULawSDPNameAndRate), g711.ULawSDPNameAndRate, 0},
+		{"PCMA inbound", callerOffering(g711.ALawSDPNameAndRate), g711.ALawSDPNameAndRate, 8},
+		{"G722 inbound", callerOffering(g722.SDPNameAndRate), g722.SDPNameAndRate, 9},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -286,10 +286,10 @@ func TestLegacyCodecScenariosOpusDisabled(t *testing.T) {
 func TestDTMFNegotiatedOpusDisabled(t *testing.T) {
 	SetOpusEnabled(false)
 
-	caller := callerOffering(g711.ULawSDPName, dtmf.SDPName)
+	caller := callerOffering(g711.ULawSDPNameAndRate, dtmf.SDPNameAndRate)
 	audio, err := answerCodecFor(t, caller, defaultCodecs)
 	require.NoError(t, err)
-	require.Equal(t, g711.ULawSDPName, audio.Codec.Info().SDPName)
+	require.Equal(t, g711.ULawSDPNameAndRate, audio.Codec.Info().SDPName)
 	require.NotZero(t, audio.DTMFType, "DTMF (telephone-event) must be negotiated")
 }
 
@@ -301,9 +301,9 @@ func TestOutboundOfferExcludesOpusWhenDisabled(t *testing.T) {
 	maps := offerRtpmaps(t, defaultCodecs)
 	joined := strings.Join(maps, "\n")
 	require.NotContains(t, joined, "opus", "offer must not include Opus when disabled")
-	require.Contains(t, joined, strings.ToLower(g711.ULawSDPName), "offer must still include PCMU")
-	require.Contains(t, joined, strings.ToLower(g711.ALawSDPName), "offer must still include PCMA")
-	require.Contains(t, joined, strings.ToLower(g722.SDPName), "offer must still include G722")
+	require.Contains(t, joined, strings.ToLower(g711.ULawSDPNameAndRate), "offer must still include PCMU")
+	require.Contains(t, joined, strings.ToLower(g711.ALawSDPNameAndRate), "offer must still include PCMA")
+	require.Contains(t, joined, strings.ToLower(g722.SDPNameAndRate), "offer must still include G722")
 }
 
 // A call whose only offered codec we do not support must fail gracefully
@@ -313,7 +313,7 @@ func TestNoCommonCodecFailsGracefully(t *testing.T) {
 
 	// AMR-WB is disabled by default; a caller offering only AMR-WB shares no
 	// codec with us.
-	caller := callerOffering(amrwb.SDPName)
+	caller := callerOffering(amrwb.SDPNameAndRate)
 	_, err := answerCodecFor(t, caller, defaultCodecs)
 	require.Error(t, err, "no common codec must return an error, not panic")
 }
