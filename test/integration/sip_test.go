@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/livekit/protocol/tracer/jaeger"
 	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
-	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
@@ -752,8 +753,8 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 
 func TestSIPAudio(t *testing.T) {
 	for _, codec := range []string{
-		g711.ULawSDPName,
-		g722.SDPName,
+		g711.ULawSDPNameAndRate,
+		g722.SDPNameAndRate,
 	} {
 		codec := codec
 		t.Run(codec, func(t *testing.T) {
@@ -787,7 +788,7 @@ func TestSIPAudio(t *testing.T) {
 						if i == 0 {
 							// Make first client always use the same codec.
 							// This way we can see how different codecs interact.
-							codec = g711.ULawSDPName
+							codec = g711.ULawSDPNameAndRate
 						}
 						wg.Add(1)
 						go func() {

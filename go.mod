@@ -9,11 +9,11 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20260605182139-b8633b99de19
-	github.com/livekit/mediatransportutil v0.0.0-20260605182015-e79eb8d79819
+	github.com/livekit/media-sdk v0.0.0-20260608145339-9568191731be
+	github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0
 	github.com/livekit/protocol v1.46.7-0.20260609181841-8a1182390cb6
 	github.com/livekit/psrpc v0.7.2
-	github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260605183249-c47ddccc5112
+	github.com/livekit/server-sdk-go/v2 v2.16.6
 	github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
@@ -29,13 +29,6 @@ require (
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
-)
-
-require (
-	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
-	github.com/pion/turn/v5 v5.0.8 // indirect
-	github.com/puzpuzpuz/xsync/v4 v4.5.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
 )
 
 require (
@@ -73,6 +66,7 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/cel-go v0.28.1 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -112,10 +106,12 @@ require (
 	github.com/pion/srtp/v3 v3.0.11 // indirect
 	github.com/pion/stun/v3 v3.1.4 // indirect
 	github.com/pion/transport/v4 v4.0.2 // indirect
+	github.com/pion/turn/v5 v5.0.8 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.68.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/puzpuzpuz/xsync/v4 v4.5.0 // indirect
 	github.com/redis/go-redis/v9 v9.20.0 // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/urfave/cli/v3 v3.9.0
@@ -135,6 +131,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
