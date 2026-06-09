@@ -33,7 +33,6 @@ import (
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
-	"github.com/livekit/protocol/logger/medialogutils"
 	"github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
@@ -435,7 +434,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 		}
 	}
 	room := lksdk.NewRoom(roomCallback)
-	room.SetLogger(medialogutils.NewOverrideLogger(r.log))
+	room.SetLogger(newRoomOverrideLogger(r.log))
 	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
 		lksdk.WithAutoSubscribe(false),
 		lksdk.WithExtraAttributes(partConf.Attributes),
@@ -589,4 +588,35 @@ func (r *Room) NewTrack() *mixer.Input {
 		return nil
 	}
 	return r.mix.NewInput()
+}
+
+// roomOverrideLogger converts errors to warnings and ignore debug
+type roomOverrideLogger struct {
+	logger.Logger
+}
+
+func newRoomOverrideLogger(l logger.Logger) *roomOverrideLogger {
+	if l == nil {
+		l = logger.GetLogger()
+	}
+
+	return &roomOverrideLogger{
+		Logger: l.WithCallDepth(1),
+	}
+}
+
+func (l *roomOverrideLogger) Debugw(msg string, keysAndValues ...interface{}) {
+	// ignore
+}
+
+func (l *roomOverrideLogger) Infow(msg string, keysAndValues ...interface{}) {
+	l.Logger.Infow(msg, keysAndValues...)
+}
+
+func (l *roomOverrideLogger) Warnw(msg string, err error, keysAndValues ...interface{}) {
+	l.Logger.Warnw(msg, err, keysAndValues...)
+}
+
+func (l *roomOverrideLogger) Errorw(msg string, err error, keysAndValues ...interface{}) {
+	l.Logger.Warnw(msg, err, keysAndValues...)
 }
