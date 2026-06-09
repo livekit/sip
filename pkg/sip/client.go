@@ -66,10 +66,10 @@ type Client struct {
 	cmu         sync.Mutex
 	activeCalls map[LocalTag]*outboundCall
 
-	handler      Handler
-	getIOClient  GetIOInfoClient
-	getSipClient GetSipClientFunc
-	getRoom      GetRoomFunc
+	handler         Handler
+	getStateHandler GetStateHandler
+	getSipClient    GetSipClientFunc
+	getRoom         GetRoomFunc
 }
 
 type ClientOption func(c *Client)
@@ -90,19 +90,19 @@ func WithGetRoomClient(fn GetRoomFunc) ClientOption {
 	}
 }
 
-func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ClientOption) *Client {
+func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...ClientOption) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:         conf,
-		log:          log,
-		region:       region,
-		mon:          mon,
-		getIOClient:  getIOClient,
-		getSipClient: DefaultGetSipClientFunc,
-		getRoom:      DefaultGetRoomFunc,
-		activeCalls:  make(map[LocalTag]*outboundCall),
+		conf:            conf,
+		log:             log,
+		region:          region,
+		mon:             mon,
+		getStateHandler: getStateHandler,
+		getSipClient:    DefaultGetSipClientFunc,
+		getRoom:         DefaultGetRoomFunc,
+		activeCalls:     make(map[LocalTag]*outboundCall),
 	}
 	for _, option := range options {
 		option(c)
@@ -227,11 +227,11 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	)
 
 	req.ParticipantAttributes = maps.Clone(req.ParticipantAttributes) // shallow clone - string/string map. Needed to avoid mutating psrpc req
-	state := NewCallState(c.getIOClient(req.ProjectId), c.createSIPCallInfo(req))
+	initial := c.createSIPCallInfo(req)
+	state := NewCallState(c.getStateHandler(req.ProjectId, req.Observability, initial), initial)
 
 	defer func() {
-		state.Update(ctx, func(info *livekit.SIPCallInfo) {
-
+		state.Update(func(info *livekit.SIPCallInfo) {
 			switch retErr {
 			case nil:
 				info.CallStatus = livekit.SIPCallStatus_SCS_PARTICIPANT_JOINED

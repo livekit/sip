@@ -475,7 +475,7 @@ type TestClientConfig struct {
 	Region       string           // Defaults to "test"
 	Config       *config.Config   // Creates minimal config if nil
 	Monitor      *stats.Monitor   // Minimal monitor if nil
-	GetIOClient  GetIOInfoClient  // MockIOInfoClient if nil
+	GetIOClient  GetStateHandler  // MockIOInfoClient if nil
 	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
 	GetRoom      GetRoomFunc      // newTestRoom if nil
 }
@@ -527,8 +527,8 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 		})
 	}
 	if cfg.GetIOClient == nil {
-		cfg.GetIOClient = func(projectID string) rpc.IOInfoClient {
-			return &MockIOInfoClient{}
+		cfg.GetIOClient = func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+			return NewRPCStateHandler(&MockIOInfoClient{})
 		}
 	}
 	if cfg.GetSipClient == nil {

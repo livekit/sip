@@ -1,6 +1,7 @@
 package cloud
 
 import (
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
@@ -17,7 +18,7 @@ func NewService(conf *IntegrationConfig, bus psrpc.MessageBus) (*service.Service
 		return nil, err
 	}
 
-	sipsrv, err := sip.NewService("", conf.Config, mon, logger.GetLogger(), func(projectID string) rpc.IOInfoClient { return psrpcClient })
+	sipsrv, err := sip.NewService("", conf.Config, mon, logger.GetLogger(), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcClient) })
 	if err != nil {
 		return nil, err
 	}

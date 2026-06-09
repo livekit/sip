@@ -75,7 +75,7 @@ type TestHandler struct {
 	GetAuthCredentialsFunc func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error)
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
 	OnInboundInfoFunc      func(log logger.Logger, call *rpc.SIPCall, headers Headers)
-	OnSessionEndFunc       func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
+	OnSessionEndFunc       func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string)
 }
 
 func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
@@ -121,9 +121,9 @@ func (h TestHandler) OnInboundInfo(log logger.Logger, call *rpc.SIPCall, headers
 	}
 }
 
-func (h TestHandler) OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+func (h TestHandler) OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
 	if h.OnSessionEndFunc != nil {
-		h.OnSessionEndFunc(ctx, callIdentifier, callInfo, reason)
+		h.OnSessionEndFunc(ctx, callIdentifier, state, reason)
 	}
 }
 
@@ -144,7 +144,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -268,7 +268,7 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 			dispatchCalls.Add(1)
 			return CallDispatch{Result: DispatchNoRuleReject}
 		},
-		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
 			// no-op
 		},
 	}
@@ -286,7 +286,7 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	s.SetHandler(h)
@@ -364,9 +364,9 @@ func TestService_OnSessionEnd(t *testing.T) {
 				},
 			}
 		},
-		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
 			receivedCallIdentifier = callIdentifier
-			receivedCallInfo = callInfo
+			receivedCallInfo = state.CloneInfo()
 			receivedReason = reason
 			close(callEnded)
 		},
@@ -384,7 +384,7 @@ func TestService_OnSessionEnd(t *testing.T) {
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -397,13 +397,13 @@ func TestService_OnSessionEnd(t *testing.T) {
 		ProjectID: expectedProjectID,
 		CallID:    expectedCallID,
 		SipCallID: expectedSipCallID,
-	}, &livekit.SIPCallInfo{
+	}, NewCallState(NewRPCStateHandler(nil), &livekit.SIPCallInfo{
 		CallId: expectedCallID,
 		ParticipantAttributes: map[string]string{
 			"projectID":       expectedProjectID,
 			AttrSIPCallIDFull: expectedSipCallID,
 		},
-	}, expectedReason)
+	}), expectedReason)
 
 	// Wait for OnSessionEnd to be called
 	select {
@@ -466,7 +466,7 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 				// No room config needed for reject
 			}
 		},
-		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
 			// No-op for tests to avoid async logging issues
 		},
 	}
@@ -488,7 +488,7 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -673,7 +673,7 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 				// No room config needed for reject
 			}
 		},
-		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
 			// No-op for tests to avoid async logging issues
 		},
 	}
@@ -695,7 +695,7 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -929,7 +929,7 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 				// No room config needed for reject
 			}
 		},
-		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
+		OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
 			// No-op for tests to avoid async logging issues
 		},
 	}
@@ -949,7 +949,7 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string) rpc.IOInfoClient { return nil })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
 	require.NoError(t, err)
 	require.NotNil(t, s)
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
@@ -449,7 +450,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		conf,
 		log,
 		mon,
-		func(projectID string) rpc.IOInfoClient { return &MockIOInfoClient{} },
+		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(&MockIOInfoClient{}) },
 		WithGetRoomClient(options.GetRoom),
 	)
 	srv := NewServer(
@@ -457,7 +458,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		conf,
 		log,
 		mon,
-		func(projectID string) rpc.IOInfoClient { return &MockIOInfoClient{} },
+		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(&MockIOInfoClient{}) },
 		WithGetRoomServer(options.GetRoom),
 		WithClient(cli),
 	)

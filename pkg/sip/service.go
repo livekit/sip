@@ -72,9 +72,14 @@ type Service struct {
 	pendingTransfers map[LocalTag]*PendingTransfer
 }
 
-type GetIOInfoClient func(projectID string) rpc.IOInfoClient
+// GetStateHandler returns the per-call StateHandler that CallState forwards
+// outgoing changes to. cloud builds typically return a handler that forks the
+// stream to both the upstream RPC and local observability; the default
+// non-cloud build returns NewRPCStateHandler(client). obs may be nil; initial
+// is the SIPCallInfo that NewCallState will own immediately after.
+type GetStateHandler func(projectID string, obs *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) StateHandler
 
-func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getIOClient GetIOInfoClient) (*Service, error) {
+func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getStateHandler GetStateHandler) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -87,13 +92,13 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if conf.MediaTimeoutInitial <= 0 {
 		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
 	}
-	cli := NewClient(region, conf, log, mon, getIOClient)
+	cli := NewClient(region, conf, log, mon, getStateHandler)
 	s := &Service{
 		conf:             conf,
 		log:              log,
 		mon:              mon,
 		cli:              cli,
-		srv:              NewServer(region, conf, log, mon, getIOClient, WithClient(cli)),
+		srv:              NewServer(region, conf, log, mon, getStateHandler, WithClient(cli)),
 		pendingTransfers: make(map[LocalTag]*PendingTransfer),
 	}
 	var err error
