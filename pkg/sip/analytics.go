@@ -172,16 +172,15 @@ func (s *CallState) EndTransfer(transferID string, inErr error) {
 	s.handler.HandleTransfer(ti)
 }
 
-// RecordCallContext applies an optional mutation to the canonical callInfo
-// and signals the handler that the post-call context has been recorded —
-// e.g. late-arriving PCAP links published after the call has ended. Does not
-// touch the dirty bit: this is a terminal post-call signal, not a regular
-// flush.
-func (s *CallState) RecordCallContext(mutate func(info *livekit.SIPCallInfo)) {
+// RecordCallContext appends late-arriving context to the canonical callInfo
+// (e.g. PCAP links published after the call has ended) and signals the
+// handler that the post-call context has been recorded. Does not touch the
+// dirty bit: this is a terminal post-call signal, not a regular flush.
+func (s *CallState) RecordCallContext(appendInfo func(info *livekit.SIPCallInfo)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if mutate != nil {
-		mutate(s.callInfo)
+	if appendInfo != nil {
+		appendInfo(s.callInfo)
 	}
 	s.handler.HandleCallContextRecorded(s.callInfo)
 }
