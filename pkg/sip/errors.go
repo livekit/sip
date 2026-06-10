@@ -70,6 +70,33 @@ func (e SDPError) ClassifyInvite() inviteFailure {
 	return res
 }
 
+// transactionTimeoutError is an INVITE transaction that terminated without a
+// final response. responses = 1xx provisionals seen first: 0 = upstream went
+// silent (Timer B), >0 = answered but never completed.
+type transactionTimeoutError struct {
+	responses int
+}
+
+var _ inviteClassifier = transactionTimeoutError{}
+
+func (e transactionTimeoutError) Error() string {
+	return fmt.Sprintf("transaction failed to complete (%d intermediate responses)", e.responses)
+}
+
+func (e transactionTimeoutError) ClassifyInvite() inviteFailure {
+	reason := "upstream-no-response"
+	if e.responses > 0 {
+		reason = "no-final-response"
+	}
+	return inviteFailure{
+		status:    callUnavailable,
+		term:      stats.ClientError(reason),
+		reason:    livekit.DisconnectReason_SIP_TRUNK_FAILURE,
+		reportErr: e, // keep so the customer sees their destination didn't complete
+		returnErr: psrpc.NewError(psrpc.Canceled, e),
+	}
+}
+
 // classifyInviteError buckets an outbound INVITE error. Self-classifying
 // errors describe themselves; the residual switch covers external types we
 // can't extend (SIPStatus, net.*, context.*) and falls back to

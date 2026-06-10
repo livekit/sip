@@ -502,7 +502,7 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			_ = tx.Cancel()
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "transaction failed to complete (%d intermediate responses)", cnt)
+			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 		case res := <-tx.Responses():
 			status := res.StatusCode
 			if setState != nil {
