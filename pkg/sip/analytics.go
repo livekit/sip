@@ -30,28 +30,77 @@ import (
 	"github.com/livekit/psrpc"
 )
 
+// StateUpdater is the upstream RPC surface CallState's default StateHandler
+// forwards to.
 type StateUpdater interface {
 	UpdateSIPCallState(ctx context.Context, req *rpc.UpdateSIPCallStateRequest, opts ...psrpc.RequestOption) (*emptypb.Empty, error)
+	RecordCallContext(ctx context.Context, req *rpc.RecordCallContextRequest, opts ...psrpc.RequestOption) (*emptypb.Empty, error)
 }
 
-func NewCallState(cli StateUpdater, initial *livekit.SIPCallInfo) *CallState {
+// StateHandler receives outgoing CallState changes. CallState invokes the
+// handler whenever the proto needs to be sent upstream (HandleUpdate) or a
+// transfer transitions (HandleTransfer). Implementations forward to an RPC
+// sink, drive in-process observability, or both.
+//
+// Methods are called while CallState holds its internal mutex. Implementations
+// must not call back into the same CallState. The supplied protos remain owned
+// by CallState; implementations that retain them past the call must clone.
+//
+// Resend / retry semantics belong to the implementation — CallState clears
+// dirty after every call regardless of upstream outcome.
+type StateHandler interface {
+	HandleUpdate(info *livekit.SIPCallInfo)
+	HandleTransfer(ti *livekit.SIPTransferInfo)
+	HandleCallContextRecorded(info *livekit.SIPCallInfo)
+}
+
+// NewRPCStateHandler returns a StateHandler that forwards updates to a
+// StateUpdater. nil cli yields a no-op handler — useful for tests that don't
+// care about the upstream sink.
+func NewRPCStateHandler(cli StateUpdater) StateHandler {
+	return &rpcStateHandler{cli: cli}
+}
+
+type rpcStateHandler struct{ cli StateUpdater }
+
+func (h *rpcStateHandler) HandleUpdate(info *livekit.SIPCallInfo) {
+	if h.cli == nil {
+		return
+	}
+	_, _ = h.cli.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{CallInfo: info})
+}
+
+func (h *rpcStateHandler) HandleTransfer(ti *livekit.SIPTransferInfo) {
+	if h.cli == nil {
+		return
+	}
+	_, _ = h.cli.UpdateSIPCallState(context.Background(), &rpc.UpdateSIPCallStateRequest{TransferInfo: ti})
+}
+
+func (h *rpcStateHandler) HandleCallContextRecorded(info *livekit.SIPCallInfo) {
+	if h.cli == nil {
+		return
+	}
+	_, _ = h.cli.RecordCallContext(context.Background(), &rpc.RecordCallContextRequest{CallInfo: info})
+}
+
+func NewCallState(handler StateHandler, initial *livekit.SIPCallInfo) *CallState {
 	if initial == nil {
 		initial = &livekit.SIPCallInfo{}
 	} else {
 		initial = proto.CloneOf(initial)
 	}
-	s := &CallState{
-		cli:           cli,
+	return &CallState{
+		handler:       handler,
 		callInfo:      initial,
 		transferInfos: make(map[string]*livekit.SIPTransferInfo),
 		dirty:         true,
 	}
-	return s
 }
 
 type CallState struct {
 	mu            sync.Mutex
-	cli           StateUpdater
+	handler       StateHandler
 	callInfo      *livekit.SIPCallInfo
 	transferInfos map[string]*livekit.SIPTransferInfo
 	dirty         bool
@@ -78,17 +127,17 @@ func (s *CallState) DeferUpdate(update func(info *livekit.SIPCallInfo)) {
 	update(s.callInfo)
 }
 
-func (s *CallState) Update(ctx context.Context, update func(info *livekit.SIPCallInfo)) {
-	ctx, span := Tracer.Start(ctx, "sip.CallState.Update")
-	defer span.End()
+func (s *CallState) Update(update func(info *livekit.SIPCallInfo)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirty = true
 	update(s.callInfo)
-	s.flush(ctx)
+	s.flushLocked()
 }
 
-func (s *CallState) StartTransfer(ctx context.Context, transferTo string) string {
+func (s *CallState) StartTransfer(transferTo string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ti := &livekit.SIPTransferInfo{
 		TransferId:            guid.New(utils.SIPTransferPrefix),
 		CallId:                s.callInfo.CallId,
@@ -96,31 +145,19 @@ func (s *CallState) StartTransfer(ctx context.Context, transferTo string) string
 		TransferInitiatedAtNs: time.Now().UnixNano(),
 		TransferStatus:        livekit.SIPTransferStatus_STS_TRANSFER_ONGOING,
 	}
-
-	req := &rpc.UpdateSIPCallStateRequest{
-		TransferInfo: ti,
-	}
-
-	s.cli.UpdateSIPCallState(ctx, req)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.handler.HandleTransfer(ti)
 	s.transferInfos[ti.TransferId] = ti
-
 	return ti.TransferId
 }
 
-func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr error) {
+func (s *CallState) EndTransfer(transferID string, inErr error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	ti := s.transferInfos[transferID]
 	delete(s.transferInfos, transferID)
-	s.mu.Unlock()
-
 	if ti == nil {
 		return
 	}
-
 	ti.TransferCompletedAtNs = time.Now().UnixNano()
 	if inErr != nil {
 		ti.Error = inErr.Error()
@@ -128,48 +165,45 @@ func (s *CallState) EndTransfer(ctx context.Context, transferID string, inErr er
 	} else {
 		ti.TransferStatus = livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL
 	}
-
 	var sipStatus *livekit.SIPStatus
 	if errors.As(inErr, &sipStatus) {
 		ti.TransferStatusCode = sipStatus
 	}
-
-	req := &rpc.UpdateSIPCallStateRequest{
-		TransferInfo: ti,
-	}
-
-	s.cli.UpdateSIPCallState(ctx, req)
+	s.handler.HandleTransfer(ti)
 }
 
-func (s *CallState) flush(ctx context.Context) {
-	ctx = context.WithoutCancel(ctx)
-	if s.cli == nil {
-		s.dirty = false
-		return
+// RecordCallContext appends late-arriving context to the canonical callInfo
+// (e.g. PCAP links published after the call has ended) and signals the
+// handler that the post-call context has been recorded. Does not touch the
+// dirty bit: this is a terminal post-call signal, not a regular flush.
+func (s *CallState) RecordCallContext(appendInfo func(info *livekit.SIPCallInfo)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if appendInfo != nil {
+		appendInfo(s.callInfo)
 	}
-	_, err := s.cli.UpdateSIPCallState(ctx, &rpc.UpdateSIPCallStateRequest{
-		CallInfo: s.callInfo,
-	})
-	if err == nil {
-		s.dirty = false
-	}
+	s.handler.HandleCallContextRecorded(s.callInfo)
 }
 
-func (s *CallState) Flush(ctx context.Context) {
-	ctx, span := Tracer.Start(ctx, "sip.CallState.Flush")
-	defer span.End()
+func (s *CallState) Flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dirty {
 		return
 	}
-	s.flush(ctx)
+	s.flushLocked()
 }
 
-func (s *CallState) ForceFlush(ctx context.Context) {
-	ctx, span := Tracer.Start(ctx, "sip.CallState.ForceFlush")
-	defer span.End()
+func (s *CallState) ForceFlush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.flush(ctx)
+	s.flushLocked()
+}
+
+// flushLocked sends the current callInfo through the handler. Caller must
+// hold s.mu. Retry/resend semantics live in the handler; CallState clears
+// dirty unconditionally.
+func (s *CallState) flushLocked() {
+	s.handler.HandleUpdate(s.callInfo)
+	s.dirty = false
 }

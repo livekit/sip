@@ -21,21 +21,21 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/livekit/protocol/tracer/jaeger"
-	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 	"github.com/urfave/cli/v3"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/tracer/jaeger"
 	"github.com/livekit/psrpc"
-
-	"github.com/livekit/sip/pkg/stats"
+	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
+	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
 
@@ -99,7 +99,7 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string) rpc.IOInfoClient { return psrpcClient })
+	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcClient) })
 	if err != nil {
 		return err
 	}

@@ -77,11 +77,12 @@ const (
 )
 
 type AuthInfo struct {
-	Result       AuthResult
-	ProjectID    string
-	TrunkID      string
-	Auth         InboundAuth
-	ProviderInfo *livekit.ProviderInfo
+	Result        AuthResult
+	ProjectID     string
+	TrunkID       string
+	Auth          InboundAuth
+	ProviderInfo  *livekit.ProviderInfo
+	Observability *rpc.SIPCallObservability
 }
 
 type InboundAuth struct {
@@ -137,7 +138,7 @@ type Handler interface {
 	DeregisterTransferSIPParticipantTopic(sipCallId string)
 
 	OnInboundInfo(log logger.Logger, callInfo *rpc.SIPCall, headers Headers)
-	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, callInfo *livekit.SIPCallInfo, reason string)
+	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string)
 }
 
 type Server struct {
@@ -145,7 +146,7 @@ type Server struct {
 	mon          *stats.Monitor
 	region       string
 	sipSrv       *sipgo.Server
-	getIOClient  GetIOInfoClient
+	getStateHandler  GetStateHandler
 	getRoom      GetRoomFunc
 	sipListeners []io.Closer
 	sipUnhandled RequestHandler
@@ -200,7 +201,7 @@ func WithClient(cli *Client) ServerOption {
 	}
 }
 
-func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getIOClient GetIOInfoClient, options ...ServerOption) *Server {
+func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...ServerOption) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -209,7 +210,7 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		conf:               conf,
 		region:             region,
 		mon:                mon,
-		getIOClient:        getIOClient,
+		getStateHandler:        getStateHandler,
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),

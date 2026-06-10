@@ -171,7 +171,7 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 		}
 		log.Infow("auth challenge timed out without authenticated retry; finalizing call as error",
 			"sipCallID", i.sipCallID, "timeout", authChallengeTimeout)
-		st.Update(context.Background(), func(info *livekit.SIPCallInfo) {
+		st.Update(func(info *livekit.SIPCallInfo) {
 			info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 			info.Error = "auth challenge issued, no authenticated retry received"
 			// EndedAtNs reflects when the call effectively ended.
@@ -328,7 +328,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if state == nil {
 			return
 		}
-		state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		state.Update(func(info *livekit.SIPCallInfo) {
 			if err := retErr; err != nil && info.Error == "" {
 				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 				info.Error = err.Error()
@@ -457,7 +457,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		log = log.WithValues("sipTrunk", r.TrunkID)
 	}
 
-	state = NewCallState(s.getIOClient(r.ProjectID), &livekit.SIPCallInfo{
+	initial := &livekit.SIPCallInfo{
 		CallId:        string(cc.ID()),
 		Region:        s.region,
 		FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
@@ -468,8 +468,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		TrunkId:       r.TrunkID,
 		ProviderInfo:  r.ProviderInfo,
 		SipCallId:     cc.SIPCallID(),
-	})
-	state.Flush(ctx)
+	}
+	state = NewCallState(s.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+	state.Flush()
 
 	switch r.Result {
 	case AuthDrop:
@@ -794,7 +795,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		c.appendLogValues("sipRule", disp.DispatchRuleID)
 	}
 
-	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+	c.state.Update(func(info *livekit.SIPCallInfo) {
 		info.TrunkId = disp.TrunkID
 		info.DispatchRuleId = disp.DispatchRuleID
 		info.RoomName = disp.Room.RoomName
@@ -994,7 +995,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		}
 	}
 
-	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+	c.state.Update(func(info *livekit.SIPCallInfo) {
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 		if r := c.lkRoom.Room(); r != nil {
@@ -1024,7 +1025,7 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			c.printStats(c.log())
 		case <-ticker.C:
 			c.log().Debugw("sending keep-alive")
-			c.state.ForceFlush(ctx)
+			c.state.ForceFlush()
 		case <-ctx.Done():
 			c.closeWithHangup(ctx)
 			return nil
@@ -1299,7 +1300,7 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 
 	// Call the handler asynchronously to avoid blocking
 	if c.s.handler != nil {
-		info := c.state.CloneInfo()
+		state := c.state
 		go func(tid traceid.ID) {
 			ctx := context.WithoutCancel(ctx)
 			ctx, span := Tracer.Start(ctx, "sip.inbound.OnSessionEnd")
@@ -1308,7 +1309,7 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 				ProjectID: c.projectID,
 				CallID:    c.call.LkCallId,
 				SipCallID: c.call.SipCallId,
-			}, info, t.Reason)
+			}, state, t.Reason)
 		}(c.tid)
 	}
 
@@ -1518,9 +1519,9 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
 	var err error
 
-	tID := c.state.StartTransfer(ctx, transferTo)
+	tID := c.state.StartTransfer(transferTo)
 	defer func() {
-		c.state.EndTransfer(ctx, tID, retErr)
+		c.state.EndTransfer(tID, retErr)
 	}()
 
 	if dialtone && c.started.IsBroken() && !c.done.Load() {

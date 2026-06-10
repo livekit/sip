@@ -32,23 +32,26 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call 
 	switch resp.ErrorCode {
 	case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_QUOTA_EXCEEDED:
 		return sip.AuthInfo{
-			ProjectID:    resp.ProjectId,
-			Result:       sip.AuthQuotaExceeded,
-			ProviderInfo: resp.ProviderInfo,
+			ProjectID:     resp.ProjectId,
+			Result:        sip.AuthQuotaExceeded,
+			ProviderInfo:  resp.ProviderInfo,
+			Observability: resp.Observability,
 		}, nil
 	case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
 		return sip.AuthInfo{
-			ProjectID:    resp.ProjectId,
-			Result:       sip.AuthNoTrunkFound,
-			ProviderInfo: resp.ProviderInfo,
+			ProjectID:     resp.ProjectId,
+			Result:        sip.AuthNoTrunkFound,
+			ProviderInfo:  resp.ProviderInfo,
+			Observability: resp.Observability,
 		}, nil
 	}
 
 	if resp.Drop {
 		return sip.AuthInfo{
-			ProjectID:    resp.ProjectId,
-			Result:       sip.AuthDrop,
-			ProviderInfo: resp.ProviderInfo,
+			ProjectID:     resp.ProjectId,
+			Result:        sip.AuthDrop,
+			ProviderInfo:  resp.ProviderInfo,
+			Observability: resp.Observability,
 		}, nil
 	}
 	if resp.Username != "" && resp.Password != "" {
@@ -61,14 +64,16 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call 
 				Password: resp.Password,
 				Realm:    resp.Realm,
 			},
-			ProviderInfo: resp.ProviderInfo,
+			ProviderInfo:  resp.ProviderInfo,
+			Observability: resp.Observability,
 		}, nil
 	}
 	return sip.AuthInfo{
-		ProjectID:    resp.ProjectId,
-		TrunkID:      resp.SipTrunkId,
-		Result:       sip.AuthAccept,
-		ProviderInfo: resp.ProviderInfo,
+		ProjectID:     resp.ProjectId,
+		TrunkID:       resp.SipTrunkId,
+		Result:        sip.AuthAccept,
+		ProviderInfo:  resp.ProviderInfo,
+		Observability: resp.Observability,
 	}, nil
 }
 

@@ -257,6 +257,6 @@ func (s *Service) OnInboundInfo(log logger.Logger, callInfo *rpc.SIPCall, header
 
 }
 
-func (s *Service) OnSessionEnd(ctx context.Context, callIdentifier *sip.CallIdentifier, callInfo *livekit.SIPCallInfo, reason string) {
-	s.log.Infow("SIP call ended", "callID", callInfo.CallId, "reason", reason)
+func (s *Service) OnSessionEnd(ctx context.Context, callIdentifier *sip.CallIdentifier, state *sip.CallState, reason string) {
+	s.log.Infow("SIP call ended", "callID", callIdentifier.CallID, "reason", reason)
 }

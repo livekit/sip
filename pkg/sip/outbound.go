@@ -178,7 +178,7 @@ func (c *outboundCall) setAttrsToHeaders(headers map[string]string) map[string]s
 }
 
 func (c *outboundCall) ensureClosed(ctx context.Context) {
-	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+	c.state.Update(func(info *livekit.SIPCallInfo) {
 		if info.Error != "" {
 			info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 		} else {
@@ -198,7 +198,7 @@ func (c *outboundCall) setErrStatus(ctx context.Context, err error) {
 	if err == nil {
 		return
 	}
-	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+	c.state.Update(func(info *livekit.SIPCallInfo) {
 		if info.Error != "" {
 			return
 		}
@@ -221,7 +221,7 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 		return err // connectSIP updates the error code on the callInfo
 	}
 
-	c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+	c.state.Update(func(info *livekit.SIPCallInfo) {
 		lkroom := c.lkRoom.Room()
 		if lkroom == nil {
 			c.log.Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
@@ -255,7 +255,7 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			c.printStats()
 		case <-ticker.C:
 			c.log.Debugw("sending keep-alive")
-			c.state.ForceFlush(ctx)
+			c.state.ForceFlush()
 		case <-c.Disconnected():
 			term := terminationFromRoomDisconnect(c.lkRoom.ClosedReason())
 			c.CloseWithReason(ctx, callDropped, term, livekit.DisconnectReason_CLIENT_INITIATED)
@@ -332,7 +332,7 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 		} else {
 			log.Infow("Closing outbound call")
 		}
-		c.state.Update(ctx, func(info *livekit.SIPCallInfo) {
+		c.state.Update(func(info *livekit.SIPCallInfo) {
 			if err != nil && info.Error == "" {
 				info.Error = err.Error()
 				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
@@ -361,7 +361,8 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 
 		// Call the handler asynchronously to avoid blocking
 		if c.c.handler != nil {
-			info := c.state.CloneInfo()
+			state := c.state
+			callID := state.Info().CallId
 			go func(tid traceid.ID) {
 				ctx := context.WithoutCancel(ctx)
 				ctx, span := Tracer.Start(ctx, "sip.outbound.OnSessionEnd")
@@ -369,9 +370,9 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 				c.c.handler.OnSessionEnd(ctx, &CallIdentifier{
 					TraceID:   tid,
 					ProjectID: c.projectID,
-					CallID:    info.CallId,
+					CallID:    callID,
 					SipCallID: c.cc.SIPCallID(),
-				}, info, t.Reason)
+				}, state, t.Reason)
 			}(c.tid)
 		}
 	})
@@ -696,9 +697,9 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	defer span.End()
 	var err error
 
-	tID := c.state.StartTransfer(ctx, transferTo)
+	tID := c.state.StartTransfer(transferTo)
 	defer func() {
-		c.state.EndTransfer(ctx, tID, retErr)
+		c.state.EndTransfer(tID, retErr)
 	}()
 
 	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
