@@ -307,7 +307,7 @@ func (c *outboundCall) CloseWithReason(ctx context.Context, status CallStatus, t
 func (c *outboundCall) closeWithTimeout(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(ctx, psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"), callDropped, stats.ServerError("media-timeout"), livekit.DisconnectReason_UNKNOWN_REASON)
+	c.close(ctx, psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"), callDropped, stats.Indeterminate("media-timeout"), livekit.DisconnectReason_UNKNOWN_REASON)
 }
 
 func (c *outboundCall) printStats() {

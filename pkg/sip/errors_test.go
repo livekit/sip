@@ -53,14 +53,14 @@ func TestClassifyInviteError(t *testing.T) {
 		{"487 Request Terminated (4xx catch-all)", sipStatusErr(487), callRejected, stats.ClientError("client-error-487"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 
 		// 5xx upstream server error
-		{"500 Internal Server Error", sipStatusErr(500), callDropped, stats.ServerError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
-		{"503 Service Unavailable", sipStatusErr(503), callDropped, stats.ServerError("upstream-server-error-503"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"500 Internal Server Error", sipStatusErr(500), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"503 Service Unavailable", sipStatusErr(503), callDropped, stats.UpstreamError("upstream-server-error-503"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// 5xx with a trunk rate-limit body: customer-side, reclassified as client_error
 		{"500 Trunk CPS limit exceeded", sipStatusBodyErr(500, "Trunk CPS limit exceeded. Region: us1"), callRejected, stats.ClientError("cps-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 		{"500 Trunk concurrent call limit exceeded", sipStatusBodyErr(500, "Trunk concurrent call limit exceeded. Region: us1"), callRejected, stats.ClientError("concurrent-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 		{"503 Trunk CPS limit exceeded", sipStatusBodyErr(503, "Trunk CPS limit exceeded. Region: us1"), callRejected, stats.ClientError("cps-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
-		{"500 generic body is not a rate limit", sipStatusBodyErr(500, "Service Unavailable"), callDropped, stats.ServerError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"500 generic body is not a rate limit", sipStatusBodyErr(500, "Service Unavailable"), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// 6xx global decline
 		{"600 Global Busy Everywhere", sipStatusErr(600), callRejected, stats.ClientError("global-decline-600"), livekit.DisconnectReason_USER_REJECTED, false},

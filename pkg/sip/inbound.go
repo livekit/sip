@@ -1331,7 +1331,7 @@ func (c *inboundCall) closeWithTimeout(ctx context.Context, isError bool) {
 			}
 		})
 	}
-	c.close(ctx, status, stats.ServerError("media-timeout"))
+	c.close(ctx, status, stats.Indeterminate("media-timeout"))
 }
 
 func (c *inboundCall) closeWithNoACK(ctx context.Context) {

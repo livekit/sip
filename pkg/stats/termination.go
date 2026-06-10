@@ -20,6 +20,10 @@ const (
 	ResultSuccess     TerminationResult = "success"
 	ResultServerError TerminationResult = "server_error"
 	ResultClientError TerminationResult = "client_error"
+	// Unattributable failure (e.g. media timeout)
+	ResultIndeterminate TerminationResult = "indeterminate"
+	// Upstream carrier/trunk 5xx
+	ResultUpstreamError TerminationResult = "upstream_error"
 )
 
 type Termination struct {
@@ -33,4 +37,10 @@ func ServerError(reason string) Termination {
 }
 func ClientError(reason string) Termination {
 	return Termination{Result: ResultClientError, Reason: reason}
+}
+func Indeterminate(reason string) Termination {
+	return Termination{Result: ResultIndeterminate, Reason: reason}
+}
+func UpstreamError(reason string) Termination {
+	return Termination{Result: ResultUpstreamError, Reason: reason}
 }
