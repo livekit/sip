@@ -156,8 +156,8 @@ func classifyInviteError(err error) inviteFailure {
 					res.status, res.term, res.reason = callRejected, stats.ClientError("concurrent-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 					// keep reportErr so the customer can see they hit their cap
 				default:
-					res.status, res.term, res.reason = callDropped, stats.ServerError(fmt.Sprintf("upstream-server-error-%d", code)), livekit.DisconnectReason_SIP_TRUNK_FAILURE
-					// keep reportErr so 5xx detail is recorded
+					// Carrier-side 5xx; keep reportErr for the detail.
+					res.status, res.term, res.reason = callDropped, stats.UpstreamError(fmt.Sprintf("upstream-server-error-%d", code)), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 				}
 			case code >= 600 && code < 700:
 				res.status, res.term, res.reason = callRejected, stats.ClientError(fmt.Sprintf("global-decline-%d", code)), livekit.DisconnectReason_USER_REJECTED
