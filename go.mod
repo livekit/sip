@@ -9,7 +9,7 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20260608233105-27d39f4e1900
+	github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9
 	github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0
 	github.com/livekit/protocol v1.46.7-0.20260610064410-e286afe70eb0
 	github.com/livekit/psrpc v0.7.2
@@ -78,7 +78,7 @@ require (
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
-	github.com/livekit/amrwb-cgo v0.0.0-20260527094629-96c39974d532 // indirect
+	github.com/livekit/amrwb-cgo v0.0.0-20260612153743-6d4b69dc1470 // indirect
 	github.com/mackerelio/go-osstat v0.2.7 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
