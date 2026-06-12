@@ -388,6 +388,8 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	select {
 	case err := <-pending.Done:
 		if err == nil {
+			// If there is more than one RPC call waiting on the result,
+			// this ensures we return the same error to all callers.
 			if pErr := pending.Error.Load(); pErr != nil {
 				err = *pErr
 			}
