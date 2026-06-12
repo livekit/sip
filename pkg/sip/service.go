@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/livekit/sipgo/transport"
@@ -50,6 +51,7 @@ import (
 type PendingTransfer struct {
 	CallID     string
 	TransferTo string
+	Error      atomic.Pointer[error]
 	Done       chan error
 }
 
@@ -374,6 +376,7 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			default:
 				s.log.Errorw("pending transfer channel is full, dropping error", err, "callID", req.SipCallId, "transferTo", req.TransferTo)
 			}
+			pending.Error.Store(&err)
 			close(pending.Done)
 
 			s.mu.Lock()
@@ -384,6 +387,11 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 
 	select {
 	case err := <-pending.Done:
+		if err == nil {
+			if pErr := pending.Error.Load(); pErr != nil {
+				err = *pErr
+			}
+		}
 		return &emptypb.Empty{}, err
 	case <-ctx.Done():
 		return &emptypb.Empty{}, psrpc.NewError(psrpc.Canceled, ctx.Err())

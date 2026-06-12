@@ -40,73 +40,72 @@ var (
 	referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 )
 
-// TODO: Add String method to sipgo.StatusCode
 var statusNamesMap = map[int]string{
 	100: "Trying",
 	180: "Ringing",
-	181: "CallIsForwarded",
+	181: "Call Is Forwarded",
 	182: "Queued",
-	183: "SessionInProgress",
+	183: "Session In Progress",
 
 	200: "OK",
 	202: "Accepted",
 
-	301: "MovedPermanently",
-	302: "MovedTemporarily",
-	305: "UseProxy",
+	301: "Moved Permanently",
+	302: "Moved Temporarily",
+	305: "Use Proxy",
 
-	400: "BadRequest",
+	400: "Bad Request",
 	401: "Unauthorized",
-	402: "PaymentRequired",
+	402: "Payment Required",
 	403: "Forbidden",
-	404: "NotFound",
-	405: "MethodNotAllowed",
-	406: "NotAcceptable",
-	407: "ProxyAuthRequired",
-	408: "RequestTimeout",
+	404: "Not Found",
+	405: "Method Not Allowed",
+	406: "Not Acceptable",
+	407: "Proxy Auth Required",
+	408: "Request Timeout",
 	409: "Conflict",
 	410: "Gone",
-	413: "RequestEntityTooLarge",
-	414: "RequestURITooLong",
-	415: "UnsupportedMediaType",
-	416: "RequestedRangeNotSatisfiable",
-	420: "BadExtension",
-	421: "ExtensionRequired",
-	423: "IntervalToBrief",
-	480: "TemporarilyUnavailable",
-	481: "CallTransactionDoesNotExists",
-	482: "LoopDetected",
-	483: "TooManyHops",
-	484: "AddressIncomplete",
+	413: "Request Entity Too Large",
+	414: "Request URI Too Long",
+	415: "Unsupported Media Type",
+	416: "Requested Range Not Satisfiable",
+	420: "Bad Extension",
+	421: "Extension Required",
+	423: "Interval Too Brief",
+	480: "Temporarily Unavailable",
+	481: "Call Transaction Does Not Exists",
+	482: "Loop Detected",
+	483: "Too Many Hops",
+	484: "Address Incomplete",
 	485: "Ambiguous",
-	486: "BusyHere",
-	487: "RequestTerminated",
-	488: "NotAcceptableHere",
+	486: "Busy Here",
+	487: "Request Terminated",
+	488: "Not Acceptable Here",
 
-	500: "InternalServerError",
-	501: "NotImplemented",
-	502: "BadGateway",
-	503: "ServiceUnavailable",
-	504: "GatewayTimeout",
-	505: "VersionNotSupported",
-	513: "MessageTooLarge",
+	500: "Internal Server Error",
+	501: "Not Implemented",
+	502: "Bad Gateway",
+	503: "Service Unavailable",
+	504: "Gateway Timeout",
+	505: "Version Not Supported",
+	513: "Message Too Large",
 
-	600: "GlobalBusyEverywhere",
-	603: "GlobalDecline",
-	604: "GlobalDoesNotExistAnywhere",
-	606: "GlobalNotAcceptable",
+	600: "Global Busy Everywhere",
+	603: "Global Decline",
+	604: "Global Does Not Exist Anywhere",
+	606: "Global Not Acceptable",
 }
 
 func sipStatus(code sip.StatusCode) string {
 	if name := statusNamesMap[int(code)]; name != "" {
 		return name
 	}
-	return fmt.Sprintf("Status%d", int(code))
+	return fmt.Sprintf("Status %d", int(code))
 }
 
 func statusName(status int) string {
 	if name := statusNamesMap[status]; name != "" {
-		return fmt.Sprintf("%d-%s", status, name)
+		return fmt.Sprintf("%d-%s", status, strings.ReplaceAll(name, " ", ""))
 	}
 	return fmt.Sprintf("status-%d", status)
 }

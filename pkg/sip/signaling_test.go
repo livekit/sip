@@ -16,12 +16,14 @@ import (
 	"errors"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -197,7 +199,7 @@ func (s *sipUATest) serveTransport(t *testing.T, transport string) error {
 	return nil
 }
 
-func (s *sipUATest) RegisterSink(localTag string, method string) chan *sipUARequest {
+func (s *sipUATest) RegisterSink(localTag string, method string) <-chan *sipUARequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dialogMethods, ok := s.sinks[localTag]
@@ -296,6 +298,7 @@ var index atomic.Int32
 
 type sipUADialogTest struct {
 	TestUA     *sipUATest
+	isUAS      bool
 	callID     string
 	localUser  string
 	remoteUser string
@@ -308,10 +311,11 @@ type sipUADialogTest struct {
 	routeSet   []sip.Uri
 }
 
-func newTestCall(testUA *sipUATest, forceRemoteTag bool) *sipUADialogTest {
+func newTestCall(testUA *sipUATest, isUAS bool) *sipUADialogTest {
 	i := index.Add(1)
 	d := &sipUADialogTest{
 		TestUA:     testUA,
+		isUAS:      isUAS,
 		callID:     fmt.Sprintf("callID-%d", i),
 		localUser:  fmt.Sprintf("localTestUser-%d", i),
 		remoteUser: fmt.Sprintf("remoteTestUser-%d", i),
@@ -320,7 +324,8 @@ func newTestCall(testUA *sipUATest, forceRemoteTag bool) *sipUADialogTest {
 		localCseq:  1,
 		remoteCseq: 0, // Needs to be set by remote
 	}
-	if forceRemoteTag {
+	if isUAS {
+		// sipUADialogTest preceeds CreateSipParticipantRequest, that needs this generated.
 		d.remoteTag = LocalTag(fmt.Sprintf("remoteTestTag-%d", i))
 	}
 	return d
@@ -396,6 +401,18 @@ func (d *sipUADialogTest) CreateSipParticipantRequest() *rpc.InternalCreateSIPPa
 	return req
 }
 
+func (d *sipUADialogTest) TransactionRequest(t *testing.T, req *sip.Request) *sip.Response {
+	return d.TestUA.TransactionRequest(t, req, !d.isUAS)
+}
+
+func (d *sipUADialogTest) RegisterRequestChannel(method string) <-chan *sipUARequest {
+	return d.TestUA.RegisterSink(d.localTag, method)
+}
+
+func (d *sipUADialogTest) UnregisterRequestChannel(method string) {
+	d.TestUA.UnregisterSink(d.localTag, method)
+}
+
 type serviceTest struct {
 	TestUA  *sipUATest
 	Server  *Server // Processing inbound calls and SIP
@@ -450,7 +467,9 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		conf,
 		log,
 		mon,
-		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(&MockIOInfoClient{}) },
+		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+			return NewRPCStateHandler(&MockIOInfoClient{})
+		},
 		WithGetRoomClient(options.GetRoom),
 	)
 	srv := NewServer(
@@ -458,7 +477,9 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		conf,
 		log,
 		mon,
-		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(&MockIOInfoClient{}) },
+		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+			return NewRPCStateHandler(&MockIOInfoClient{})
+		},
 		WithGetRoomServer(options.GetRoom),
 		WithClient(cli),
 	)
@@ -541,7 +562,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	t.Helper()
 
 	newInviteSink := st.TestUA.RegisterSink("", "INVITE")
-	var reqSink chan *sipUARequest
+	var reqSink <-chan *sipUARequest
 	defer st.TestUA.UnregisterSink("", "INVITE")
 
 	call := newTestCall(st.TestUA, true)
@@ -1167,4 +1188,174 @@ func TestRouteSet(t *testing.T) {
 			require.NoError(t, err)
 		})
 	})
+}
+
+func TestTransferSIPParticipant(t *testing.T) {
+	handleReferRequest := func(t *testing.T, ctx context.Context, call *sipUADialogTest, referStatus int, notifyStatuses []int, done chan<- struct{}) {
+		// This will receive the REFER request, respond with referStatus.
+		// Ten proceed to generate NOTIFY with the requests statues, and handle the responses.
+		t.Helper()
+		defer close(done)
+		refChan := call.RegisterRequestChannel(string(sip.REFER))
+		defer call.UnregisterRequestChannel(string(sip.REFER))
+
+		select {
+		case <-ctx.Done():
+			t.Logf("Test aborted without receiving a REFER request: %v", ctx.Err())
+			return
+		case msg := <-refChan:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.REFER, msg.req.Method)
+			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
+			t.Logf("Received REFER request, responding REFER-%d %s", referStatus, sipStatus(referStatus))
+			resp := sip.NewResponseFromRequest(msg.req, referStatus, sipStatus(referStatus), nil)
+			require.NoError(t, msg.tx.Respond(resp))
+			break
+		}
+		if referStatus < 200 || referStatus >= 300 {
+			t.Logf("REFER-%d %s response sent, skipping %d NOTIFY requests", referStatus, sipStatus(referStatus), len(notifyStatuses))
+			require.Empty(t, notifyStatuses)
+			return
+		}
+		for i, status := range notifyStatuses {
+			select {
+			case <-ctx.Done():
+				t.Logf("Test aborted without ending remaining %d NOTIFY requests: %v", len(notifyStatuses)-i, ctx.Err())
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			t.Logf("Sending NOTIFY request carrying INVITE-%d %s response", status, sipStatus(status))
+			notifyReq := call.NewRequest(sip.NOTIFY)
+			notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
+			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
+			notifyReq.SetBody([]byte(sip.NewResponse(status, sipStatus(status)).String()))
+			notifyResp := call.TransactionRequest(t, notifyReq)
+			t.Logf("Received NOTIFY-%d %s response", notifyResp.StatusCode, notifyResp.Reason)
+			require.Equal(t, 200, notifyResp.StatusCode, "Expecting 200 OK response to NOTIFY")
+		}
+		t.Log("All NOTIFY requests sent")
+	}
+
+	handleByeRequest := func(t *testing.T, ctx context.Context, call *sipUADialogTest, done chan<- struct{}) {
+		// This will receive the BYE request, respond with 200 OK.
+		t.Helper()
+		defer close(done)
+		byeChan := call.RegisterRequestChannel(string(sip.BYE))
+		defer call.UnregisterRequestChannel(string(sip.BYE))
+
+		select {
+		case <-ctx.Done():
+			t.Logf("Test aborted without receiving a BYE request: %v", ctx.Err())
+			require.NoError(t, ctx.Err())
+		case msg := <-byeChan:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
+			t.Logf("Received BYE")
+			resp := sip.NewResponseFromRequest(msg.req, 200, sipStatus(200), nil)
+			require.NoError(t, msg.tx.Respond(resp))
+		}
+	}
+
+	sendBye := func(t *testing.T, call *sipUADialogTest) {
+		t.Helper()
+		t.Logf("Sending BYE")
+		resp := call.TransactionRequest(t, call.NewRequest(sip.BYE))
+		t.Logf("Received BYE-%d %s response", resp.StatusCode, resp.Reason)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting BYE-200 OK")
+	}
+
+	for _, direction := range []string{"inbound", "outbound"} {
+		t.Run(direction, func(t *testing.T) {
+			for _, referStatus := range []int{202} {
+				t.Run(fmt.Sprintf("REFER-%d", referStatus), func(t *testing.T) {
+					for _, finalNotifyStatus := range []int{200, 480} {
+						t.Run(fmt.Sprintf("NOTIFY-%d", finalNotifyStatus), func(t *testing.T) {
+							var call *sipUADialogTest
+							st := NewServiceTest(t, nil)
+							switch direction {
+							case "inbound":
+								call, _ = st.CreateInboundCall(t)
+							case "outbound":
+								call, _, _ = st.CreateOutboundCall(t)
+							}
+							svc := newServiceFromTest(st)
+
+							srvCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+							defer cancel()
+
+							// handleReferRequest Will accpet refer and send NOTIFY requests.
+							notifyDone := make(chan struct{})
+							go handleReferRequest(t, srvCtx, call, referStatus, []int{100, 180, finalNotifyStatus}, notifyDone)
+
+							var byeDone chan struct{}
+							if finalNotifyStatus < 300 { // Call does not end on REFER failure
+								byeDone = make(chan struct{})
+								go handleByeRequest(t, srvCtx, call, byeDone)
+							} else {
+								defer sendBye(t, call)
+							}
+
+							tansferDurationMax := 5 * time.Second
+							transferReq := &rpc.InternalTransferSIPParticipantRequest{
+								SipCallId:      string(call.remoteTag),
+								TransferTo:     "tel:+15551234567",
+								RingingTimeout: durationpb.New(tansferDurationMax),
+							}
+							// Issue several API calls to transfer the call concurrently, supported
+							wg := sync.WaitGroup{}
+							for i := 0; i < 4; i++ {
+								wg.Add(1)
+								go func() {
+									defer wg.Done()
+									clnCtx, cancel := context.WithTimeout(t.Context(), tansferDurationMax)
+									defer cancel()
+
+									_, err := svc.transferSIPParticipant(clnCtx, transferReq)
+									if finalNotifyStatus < 300 {
+										require.NoError(t, err)
+									} else {
+										t.Logf("Received error: %v", err)
+										require.Error(t, err)
+										var psErr psrpc.Error
+										require.ErrorAs(t, err, &psErr)
+										var st *livekit.SIPStatus
+										require.ErrorAs(t, err, &st)
+										require.Equal(t, livekit.SIPStatusCode(finalNotifyStatus), st.Code)
+										require.Equal(t, sipStatus(finalNotifyStatus), st.Status)
+									}
+								}()
+							}
+							wg.Wait() // TODO: Add timeout just in case
+							for notifyDone != nil || byeDone != nil {
+								select {
+								case <-notifyDone:
+									t.Log("NOTIFY requests completed")
+									notifyDone = nil
+								case <-byeDone:
+									t.Log("BYE request completed")
+									byeDone = nil
+								case <-srvCtx.Done():
+									t.Fatalf("timed out waiting for NOTIFY or BYE requests: %v", srvCtx.Err())
+								}
+							}
+							t.Log("test done")
+						})
+					}
+				})
+
+			}
+		})
+	}
+}
+
+func newServiceFromTest(st *serviceTest) *Service {
+	return &Service{
+		conf:             st.Client.conf,
+		log:              st.Server.log,
+		mon:              st.Server.mon,
+		cli:              st.Client,
+		srv:              st.Server,
+		pendingTransfers: make(map[LocalTag]*PendingTransfer),
+	}
 }
