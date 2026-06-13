@@ -374,7 +374,7 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			select {
 			case pending.Done <- err:
 			default:
-				s.log.Errorw("pending transfer channel is full, dropping error", err, "callID", req.SipCallId, "transferTo", req.TransferTo)
+				s.log.Errorw("pending transfer received more than one error", err, "callID", req.SipCallId, "transferTo", req.TransferTo)
 			}
 			pending.Error.Store(&err)
 			close(pending.Done)
