@@ -325,7 +325,7 @@ func newTestCall(testUA *sipUATest, isUAS bool) *sipUADialogTest {
 		remoteCseq: 0, // Needs to be set by remote
 	}
 	if isUAS {
-		// sipUADialogTest preceeds CreateSipParticipantRequest, that needs this generated.
+		// sipUADialogTest generates CreateSipParticipantRequest, which needs the tag as input.
 		d.remoteTag = LocalTag(fmt.Sprintf("remoteTestTag-%d", i))
 	}
 	return d
@@ -418,6 +418,7 @@ type serviceTest struct {
 	Server  *Server // Processing inbound calls and SIP
 	Client  *Client // Processing outbound calls
 	Handler Handler
+	Service *Service
 }
 
 type serviceTestConfig struct {
@@ -505,11 +506,20 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 
 	addr := netip.AddrPortFrom(loopback, uint16(sipPort))
 
+	service := &Service{
+		conf:             conf,
+		log:              log,
+		mon:              mon,
+		cli:              cli,
+		srv:              srv,
+		pendingTransfers: make(map[LocalTag]*PendingTransfer),
+	}
 	return &serviceTest{
 		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(3)),
 		Server:  srv,
 		Client:  cli,
 		Handler: handler,
+		Service: service,
 	}
 }
 
@@ -724,272 +734,332 @@ func TestReinvite(t *testing.T) {
 }
 
 func TestTransfer(t *testing.T) {
-	t.Run("inbound", func(t *testing.T) {
-		prepFunc := func(t *testing.T) (*serviceTest, *sipUADialogTest, *inboundCall) {
-			t.Helper()
-			st := NewServiceTest(t, nil)
-			call, ic := st.CreateInboundCall(t)
-			return st, call, ic
-		}
+	const referTo = "tel:+15551234567"
 
-		startTransfer := func(ctx context.Context, ic *inboundCall, to string, headers map[string]string, dialtone bool) <-chan error {
-			transferRes := make(chan error, 1)
-			go func() {
-				defer close(transferRes)
-				err := ic.transferCall(ctx, to, headers, dialtone)
-				if err != nil {
-					transferRes <- err
+	expectHeaders := func(referTo string, headers map[string]string) []sip.Header {
+		expected := []sip.Header{sip.NewHeader("Refer-To", fmt.Sprintf("<%s>", referTo))}
+		for name, value := range headers {
+			expected = append(expected, sip.NewHeader(name, value))
+		}
+		return expected
+	}
+
+	handleRefer := func(t *testing.T, ctx context.Context, refChan <-chan *sipUARequest, call *sipUADialogTest, referStatus int, validateHeaders []sip.Header) error {
+		t.Helper()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("test aborted without receiving a REFER request: %v", ctx.Err())
+		case msg := <-refChan:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.REFER, msg.req.Method)
+			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
+			for _, expectedHeader := range validateHeaders {
+				reqHeaders := msg.req.GetHeaders(expectedHeader.Name())
+				found := false
+				for _, reqHeader := range reqHeaders {
+					if reqHeader.Value() == expectedHeader.Value() {
+						found = true
+						break
+					}
 				}
-			}()
-			return transferRes
-		}
-
-		t.Run("normal", func(t *testing.T) {
-			st, call, ic := prepFunc(t)
-			reqChan := st.TestUA.RegisterSink(call.localTag, "")
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
-			defer cancel()
-
-			transferRes := startTransfer(ctx, ic, "tel:+15551234567", nil, false)
-
-			select {
-			case msg := <-reqChan:
-				require.Equal(t, sip.REFER, msg.req.Method)
-				require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-				hdrs := msg.req.GetHeaders("Refer-To")
-				require.Equal(t, 1, len(hdrs), "should be 1 Refer-To header")
-				require.Equal(t, "<tel:+15551234567>", hdrs[0].Value())
-				resp := sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil)
-				msg.tx.Respond(resp)
-				// OK, proceed
-			case err := <-transferRes:
-				t.Fatal("error transferring call, unexpected transfer API response", err)
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for REFER to arrive")
+				require.True(t, found, "REFER request should contain the expected header %s: %s, instead got: %v", expectedHeader.Name(), expectedHeader.Value(), reqHeaders)
 			}
+			t.Logf("Received REFER request, responding REFER-%d %s", referStatus, sipStatus(referStatus))
+			resp := sip.NewResponseFromRequest(msg.req, referStatus, sipStatus(referStatus), nil)
+			return msg.tx.Respond(resp)
+		}
+	}
 
+	sendNotify := func(t *testing.T, ctx context.Context, call *sipUADialogTest, notifyStatuses []int) error {
+		t.Helper()
+		require.NotEmpty(t, notifyStatuses)
+		for i, status := range notifyStatuses {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("test aborted without ending remaining %d NOTIFY requests: %v", len(notifyStatuses)-i, ctx.Err())
+			case <-time.After(5 * time.Millisecond):
+			}
+			t.Logf("Sending NOTIFY request carrying INVITE-%d response", status)
 			notifyReq := call.NewRequest(sip.NOTIFY)
 			notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
 			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
-			notifyReq.SetBody([]byte(sip.NewResponse(200, "OK").String()))
-
-			resp := st.TestUA.TransactionRequest(t, notifyReq, true)
-			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
-
-			select {
-			case err := <-transferRes:
-				if err != nil {
-					t.Fatal("error transferring call, unexpected transfer API response", err)
-				}
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for BYE to arrive")
-			}
-		})
-
-		t.Run("with headers", func(t *testing.T) {
-			st, call, ic := prepFunc(t)
-			reqChan := st.TestUA.RegisterSink(call.localTag, "")
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
-			defer cancel()
-
-			headers := map[string]string{
-				"X-Custom-Header": "custom-value",
-			}
-			transferRes := startTransfer(ctx, ic, "tel:+15551234567", headers, false)
-
-			select {
-			case msg := <-reqChan:
-				require.Equal(t, sip.REFER, msg.req.Method)
-				require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-				hdrs := msg.req.GetHeaders("Refer-To")
-				require.Equal(t, 1, len(hdrs), "should be 1 Refer-To header")
-				require.Equal(t, "<tel:+15551234567>", hdrs[0].Value())
-				hdr := msg.req.GetHeaders("X-Custom-Header")
-				require.Equal(t, 1, len(hdr), "should be 1 X-Custom-Header")
-				require.Equal(t, "custom-value", hdr[0].Value())
-				resp := sip.NewResponseFromRequest(msg.req, 480, "Temporarily Unavailable", nil)
-				msg.tx.Respond(resp)
-			case err := <-transferRes:
-				t.Fatal("error transferring call, unexpected transfer API response", err)
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for REFER to arrive")
-			}
-		})
-
-		t.Run("bye", func(t *testing.T) {
-			// After REFER gets 202 we wait on NOTIFY; remote hangs up with BYE instead.
-			st, call, ic := prepFunc(t)
-			reqChan := st.TestUA.RegisterSink(call.localTag, "")
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
-			defer cancel()
-
-			transferRes := startTransfer(ctx, ic, "tel:+15551234567", nil, false)
-
-			select {
-			case msg := <-reqChan:
-				require.Equal(t, sip.REFER, msg.req.Method)
-				require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-				hdrs := msg.req.GetHeaders("Refer-To")
-				require.Equal(t, 1, len(hdrs), "should be 1 Refer-To header")
-				require.Equal(t, "<tel:+15551234567>", hdrs[0].Value())
-				resp := sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil)
-				msg.tx.Respond(resp)
-				// OK, proceed
-			case err := <-transferRes:
-				t.Fatal("error transferring call, unexpected transfer API response", err)
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for REFER to arrive")
-			}
-
-			byeReq := call.NewRequest(sip.BYE)
-			resp := st.TestUA.TransactionRequest(t, byeReq, true)
-			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
-
-			select {
-			case err := <-transferRes:
-				if err != nil {
-					t.Fatal("error transferring call, unexpected transfer API response", err)
-				}
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for BYE to arrive")
-			}
-		})
-	})
-
-	t.Run("outbound", func(t *testing.T) {
-		prepFunc := func(t *testing.T) (*serviceTest, *sipUADialogTest, *outboundCall) {
-			t.Helper()
-			st := NewServiceTest(t, nil)
-			call, oc, _ := st.CreateOutboundCall(t)
-			return st, call, oc
+			notifyReq.SetBody([]byte(sip.NewResponse(status, sipStatus(status)).String()))
+			notifyResp := call.TransactionRequest(t, notifyReq)
+			t.Logf("Received NOTIFY-%d %s response", notifyResp.StatusCode, notifyResp.Reason)
+			require.Equal(t, 200, notifyResp.StatusCode, "Expecting 200 OK response to NOTIFY")
 		}
+		t.Log("All NOTIFY requests sent")
+		return nil
+	}
 
-		startTransfer := func(t *testing.T, ctx context.Context, oc *outboundCall, to string, headers map[string]string, dialtone bool) <-chan error {
-			transferRes := make(chan error, 1)
-			go func() {
-				defer close(transferRes)
-				t.Logf("startTransfer")
-				err := oc.transferCall(ctx, to, headers, dialtone)
-				t.Logf("startTransfer done")
-				if err != nil {
-					t.Logf("startTransfer error")
-					transferRes <- err
-				}
-			}()
-			return transferRes
+	handleBye := func(t *testing.T, ctx context.Context, reqChan <-chan *sipUARequest, call *sipUADialogTest) error {
+		// This will receive the BYE request, respond with 200 OK.
+		t.Helper()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("test aborted without receiving a BYE request: %v", ctx.Err())
+		case msg := <-reqChan:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
+			t.Logf("Received BYE")
+			resp := sip.NewResponseFromRequest(msg.req, 200, sipStatus(200), nil)
+			return msg.tx.Respond(resp)
 		}
+	}
 
-		t.Run("normal", func(t *testing.T) {
-			st, call, oc := prepFunc(t)
-			reqChan := st.TestUA.RegisterSink(call.localTag, "")
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
-			defer cancel()
+	sendBye := func(t *testing.T, call *sipUADialogTest) error {
+		t.Helper()
+		t.Logf("Sending BYE")
+		resp := call.TransactionRequest(t, call.NewRequest(sip.BYE))
+		t.Logf("Received BYE-%d %s response", resp.StatusCode, resp.Reason)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting BYE-200 OK")
+		return nil
+	}
 
-			transferRes := startTransfer(t, ctx, oc, "tel:+15551234567", nil, false)
-
-			select {
-			case msg := <-reqChan:
-				require.Equal(t, sip.REFER, msg.req.Method)
-				require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-				hdrs := msg.req.GetHeaders("Refer-To")
-				require.Equal(t, 1, len(hdrs), "should be 1 Refer-To header")
-				require.Equal(t, "<tel:+15551234567>", hdrs[0].Value())
-				resp := sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil)
-				msg.tx.Respond(resp)
-				// OK, proceed
-			case err := <-transferRes:
-				t.Fatal("error transferring call, unexpected transfer API response", err)
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for REFER to arrive")
+	startTransfer := func(t *testing.T, ctx context.Context, st *serviceTest, call *sipUADialogTest, to string, headers map[string]string, dialtone bool) <-chan error {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() {
+			defer close(done)
+			transferReq := &rpc.InternalTransferSIPParticipantRequest{
+				SipCallId:    string(call.remoteTag),
+				TransferTo:   to,
+				Headers:      headers,
+				PlayDialtone: dialtone,
 			}
+			if deadline, ok := ctx.Deadline(); ok {
+				transferReq.RingingTimeout = durationpb.New(time.Until(deadline) + (5 * time.Millisecond))
+			}
+			_, err := st.Service.TransferSIPParticipant(ctx, transferReq)
+			if err != nil {
+				done <- err
+			}
+		}()
+		return done
+	}
 
-			notifyReq := call.NewRequest(sip.NOTIFY)
-			notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
-			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
-			notifyReq.SetBody([]byte(sip.NewResponse(200, "OK").String()))
+	directions := map[string]func(t *testing.T, st *serviceTest) *sipUADialogTest{
+		"inbound": func(t *testing.T, st *serviceTest) *sipUADialogTest {
+			call, _ := st.CreateInboundCall(t)
+			return call
+		},
+		"outbound": func(t *testing.T, st *serviceTest) *sipUADialogTest {
+			call, _, _ := st.CreateOutboundCall(t)
+			return call
+		},
+	}
 
-			resp := st.TestUA.TransactionRequest(t, notifyReq, false)
-			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+	for direction, setupCall := range directions {
+		t.Run(direction, func(t *testing.T) {
+			t.Run("normal", func(t *testing.T) {
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
 
-			select {
-			case err := <-transferRes:
-				if err != nil {
-					t.Fatal("error transferring call, unexpected transfer API response", err)
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180, 200})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = handleBye(t, ctx, reqChan, call) // Expexting BYE after successful transfer
+				require.NoError(t, err, "Failed to process BYE request")
+				select {
+				case err := <-transferRes:
+					require.NoError(t, err, "error transferring call, unexpected transfer API response")
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
 				}
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for BYE to arrive")
-			}
-		})
+			})
 
-		t.Run("with headers", func(t *testing.T) {
-			st, call, oc := prepFunc(t)
-			reqChan := st.TestUA.RegisterSink(call.localTag, "")
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
-			defer cancel()
+			t.Run("noraml_concurrent", func(t *testing.T) {
+				// Same as normal, but with multiple concurrent transfers API requests.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
 
-			headers := map[string]string{
-				"X-Custom-Header": "custom-value",
-			}
-			transferRes := startTransfer(t, ctx, oc, "tel:+15551234567", headers, false)
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
 
-			select {
-			case msg := <-reqChan:
-				require.Equal(t, sip.REFER, msg.req.Method)
-				require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-				hdrs := msg.req.GetHeaders("Refer-To")
-				require.Equal(t, 1, len(hdrs), "should be 1 Refer-To header")
-				require.Equal(t, "<tel:+15551234567>", hdrs[0].Value())
-				hdr := msg.req.GetHeaders("X-Custom-Header")
-				require.Equal(t, 1, len(hdr), "should be 1 X-Custom-Header")
-				require.Equal(t, "custom-value", hdr[0].Value())
-				resp := sip.NewResponseFromRequest(msg.req, 480, "Temporarily Unavailable", nil)
-				msg.tx.Respond(resp)
-			case err := <-transferRes:
-				t.Fatal("error transferring call, unexpected transfer API response", err)
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for REFER to arrive")
-			}
-		})
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
 
-		t.Run("bye", func(t *testing.T) {
-			// After REFER gets 202 we wait on NOTIFY; remote hangs up with BYE instead.
-			st, call, oc := prepFunc(t)
-			reqChan := st.TestUA.RegisterSink(call.localTag, "")
-			ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
-			defer cancel()
-
-			transferRes := startTransfer(t, ctx, oc, "tel:+15551234567", nil, false)
-
-			select {
-			case msg := <-reqChan:
-				require.Equal(t, sip.REFER, msg.req.Method)
-				require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-				hdrs := msg.req.GetHeaders("Refer-To")
-				require.Equal(t, 1, len(hdrs), "should be 1 Refer-To header")
-				require.Equal(t, "<tel:+15551234567>", hdrs[0].Value())
-				resp := sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil)
-				msg.tx.Respond(resp)
-				// OK, proceed
-			case err := <-transferRes:
-				t.Fatal("error transferring call, unexpected transfer API response", err)
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for REFER to arrive")
-			}
-
-			byeReq := call.NewRequest(sip.BYE)
-			resp := st.TestUA.TransactionRequest(t, byeReq, false)
-			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
-
-			select {
-			case err := <-transferRes:
-				if err != nil {
-					t.Fatal("error transferring call, unexpected transfer API response", err)
+				transferResults := []<-chan error{
+					startTransfer(t, ctx, st, call, referTo, nil, false),
+					startTransfer(t, ctx, st, call, referTo, nil, false),
+					startTransfer(t, ctx, st, call, referTo, nil, false),
 				}
-			case <-ctx.Done():
-				t.Fatal("timeout waiting for API to time return")
-			}
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180, 200})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = handleBye(t, ctx, reqChan, call) // Expexting BYE after successful transfer
+				require.NoError(t, err, "Failed to process BYE request")
+				for _, transferRes := range transferResults {
+					select {
+					case err := <-transferRes:
+						require.NoError(t, err, "error transferring call, unexpected transfer API response")
+					case <-ctx.Done():
+						require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
+					}
+				}
+			})
+
+			t.Run("with headers", func(t *testing.T) {
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				headers := map[string]string{
+					"X-Custom-Header": "custom-value",
+				}
+				transferRes := startTransfer(t, ctx, st, call, referTo, headers, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180, 200})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = handleBye(t, ctx, reqChan, call) // Expexting BYE after successful transfer
+				require.NoError(t, err, "Failed to process BYE request")
+				select {
+				case err := <-transferRes:
+					require.NoError(t, err, "error transferring call, unexpected transfer API response")
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
+				}
+			})
+
+			t.Run("failed", func(t *testing.T) {
+				// Transfer fails, we don't receive a BYE
+				const finalNotifyStatus = 480
+
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180, finalNotifyStatus})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				select {
+				case <-time.After(time.Millisecond * 250):
+					t.Logf("No BYE received, as expected")
+				case msg := <-reqChan:
+					t.Fatalf("Received unexpected request: %+v", msg)
+				}
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+				select {
+				case err := <-transferRes:
+					t.Logf("Received error: %v", err)
+					require.Error(t, err)
+					var psErr psrpc.Error
+					require.ErrorAs(t, err, &psErr)
+					var sipErr *livekit.SIPStatus
+					require.ErrorAs(t, err, &sipErr)
+					require.Equal(t, livekit.SIPStatusCode(finalNotifyStatus), sipErr.Code)
+					require.Equal(t, sipStatus(finalNotifyStatus), sipErr.Status)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
+				}
+			})
+
+			t.Run("failed_concurrent", func(t *testing.T) {
+				// Transfer fails, we don't receive a BYE
+				const finalNotifyStatus = 480
+
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferResults := []<-chan error{
+					startTransfer(t, ctx, st, call, referTo, nil, false),
+					startTransfer(t, ctx, st, call, referTo, nil, false),
+					startTransfer(t, ctx, st, call, referTo, nil, false),
+				}
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180, finalNotifyStatus})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				select {
+				case <-time.After(time.Millisecond * 250):
+					t.Logf("No BYE received, as expected")
+				case msg := <-reqChan:
+					t.Fatalf("Received unexpected request: %+v", msg)
+				}
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+				for i, transferRes := range transferResults {
+					select {
+					case err := <-transferRes:
+						t.Logf("Received error: %v for transfer %d", err, i)
+						require.Error(t, err)
+						var psErr psrpc.Error
+						require.ErrorAs(t, err, &psErr)
+						var sipErr *livekit.SIPStatus
+						require.ErrorAs(t, err, &sipErr)
+						require.Equal(t, livekit.SIPStatusCode(finalNotifyStatus), sipErr.Code)
+						require.Equal(t, sipStatus(finalNotifyStatus), sipErr.Status)
+					case <-ctx.Done():
+						require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
+					}
+				}
+			})
+
+			t.Run("bye", func(t *testing.T) {
+				// After REFER gets 202 we wait on NOTIFY; remote hangs up with BYE instead.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				headers := map[string]string{
+					"X-Custom-Header": "custom-value",
+				}
+				transferRes := startTransfer(t, ctx, st, call, referTo, headers, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+
+				select {
+				case err := <-transferRes:
+					require.NoError(t, err, "error transferring call, unexpected transfer API response")
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
+				}
+			})
 		})
-	})
+	}
 }
 
 func TestRouteSet(t *testing.T) {
@@ -1188,174 +1258,4 @@ func TestRouteSet(t *testing.T) {
 			require.NoError(t, err)
 		})
 	})
-}
-
-func TestTransferSIPParticipant(t *testing.T) {
-	handleReferRequest := func(t *testing.T, ctx context.Context, call *sipUADialogTest, referStatus int, notifyStatuses []int, done chan<- struct{}) {
-		// This will receive the REFER request, respond with referStatus.
-		// Ten proceed to generate NOTIFY with the requests statues, and handle the responses.
-		t.Helper()
-		defer close(done)
-		refChan := call.RegisterRequestChannel(string(sip.REFER))
-		defer call.UnregisterRequestChannel(string(sip.REFER))
-
-		select {
-		case <-ctx.Done():
-			t.Logf("Test aborted without receiving a REFER request: %v", ctx.Err())
-			return
-		case msg := <-refChan:
-			require.NotNil(t, msg)
-			require.Equal(t, sip.REFER, msg.req.Method)
-			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-			t.Logf("Received REFER request, responding REFER-%d %s", referStatus, sipStatus(referStatus))
-			resp := sip.NewResponseFromRequest(msg.req, referStatus, sipStatus(referStatus), nil)
-			require.NoError(t, msg.tx.Respond(resp))
-			break
-		}
-		if referStatus < 200 || referStatus >= 300 {
-			t.Logf("REFER-%d %s response sent, skipping %d NOTIFY requests", referStatus, sipStatus(referStatus), len(notifyStatuses))
-			require.Empty(t, notifyStatuses)
-			return
-		}
-		for i, status := range notifyStatuses {
-			select {
-			case <-ctx.Done():
-				t.Logf("Test aborted without ending remaining %d NOTIFY requests: %v", len(notifyStatuses)-i, ctx.Err())
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-			t.Logf("Sending NOTIFY request carrying INVITE-%d %s response", status, sipStatus(status))
-			notifyReq := call.NewRequest(sip.NOTIFY)
-			notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
-			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
-			notifyReq.SetBody([]byte(sip.NewResponse(status, sipStatus(status)).String()))
-			notifyResp := call.TransactionRequest(t, notifyReq)
-			t.Logf("Received NOTIFY-%d %s response", notifyResp.StatusCode, notifyResp.Reason)
-			require.Equal(t, 200, notifyResp.StatusCode, "Expecting 200 OK response to NOTIFY")
-		}
-		t.Log("All NOTIFY requests sent")
-	}
-
-	handleByeRequest := func(t *testing.T, ctx context.Context, call *sipUADialogTest, done chan<- struct{}) {
-		// This will receive the BYE request, respond with 200 OK.
-		t.Helper()
-		defer close(done)
-		byeChan := call.RegisterRequestChannel(string(sip.BYE))
-		defer call.UnregisterRequestChannel(string(sip.BYE))
-
-		select {
-		case <-ctx.Done():
-			t.Logf("Test aborted without receiving a BYE request: %v", ctx.Err())
-			require.NoError(t, ctx.Err())
-		case msg := <-byeChan:
-			require.NotNil(t, msg)
-			require.Equal(t, sip.BYE, msg.req.Method)
-			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
-			t.Logf("Received BYE")
-			resp := sip.NewResponseFromRequest(msg.req, 200, sipStatus(200), nil)
-			require.NoError(t, msg.tx.Respond(resp))
-		}
-	}
-
-	sendBye := func(t *testing.T, call *sipUADialogTest) {
-		t.Helper()
-		t.Logf("Sending BYE")
-		resp := call.TransactionRequest(t, call.NewRequest(sip.BYE))
-		t.Logf("Received BYE-%d %s response", resp.StatusCode, resp.Reason)
-		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting BYE-200 OK")
-	}
-
-	for _, direction := range []string{"inbound", "outbound"} {
-		t.Run(direction, func(t *testing.T) {
-			for _, referStatus := range []int{202} {
-				t.Run(fmt.Sprintf("REFER-%d", referStatus), func(t *testing.T) {
-					for _, finalNotifyStatus := range []int{200, 480} {
-						t.Run(fmt.Sprintf("NOTIFY-%d", finalNotifyStatus), func(t *testing.T) {
-							var call *sipUADialogTest
-							st := NewServiceTest(t, nil)
-							switch direction {
-							case "inbound":
-								call, _ = st.CreateInboundCall(t)
-							case "outbound":
-								call, _, _ = st.CreateOutboundCall(t)
-							}
-							svc := newServiceFromTest(st)
-
-							srvCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-							defer cancel()
-
-							// handleReferRequest Will accpet refer and send NOTIFY requests.
-							notifyDone := make(chan struct{})
-							go handleReferRequest(t, srvCtx, call, referStatus, []int{100, 180, finalNotifyStatus}, notifyDone)
-
-							var byeDone chan struct{}
-							if finalNotifyStatus < 300 { // Call does not end on REFER failure
-								byeDone = make(chan struct{})
-								go handleByeRequest(t, srvCtx, call, byeDone)
-							} else {
-								defer sendBye(t, call)
-							}
-
-							tansferDurationMax := 5 * time.Second
-							transferReq := &rpc.InternalTransferSIPParticipantRequest{
-								SipCallId:      string(call.remoteTag),
-								TransferTo:     "tel:+15551234567",
-								RingingTimeout: durationpb.New(tansferDurationMax),
-							}
-							// Issue several API calls to transfer the call concurrently, supported
-							wg := sync.WaitGroup{}
-							for i := 0; i < 4; i++ {
-								wg.Add(1)
-								go func() {
-									defer wg.Done()
-									clnCtx, cancel := context.WithTimeout(t.Context(), tansferDurationMax)
-									defer cancel()
-
-									_, err := svc.transferSIPParticipant(clnCtx, transferReq)
-									if finalNotifyStatus < 300 {
-										require.NoError(t, err)
-									} else {
-										t.Logf("Received error: %v", err)
-										require.Error(t, err)
-										var psErr psrpc.Error
-										require.ErrorAs(t, err, &psErr)
-										var st *livekit.SIPStatus
-										require.ErrorAs(t, err, &st)
-										require.Equal(t, livekit.SIPStatusCode(finalNotifyStatus), st.Code)
-										require.Equal(t, sipStatus(finalNotifyStatus), st.Status)
-									}
-								}()
-							}
-							wg.Wait() // TODO: Add timeout just in case
-							for notifyDone != nil || byeDone != nil {
-								select {
-								case <-notifyDone:
-									t.Log("NOTIFY requests completed")
-									notifyDone = nil
-								case <-byeDone:
-									t.Log("BYE request completed")
-									byeDone = nil
-								case <-srvCtx.Done():
-									t.Fatalf("timed out waiting for NOTIFY or BYE requests: %v", srvCtx.Err())
-								}
-							}
-							t.Log("test done")
-						})
-					}
-				})
-
-			}
-		})
-	}
-}
-
-func newServiceFromTest(st *serviceTest) *Service {
-	return &Service{
-		conf:             st.Client.conf,
-		log:              st.Server.log,
-		mon:              st.Server.mon,
-		cli:              st.Client,
-		srv:              st.Server,
-		pendingTransfers: make(map[LocalTag]*PendingTransfer),
-	}
 }
