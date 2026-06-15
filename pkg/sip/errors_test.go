@@ -95,13 +95,13 @@ func TestClassifyInviteError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res := classifyInviteError(tc.err)
-			require.Equal(t, tc.wantStatus, res.status, "status")
-			require.Equal(t, tc.wantTerm, res.term, "termination")
-			require.Equal(t, tc.wantReason, res.reason, "disconnect reason")
+			require.Equal(t, tc.wantStatus, res.Status, "status")
+			require.Equal(t, tc.wantTerm, res.Term, "termination")
+			require.Equal(t, tc.wantReason, res.Reason, "disconnect reason")
 			if tc.wantReport {
-				require.NotNil(t, res.reportErr, "reportErr expected non-nil")
+				require.NotNil(t, res.Report, "reportErr expected non-nil")
 			} else {
-				require.Nil(t, res.reportErr, "reportErr expected nil")
+				require.Nil(t, res.Report, "reportErr expected nil")
 			}
 		})
 	}

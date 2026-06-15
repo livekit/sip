@@ -265,8 +265,8 @@ func (r *testRoom) NewTrack() *mixer.Input {
 	return r.room.NewTrack()
 }
 
-func (r *testRoom) RegisterRPC(method string, handler lksdk.RpcHandlerFunc) error {
-	return r.room.RegisterRPC(method, handler)
+func (r *testRoom) RegisterRpcCtxMethod(method string, handler lksdk.RpcHandlerCtxFunc) error {
+	return r.room.RegisterRpcCtxMethod(method, handler)
 }
 
 type testSIPClientTransaction struct {

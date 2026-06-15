@@ -350,7 +350,11 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	call.log.Infow("BYE from remote")
 	go func(call *outboundCall) {
 		call.cc.AcceptBye(req, tx)
-		call.CloseWithReason(ctx, CallHangup, stats.Success("bye"), livekit.DisconnectReason_CLIENT_INITIATED)
+		call.CloseWith(ctx, EndCall{
+			Status: CallHangup,
+			Term:   stats.Success("bye"),
+			Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+		})
 	}(call)
 	return true
 }
