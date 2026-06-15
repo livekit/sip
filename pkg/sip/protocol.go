@@ -40,6 +40,21 @@ var (
 	referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 )
 
+type Result struct {
+	Code   sip.StatusCode
+	Status string
+}
+
+func (r Result) NewResponse(req *sip.Request) *sip.Response {
+	if r.Code == 0 {
+		r.Code = sip.StatusServiceUnavailable
+	}
+	if r.Status == "" {
+		r.Status = sipStatus(r.Code)
+	}
+	return sip.NewResponseFromRequest(req, r.Code, r.Status, nil)
+}
+
 var statusNamesMap = map[int]string{
 	100: "Trying",
 	180: "Ringing",

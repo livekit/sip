@@ -131,14 +131,23 @@ func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
 	}
 }
 
-func (v CallStatus) SIPStatus() (sip.StatusCode, string) {
+func (v CallStatus) SIPStatus() Result {
 	switch v {
 	case callMediaFailed:
-		return sip.StatusNotAcceptableHere, "MediaFailed"
+		return Result{
+			Code:   sip.StatusNotAcceptableHere,
+			Status: "MediaFailed",
+		}
 	case CallCancelled:
-		return sip.StatusRequestTerminated, "Request Terminated"
+		return Result{
+			Code:   sip.StatusRequestTerminated,
+			Status: "Request Terminated",
+		}
 	default:
-		return sip.StatusBusyHere, "Rejected"
+		return Result{
+			Code:   sip.StatusBusyHere,
+			Status: "Rejected",
+		}
 	}
 }
 

@@ -1264,8 +1264,8 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 	}
 	defer c.mon.StageDurTimer("close")
 	c.stats.Closed.Store(true)
-	sipCode, sipStatus := status.SIPStatus()
-	log := c.log().WithValues("status", sipCode, "result", string(t.Result), "reason", t.Reason)
+	result := status.SIPStatus()
+	log := c.log().WithValues("status", result.Code, "result", string(t.Result), "reason", t.Reason)
 	defer func() {
 		c.stats.Update()
 		c.printStats(log)
@@ -1287,7 +1287,7 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 	// This ensures participant attributes are still available for
 	// attributes_to_headers mapping in the setHeaders callback.
 	// See: https://github.com/livekit/sip/issues/404
-	c.cc.CloseWithStatus(ctx, sipCode, sipStatus)
+	c.cc.CloseWithStatus(ctx, result)
 	c.closeMedia()
 	if callDurFn := c.callDur; callDurFn != nil {
 		callDurFn()
@@ -2039,7 +2039,7 @@ func (c *sipInbound) sendBye(ctx context.Context) {
 	sendAndACK(ctx, c, r)
 }
 
-func (c *sipInbound) sendStatus(ctx context.Context, code sip.StatusCode, status string) {
+func (c *sipInbound) sendStatus(ctx context.Context, result Result) {
 	ctx = context.WithoutCancel(ctx)
 	if c.inviteOk != nil {
 		return // call already established
@@ -2050,10 +2050,7 @@ func (c *sipInbound) sendStatus(ctx context.Context, code sip.StatusCode, status
 	ctx, span := Tracer.Start(ctx, "sip.inbound.sendStatus")
 	defer span.End()
 
-	if status == "" {
-		status = sipStatus(code)
-	}
-	r := sip.NewResponseFromRequest(c.invite, code, status, nil)
+	r := result.NewResponse(c.invite)
 	for k, v := range c.fillHeaders(nil) {
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
@@ -2144,11 +2141,14 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 // Close the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with busy status.
 func (c *sipInbound) Close(ctx context.Context) {
 	ctx = context.WithoutCancel(ctx)
-	c.CloseWithStatus(ctx, sip.StatusBusyHere, "Rejected")
+	c.CloseWithStatus(ctx, Result{
+		Code:   sip.StatusBusyHere,
+		Status: "Rejected",
+	})
 }
 
 // CloseWithStatus the inbound call cleanly. Depending on the call state it either sends BYE or terminates INVITE with a specified status.
-func (c *sipInbound) CloseWithStatus(ctx context.Context, code sip.StatusCode, status string) {
+func (c *sipInbound) CloseWithStatus(ctx context.Context, result Result) {
 	ctx = context.WithoutCancel(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -2156,7 +2156,7 @@ func (c *sipInbound) CloseWithStatus(ctx context.Context, code sip.StatusCode, s
 		// TODO: add cause for a failure, if any
 		c.sendBye(ctx)
 	} else if c.inviteTx != nil {
-		c.sendStatus(ctx, code, status)
+		c.sendStatus(ctx, result)
 	} else {
 		c.drop()
 	}
