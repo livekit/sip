@@ -1264,7 +1264,22 @@ func (c *inboundCall) close(ctx context.Context, status CallStatus, t stats.Term
 	}
 	defer c.mon.StageDurTimer("close")
 	c.stats.Closed.Store(true)
-	result := status.SIPStatus()
+	result := Result{
+		Code:   sip.StatusBusyHere,
+		Status: "Rejected",
+	}
+	switch status {
+	case callMediaFailed:
+		result = Result{
+			Code:   sip.StatusNotAcceptableHere,
+			Status: "Media Failed",
+		}
+	case CallCancelled:
+		result = Result{
+			Code:   sip.StatusRequestTerminated,
+			Status: "Request Terminated",
+		}
+	}
 	log := c.log().WithValues("status", result.Code, "result", string(t.Result), "reason", t.Reason)
 	defer func() {
 		c.stats.Update()
