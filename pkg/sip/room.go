@@ -172,6 +172,23 @@ func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
 	return NewRoom(log, st)
 }
 
+func getRoomFuncForConfig(conf *config.Config) GetRoomFunc {
+	if conf == nil || conf.MixerInputBufferFrames <= 0 {
+		return DefaultGetRoomFunc
+	}
+	mixerInputBufferFrames := conf.MixerInputBufferFrames
+	return func(log logger.Logger, st *RoomStats) RoomInterface {
+		return NewRoom(log, st, WithRoomMixerInputBufferFrames(mixerInputBufferFrames))
+	}
+}
+
+func withMixerInputBufferFrames(frames int, opts ...mixer.MixerOptions) []mixer.MixerOptions {
+	if frames > 0 {
+		opts = append(opts, mixer.WithInputBufferFrames(frames))
+	}
+	return opts
+}
+
 type Room struct {
 	log        logger.Logger
 	roomLog    logger.Logger // deferred logger
@@ -206,14 +223,31 @@ type RoomConfig struct {
 	LogSignalChanges bool
 }
 
-func NewRoom(log logger.Logger, st *RoomStats) *Room {
+type RoomOptions struct {
+	MixerInputBufferFrames int
+}
+
+type RoomOption func(*RoomOptions)
+
+func WithRoomMixerInputBufferFrames(frames int) RoomOption {
+	return func(opts *RoomOptions) {
+		opts.MixerInputBufferFrames = frames
+	}
+}
+
+func NewRoom(log logger.Logger, st *RoomStats, options ...RoomOption) *Room {
 	if st == nil {
 		st = &RoomStats{}
+	}
+	opts := RoomOptions{}
+	for _, option := range options {
+		option(&opts)
 	}
 	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
 
 	var err error
-	r.mix, err = mixer.NewMixer(r.out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
+	mixerOpts := withMixerInputBufferFrames(opts.MixerInputBufferFrames, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
+	r.mix, err = mixer.NewMixer(r.out, rtp.DefFrameDur, 1, mixerOpts...)
 	if err != nil {
 		panic(err)
 	}
