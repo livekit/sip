@@ -381,6 +381,13 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		if body := req.Body(); len(body) != 0 && existing.media != nil {
+			if desc, err := sdp.Parse(body); err == nil {
+				existing.media.UpdateRemote(desc.Addr)
+			} else {
+				existing.log().Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
+			}
+		}
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
