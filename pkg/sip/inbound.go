@@ -312,6 +312,14 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	return true, false
 }
 
+func sdpBodyFromRequest(req *sip.Request) []byte {
+	ct := req.ContentType()
+	if ct != nil && ct.Value() != "application/sdp" {
+		return nil
+	}
+	return req.Body()
+}
+
 func updateRemoteFromSDP(media *MediaPort, log logger.Logger, body []byte) {
 	if len(body) == 0 || media == nil {
 		return
@@ -393,7 +401,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		updateRemoteFromSDP(existing.media, existing.log(), req.Body())
+		updateRemoteFromSDP(existing.media, existing.log(), sdpBodyFromRequest(req))
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
@@ -404,7 +412,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			localSDP := oc.cc.LocalSDP()
 			if len(localSDP) != 0 {
 				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-				updateRemoteFromSDP(oc.media, oc.log, req.Body())
+				updateRemoteFromSDP(oc.media, oc.log, sdpBodyFromRequest(req))
 				oc.cc.RecordInvite(newCSeq)
 				cc.AcceptAsKeepAlive(localSDP)
 				return nil
