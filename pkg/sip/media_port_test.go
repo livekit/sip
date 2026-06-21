@@ -165,6 +165,31 @@ func newIP(v string) netip.Addr {
 	return ip
 }
 
+func TestMediaPortUpdateRemote(t *testing.T) {
+	log := logger.GetLogger()
+	mon := newTestCallMonitor(t)
+
+	// newUDPPipe wires two in-memory testUDPConn together.
+	c1, _ := newUDPPipe()
+	mp, err := NewMediaPortWith(1, log, mon, c1, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, 8000)
+	require.NoError(t, err)
+	defer mp.Close()
+
+	// Initially no destination is set.
+	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any update")
+
+	// Update to a valid address.
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	mp.UpdateRemote(addr)
+	require.Equal(t, addr, mp.RemoteAddr(), "RemoteAddr should reflect the updated address")
+
+	// UpdateRemote with invalid addr should be a no-op.
+	mp.UpdateRemote(netip.AddrPort{})
+	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with invalid addr should not change RemoteAddr")
+}
+
 func TestMediaPort(t *testing.T) {
 	// Main resampler has unpredictable (although tiny) output delay
 	// and other randomness in the generated samples.

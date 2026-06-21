@@ -630,6 +630,20 @@ func (p *MediaPort) Port() int {
 	return p.port.LocalAddr().(*net.UDPAddr).Port
 }
 
+func (p *MediaPort) RemoteAddr() netip.AddrPort {
+	dst := p.port.dst.Load()
+	if dst == nil {
+		return netip.AddrPort{}
+	}
+	return *dst
+}
+
+func (p *MediaPort) UpdateRemote(addr netip.AddrPort) {
+	if addr.IsValid() {
+		p.port.SetDst(addr)
+	}
+}
+
 func (p *MediaPort) Received() <-chan struct{} {
 	return p.mediaReceived.Watch()
 }
