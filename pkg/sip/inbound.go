@@ -312,6 +312,18 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	return true, false
 }
 
+func updateRemoteFromSDP(media *MediaPort, log logger.Logger, body []byte) {
+	if len(body) == 0 || media == nil {
+		return
+	}
+	desc, err := sdp.ParseWith(msdk.GlobalCodecs(), body)
+	if err != nil {
+		log.Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
+		return
+	}
+	media.UpdateRemote(desc.Addr)
+}
+
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
 	_ = s.processInvite(req, tx)
@@ -381,13 +393,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		if body := req.Body(); len(body) != 0 && existing.media != nil {
-			if desc, err := sdp.ParseWith(msdk.GlobalCodecs(), body); err == nil {
-				existing.media.UpdateRemote(desc.Addr)
-			} else {
-				existing.log().Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
-			}
-		}
+		updateRemoteFromSDP(existing.media, existing.log(), req.Body())
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
@@ -398,13 +404,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			localSDP := oc.cc.LocalSDP()
 			if len(localSDP) != 0 {
 				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-				if body := req.Body(); len(body) != 0 && oc.media != nil {
-					if desc, err := sdp.ParseWith(msdk.GlobalCodecs(), body); err == nil {
-						oc.media.UpdateRemote(desc.Addr)
-					} else {
-						oc.log.Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
-					}
-				}
+				updateRemoteFromSDP(oc.media, oc.log, req.Body())
 				oc.cc.RecordInvite(newCSeq)
 				cc.AcceptAsKeepAlive(localSDP)
 				return nil
