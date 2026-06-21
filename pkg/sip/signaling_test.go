@@ -715,6 +715,13 @@ func TestReinvite(t *testing.T) {
 			resp = st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
+
+			// After the re-INVITE with new offer, the media port destination must be updated.
+			require.Equal(t,
+				netip.MustParseAddrPort("9.8.7.6:12345"),
+				oc.media.RemoteAddr(),
+				"re-INVITE should redirect outbound call RTP to the new remote address",
+			)
 		})
 
 		t.Run("miss", func(t *testing.T) {

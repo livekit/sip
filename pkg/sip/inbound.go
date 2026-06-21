@@ -395,11 +395,18 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
-			sdp := oc.cc.LocalSDP()
-			if len(sdp) != 0 {
+			localSDP := oc.cc.LocalSDP()
+			if len(localSDP) != 0 {
 				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+				if body := req.Body(); len(body) != 0 && oc.media != nil {
+					if desc, err := sdp.Parse(body); err == nil {
+						oc.media.UpdateRemote(desc.Addr)
+					} else {
+						oc.log.Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
+					}
+				}
 				oc.cc.RecordInvite(newCSeq)
-				cc.AcceptAsKeepAlive(sdp)
+				cc.AcceptAsKeepAlive(localSDP)
 				return nil
 			}
 		}
