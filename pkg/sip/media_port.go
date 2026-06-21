@@ -241,7 +241,7 @@ func (c *udpConn) SetDst(addr netip.AddrPort) {
 	if addr.IsValid() {
 		prev := c.dst.Swap(&addr)
 		if prev == nil || !prev.IsValid() {
-			c.log.Infow("setting media destination", "prev", prev, "addr", addr.String())
+			c.log.Infow("setting media destination", "prev", netip.AddrPort{}, "addr", addr.String())
 		} else if *prev != addr {
 			changeCount := c.dstChangeCount.Add(1)
 			now := time.Now().UnixNano()
