@@ -690,6 +690,21 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
 		})
+
+		t.Run("no_body", func(t *testing.T) {
+			st := NewServiceTest(t, nil)
+			call, ic := st.CreateInboundCall(t)
+			serverLocalSDP := call.remoteSDP
+			initialRemote := ic.media.RemoteAddr()
+
+			// Re-INVITE with no SDP body — destination must not change.
+			req, _, err := call.Invite(nil)
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
+			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, ic.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+		})
 	})
 	t.Run("outbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {

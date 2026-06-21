@@ -639,7 +639,7 @@ func (p *MediaPort) RemoteAddr() netip.AddrPort {
 }
 
 func (p *MediaPort) UpdateRemote(addr netip.AddrPort) {
-	if addr.IsValid() {
+	if addr.IsValid() && !addr.Addr().IsUnspecified() {
 		p.port.SetDst(addr)
 	}
 }

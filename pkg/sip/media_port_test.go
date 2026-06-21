@@ -188,6 +188,10 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	// UpdateRemote with invalid addr should be a no-op.
 	mp.UpdateRemote(netip.AddrPort{})
 	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with invalid addr should not change RemoteAddr")
+
+	// UpdateRemote with unspecified address (c=0.0.0.0 hold form) should be a no-op.
+	mp.UpdateRemote(netip.MustParseAddrPort("0.0.0.0:12345"))
+	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with unspecified addr should not change RemoteAddr")
 }
 
 func TestMediaPort(t *testing.T) {
