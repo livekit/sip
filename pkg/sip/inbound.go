@@ -400,7 +400,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		updateRemoteFromSDP(existing.media, existing.log(), sdpBodyFromRequest(req))
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
@@ -411,7 +411,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			localSDP := oc.cc.LocalSDP()
 			if len(localSDP) != 0 {
-				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 				updateRemoteFromSDP(oc.media, oc.log, sdpBodyFromRequest(req))
 				oc.cc.RecordInvite(newCSeq)
 				cc.AcceptAsKeepAlive(localSDP)
