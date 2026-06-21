@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo/sip"
 )
 
@@ -123,4 +125,246 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	require.Equal(t, addedRouteHeader.Value(), ackRouteHeaders[1].Value())
 
 	cancel()
+}
+
+func TestBuildOutboundHeaders(t *testing.T) {
+	newReq := func() *rpc.InternalCreateSIPParticipantRequest {
+		return &rpc.InternalCreateSIPParticipantRequest{}
+	}
+	check := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, defaultHost string, expURI, expFrom, expTo, expErr string) {
+		if defaultHost == "" {
+			defaultHost = "sip.default.test"
+		}
+		uri, from, to, err := buildOutboundHeaders(req, defaultHost)
+		if expErr != "" {
+			require.Error(t, err)
+			require.Equal(t, expErr, err.Error())
+			return
+		}
+		require.NoError(t, err)
+		require.Equal(t, expURI, uri.String())
+		require.Equal(t, expFrom, from.String())
+		require.Equal(t, expTo, to.String())
+	}
+	expectErr := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, expErr string) {
+		check(t, req, "", "", "", "", expErr)
+	}
+	expect := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, expURI, expFrom, expTo string) {
+		check(t, req, "", expURI, expFrom, expTo, "")
+	}
+	uriVals := func(u *livekit.SIPUri) *livekit.SIPRequestDest {
+		return &livekit.SIPRequestDest{
+			Uri: &livekit.SIPRequestDest_Values{
+				Values: u,
+			},
+		}
+	}
+	uriRaw := func(raw string) *livekit.SIPRequestDest {
+		return &livekit.SIPRequestDest{
+			Uri: &livekit.SIPRequestDest_Raw{
+				Raw: raw,
+			},
+		}
+	}
+	namedVals := func(name string, u *livekit.SIPUri) *livekit.SIPNamedDest {
+		return &livekit.SIPNamedDest{
+			DisplayName: name,
+			Uri: &livekit.SIPNamedDest_Values{
+				Values: u,
+			},
+		}
+	}
+	namedRaw := func(name string, raw string) *livekit.SIPNamedDest {
+		return &livekit.SIPNamedDest{
+			DisplayName: name,
+			Uri: &livekit.SIPNamedDest_Raw{
+				Raw: raw,
+			},
+		}
+	}
+	t.Run("empty", func(t *testing.T) {
+		req := newReq()
+		expectErr(t, req, "invalid request URI: number must be set")
+	})
+	t.Run("legacy", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		expect(t, req,
+			`sip:222@sip.test.com`,
+			`From: "111" <sip:111@sip.default.test>`,
+			`To: <sip:222@sip.test.com>`,
+		)
+	})
+	t.Run("legacy name", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.DisplayName = new("LK")
+		expect(t, req,
+			`sip:222@sip.test.com`,
+			`From: "LK" <sip:111@sip.default.test>`,
+			`To: <sip:222@sip.test.com>`,
+		)
+	})
+	t.Run("legacy and uri", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipRequestUri = uriVals(&livekit.SIPUri{
+			User: "333",
+			Host: "sip.another.com",
+		})
+		expect(t, req,
+			`sip:333@sip.another.com`,
+			`From: "111" <sip:111@sip.default.test>`,
+			`To: <sip:222@sip.test.com>`,
+		)
+	})
+	t.Run("legacy and uri raw", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipRequestUri = uriRaw(`sip:333@sip.another.com`)
+		expect(t, req,
+			`sip:333@sip.another.com`,
+			`From: "111" <sip:111@sip.default.test>`,
+			`To: <sip:222@sip.test.com>`,
+		)
+	})
+	t.Run("legacy and From", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipFromHeader = namedVals("LK", &livekit.SIPUri{
+			User: "333",
+			Host: "sip.another.com",
+		})
+		expect(t, req,
+			`sip:222@sip.test.com`,
+			`From: "LK" <sip:333@sip.another.com>`,
+			`To: <sip:222@sip.test.com>`,
+		)
+	})
+	t.Run("legacy and To both", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipToHeader = namedVals("User", &livekit.SIPUri{
+			User: "333",
+			Host: "sip.another.com",
+		})
+		expectErr(t, req, "invalid To header: cannot use both CallTo and SipToHeader")
+	})
+	t.Run("legacy and To addr", func(t *testing.T) {
+		// Allow both Address and To. Address could be used as a network-level destination.
+		req := newReq()
+		req.Address = "1.2.3.4"
+		req.Number = "111"
+		req.SipToHeader = namedVals("User", &livekit.SIPUri{
+			User: "333",
+			Host: "sip.another.com",
+		})
+		// However, CallTo is needed for request URI, but it cannot be set because it conflicts with To header.
+		expectErr(t, req, "invalid request URI: number must be set")
+	})
+	t.Run("all new", func(t *testing.T) {
+		req := newReq()
+		req.SipRequestUri = uriVals(&livekit.SIPUri{
+			User: "222",
+			Host: "sip.test.com",
+		})
+		req.SipFromHeader = namedVals("LK", &livekit.SIPUri{
+			User: "111",
+			Host: "example.com", // OSS can override the hostname
+		})
+		req.SipToHeader = namedVals("User", &livekit.SIPUri{
+			User: "333",
+			Host: "sip.another.com",
+		})
+		expect(t, req,
+			`sip:222@sip.test.com`,
+			`From: "LK" <sip:111@example.com>`, // OSS can override the hostname
+			`To: "User" <sip:333@sip.another.com>`,
+		)
+	})
+	t.Run("all raw brackets", func(t *testing.T) {
+		req := newReq()
+		req.SipRequestUri = uriRaw(`sip:222@sip.test.com`)
+		req.SipFromHeader = namedRaw("LK", `<sip:111@sip.livekit.test>`)
+		req.SipToHeader = namedRaw("User", `<sip:333@sip.another.com>`)
+		expect(t, req,
+			`sip:222@sip.test.com`,
+			`From: "LK" <sip:111@sip.livekit.test>`,
+			`To: "User" <sip:333@sip.another.com>`,
+		)
+	})
+	t.Run("all raw no brackets", func(t *testing.T) {
+		req := newReq()
+		req.SipRequestUri = uriRaw(`sip:222@sip.test.com`)
+		req.SipFromHeader = namedRaw("LK", `sip:111@sip.livekit.test`)
+		req.SipToHeader = namedRaw("User", `sip:333@sip.another.com`)
+		expect(t, req,
+			`sip:222@sip.test.com`,
+			`From: "LK" <sip:111@sip.livekit.test>`,
+			`To: "User" <sip:333@sip.another.com>`,
+		)
+	})
+	t.Run("raw param override", func(t *testing.T) {
+		req := newReq()
+		req.SipRequestUri = uriRaw(`sip:222@sip.test.com`)
+		req.SipFromHeader = namedRaw("LK", `<sip:111@sip.livekit.test>;tag=AAA`)
+		req.SipToHeader = namedRaw("User", `<sip:333@sip.another.com>;tag=BBB`)
+		expectErr(t, req, "invalid To header: invalid request URI")
+	})
+	t.Run("all raw transport", func(t *testing.T) {
+		req := newReq()
+		req.SipRequestUri = uriRaw(`sip:222@sip.test.com;transport=tcp`)
+		req.SipFromHeader = namedRaw("LK", `sip:111@sip.livekit.test;transport=tcp`)
+		req.SipToHeader = namedRaw("User", `sip:333@sip.another.com;transport=tcp`)
+		expect(t, req,
+			`sip:222@sip.test.com;transport=tcp`,
+			`From: "LK" <sip:111@sip.livekit.test;transport=tcp>`,
+			`To: "User" <sip:333@sip.another.com;transport=tcp>`,
+		)
+	})
+	t.Run("all raw req transport", func(t *testing.T) {
+		req := newReq()
+		req.Transport = livekit.SIPTransport_SIP_TRANSPORT_TLS
+		req.SipRequestUri = uriRaw(`sip:222@sip.test.com;transport=tcp`)
+		req.SipFromHeader = namedRaw("LK", `sip:111@example.com;transport=tcp`)
+		req.SipToHeader = namedRaw("User", `sip:333@sip.another.com;transport=tcp`)
+		expect(t, req,
+			`sip:222@sip.test.com;transport=tls`,
+			`From: "LK" <sip:111@example.com;transport=tls>`,
+			`To: "User" <sip:333@sip.another.com;transport=tls>`,
+		)
+	})
+	t.Run("all new req transport", func(t *testing.T) {
+		req := newReq()
+		req.Transport = livekit.SIPTransport_SIP_TRANSPORT_TLS
+		req.SipRequestUri = uriVals(&livekit.SIPUri{
+			User: "222",
+			Host: "sip.test.com",
+		})
+		req.SipFromHeader = namedVals("LK", &livekit.SIPUri{
+			User: "111",
+			Host: "example.com",
+		})
+		req.SipToHeader = namedVals("User", &livekit.SIPUri{
+			User: "333",
+			Host: "sip.another.com",
+		})
+		expect(t, req,
+			`sip:222@sip.test.com;transport=tls`,
+			`From: "LK" <sip:111@example.com;transport=tls>`,
+			`To: "User" <sip:333@sip.another.com;transport=tls>`,
+		)
+	})
 }

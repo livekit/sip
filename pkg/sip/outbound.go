@@ -46,11 +46,10 @@ import (
 )
 
 type sipOutboundConfig struct {
-	address         string
 	transport       livekit.SIPTransport
-	host            string
-	from            string
-	to              string
+	uri             *sip.Uri
+	from            *sip.FromHeader
+	to              *sip.ToHeader
 	user            string
 	pass            string
 	dtmf            string
@@ -64,7 +63,6 @@ type sipOutboundConfig struct {
 	enabledFeatures []livekit.SIPFeature
 	featureFlags    map[string]string
 	mediaConfig     *sipMediaConfig
-	displayName     *string
 }
 
 type outboundCall struct {
@@ -104,15 +102,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 
 	tr := TransportFrom(sipConf.transport)
 	contact := c.ContactURI(tr)
-	if sipConf.host == "" {
-		sipConf.host = contact.GetHost()
-	}
-	fromURI := URI{
-		User:      sipConf.from,
-		Host:      sipConf.host,
-		Addr:      contact.Addr,
-		Transport: tr,
-	}
+
 	now := time.Now()
 	call := &outboundCall{
 		c:         c,
@@ -126,13 +116,13 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		projectID: projectID,
 	}
 	call.stats.Update()
-	call.cc = c.newOutbound(log, id, fromURI, contact, sipConf.displayName, call.setAttrsToHeaders)
+	call.cc = c.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
 	call.log = call.log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", call.cc.callID)
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
 		call.cc.routeHeaders = conf.OutboundRouteHeaders
 	}
 
-	call.mon = c.mon.NewCall(stats.Outbound, sipConf.host, sipConf.address)
+	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	var err error
 
 	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
@@ -602,10 +592,8 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.mon.InviteReq()
 	c.sigTs.InviteTime = time.Now()
 
-	toUri := CreateURIFromUserAndAddress(c.sipConf.to, c.sipConf.address, TransportFrom(c.sipConf.transport))
-
 	ringing := false
-	sdpResp, err := c.cc.Invite(ctx, toUri, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
+	sdpResp, err := c.cc.Invite(ctx, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
 		if code == sip.StatusOK {
 			return // is set separately
 		}
@@ -744,27 +732,19 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	return nil
 }
 
-func (c *Client) newOutbound(log logger.Logger, id LocalTag, from, contact URI, displayName *string, getHeaders setHeadersFunc) *sipOutbound {
-	from = from.Normalize()
-	if displayName == nil { // Nothing specified, preserve legacy behavior
-		displayName = &from.User
-	}
-
-	fromHeader := &sip.FromHeader{
-		DisplayName: *displayName,
-		Address:     *from.GetURI(),
-		Params:      sip.NewParams(),
-	}
+func (c *Client) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
 	contactHeader := &sip.ContactHeader{
 		Address: *contact.GetContactURI(),
 	}
-	fromHeader.Params.Add("tag", string(id))
+	from.Params.Add("tag", string(id))
 	return &sipOutbound{
 		log:        log,
 		c:          c,
 		id:         id,
 		callID:     guid.HashedID(string(id)),
-		from:       fromHeader,
+		uri:        uri,
+		to:         to,
+		from:       from,
 		contact:    contactHeader,
 		referDone:  make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 		nextCSeq:   1,
@@ -776,7 +756,9 @@ type sipOutbound struct {
 	log          logger.Logger
 	c            *Client
 	id           LocalTag
+	uri          *sip.Uri
 	from         *sip.FromHeader
+	to           *sip.ToHeader
 	contact      *sip.ContactHeader
 	routeHeaders []string
 
@@ -786,7 +768,6 @@ type sipOutbound struct {
 	invite     *sip.Request
 	inviteOk   *sip.Response
 	localSDP   []byte // SDP Offer, constrained by the answer
-	to         *sip.ToHeader
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
 
@@ -886,12 +867,11 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, to URI, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) ([]byte, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Invite")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	toHeader := &sip.ToHeader{Address: *to.GetURI()}
 
 	var (
 		sipHeaders         Headers
@@ -912,7 +892,7 @@ authLoop:
 		if try >= 5 {
 			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
 		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), toHeader, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
 		}
@@ -980,7 +960,7 @@ authLoop:
 	}
 
 	c.invite, c.inviteOk = req, resp
-	toHeader = resp.To()
+	toHeader := resp.To()
 	if toHeader == nil {
 		return nil, psrpc.NewErrorf(psrpc.Internal, "no To header in INVITE response")
 	}
@@ -1026,16 +1006,16 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, to *sip.ToHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
-	req := sip.NewRequest(sip.INVITE, to.Address)
+	req := sip.NewRequest(sip.INVITE, *c.uri)
 	c.setCSeq(req)
 	req.RemoveHeader("Call-ID")
 	req.AppendHeader(&callID)
 
 	req.SetBody(offer)
-	req.AppendHeader(to)
+	req.AppendHeader(c.to)
 	req.AppendHeader(c.from)
 	req.AppendHeader(c.contact)
 
