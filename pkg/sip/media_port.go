@@ -241,7 +241,7 @@ func (c *udpConn) SetDst(addr netip.AddrPort) {
 	if addr.IsValid() {
 		prev := c.dst.Swap(&addr)
 		if prev == nil || !prev.IsValid() {
-			c.log.Infow("setting media destination", "prev", netip.AddrPort{}, "addr", addr.String())
+			c.log.Infow("setting media destination", "addr", addr.String())
 		} else if *prev != addr {
 			changeCount := c.dstChangeCount.Add(1)
 			now := time.Now().UnixNano()
@@ -257,7 +257,7 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 	n, addr, err := c.ReadFromUDPAddrPort(b)
 	prev := c.src.Swap(&addr)
 	if prev == nil || !prev.IsValid() {
-		c.log.Infow("setting media source", "prev", netip.AddrPort{}, "addr", addr.String())
+		c.log.Infow("setting media source", "addr", addr.String())
 	} else if *prev != addr {
 		changeCount := c.srcChangeCount.Add(1)
 		now := time.Now().UnixNano()
