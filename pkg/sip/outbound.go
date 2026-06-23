@@ -139,14 +139,22 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		IgnorePreanswerData:  true,
 	}, RoomSampleRate)
 	if err != nil {
-		call.close(ctx, fmt.Errorf("media failed: %w", err), callDropped, stats.ServerError("media-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
+		call.close(ctx, EndCall{
+			Report: fmt.Errorf("media failed: %w", err),
+			Status: callDropped,
+			Term:   stats.ServerError("media-failed"),
+		})
 		return nil, err
 	}
 	call.media.SetDTMFAudio(conf.AudioDTMF)
 	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
-		call.close(ctx, fmt.Errorf("room join failed: %w", err), callDropped, stats.ServerError("join-failed"), livekit.DisconnectReason_UNKNOWN_REASON)
+		call.close(ctx, EndCall{
+			Report: fmt.Errorf("room join failed: %w", err),
+			Status: callDropped,
+			Term:   stats.ServerError("join-failed"),
+		})
 		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
 
@@ -248,7 +256,11 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			c.state.ForceFlush()
 		case <-c.Disconnected():
 			term := terminationFromRoomDisconnect(c.lkRoom.ClosedReason())
-			c.CloseWithReason(ctx, callDropped, term, livekit.DisconnectReason_CLIENT_INITIATED)
+			c.CloseWith(ctx, EndCall{
+				Status: callDropped,
+				Term:   term,
+				Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+			})
 			return nil
 		case <-c.media.Timeout():
 			c.closeWithTimeout(ctx)
@@ -284,62 +296,86 @@ func (c *outboundCall) Disconnected() <-chan struct{} {
 func (c *outboundCall) Close(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(ctx, nil, callDropped, stats.ServerError("shutdown"), livekit.DisconnectReason_SERVER_SHUTDOWN)
+	c.close(ctx, EndCall{
+		Status: callDropped,
+		Term:   stats.ServerError("shutdown"),
+		Reason: livekit.DisconnectReason_SERVER_SHUTDOWN,
+	})
 	return nil
 }
 
-func (c *outboundCall) CloseWithReason(ctx context.Context, status CallStatus, t stats.Termination, reason livekit.DisconnectReason) {
+func (c *outboundCall) CloseWith(ctx context.Context, end EndCall) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(ctx, nil, status, t, reason)
+	return c.close(ctx, end)
 }
 
 func (c *outboundCall) closeWithTimeout(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.close(ctx, psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"), callDropped, stats.Indeterminate("media-timeout"), livekit.DisconnectReason_UNKNOWN_REASON)
+	c.close(ctx, EndCall{
+		Report: psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"),
+		Status: callDropped,
+		Term:   stats.Indeterminate("media-timeout"),
+		Reason: livekit.DisconnectReason_UNKNOWN_REASON,
+	})
+}
+
+// EndCall implements CallInterface.
+func (c *outboundCall) EndCall(ctx context.Context, headers map[string]string) error {
+	if !c.CloseWith(ctx, EndCall{
+		Status:  CallHangup,
+		Term:    stats.Success("rpc"),
+		Reason:  livekit.DisconnectReason_CLIENT_INITIATED,
+		Headers: headers,
+	}) {
+		return errors.New("call already ended")
+	}
+	return nil
 }
 
 func (c *outboundCall) printStats() {
 	c.stats.Log(c.log, c.callStart)
 }
 
-func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, t stats.Termination, reason livekit.DisconnectReason) {
+func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 	c.closing.Break()
 	ctx = context.WithoutCancel(ctx)
+	done := false
 	c.stopped.Once(func() {
+		done = true
 		c.stats.Closed.Store(true)
-		log := c.log.WithValues("status", status, "result", string(t.Result), "reason", t.Reason)
+		log := c.log.WithValues("status", end.Status, "result", string(end.Term.Result), "reason", end.Term.Reason)
 		defer func() {
 			c.stats.Update()
 			c.printStats()
 			c.sigTs.Log(log)
 		}()
 
-		c.setStatus(status)
-		if err != nil {
-			log.Warnw("Closing outbound call with error", nil)
+		c.setStatus(end.Status)
+		if err := end.Report; err != nil {
+			log.Warnw("Closing outbound call with error", err)
 		} else {
 			log.Infow("Closing outbound call")
 		}
 		c.state.Update(func(info *livekit.SIPCallInfo) {
-			if err != nil && info.Error == "" {
+			if err := end.Report; err != nil && info.Error == "" {
 				info.Error = err.Error()
 				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 			}
-			info.DisconnectReason = reason
+			info.DisconnectReason = end.Reason
 		})
 
 		// Send BYE _before_ closing media/room connection.
 		// This ensures participant attributes are still available for
 		// attributes_to_headers mapping in the setHeaders callback.
 		// See: https://github.com/livekit/sip/issues/404
-		c.stopSIP(ctx, t)
+		c.stopSIP(ctx, end.Term, end.Headers)
 		c.media.Close()
 
 		if r := c.lkRoom; r != nil {
 			_ = r.CloseOutput()
-			_ = r.CloseWithReason(status.DisconnectReason())
+			_ = r.CloseWithReason(end.Status.DisconnectReason())
 		}
 		c.lkRoomIn = nil
 
@@ -362,10 +398,11 @@ func (c *outboundCall) close(ctx context.Context, err error, status CallStatus, 
 					ProjectID: c.projectID,
 					CallID:    callID,
 					SipCallID: c.cc.SIPCallID(),
-				}, state, t.Reason)
+				}, state, end.Term.Reason)
 			}(c.tid)
 		}
 	})
+	return done
 }
 
 func (c *outboundCall) Participant() ParticipantInfo {
@@ -382,7 +419,7 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 	if err := c.dialSIP(ctx, tid); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
 		res := classifyInviteError(err)
-		c.close(ctx, res.reportErr, res.status, res.term, res.reason)
+		c.close(ctx, res.EndCall)
 		return res.returnErr
 	}
 	c.connectMedia()
@@ -422,6 +459,9 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	c.lkRoom = r
 	c.lkRoomIn = local
 	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
+		return err
+	}
+	if err := registerCallRPC(c.lkRoom, c); err != nil {
 		return err
 	}
 	return nil
@@ -507,7 +547,7 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 	}
 }
 
-func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination) {
+func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination, headers map[string]string) {
 	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
 	defer cancel()
 	go func() {
@@ -521,7 +561,7 @@ func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination) {
 	}()
 
 	c.mon.CallTerminate(t)
-	c.cc.Close(ctx)
+	c.cc.Close(ctx, headers)
 }
 
 func (c *outboundCall) setStatus(v CallStatus) {
@@ -629,7 +669,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		} else {
 			c.mon.InviteError("other")
 		}
-		c.cc.Close(ctx)
+		c.cc.Close(ctx, nil)
 		c.log.Infow("SIP invite failed", "error", err)
 		return err
 	}
@@ -726,7 +766,11 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() {
-		c.CloseWithReason(ctx, CallHangup, stats.Success("call transferred"), livekit.DisconnectReason_CLIENT_INITIATED)
+		c.CloseWith(ctx, EndCall{
+			Status: CallHangup,
+			Term:   stats.Success("call transferred"),
+			Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+		})
 	})
 
 	return nil
@@ -1075,7 +1119,7 @@ func (c *sipOutbound) setCSeq(req *sip.Request) {
 	c.nextCSeq++
 }
 
-func (c *sipOutbound) sendBye(ctx context.Context) {
+func (c *sipOutbound) sendBye(ctx context.Context, headers map[string]string) {
 	ctx = context.WithoutCancel(ctx)
 	if c.invite == nil || c.inviteOk == nil {
 		return // call wasn't established
@@ -1089,6 +1133,9 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 			r.AppendHeader(sip.NewHeader(k, v))
 		}
 	}
+	for k, v := range headers {
+		r.AppendHeader(sip.NewHeader(k, v))
+	}
 	if c.c.closing.IsBroken() {
 		// do not wait for a response
 		_ = c.WriteRequest(r)
@@ -1099,7 +1146,7 @@ func (c *sipOutbound) sendBye(ctx context.Context) {
 	sendAndACK(ctx, c, r)
 }
 
-func (c *sipOutbound) sendCancel(ctx context.Context) {
+func (c *sipOutbound) sendCancel(ctx context.Context, headers map[string]string) {
 	ctx = context.WithoutCancel(ctx)
 	if c.invite == nil {
 		return
@@ -1112,6 +1159,9 @@ func (c *sipOutbound) sendCancel(ctx context.Context) {
 		for k, v := range c.getHeaders(nil) {
 			r.AppendHeader(sip.NewHeader(k, v))
 		}
+	}
+	for k, v := range headers {
+		r.AppendHeader(sip.NewHeader(k, v))
 	}
 	_ = c.WriteRequest(r)
 	c.drop()
@@ -1199,14 +1249,14 @@ func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) e
 	}
 }
 
-func (c *sipOutbound) Close(ctx context.Context) {
+func (c *sipOutbound) Close(ctx context.Context, headers map[string]string) {
 	ctx = context.WithoutCancel(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.inviteOk != nil {
-		c.sendBye(ctx)
+		c.sendBye(ctx, headers)
 	} else if c.invite != nil {
-		c.sendCancel(ctx)
+		c.sendCancel(ctx, headers)
 	} else {
 		c.drop()
 	}

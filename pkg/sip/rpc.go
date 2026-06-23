@@ -1,37 +1,12 @@
 package sip
 
 import (
-	"encoding/json"
+	"context"
 	"strings"
 
+	"github.com/livekit/protocol/livekit/roomrpc/siprpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 )
-
-func registerRPCMethodJSON[Req any, Resp any](r RoomInterface, name string, fnc func(r Req) (Resp, error)) error {
-	return r.RegisterRPC(name, func(data lksdk.RpcInvocationData) (string, error) {
-		var req Req
-		if len(data.Payload) != 0 {
-			if err := json.Unmarshal([]byte(data.Payload), &req); err != nil {
-				return "", err
-			}
-		}
-		resp, err := fnc(req)
-		if err != nil {
-			return "", err
-		}
-		out, err := json.Marshal(&resp)
-		return string(out), err
-	})
-}
-
-type getHeadersReq struct {
-	Include []string `json:"include,omitempty"` // list of headers to include
-	Exclude []string `json:"exclude,omitempty"` // list of headers to exclude
-}
-
-type getHeadersResp struct {
-	Headers map[string]string `json:"headers"`
-}
 
 // getHeadersIgnore is a set of header that are filtered out of the participant RPC response.
 var getHeadersIgnore = map[string]struct{}{
@@ -54,7 +29,7 @@ var getHeadersIgnore = map[string]struct{}{
 	"max-forwards":        {},
 }
 
-func rpcGetHeaders(cc Signaling, r getHeadersReq) (getHeadersResp, error) {
+func rpcGetHeaders(ctx context.Context, cc Signaling, r *siprpc.GetRemoteHeadersV1Request) (*siprpc.GetRemoteHeadersV1Response, error) {
 	var (
 		only map[string]struct{}
 		skip map[string]struct{}
@@ -85,14 +60,36 @@ func rpcGetHeaders(cc Signaling, r getHeadersReq) (getHeadersResp, error) {
 		}
 		out[h.Name()] = h.Value()
 	}
-	return getHeadersResp{
+	return &siprpc.GetRemoteHeadersV1Response{
 		Headers: out,
 	}, nil
 }
 
+func rpcEndCall(ctx context.Context, call CallInterface, r *siprpc.EndCallV1Request) (*siprpc.EndCallV1Response, error) {
+	err := call.EndCall(ctx, r.Headers)
+	if err != nil {
+		return nil, err
+	}
+	return &siprpc.EndCallV1Response{}, nil
+}
+
 func registerSignalingRPC(r RoomInterface, cc Signaling) error {
-	err := registerRPCMethodJSON(r, "lk.sip.GetRemoteHeaders", func(r getHeadersReq) (getHeadersResp, error) {
-		return rpcGetHeaders(cc, r)
+	err := lksdk.RegisterRPCMethodJSON(r, "lk.sip.GetRemoteHeaders", func(ctx context.Context, r *siprpc.GetRemoteHeadersV1Request) (*siprpc.GetRemoteHeadersV1Response, error) {
+		return rpcGetHeaders(ctx, cc, r)
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+type CallInterface interface {
+	EndCall(ctx context.Context, headers map[string]string) error
+}
+
+func registerCallRPC(r RoomInterface, call CallInterface) error {
+	err := lksdk.RegisterRPCMethodJSON(r, "lk.sip.EndCall", func(ctx context.Context, r *siprpc.EndCallV1Request) (*siprpc.EndCallV1Response, error) {
+		return rpcEndCall(ctx, call, r)
 	})
 	if err != nil {
 		return err

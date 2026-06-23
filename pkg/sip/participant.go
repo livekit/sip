@@ -18,8 +18,6 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
-	"github.com/livekit/sipgo/sip"
-
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -128,17 +126,6 @@ func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
 		return livekit.DisconnectReason_USER_UNAVAILABLE
 	case callRejected:
 		return livekit.DisconnectReason_USER_REJECTED
-	}
-}
-
-func (v CallStatus) SIPStatus() (sip.StatusCode, string) {
-	switch v {
-	case callMediaFailed:
-		return sip.StatusNotAcceptableHere, "MediaFailed"
-	case CallCancelled:
-		return sip.StatusRequestTerminated, "Request Terminated"
-	default:
-		return sip.StatusBusyHere, "Rejected"
 	}
 }
 

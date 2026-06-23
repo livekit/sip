@@ -21,10 +21,7 @@ import (
 // inviteFailure is the verdict for a failed outbound INVITE: how to record
 // the call, how to bucket the SLI, and which error to surface back.
 type inviteFailure struct {
-	status    CallStatus
-	term      stats.Termination
-	reason    livekit.DisconnectReason
-	reportErr error // nil skips writing SIPCallInfo.Error
+	EndCall
 	returnErr error
 }
 
@@ -54,18 +51,20 @@ func (e SDPError) GRPCStatus() *status.Status {
 
 func (e SDPError) ClassifyInvite() inviteFailure {
 	res := inviteFailure{
-		status:    callRejected,
-		reason:    livekit.DisconnectReason_MEDIA_FAILURE,
-		reportErr: e.Err,
+		EndCall: EndCall{
+			Status: callRejected,
+			Reason: livekit.DisconnectReason_MEDIA_FAILURE,
+			Report: e.Err,
+		},
 		returnErr: e,
 	}
 	switch {
 	case errors.Is(e.Err, sdp.ErrNoCommonMedia):
-		res.term = stats.ClientError("no-common-codec")
+		res.Term = stats.ClientError("no-common-codec")
 	case errors.Is(e.Err, sdp.ErrNoCommonCrypto):
-		res.term = stats.ClientError("encryption-required")
+		res.Term = stats.ClientError("encryption-required")
 	default:
-		res.term = stats.ClientError("sdp-error")
+		res.Term = stats.ClientError("sdp-error")
 	}
 	return res
 }
@@ -89,10 +88,12 @@ func (e transactionTimeoutError) ClassifyInvite() inviteFailure {
 		reason = "no-final-response"
 	}
 	return inviteFailure{
-		status:    callUnavailable,
-		term:      stats.ClientError(reason),
-		reason:    livekit.DisconnectReason_SIP_TRUNK_FAILURE,
-		reportErr: e, // keep so the customer sees their destination didn't complete
+		EndCall: EndCall{
+			Status: callUnavailable,
+			Term:   stats.ClientError(reason),
+			Reason: livekit.DisconnectReason_SIP_TRUNK_FAILURE,
+			Report: e, // keep so the customer sees their destination didn't complete
+		},
 		returnErr: psrpc.NewError(psrpc.Canceled, e),
 	}
 }
@@ -107,10 +108,12 @@ func classifyInviteError(err error) inviteFailure {
 	}
 
 	res := inviteFailure{
-		status:    callDropped,
-		term:      stats.ServerError("invite-failed"),
-		reason:    livekit.DisconnectReason_UNKNOWN_REASON,
-		reportErr: err,
+		EndCall: EndCall{
+			Status: callDropped,
+			Term:   stats.ServerError("invite-failed"),
+			Reason: livekit.DisconnectReason_UNKNOWN_REASON,
+			Report: err,
+		},
 		returnErr: err,
 	}
 
@@ -118,31 +121,31 @@ func classifyInviteError(err error) inviteFailure {
 		code := int(sipStatus.Code)
 		switch code {
 		case int(sip.StatusUnauthorized), int(sip.StatusProxyAuthRequired):
-			res.status, res.term, res.reason = callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED
+			res.Report = nil
 		case int(sip.StatusForbidden):
-			res.status, res.term, res.reason = callRejected, stats.ClientError("forbidden"), livekit.DisconnectReason_USER_REJECTED
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callRejected, stats.ClientError("forbidden"), livekit.DisconnectReason_USER_REJECTED
+			res.Report = nil
 		case int(sip.StatusNotFound):
-			res.status, res.term, res.reason = callUnavailable, stats.ClientError("not-found"), livekit.DisconnectReason_USER_UNAVAILABLE
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callUnavailable, stats.ClientError("not-found"), livekit.DisconnectReason_USER_UNAVAILABLE
+			res.Report = nil
 		case int(sip.StatusRequestTimeout):
-			res.status, res.term, res.reason = callUnavailable, stats.ClientError("request-timeout"), livekit.DisconnectReason_USER_UNAVAILABLE
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callUnavailable, stats.ClientError("request-timeout"), livekit.DisconnectReason_USER_UNAVAILABLE
+			res.Report = nil
 		case int(sip.StatusTemporarilyUnavailable):
-			res.status, res.term, res.reason = callUnavailable, stats.ClientError("unavailable"), livekit.DisconnectReason_USER_UNAVAILABLE
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callUnavailable, stats.ClientError("unavailable"), livekit.DisconnectReason_USER_UNAVAILABLE
+			res.Report = nil
 		case int(sip.StatusBusyHere):
-			res.status, res.term, res.reason = callRejected, stats.ClientError("busy"), livekit.DisconnectReason_USER_REJECTED
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callRejected, stats.ClientError("busy"), livekit.DisconnectReason_USER_REJECTED
+			res.Report = nil
 		case int(sip.StatusNotAcceptableHere):
-			res.status, res.term, res.reason = callRejected, stats.ClientError("not-acceptable"), livekit.DisconnectReason_USER_REJECTED
-			res.reportErr = nil
+			res.Status, res.Term, res.Reason = callRejected, stats.ClientError("not-acceptable"), livekit.DisconnectReason_USER_REJECTED
+			res.Report = nil
 		default:
 			switch {
 			case code >= 400 && code < 500:
-				res.status, res.term, res.reason = callRejected, stats.ClientError(fmt.Sprintf("client-error-%d", code)), livekit.DisconnectReason_USER_UNAVAILABLE
-				res.reportErr = nil
+				res.Status, res.Term, res.Reason = callRejected, stats.ClientError(fmt.Sprintf("client-error-%d", code)), livekit.DisconnectReason_USER_UNAVAILABLE
+				res.Report = nil
 			case code >= 500 && code < 600:
 				// Some upstreams (notably Twilio) return a 5xx when the customer's own trunk exceeds its configured CPS or
 				// concurrent-call cap. That's a customer-side rate limit, not upstream infrastructure breakage, so it must not count
@@ -150,26 +153,26 @@ func classifyInviteError(err error) inviteFailure {
 				body := strings.ToLower(sipStatus.GetStatus())
 				switch {
 				case strings.Contains(body, "cps limit exceeded"):
-					res.status, res.term, res.reason = callRejected, stats.ClientError("cps-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+					res.Status, res.Term, res.Reason = callRejected, stats.ClientError("cps-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 					// keep reportErr so the customer can see they hit their cap
 				case strings.Contains(body, "concurrent call limit exceeded"):
-					res.status, res.term, res.reason = callRejected, stats.ClientError("concurrent-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+					res.Status, res.Term, res.Reason = callRejected, stats.ClientError("concurrent-limit-exceeded"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 					// keep reportErr so the customer can see they hit their cap
 				default:
 					// Carrier-side 5xx; keep reportErr for the detail.
-					res.status, res.term, res.reason = callDropped, stats.UpstreamError(fmt.Sprintf("upstream-server-error-%d", code)), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+					res.Status, res.Term, res.Reason = callDropped, stats.UpstreamError(fmt.Sprintf("upstream-server-error-%d", code)), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 				}
 			case code >= 600 && code < 700:
-				res.status, res.term, res.reason = callRejected, stats.ClientError(fmt.Sprintf("global-decline-%d", code)), livekit.DisconnectReason_USER_REJECTED
-				res.reportErr = nil
+				res.Status, res.Term, res.Reason = callRejected, stats.ClientError(fmt.Sprintf("global-decline-%d", code)), livekit.DisconnectReason_USER_REJECTED
+				res.Report = nil
 			}
 		}
 		return res
 	}
 
 	if errors.Is(err, ErrSIPRequestTimeout) {
-		res.status, res.term, res.reason = callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE
-		res.reportErr = nil
+		res.Status, res.Term, res.Reason = callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE
+		res.Report = nil
 		return res
 	}
 
@@ -177,36 +180,36 @@ func classifyInviteError(err error) inviteFailure {
 	// op error can wrap a context error, and the context cause is more
 	// informative.
 	if errors.Is(err, context.DeadlineExceeded) {
-		res.status, res.term, res.reason = callDropped, stats.ServerError("deadline-exceeded"), livekit.DisconnectReason_UNKNOWN_REASON
+		res.Status, res.Term, res.Reason = callDropped, stats.ServerError("deadline-exceeded"), livekit.DisconnectReason_UNKNOWN_REASON
 		res.returnErr = psrpc.NewError(psrpc.DeadlineExceeded, err)
 		return res
 	}
 	if errors.Is(err, context.Canceled) {
-		res.status, res.term, res.reason = callRejected, stats.ClientError("canceled"), livekit.DisconnectReason_USER_UNAVAILABLE
-		res.reportErr = nil
+		res.Status, res.Term, res.Reason = callRejected, stats.ClientError("canceled"), livekit.DisconnectReason_USER_UNAVAILABLE
+		res.Report = nil
 		res.returnErr = psrpc.NewError(psrpc.Canceled, err)
 		return res
 	}
 
 	// Specific net error types before *net.OpError (which wraps them).
 	if _, ok := errors.AsType[*net.AddrError](err); ok {
-		res.status, res.term, res.reason = callDropped, stats.ClientError("address-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+		res.Status, res.Term, res.Reason = callDropped, stats.ClientError("address-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 		res.returnErr = psrpc.NewError(psrpc.InvalidArgument, err)
 		return res
 	}
 	if _, ok := errors.AsType[*net.DNSError](err); ok {
-		res.status, res.term, res.reason = callDropped, stats.ClientError("dns-resolution"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+		res.Status, res.Term, res.Reason = callDropped, stats.ClientError("dns-resolution"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 		res.returnErr = psrpc.NewError(psrpc.InvalidArgument, err)
 		return res
 	}
 	if _, ok := errors.AsType[*net.OpError](err); ok {
-		res.status, res.term, res.reason = callDropped, stats.ServerError("network-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
+		res.Status, res.Term, res.Reason = callDropped, stats.ServerError("network-error"), livekit.DisconnectReason_SIP_TRUNK_FAILURE
 		res.returnErr = psrpc.NewError(psrpc.Unavailable, err)
 		return res
 	}
 
 	if errors.Is(err, ErrAuthMaxRetry) || errors.Is(err, ErrAuthMissingCreds) || errors.Is(err, ErrAuthNoHeader) {
-		res.status, res.term, res.reason = callRejected, stats.ClientError("auth-failed"), livekit.DisconnectReason_USER_REJECTED
+		res.Status, res.Term, res.Reason = callRejected, stats.ClientError("auth-failed"), livekit.DisconnectReason_USER_REJECTED
 		// keep reportErr so the auth detail is recorded
 		return res
 	}

@@ -26,6 +26,7 @@ import (
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -39,6 +40,29 @@ const (
 var (
 	referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 )
+
+type Result struct {
+	Code   sip.StatusCode
+	Status string
+}
+
+func (r Result) NewResponse(req *sip.Request) *sip.Response {
+	if r.Code == 0 {
+		r.Code = sip.StatusServiceUnavailable
+	}
+	if r.Status == "" {
+		r.Status = sipStatus(r.Code)
+	}
+	return sip.NewResponseFromRequest(req, r.Code, r.Status, nil)
+}
+
+type EndCall struct {
+	Report  error      // reported to LiveKit analytics
+	Status  CallStatus // TODO: legacy
+	Term    stats.Termination
+	Reason  livekit.DisconnectReason // disconnect reason for LiveKit participant
+	Headers map[string]string        // extra headers to send to SIP peer
+}
 
 var statusNamesMap = map[int]string{
 	100: "Trying",
