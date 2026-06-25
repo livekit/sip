@@ -73,7 +73,7 @@ func TestClassifyInviteError(t *testing.T) {
 
 		// Sentinel-based errors
 		{"SIP request timeout (no answer)", psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout), callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
-		{"SIP transaction timeout (silent, cnt=0)", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: 0}), callUnavailable, stats.ClientError("upstream-no-response"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"SIP transaction timeout (silent, cnt=0)", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: 0}), callUnavailable, stats.Indeterminate("upstream-no-response"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 		{"SIP transaction timeout (no final, cnt>0)", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: 2}), callUnavailable, stats.ClientError("no-final-response"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 		{"Auth max retry", psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry), callRejected, stats.ClientError("auth-failed"), livekit.DisconnectReason_USER_REJECTED, true},
 		{"Auth missing creds", psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds), callRejected, stats.ClientError("auth-failed"), livekit.DisconnectReason_USER_REJECTED, true},

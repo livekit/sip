@@ -83,14 +83,16 @@ func (e transactionTimeoutError) Error() string {
 }
 
 func (e transactionTimeoutError) ClassifyInvite() inviteFailure {
-	reason := "upstream-no-response"
+	// 0 provisionals: silent after transmit (Timer B), unattributable -> indeterminate.
+	// >0: a 1xx proved the path works, so a later stall is client-side.
+	term := stats.Indeterminate("upstream-no-response")
 	if e.responses > 0 {
-		reason = "no-final-response"
+		term = stats.ClientError("no-final-response")
 	}
 	return inviteFailure{
 		EndCall: EndCall{
 			Status: callUnavailable,
-			Term:   stats.ClientError(reason),
+			Term:   term,
 			Reason: livekit.DisconnectReason_SIP_TRUNK_FAILURE,
 			Report: e, // keep so the customer sees their destination didn't complete
 		},
