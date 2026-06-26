@@ -126,17 +126,18 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	var err error
 
 	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
-		IP:                   c.sconf.MediaIP,
-		Ports:                conf.RTPPort,
-		MediaTimeoutInitial:  c.conf.MediaTimeoutInitial,
-		MediaTimeout:         sipConf.mediaConfig.MediaTimeout,
-		SymmetricRTP:         c.conf.SymmetricRTP,
-		IgnoreLocalAddrInSDP: c.conf.IgnoreLocalAddrInSDP,
-		EnableJitterBuffer:   call.jitterBuf,
-		LogSignalChanges:     signalLoggingEnabled,
-		Stats:                &call.stats.Port,
-		NoInputResample:      !RoomResample,
-		IgnorePreanswerData:  true,
+		IP:                     c.sconf.MediaIP,
+		Ports:                  conf.RTPPort,
+		MediaTimeoutInitial:    c.conf.MediaTimeoutInitial,
+		MediaTimeout:           sipConf.mediaConfig.MediaTimeout,
+		SymmetricRTP:           c.conf.SymmetricRTP,
+		IgnoreLocalAddrInSDP:   c.conf.IgnoreLocalAddrInSDP,
+		EnableJitterBuffer:     call.jitterBuf,
+		LogSignalChanges:       signalLoggingEnabled,
+		MixerInputBufferFrames: conf.MixerInputBufferFrames,
+		Stats:                  &call.stats.Port,
+		NoInputResample:        !RoomResample,
+		IgnorePreanswerData:    true,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(ctx, EndCall{

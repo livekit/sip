@@ -127,6 +127,11 @@ type Config struct {
 	AudioDTMF              bool    `yaml:"audio_dtmf"`
 	EnableJitterBuffer     bool    `yaml:"enable_jitter_buffer"`
 	EnableJitterBufferProb float64 `yaml:"enable_jitter_buffer_prob"`
+	// MixerInputBufferFrames is the number of frames the SIP audio mixer buffers per input (each frame = 20ms).
+	// 0 (default) keeps the library default (5 frames / 100ms). Raising it (e.g. 15 = 300ms) absorbs bursty input
+	// (e.g. realtime speech models) that starves the small default and causes choppy audio, at the cost of
+	// ~frames*20ms added agent->callee latency.
+	MixerInputBufferFrames int `yaml:"mixer_input_buffer_frames"`
 
 	// internal
 	ServiceName string `yaml:"-"`

@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -163,6 +165,122 @@ func newIP(v string) netip.Addr {
 		panic(err)
 	}
 	return ip
+}
+
+func TestConfigMixerInputBufferFrames(t *testing.T) {
+	t.Run("parsed", func(t *testing.T) {
+		conf, err := config.NewConfig(`
+redis:
+  address: localhost:6379
+mixer_input_buffer_frames: 15
+`)
+		require.NoError(t, err)
+		require.Equal(t, 15, conf.MixerInputBufferFrames)
+	})
+
+	t.Run("default", func(t *testing.T) {
+		conf, err := config.NewConfig(`
+redis:
+  address: localhost:6379
+`)
+		require.NoError(t, err)
+		require.Zero(t, conf.MixerInputBufferFrames)
+	})
+}
+
+func TestRoomMixerInputBufferFrames(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		room := NewRoom(logger.NewTestLogger(t), nil)
+		t.Cleanup(func() { require.NoError(t, room.Close()) })
+
+		require.Equal(t, mixer.DefaultInputBufferFrames, mixerInputBufferFrames(t, room.mix))
+	})
+
+	t.Run("configured", func(t *testing.T) {
+		room := NewRoom(logger.NewTestLogger(t), nil, WithRoomMixerInputBufferFrames(15))
+		t.Cleanup(func() { require.NoError(t, room.Close()) })
+
+		require.Equal(t, 15, mixerInputBufferFrames(t, room.mix))
+	})
+}
+
+func TestConfiguredRoomFactoryMixerInputBufferFrames(t *testing.T) {
+	room, ok := getRoomFuncForConfig(&config.Config{
+		MixerInputBufferFrames: 15,
+	})(logger.NewTestLogger(t), nil).(*Room)
+	require.True(t, ok)
+	t.Cleanup(func() { require.NoError(t, room.Close()) })
+
+	require.Equal(t, 15, mixerInputBufferFrames(t, room.mix))
+}
+
+func TestMediaPortDTMFMixerInputBufferFrames(t *testing.T) {
+	const frames = 15
+	const rate = 16000
+
+	c1, c2 := newUDPPipe()
+	log := logger.NewTestLogger(t)
+
+	caller, err := NewMediaPortWith(1, log.WithName("caller"), newTestCallMonitor(t), c1, &MediaOptions{
+		IP:                     newIP("1.1.1.1"),
+		Ports:                  rtcconfig.PortRange{Start: 10000},
+		MixerInputBufferFrames: frames,
+	}, rate)
+	require.NoError(t, err)
+	t.Cleanup(caller.Close)
+	caller.SetDTMFAudio(true)
+
+	callee, err := NewMediaPortWith(2, log.WithName("callee"), newTestCallMonitor(t), c2, &MediaOptions{
+		IP:    newIP("2.2.2.2"),
+		Ports: rtcconfig.PortRange{Start: 20000},
+	}, rate)
+	require.NoError(t, err)
+	t.Cleanup(callee.Close)
+
+	offer, err := caller.NewOffer(defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+
+	answer, _, err := callee.SetOffer(offerData, defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+	answerData, err := answer.SDP.Marshal()
+	require.NoError(t, err)
+
+	callerConf, _, err := caller.SetAnswer(offer, answerData, defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+	require.NoError(t, caller.SetConfig(callerConf))
+	require.NotNil(t, caller.dtmfOutAudio)
+
+	require.Equal(t, frames, mixerInputBufferFramesFromInput(t, caller.dtmfOutAudio))
+}
+
+func mixerInputBufferFrames(t testing.TB, mix *mixer.Mixer) int {
+	t.Helper()
+
+	v := reflect.ValueOf(mix)
+	require.Equal(t, reflect.Ptr, v.Kind())
+	require.False(t, v.IsNil())
+
+	field := v.Elem().FieldByName("inputBufferFrames")
+	require.True(t, field.IsValid())
+	return int(field.Int())
+}
+
+func mixerInputBufferFramesFromInput(t testing.TB, w msdk.PCM16Writer) int {
+	t.Helper()
+
+	v := reflect.ValueOf(w)
+	require.Equal(t, reflect.Ptr, v.Kind())
+	require.False(t, v.IsNil())
+
+	mix := v.Elem().FieldByName("m")
+	require.True(t, mix.IsValid())
+	require.False(t, mix.IsNil())
+
+	field := mix.Elem().FieldByName("inputBufferFrames")
+	require.True(t, field.IsValid())
+	return int(field.Int())
 }
 
 func TestMediaPort(t *testing.T) {
