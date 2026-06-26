@@ -22,6 +22,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -1014,21 +1015,33 @@ authLoop:
 		return nil, psrpc.NewErrorf(psrpc.Internal, "no tag in To header in INVITE response")
 	}
 
+	flushDestinationCache := false
 	if cont := resp.Contact(); cont != nil {
-		req.Recipient = cont.Address
-		if req.Recipient.Port == 0 {
-			req.Recipient.Port = 5060
+		newContact := cont.Address
+		if newContact.Port == 0 {
+			newContact.Port = 5060
 		}
+		oldRecipient := req.Recipient
+		if oldRecipient.Port == 0 {
+			oldRecipient.Port = 5060
+		}
+		flushDestinationCache = !strings.EqualFold(oldRecipient.Host, newContact.Host) || oldRecipient.Port != newContact.Port
+		req.Recipient = newContact
 	}
 
 	// We currently don't plumb the request back to caller to construct the ACK with.
 	// Thus, we need to modify the request to update any route sets.
 	for req.RemoveHeader("Route") {
+		flushDestinationCache = true
 	}
 	for _, hdr := range resp.GetHeaders("Record-Route") {
+		flushDestinationCache = true
 		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}
 
+	if flushDestinationCache {
+		req.MessageData.SetDestination("") // Undo destination fixing
+	}
 	return c.inviteOk.Body(), nil
 }
 

@@ -127,6 +127,127 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	cancel()
 }
 
+const (
+	testMinimalSDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+	// Simulates sipgo caching a DNS-resolved transport target on the INVITE.
+	testInviteCachedDestination = "10.0.0.1:5060"
+	testInviteTargetHost        = "sip.example.com"
+)
+
+// waitOutboundINVITEAndACK drives CreateSIPParticipant until an INVITE is sent, fakes a 200 OK,
+// and returns the captured ACK. mutate is called after the INVITE is received and before the
+// 200 OK is delivered to the transaction.
+func waitOutboundINVITEAndACK(
+	t *testing.T,
+	participantReq *rpc.InternalCreateSIPParticipantRequest,
+	mutate func(tr *transactionRequest, resp *sip.Response),
+) (*transactionRequest, *sipRequest) {
+	t.Helper()
+
+	client := NewOutboundTestClient(t, TestClientConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_, err := client.CreateSIPParticipant(ctx, participantReq)
+		if err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant error: %v", err)
+			t.Fail()
+		}
+	}()
+
+	var sipClient *testSIPClient
+	select {
+	case sipClient = <-createdClients:
+		t.Cleanup(func() { _ = sipClient.Close() })
+	case <-time.After(500 * time.Millisecond):
+		require.Fail(t, "expected test SIP client to be created")
+		return nil, nil
+	}
+
+	var tr *transactionRequest
+	select {
+	case tr = <-sipClient.transactions:
+		t.Cleanup(func() { tr.transaction.Terminate() })
+	case <-time.After(500 * time.Millisecond):
+		require.Fail(t, "expected INVITE transaction")
+		return nil, nil
+	}
+
+	require.Equal(t, sip.INVITE, tr.req.Method)
+
+	resp := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
+	require.NotNil(t, resp)
+	mutate(tr, resp)
+	require.NoError(t, tr.transaction.SendResponse(resp))
+
+	var ackReq *sipRequest
+	select {
+	case ackReq = <-sipClient.requests:
+	case <-time.After(500 * time.Millisecond):
+		require.Fail(t, "expected ACK request")
+		return tr, nil
+	}
+
+	require.Equal(t, sip.ACK, ackReq.req.Method)
+	return tr, ackReq
+}
+
+func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
+	t.Run("changed contact flushes stale cached destination", func(t *testing.T) {
+		// Without the fix, NewAckRequest copies the INVITE's cached DNS destination
+		// (10.0.0.1:5060) even though the 200 OK Contact points elsewhere.
+		const (
+			contactHost = "10.0.0.99"
+			contactPort = 5080
+		)
+		contactURI := sip.Uri{Host: contactHost, Port: contactPort}
+
+		_, ackReq := waitOutboundINVITEAndACK(t, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+			require.Equal(t, testInviteTargetHost, tr.req.Recipient.Host)
+			tr.req.SetDestination(testInviteCachedDestination)
+			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
+		})
+		require.NotNil(t, ackReq)
+
+		require.Equal(t, contactHost, ackReq.req.Recipient.Host)
+		require.Equal(t, contactPort, ackReq.req.Recipient.Port)
+		require.Equal(t, fmt.Sprintf("%s:%d", contactHost, contactPort), ackReq.req.Destination())
+		require.NotEqual(t, testInviteCachedDestination, ackReq.req.Destination())
+	})
+
+	t.Run("unchanged contact keeps cached destination", func(t *testing.T) {
+		contactURI := sip.Uri{Host: testInviteTargetHost, Port: 5060}
+
+		_, ackReq := waitOutboundINVITEAndACK(t, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+			tr.req.SetDestination(testInviteCachedDestination)
+			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
+		})
+		require.NotNil(t, ackReq)
+
+		require.Equal(t, testInviteTargetHost, ackReq.req.Recipient.Host)
+		require.Equal(t, testInviteCachedDestination, ackReq.req.Destination())
+	})
+
+	t.Run("record route rebuild flushes stale cached destination", func(t *testing.T) {
+		// Route set changes must invalidate the cached destination even when Contact
+		// matches the original INVITE target.
+		proxyURI := sip.Uri{Host: "proxy.example.com", Port: 5060, UriParams: sip.HeaderParams{{"lr", ""}}}
+		contactURI := sip.Uri{Host: testInviteTargetHost, Port: 5060}
+
+		_, ackReq := waitOutboundINVITEAndACK(t, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+			tr.req.SetDestination(testInviteCachedDestination)
+			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
+			resp.AppendHeader(&sip.RecordRouteHeader{Address: proxyURI})
+		})
+		require.NotNil(t, ackReq)
+
+		require.Equal(t, testInviteTargetHost, ackReq.req.Recipient.Host)
+		require.Equal(t, "proxy.example.com:5060", ackReq.req.Destination())
+		require.NotEqual(t, testInviteCachedDestination, ackReq.req.Destination())
+	})
+}
+
 func TestBuildOutboundHeaders(t *testing.T) {
 	newReq := func() *rpc.InternalCreateSIPParticipantRequest {
 		return &rpc.InternalCreateSIPParticipantRequest{}
