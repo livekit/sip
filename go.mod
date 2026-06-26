@@ -11,9 +11,9 @@ require (
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9
 	github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0
-	github.com/livekit/protocol v1.47.1-0.20260618140803-db77a56cf894
+	github.com/livekit/protocol v1.48.1-0.20260624204523-bd5703442db6
 	github.com/livekit/psrpc v0.7.2
-	github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260618140743-3776341a116e
+	github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260625120102-b6d1838861e7
 	github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
@@ -56,7 +56,7 @@ require (
 	github.com/docker/cli v29.2.0+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v1.4.0 // indirect
+	github.com/emiago/sipgo v1.4.0
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
@@ -95,7 +95,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opencontainers/runc v1.3.3 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
-	github.com/pion/dtls/v3 v3.1.3 // indirect
+	github.com/pion/dtls/v3 v3.1.4 // indirect
 	github.com/pion/ice/v4 v4.2.7 // indirect
 	github.com/pion/interceptor v0.1.45 // indirect
 	github.com/pion/logging v0.2.4 // indirect

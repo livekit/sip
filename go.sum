@@ -134,12 +134,12 @@ github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9 h1:GVMkuNwXQ74kV
 github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9/go.mod h1:TuYRjSepaakL6ATsM9V2VMuksewW1PlhA32BG7Pxty0=
 github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0 h1:XHNNzebIKZRkLimla/hFGrAIX5EMWHctrgt3hLw7s+I=
 github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0/go.mod h1:o8CFmAdrVwzJNOCsQCLUzXRjokkufNshnQHOe4fRaqU=
-github.com/livekit/protocol v1.47.1-0.20260618140803-db77a56cf894 h1:OH1Fejt3yDQXG2bYs1LkaSxifdVlm61eG3yrzrLW6Jo=
-github.com/livekit/protocol v1.47.1-0.20260618140803-db77a56cf894/go.mod h1:jO+y05AU9Ec4JswDyuzKCZ4bhziOS0CzMqgnbj60Dzs=
+github.com/livekit/protocol v1.48.1-0.20260624204523-bd5703442db6 h1:Z23fxGEJJS3akyX2Q6LGo5xfL+B+NcEBhOp5o0Cz5IE=
+github.com/livekit/protocol v1.48.1-0.20260624204523-bd5703442db6/go.mod h1:jO+y05AU9Ec4JswDyuzKCZ4bhziOS0CzMqgnbj60Dzs=
 github.com/livekit/psrpc v0.7.2 h1:6oZ+NODJ2pLyaT6VqDq1F4Qc/3TpDUSpyphj/P9MhQc=
 github.com/livekit/psrpc v0.7.2/go.mod h1:rAI+m2+/cb4x9RXhLRtUx5ZwdfjjXOl4zi46IjEetaw=
-github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260618140743-3776341a116e h1:PJZ+9COhAT8sCIo6zJCtYaDeJBQcCUN8H0GyEe2xMMM=
-github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260618140743-3776341a116e/go.mod h1:fuOvpz1rjH2XgsaXiVKSzW1tPw7es5dmBjr4GrX7xd8=
+github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260625120102-b6d1838861e7 h1:7I1SzZrgyE2PTPzPuWfR+6HO6C7sO0VJb61fUT5KJRw=
+github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260625120102-b6d1838861e7/go.mod h1:B3qlhVBZ4olBWRN/KxokLZE2d4LujNk4n2yYDL3+u2s=
 github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb h1:HmgaJMGs0Nco/Z+XMc9f+xFgrbood9yJsIBtl1OY76M=
 github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb/go.mod h1:aDa6mbFktNzA1D917RhFlIB5IOfNBTmrwt+/lX960j0=
 github.com/mackerelio/go-osstat v0.2.7 h1:TCavZi10wF49bT6iQZ9eT2keGZQpC69MTDfdJej5e94=
@@ -180,8 +180,8 @@ github.com/ory/dockertest/v4 v4.0.0 h1:i19aFsO/VXE0VrMk4ifnKW4G/KIJ93PCjLOslxXoP
 github.com/ory/dockertest/v4 v4.0.0/go.mod h1:b5Ofu8VIxWNhXFvQcLu17pRNQdoUBKtXBW74G4Ygzx8=
 github.com/pion/datachannel v1.6.0 h1:XecBlj+cvsxhAMZWFfFcPyUaDZtd7IJvrXqlXD/53i0=
 github.com/pion/datachannel v1.6.0/go.mod h1:ur+wzYF8mWdC+Mkis5Thosk+u/VOL287apDNEbFpsIk=
-github.com/pion/dtls/v3 v3.1.3 h1:OA6J5UCeA8DvRXD8ofaMnlNPXN3ISBLHHJ9P8SWL09E=
-github.com/pion/dtls/v3 v3.1.3/go.mod h1:GEwid4EzCcakfrNvHXM7bs6ci2mASI5Y5Q4tbtLFuWs=
+github.com/pion/dtls/v3 v3.1.4 h1:QhvtMflMfu9Kf0RcDC5BJBle4caPskByrKQR6uuYqpY=
+github.com/pion/dtls/v3 v3.1.4/go.mod h1:cr/qotLISUw/9C1m83ZPNZtj9WnXkYLpfCptPqbkInc=
 github.com/pion/ice/v4 v4.2.7 h1:zDEbC6MiEdhQpF8TxBOTws+NU6ZgGpveHrQq4Lc1kao=
 github.com/pion/ice/v4 v4.2.7/go.mod h1:9SNPaq0c7El/ki8leJzyCkK10zsskprR3zTNbO3monY=
 github.com/pion/interceptor v0.1.45 h1:6PUo/5829bIfRFIPPJQzuDn8EjxRTSB/CSD7QVCOaqo=
