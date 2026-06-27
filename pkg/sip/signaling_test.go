@@ -641,7 +641,7 @@ func TestReinvite(t *testing.T) {
 	t.Run("inbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
-			call, _ := st.CreateInboundCall(t)
+			call, ic := st.CreateInboundCall(t)
 			serverLocalSDP := call.remoteSDP
 
 			// Re-INVITE
@@ -661,6 +661,9 @@ func TestReinvite(t *testing.T) {
 			resp = st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
+
+			// After the re-INVITE with new offer, the media port destination must be updated.
+			require.Equal(t, newOffer.Addr, ic.media.RemoteAddr(), "re-INVITE should redirect RTP to the new remote address")
 		})
 
 		t.Run("miss", func(t *testing.T) {
@@ -682,6 +685,20 @@ func TestReinvite(t *testing.T) {
 			resp = st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
+		})
+
+		t.Run("no_body", func(t *testing.T) {
+			st := NewServiceTest(t, nil)
+			call, ic := st.CreateInboundCall(t)
+			serverLocalSDP := call.remoteSDP
+			initialRemote := ic.media.RemoteAddr()
+
+			// Re-INVITE with no SDP body — destination must not change.
+			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
+			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, ic.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
 		})
 	})
 	t.Run("outbound", func(t *testing.T) {
@@ -708,6 +725,23 @@ func TestReinvite(t *testing.T) {
 			resp = st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
+
+			// After the re-INVITE with new offer, the media port destination must be updated.
+			require.Equal(t, newOffer.Addr, oc.media.RemoteAddr(), "re-INVITE should redirect outbound call RTP to the new remote address")
+		})
+
+		t.Run("no_body", func(t *testing.T) {
+			st := NewServiceTest(t, nil)
+			call, oc, _ := st.CreateOutboundCall(t)
+			serverLocalSDP := oc.cc.LocalSDP()
+			initialRemote := oc.media.RemoteAddr()
+
+			// Re-INVITE with no SDP body — destination must not change.
+			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
+			resp := st.TestUA.TransactionRequest(t, req, false)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
+			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, oc.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
 		})
 
 		t.Run("miss", func(t *testing.T) {

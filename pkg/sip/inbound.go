@@ -312,6 +312,26 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	return true, false
 }
 
+func sdpBodyFromRequest(req *sip.Request) []byte {
+	ct := req.ContentType()
+	if ct != nil && ct.Value() != "application/sdp" {
+		return nil
+	}
+	return req.Body()
+}
+
+func updateRemoteFromSDP(media *MediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
+	if len(body) == 0 || media == nil {
+		return
+	}
+	desc, err := sdp.ParseWith(codecs, body)
+	if err != nil {
+		log.Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
+		return
+	}
+	media.UpdateRemote(desc.Addr)
+}
+
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
 	_ = s.processInvite(req, tx)
@@ -380,7 +400,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		existing.log().Infow("reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		existing.updateRemoteFromSDP(sdpBodyFromRequest(req))
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
@@ -388,11 +409,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
-			sdp := oc.cc.LocalSDP()
-			if len(sdp) != 0 {
-				oc.log.Infow("accepting reinvite", "content-type", req.ContentType(), "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+			localSDP := oc.cc.LocalSDP()
+			if len(localSDP) != 0 {
+				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+				oc.updateRemoteFromSDP(sdpBodyFromRequest(req))
 				oc.cc.RecordInvite(newCSeq)
-				cc.AcceptAsKeepAlive(sdp)
+				cc.AcceptAsKeepAlive(localSDP)
 				return nil
 			}
 		}
@@ -668,6 +690,7 @@ type inboundCall struct {
 	call        *rpc.SIPCall
 	mmu         sync.Mutex
 	media       *MediaPort
+	mediaCodecs *msdk.CodecSet
 	dtmf        chan dtmf.Event // buffered
 	endCall     chan EndCall    // buffered
 	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
@@ -1087,6 +1110,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 		return nil, err
 	}
 	c.media = mp
+	c.mediaCodecs = mconf.Codecs
 	mp.EnableTimeout(false) // enabled once we accept the call
 	mp.DisableOut()         // disabled until we send 200
 	mp.SetDTMFAudio(conf.AudioDTMF)
@@ -1454,6 +1478,12 @@ func (c *inboundCall) Close() error {
 // close() is idempotent via c.done, so concurrent paths cannot double-emit.
 func (c *inboundCall) Shutdown(ctx context.Context) {
 	c.closeWithTerm(ctx, stats.ServerError("shutdown"))
+}
+
+func (c *inboundCall) updateRemoteFromSDP(body []byte) {
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
+	updateRemoteFromSDP(c.media, c.log(), c.mediaCodecs, body)
 }
 
 func (c *inboundCall) closeMedia() {
