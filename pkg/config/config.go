@@ -73,6 +73,20 @@ type TCPConfig struct {
 	DialPort rtcconfig.PortRange `yaml:"dial_port"`
 }
 
+// OpusConfig configures the Opus audio encoder for SIP media. All fields are
+// optional; the zero value keeps libopus defaults.
+type OpusConfig struct {
+	// Bitrate is the target encoder bitrate in bits per second (e.g. 24000).
+	// 0 leaves libopus automatic bitrate selection in place.
+	Bitrate int `yaml:"bitrate"`
+	// Complexity is the encoder computational complexity, 1-10. 0 keeps the default.
+	Complexity int `yaml:"complexity"`
+	// FEC enables in-band Forward Error Correction.
+	FEC bool `yaml:"fec"`
+	// PacketLossPercent is the expected packet loss (0-100) used to tune FEC.
+	PacketLossPercent int `yaml:"packet_loss_percent"`
+}
+
 type Config struct {
 	Redis     *redis.RedisConfig `yaml:"redis"`      // required
 	ApiKey    string             `yaml:"api_key"`    // required (env LIVEKIT_API_KEY)
@@ -127,6 +141,14 @@ type Config struct {
 	AudioDTMF              bool    `yaml:"audio_dtmf"`
 	EnableJitterBuffer     bool    `yaml:"enable_jitter_buffer"`
 	EnableJitterBufferProb float64 `yaml:"enable_jitter_buffer_prob"`
+
+	// EnableOpus opts into offering the Opus codec for SIP media. It is
+	// disabled by default so existing deployments are unaffected. When enabled,
+	// Opus is offered and preferred over G722/G711.
+	EnableOpus bool `yaml:"enable_opus"`
+	// Opus tunes the Opus encoder used for SIP media. The zero value keeps
+	// libopus defaults (full-complexity VoIP).
+	Opus OpusConfig `yaml:"opus"`
 
 	// internal
 	ServiceName string `yaml:"-"`
