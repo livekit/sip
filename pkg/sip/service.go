@@ -216,6 +216,7 @@ func (s *Service) Start() error {
 		}
 	}
 	msdk.CodecsSetEnabled(s.conf.Codecs)
+	SetOpusEnabled(s.conf.EnableOpus)
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
