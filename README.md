@@ -19,6 +19,7 @@ WebRTC is proving to be a versatile and scalable transport protocol both for med
 
 SIP is designed to be a full-featured SIP bridge, connecting LiveKit sessions with Telephony networks with SIP Trunking.
 Currently, the following features are supported:
+
 - Dialing Out (Sending INVITEs)
 - Dialing In (Accepting INVITEs)
 - Digest Authentication
@@ -30,10 +31,10 @@ Currently, the following features are supported:
 
 To accept inbound calls, the workflow goes like this:
 
-* create an SIP Trunk with `CreateSIPTrunk` API (to livekit-server)
-* create an SIP Dispatch Rule with `CreateSIPDispatchRule` API (to livekit-server)
-* SIP service receives a call
-* SIP service connects to the LiveKit room and SIP caller is a participant
+- create an SIP Trunk with `CreateSIPTrunk` API (to livekit-server)
+- create an SIP Dispatch Rule with `CreateSIPDispatchRule` API (to livekit-server)
+- SIP service receives a call
+- SIP service connects to the LiveKit room and SIP caller is a participant
 
 See [SIP Quickstart](https://docs.livekit.io/sip/quickstarts/configuring-sip-trunk/) for a full guide.
 
@@ -62,9 +63,16 @@ prometheus_port: port used to collect prometheus metrics. Used for autoscaling
 log_level: debug, info, warn, or error (default info)
 sip_port: port to listen and send SIP traffic (default 5060)
 rtp_port: port to listen and send RTP traffic (default 10000-20000)
+enable_opus: offer the Opus codec for SIP media (default false, experimental)
 ```
 
 The config file can be added to a mounted volume with its location passed in the SIP_CONFIG_FILE env var, or its body can be passed in the SIP_CONFIG_BODY env var.
+
+#### Codecs
+
+PCMU, PCMA, G722, and DTMF are negotiated by default. Opus is **disabled by default** - set `enable_opus: true` to offer it. Validate interoperability with your SIP infrastructure before enabling in production.
+
+When enabled, Opus (`opus/48000/2`, 48 kHz mono) is preferred over G722 and G711. Peers that do not support Opus fall back to G722, then G711 transparently.
 
 ### Using the SIP service
 
@@ -120,13 +128,12 @@ The SIP Bridge request creation JSON file uses the following syntax:
 At this time we support one rule `dispatchRuleDirect`. This can be set like so
 
 ```
-	"rule": {
-		"dispatchRuleDirect": {
-			"roomName":"my-new-room"
-		}
-	}
+ "rule": {
+  "dispatchRuleDirect": {
+   "roomName":"my-new-room"
+  }
+ }
 ```
-
 
 On success, `livekit-cli` will return the unique id for the SIP Dispatch Rule.
 
@@ -182,6 +189,7 @@ sip --config=config.yaml
 #### Running with Docker
 
 To run against a local LiveKit server, a Redis server must be running locally. The SIP service must be instructed to connect to LiveKit server and Redis on the host. The host network is accessible from within the container on IP:
+
 - host.docker.internal on MacOS and Windows
 - 172.17.0.1 on linux
 
@@ -206,8 +214,6 @@ docker run --rm \
     --network host \
     livekit/sip
 ```
-
-
 
 <!--BEGIN_REPO_NAV-->
 <br/><table>
