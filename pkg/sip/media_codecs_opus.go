@@ -4,7 +4,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-// 	http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -29,14 +29,23 @@ func init() {
 		RTPClockRate: 48000,
 		RTPIsStatic:  false,
 		Priority:     10,
+		Disabled:     true,
 		FileExt:      "opus",
 	}, opusDecode, opusEncode))
+}
+
+// SetOpusEnabled toggles Opus in both the per-call default codec set and the
+// global media-sdk codec set. Call once during Service.Start.
+func SetOpusEnabled(enabled bool) {
+	defaultCodecs.SetEnabled(OpusSDPName, enabled)
+	msdk.CodecSetEnabled(OpusSDPName, enabled)
 }
 
 func opusDecode(w msdk.PCM16Writer) msdk.WriteCloser[opus.Sample] {
 	dec, err := opus.Decode(w, 1, logger.GetLogger())
 	if err != nil {
-		panic("opus decode init: " + err.Error())
+		logger.GetLogger().Errorw("opus decode init failed", err)
+		return nil
 	}
 	return dec
 }
@@ -44,7 +53,8 @@ func opusDecode(w msdk.PCM16Writer) msdk.WriteCloser[opus.Sample] {
 func opusEncode(w msdk.WriteCloser[opus.Sample]) msdk.PCM16Writer {
 	enc, err := opus.Encode(w, 1, logger.GetLogger())
 	if err != nil {
-		panic("opus encode init: " + err.Error())
+		logger.GetLogger().Errorw("opus encode init failed", err)
+		return nil
 	}
 	return enc
 }
