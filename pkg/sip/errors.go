@@ -25,6 +25,20 @@ type inviteFailure struct {
 	returnErr error
 }
 
+// afterInvite makes a server-side failure non-retryable once an INVITE has been
+// sent, so a fallback-capable SDK won't re-dial and place a duplicate call.
+// Other result classes already map to non-retryable codes; Term is unchanged.
+func (f inviteFailure) afterInvite() inviteFailure {
+	if f.Term.Result == stats.ResultServerError {
+		cause := f.returnErr
+		if cause == nil {
+			cause = errors.New(f.Term.Reason)
+		}
+		f.returnErr = psrpc.NewError(psrpc.FailedPrecondition, cause)
+	}
+	return f
+}
+
 // inviteClassifier lets an error describe its own verdict instead of
 // classifyInviteError carrying a switch over every variant. Source sites
 // wrap raw errors in these types so the classification lives next to where

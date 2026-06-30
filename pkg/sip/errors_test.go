@@ -116,6 +116,35 @@ func TestClassifyInviteError_SDPGRPCStatus(t *testing.T) {
 	require.Equal(t, psrpc.FailedPrecondition, code)
 }
 
+func TestInviteFailure_AfterInvite(t *testing.T) {
+	// Post-INVITE: server-side failures downgrade to a non-retryable code;
+	// client/upstream errors are left as-is. Term is always preserved.
+	cases := []struct {
+		name      string
+		in        inviteFailure
+		downgrade bool
+	}{
+		{"network-error", classifyInviteError(&net.OpError{Op: "write", Net: "tcp", Err: errors.New("broken pipe")}), true},
+		{"invite-failed", classifyInviteError(errors.New("ack write failed")), true},
+		{"client busy", classifyInviteError(&livekit.SIPStatus{Code: livekit.SIPStatusCode(486), Status: "busy"}), false},
+		{"upstream 503", classifyInviteError(&livekit.SIPStatus{Code: livekit.SIPStatusCode(503), Status: "unavailable"}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := tc.in.returnErr
+			out := tc.in.afterInvite()
+			require.Equal(t, tc.in.Term, out.Term)
+			if !tc.downgrade {
+				require.Equal(t, before, out.returnErr)
+				return
+			}
+			code, _ := psrpc.GetErrorCode(out.returnErr)
+			require.Equal(t, psrpc.FailedPrecondition, code)
+			require.ErrorIs(t, out.returnErr, before)
+		})
+	}
+}
+
 func TestClassifyInviteError_ReturnErrWrap(t *testing.T) {
 	// Refined buckets that wrap returnErr with a specific psrpc code so the
 	// RPC boundary reflects the originating failure mode instead of an
