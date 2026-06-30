@@ -363,7 +363,6 @@ func TestMediaPort(t *testing.T) {
 						} else {
 							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", aliceAudio.Type, codecName, nativeRate)
 						}
-
 						// This side resamples the received audio to the expected sample rate.
 						expChainBob := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", bobAudio.Type, codecName, nativeRate)
 
