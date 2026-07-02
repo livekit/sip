@@ -111,6 +111,7 @@ type Config struct {
 	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
 	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
 	Codecs               map[string]bool `yaml:"codecs"`
+	EnableOpus           bool            `yaml:"enable_opus"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
