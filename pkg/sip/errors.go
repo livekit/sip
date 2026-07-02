@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -98,6 +99,86 @@ func (e transactionTimeoutError) ClassifyInvite() inviteFailure {
 		},
 		returnErr: psrpc.NewError(psrpc.Canceled, e),
 	}
+}
+
+// twilioPermanentBlockCodes are Twilio X-Twilio-Error codes for calls a carrier
+// permanently blocks for fraud/regulatory reasons. Twilio surfaces these as a
+// generic SIP 603 Decline, which is indistinguishable from an ordinary callee
+// rejection, so we key off the proprietary error code instead. The distinct
+// classification lets callers suppress the destination rather than retrying it.
+//
+// This lives alongside the Twilio rate-limit handling in classifyInviteError.
+var twilioPermanentBlockCodes = map[int]struct{}{
+	32203: {}, // call blocked as potential fraud / regulatory block
+}
+
+// carrierBlockedError is an outbound INVITE that a carrier permanently rejected
+// (e.g. Twilio X-Twilio-Error 32203). It self-classifies so the failure reads
+// distinctly from a normal decline, and unwraps to the underlying SIPStatus so
+// the SIP code/text is still recorded on the call (CallStatusCode). Note it does
+// not overwrite SIPStatus.Status — the SIP reason phrase is preserved; the
+// provider block detail surfaces via the reported error and the SLI term.
+type carrierBlockedError struct {
+	status       *livekit.SIPStatus
+	provider     string // e.g. "twilio"
+	providerCode int    // e.g. 32203
+}
+
+var _ inviteClassifier = carrierBlockedError{}
+
+func (e carrierBlockedError) Error() string {
+	return fmt.Sprintf("carrier blocked call (%s error %d): %s", e.provider, e.providerCode, e.status.Error())
+}
+
+func (e carrierBlockedError) Unwrap() error { return e.status }
+
+func (e carrierBlockedError) ClassifyInvite() inviteFailure {
+	return inviteFailure{
+		EndCall: EndCall{
+			Status: callRejected,
+			// Distinct SLI bucket: a carrier fraud/regulatory block is a
+			// customer-side outcome, not upstream breakage.
+			Term: stats.ClientError("carrier-blocked"),
+			// No dedicated DisconnectReason enum exists yet; USER_REJECTED is the
+			// closest fit. The differentiator is the term and the reported error,
+			// which carry the provider block code for downstream consumers.
+			Reason: livekit.DisconnectReason_USER_REJECTED,
+			Report: e, // keep so the block (and provider code) is recorded
+		},
+		// Preserve the SIPStatus at the RPC boundary so ApplySIPStatus still maps
+		// the SIP code (e.g. 603) for the caller, matching other SIPStatus paths.
+		returnErr: e.status,
+	}
+}
+
+// carrierBlockFromResponse returns a carrierBlockedError if resp carries a
+// provider error code known to be a permanent carrier block, else nil. st is
+// the SIPStatus already built for resp and is retained on the returned error.
+func carrierBlockFromResponse(resp *sip.Response, st *livekit.SIPStatus) error {
+	if h := resp.GetHeader("X-Twilio-Error"); h != nil {
+		// Header format is "<code> <description>"; parse the leading code.
+		if code := parseLeadingProviderCode(h.Value()); code != 0 {
+			if _, ok := twilioPermanentBlockCodes[code]; ok {
+				return carrierBlockedError{status: st, provider: "twilio", providerCode: code}
+			}
+		}
+	}
+	return nil
+}
+
+// parseLeadingProviderCode extracts the leading integer code from a provider
+// error header value (e.g. "32203 Call blocked as potential fraud" -> 32203).
+// Returns 0 when the value does not start with a number.
+func parseLeadingProviderCode(v string) int {
+	fields := strings.Fields(v)
+	if len(fields) == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // classifyInviteError buckets an outbound INVITE error. Self-classifying

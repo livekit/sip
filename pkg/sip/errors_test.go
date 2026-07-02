@@ -12,6 +12,7 @@ import (
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/stats"
 )
@@ -66,6 +67,10 @@ func TestClassifyInviteError(t *testing.T) {
 		{"600 Global Busy Everywhere", sipStatusErr(600), callRejected, stats.ClientError("global-decline-600"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"603 Global Decline", sipStatusErr(603), callRejected, stats.ClientError("global-decline-603"), livekit.DisconnectReason_USER_REJECTED, false},
 
+		// Carrier permanent block (Twilio 32203) — distinct from a normal 603 decline
+		{"Twilio 32203 carrier block", carrierBlockedError{status: &livekit.SIPStatus{Code: 603, Status: "Decline"}, provider: "twilio", providerCode: 32203}, callRejected, stats.ClientError("carrier-blocked"), livekit.DisconnectReason_USER_REJECTED, true},
+		{"Twilio 32203 carrier block (wrapped)", fmt.Errorf("INVITE blocked by carrier: %w", carrierBlockedError{status: &livekit.SIPStatus{Code: 603, Status: "Decline"}, provider: "twilio", providerCode: 32203}), callRejected, stats.ClientError("carrier-blocked"), livekit.DisconnectReason_USER_REJECTED, true},
+
 		// SDP errors
 		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_MEDIA_FAILURE, true},
 		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_MEDIA_FAILURE, true},
@@ -114,6 +119,50 @@ func TestClassifyInviteError_SDPGRPCStatus(t *testing.T) {
 	code, ok := psrpc.GetErrorCode(res.returnErr)
 	require.True(t, ok)
 	require.Equal(t, psrpc.FailedPrecondition, code)
+}
+
+func TestParseLeadingProviderCode(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"32203 Call blocked as potential fraud", 32203},
+		{"32203", 32203},
+		{"  32203  ", 32203},
+		{"Decline", 0},
+		{"", 0},
+		{"blocked 32203", 0}, // code must lead
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, parseLeadingProviderCode(tc.in), tc.in)
+	}
+}
+
+func TestCarrierBlockFromResponse(t *testing.T) {
+	st := &livekit.SIPStatus{Code: 603, Status: "Decline"}
+
+	// No provider header -> not a carrier block.
+	resp := sip.NewResponse(603, "Decline")
+	require.Nil(t, carrierBlockFromResponse(resp, st))
+
+	// Twilio permanent-block code -> carrierBlockedError that classifies distinctly.
+	resp = sip.NewResponse(603, "Decline")
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32203 Call blocked as potential fraud"))
+	err := carrierBlockFromResponse(resp, st)
+	require.NotNil(t, err)
+	res := classifyInviteError(fmt.Errorf("INVITE blocked by carrier: %w", err))
+	require.Equal(t, callRejected, res.Status)
+	require.Equal(t, stats.ClientError("carrier-blocked"), res.Term)
+	require.Equal(t, livekit.DisconnectReason_USER_REJECTED, res.Reason)
+	// The SIPStatus is preserved for CallStatusCode / RPC boundary mapping.
+	var sipStatus *livekit.SIPStatus
+	require.True(t, errors.As(err, &sipStatus))
+	require.Equal(t, livekit.SIPStatusCode(603), sipStatus.Code)
+
+	// A non-block Twilio error code -> not suppressed here.
+	resp = sip.NewResponse(486, "Busy Here")
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "13224 Invalid phone number"))
+	require.Nil(t, carrierBlockFromResponse(resp, st))
 }
 
 func TestClassifyInviteError_ReturnErrWrap(t *testing.T) {
