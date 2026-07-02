@@ -950,25 +950,32 @@ authLoop:
 		case sip.StatusOK:
 			break authLoop
 		default:
-			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &livekit.SIPStatus{
+			st := &livekit.SIPStatus{
 				Code:   livekit.SIPStatusCode(resp.StatusCode),
 				Status: resp.Reason,
-			})
+			}
+			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
+				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
+			}
+			return nil, fmt.Errorf("unexpected status from INVITE response: %w", st)
 		case sip.StatusBadRequest,
 			sip.StatusNotFound,
 			sip.StatusTemporarilyUnavailable,
 			sip.StatusNotAcceptableHere,
 			sip.StatusBusyHere:
-			err := &livekit.SIPStatus{
+			st := &livekit.SIPStatus{
 				Code:   livekit.SIPStatusCode(resp.StatusCode),
 				Status: resp.Reason,
 			}
 			if body := resp.Body(); len(body) != 0 {
-				err.Status = string(body)
+				st.Status = string(body)
 			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
-				err.Status = s.Value()
+				st.Status = s.Value()
 			}
-			return nil, fmt.Errorf("INVITE failed: %w", err)
+			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
+				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
+			}
+			return nil, fmt.Errorf("INVITE failed: %w", st)
 		case sip.StatusUnauthorized:
 			authHeaderName = "WWW-Authenticate"
 			authHeaderRespName = "Authorization"
