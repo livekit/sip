@@ -102,5 +102,6 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		name = fmt.Sprintf("%s/%d", name, rate)
 		s.SetEnabled(name, true)
 	}
+	s.SetEnabled(dtmf.SDPNameAndRate, true)
 	return s, nil
 }
