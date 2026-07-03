@@ -213,8 +213,9 @@ func TestMediaPort(t *testing.T) {
 			codecs := msdk.NewCodecSet()
 			codecs.SetEnabled(info.SDPName, true)
 
-			sub := strings.SplitN(info.SDPName, "/", 2)
+			sub := strings.SplitN(info.SDPName, "/", 3)
 			codecName := sub[0]
+			encName := strings.ToUpper(codecName)
 			nativeRateSDP, err := strconv.Atoi(sub[1])
 			nativeRate := nativeRateSDP
 			require.NoError(t, err)
@@ -342,30 +343,34 @@ func TestMediaPort(t *testing.T) {
 					aliceToBobWrites := 1
 					bobToAliceWrites := 1
 					if tconf.Rate == nativeRate {
-						expChainBase := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit",
-							nativeRate, codecName, nativeRate, codecName, nativeRateSDP)
-						require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip2, port2), aliceToBobWriteChain)
-						require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip1, port1), bobToAliceWriteChain)
+						expChainBase := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s) -> LatencyExit",
+							nativeRate, encName, nativeRate, info.SDPName)
+						if tconf.Encrypted != sdp.EncryptionNone {
+							require.Equal(t, fmt.Sprintf("%s -> SRTPWriteStream", expChainBase), aliceToBobWriteChain)
+							require.Equal(t, fmt.Sprintf("%s -> SRTPWriteStream", expChainBase), bobToAliceWriteChain)
+						} else {
+							require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip2, port2), aliceToBobWriteChain)
+							require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip1, port1), bobToAliceWriteChain)
+						}
 
-						expChainBase = fmt.Sprintf("SilenceFiller(25) -> RTP(%%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", codecName, nativeRate, nativeRate)
+						expChainBase = fmt.Sprintf("SilenceFiller(25) -> RTP(%%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", encName, nativeRate, nativeRate)
 						require.Equal(t, fmt.Sprintf(expChainBase, aliceAudio.Type), bobToAliceHandleChain)
 						require.Equal(t, fmt.Sprintf(expChainBase, bobAudio.Type), aliceToBobHandleChain)
 					} else {
-						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> SRTPWriteStream",
-							nativeRate, codecName, nativeRate, codecName, nativeRateSDP)
+						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s) -> LatencyExit -> SRTPWriteStream",
+							nativeRate, encName, nativeRate, info.SDPName)
 						require.Equal(t, expChain, aliceToBobWriteChain)
 						require.Equal(t, expChain, bobToAliceWriteChain)
 
 						// This side does not resample the received audio, it uses sample rate of the RTP source.
 						var expChainAlice string
 						if bobToAliceNoResample {
-							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", aliceAudio.Type, codecName, nativeRate, nativeRate)
+							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", aliceAudio.Type, encName, nativeRate, nativeRate)
 						} else {
-							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", aliceAudio.Type, codecName, nativeRate)
+							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", aliceAudio.Type, encName, nativeRate)
 						}
-
 						// This side resamples the received audio to the expected sample rate.
-						expChainBob := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", bobAudio.Type, codecName, nativeRate)
+						expChainBob := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", bobAudio.Type, encName, nativeRate)
 
 						require.Equal(t, expChainAlice, bobToAliceHandleChain)
 						require.Equal(t, expChainBob, aliceToBobHandleChain)
@@ -387,6 +392,9 @@ func TestMediaPort(t *testing.T) {
 					case "AMR-WB":
 						rampUpFrames += 1
 						offsetSamples += 14 + 16
+					case "opus":
+						rampUpFrames += 2
+						offsetSamples += 24
 					}
 					aliceToBobWrites += rampUpFrames
 					bobToAliceWrites += rampUpFrames
