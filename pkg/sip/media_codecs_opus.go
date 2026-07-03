@@ -17,10 +17,20 @@
 package sip
 
 import (
+	"sync/atomic"
+
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/protocol/logger"
 )
+
+var opusEncodeOpts atomic.Pointer[OpusEncodeOptions]
+
+// SetOpusOptions configures the Opus encoder. Call before or after enabling;
+// takes effect on the next encoder instantiation (i.e. next call).
+func SetOpusOptions(opts OpusEncodeOptions) {
+	opusEncodeOpts.Store(&opts)
+}
 
 func init() {
 	msdk.RegisterCodec(msdk.NewAudioCodec(msdk.CodecInfo{
@@ -51,6 +61,7 @@ func opusDecode(w msdk.PCM16Writer) msdk.WriteCloser[opus.Sample] {
 }
 
 func opusEncode(w msdk.WriteCloser[opus.Sample]) msdk.PCM16Writer {
+	// TODO: apply opusEncodeOpts once livekit/media-sdk#69 (EncodeWith) merges.
 	enc, err := opus.Encode(w, 1, logger.GetLogger())
 	if err != nil {
 		logger.GetLogger().Errorw("opus encode init failed", err)

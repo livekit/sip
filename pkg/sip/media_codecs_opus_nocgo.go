@@ -18,3 +18,6 @@ package sip
 
 // SetOpusEnabled is a no-op in non-CGo builds; Opus requires libopus.
 func SetOpusEnabled(_ bool) {}
+
+// SetOpusOptions is a no-op in non-CGo builds; Opus requires libopus.
+func SetOpusOptions(_ OpusEncodeOptions) {}
