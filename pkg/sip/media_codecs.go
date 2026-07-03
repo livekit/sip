@@ -34,6 +34,14 @@ import (
 
 const OpusSDPName = "opus/48000/2"
 
+// OpusEncodeOptions tunes the Opus encoder. Zero values keep libopus defaults.
+type OpusEncodeOptions struct {
+	Bitrate           int  // target bitrate in bits/sec (e.g. 24000); 0 = auto
+	Complexity        int  // encoder complexity 1-10; 0 = default
+	FEC               bool // enable in-band Forward Error Correction
+	PacketLossPercent int  // expected packet loss 0-100, tunes FEC
+}
+
 var defaultCodecs = msdk.NewCodecSet()
 
 func init() {
@@ -42,6 +50,7 @@ func init() {
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
 		amrwb.SDPNameAndRate:    false, // optional
+		OpusSDPName:             false, // opt-in via enable_opus config flag
 		dtmf.SDPNameAndRate:     true,
 	})
 }
