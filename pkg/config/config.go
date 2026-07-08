@@ -44,6 +44,15 @@ var (
 	DefaultRTPPortRange = rtcconfig.PortRange{Start: 10000, End: 20000}
 )
 
+// OpusConfig tunes the Opus encoder for SIP media. All fields are optional;
+// zero values keep libopus defaults.
+type OpusConfig struct {
+	Bitrate           int  `yaml:"bitrate"`             // target bitrate in bits/sec (e.g. 24000); 0 = auto
+	Complexity        int  `yaml:"complexity"`          // encoder complexity 1-10; 0 = default
+	FEC               bool `yaml:"fec"`                 // enable in-band Forward Error Correction
+	PacketLossPercent int  `yaml:"packet_loss_percent"` // expected packet loss 0-100, tunes FEC
+}
+
 type TLSCert struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
@@ -111,6 +120,8 @@ type Config struct {
 	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
 	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
 	Codecs               map[string]bool `yaml:"codecs"`
+	EnableOpus           bool            `yaml:"enable_opus"`
+	Opus                 OpusConfig      `yaml:"opus"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.

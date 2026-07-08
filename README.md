@@ -62,9 +62,16 @@ prometheus_port: port used to collect prometheus metrics. Used for autoscaling
 log_level: debug, info, warn, or error (default info)
 sip_port: port to listen and send SIP traffic (default 5060)
 rtp_port: port to listen and send RTP traffic (default 10000-20000)
+enable_opus: offer the Opus codec for SIP media (default false, experimental)
 ```
 
 The config file can be added to a mounted volume with its location passed in the SIP_CONFIG_FILE env var, or its body can be passed in the SIP_CONFIG_BODY env var.
+
+#### Codecs
+
+PCMU, PCMA, G722, and DTMF are negotiated by default. Opus is **disabled by default** - set `enable_opus: true` to offer it. Validate interoperability with your SIP infrastructure before enabling in production.
+
+When enabled, Opus (`opus/48000/2`, 48 kHz mono) is preferred over G722 and G711. Peers that do not support Opus fall back to G722, then G711 transparently.
 
 ### Using the SIP service
 
