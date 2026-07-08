@@ -420,6 +420,10 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 	if err := c.dialSIP(ctx, tid); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
 		res := classifyInviteError(err)
+		if !c.sigTs.InviteTime.IsZero() {
+			// INVITE sent: a call may exist, so don't surface a retryable 5xx.
+			res = res.afterInvite()
+		}
 		c.close(ctx, res.EndCall)
 		return res.returnErr
 	}
