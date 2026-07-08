@@ -1422,7 +1422,7 @@ func (c *inboundCall) closeWithTimeout(ctx context.Context, isError bool) {
 func (c *inboundCall) closeWithNoACK(ctx context.Context) {
 	c.close(ctx, EndCall{
 		Status: callNoACK,
-		Term:   stats.ServerError("no-ack"),
+		Term:   stats.Indeterminate("no-ack"),
 	})
 }
 
