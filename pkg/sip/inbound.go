@@ -1105,6 +1105,8 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 		LogSignalChanges:     logSignalChanges,
 		Stats:                &c.stats.Port,
 		NoInputResample:      !RoomResample,
+		DrainingIdleTimeout:  conf.RTPDrainingIdleTimeout,
+		DrainingDuration:     conf.RTPDrainingDuration,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err

@@ -204,7 +204,6 @@ func newUDPConn(log logger.Logger, conn UDPConn, symmetric bool) *udpConn {
 	c := &udpConn{
 		UDPConn: conn,
 		log:     log,
-		stopped: make(chan struct{}),
 	}
 	c.symmetric.Store(symmetric)
 	return c
@@ -212,8 +211,9 @@ func newUDPConn(log logger.Logger, conn UDPConn, symmetric bool) *udpConn {
 
 type udpConn struct {
 	UDPConn
-	stopping       core.Fuse
-	stopped        chan struct{}
+	closed         atomic.Bool
+	discardStop    atomic.Bool
+	discardWG      sync.WaitGroup
 	log            logger.Logger
 	symmetric      atomic.Bool // send packets to the same address we receive them from
 	src            atomic.Pointer[netip.AddrPort]
@@ -254,7 +254,13 @@ func (c *udpConn) SetDst(addr netip.AddrPort) {
 }
 
 func (c *udpConn) Read(b []byte) (n int, err error) {
+	if c.closed.Load() {
+		return 0, io.EOF
+	}
 	n, addr, err := c.ReadFromUDPAddrPort(b)
+	if c.closed.Load() && errors.Is(err, os.ErrDeadlineExceeded) {
+		return n, io.EOF
+	}
 	prev := c.src.Swap(&addr)
 	if prev == nil || !prev.IsValid() {
 		c.log.Infow("setting media source", "addr", addr.String())
@@ -285,12 +291,12 @@ func (c *udpConn) Write(b []byte) (n int, err error) {
 }
 
 func (c *udpConn) discardLoop() error {
-	defer close(c.stopped)
+	defer c.discardWG.Done()
 
 	var err error
 	buf := make([]byte, 1024)
 	packetsDiscarded := uint64(0)
-	for !c.stopping.IsBroken() {
+	for !c.discardStop.Load() {
 		err = c.UDPConn.SetReadDeadline(time.Now().Add(rtp.DefFrameDur))
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
@@ -321,9 +327,26 @@ func (c *udpConn) discardLoop() error {
 	return err
 }
 
+func (c *udpConn) startDiscarding() {
+	c.discardWG.Add(1)
+	go c.discardLoop()
+}
+
 func (c *udpConn) stopDiscarding() {
-	c.stopping.Break()
-	<-c.stopped
+	c.discardStop.Store(true)
+	c.discardWG.Wait()
+}
+
+func (c *udpConn) unwrap() UDPConn {
+	c.Close()
+	return c.UDPConn
+}
+
+func (c *udpConn) Close() error {
+	c.stopDiscarding()
+	c.closed.Store(true)
+	c.UDPConn.SetReadDeadline(time.Now().Add(-time.Second)) // Kill ongoing reads
+	return nil
 }
 
 type MediaConf struct {
@@ -343,6 +366,8 @@ type MediaOptions struct {
 	NoInputResample      bool
 	IgnorePreanswerData  bool
 	LogSignalChanges     bool
+	DrainingIdleTimeout  time.Duration
+	DrainingDuration     time.Duration
 }
 
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
@@ -391,7 +416,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		stats:            opts.Stats,
 	}
 	if p.opts.IgnorePreanswerData {
-		go p.port.discardLoop()
+		p.port.startDiscarding()
 	}
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
 	p.timeoutGeneral.Store(&opts.MediaTimeout)
@@ -423,6 +448,7 @@ type MediaPort struct {
 	dtmfAudioEnabled bool
 	jitterEnabled    bool
 	logSignalChanges bool
+	rtpLoopWG        sync.WaitGroup
 
 	mu           sync.Mutex
 	conf         *MediaConf
@@ -617,7 +643,10 @@ func (p *MediaPort) Close() {
 		if p.sess != nil {
 			_ = p.sess.Close()
 		}
-		_ = p.port.Close()
+		p.port.Close()
+		p.rtpLoopWG.Wait()
+		conn := p.port.unwrap()
+		go DrainPort(p.log, conn.(*net.UDPConn), p.opts.DrainingIdleTimeout, p.opts.DrainingDuration)
 
 		hnd := p.hnd.Load()
 		if hnd != nil {
@@ -744,7 +773,7 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 		err  error
 	)
 	if c.Crypto != nil {
-		sess, err = srtp.NewSession(p.log, &srtpConn{Conn: p.port}, c.Crypto)
+		sess, err = srtp.NewSession(p.log, p.port, c.Crypto)
 	} else {
 		sess = rtp.NewSession(p.log, p.port)
 	}
@@ -765,11 +794,12 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 }
 
 func (p *MediaPort) rtpLoop(tid traceid.ID, sess rtp.Session) {
+	defer p.rtpLoopWG.Done()
 	// Need a loop to process all incoming packets.
 	for {
 		r, ssrc, err := sess.AcceptStream()
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) && !strings.Contains(err.Error(), "closed") {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrDeadlineExceeded) && !strings.Contains(err.Error(), "closed") {
 				p.log.Errorw("cannot accept RTP stream", err)
 			}
 			return
@@ -853,6 +883,7 @@ func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
 	}
+	p.rtpLoopWG.Add(1)
 	go p.rtpLoop(tid, p.sess)
 	w, err := p.sess.OpenWriteStream()
 	if err != nil {

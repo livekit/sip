@@ -138,6 +138,8 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		Stats:                &call.stats.Port,
 		NoInputResample:      !RoomResample,
 		IgnorePreanswerData:  true,
+		DrainingIdleTimeout:  conf.RTPDrainingIdleTimeout,
+		DrainingDuration:     conf.RTPDrainingDuration,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(ctx, EndCall{
