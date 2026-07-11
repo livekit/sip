@@ -23,8 +23,12 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
-func DrainPort(log logger.Logger, conn *net.UDPConn, idleTimeout, maxDuration time.Duration) {
+func DrainPort(log logger.Logger, conn *net.UDPConn, idleTimeout, maxDuration time.Duration, done chan struct{}) {
+	if done != nil {
+		defer close(done)
+	}
 	defer conn.Close()
+
 	if idleTimeout <= 0 && maxDuration <= 0 {
 		return
 	}
@@ -57,8 +61,11 @@ func DrainPort(log logger.Logger, conn *net.UDPConn, idleTimeout, maxDuration ti
 				if !maxDeadline.IsZero() && now.After(maxDeadline) {
 					reason = "maxDuration"
 					logFunc = log.Infow
-				} else {
+				} else if now.After(currentDeadline) {
 					reason = "idleTimeout"
+				} else {
+					// Part of socket close is setting a deadline for active-reads. Ignore.
+					continue
 				}
 			}
 			since := time.Duration(0)

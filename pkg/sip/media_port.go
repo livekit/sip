@@ -646,7 +646,11 @@ func (p *MediaPort) Close() {
 		p.port.Close()
 		p.rtpLoopWG.Wait()
 		conn := p.port.unwrap()
-		go DrainPort(p.log, conn.(*net.UDPConn), p.opts.DrainingIdleTimeout, p.opts.DrainingDuration)
+		if uc, ok := conn.(*net.UDPConn); ok {
+			go DrainPort(p.log, uc, p.opts.DrainingIdleTimeout, p.opts.DrainingDuration, nil)
+		} else {
+			_ = conn.Close()
+		}
 
 		hnd := p.hnd.Load()
 		if hnd != nil {
