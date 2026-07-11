@@ -44,6 +44,13 @@ var (
 	DefaultRTPPortRange = rtcconfig.PortRange{Start: 10000, End: 20000}
 )
 
+const (
+	// After a call closes we keep its RTP port bound and draining so a freshly
+	// allocated call can't inherit a port a peer is still sending stale media to.
+	DefaultRTPDrainingIdleTimeout = 30 * time.Second // release once no packets arrive for this long
+	DefaultRTPDrainingDuration    = 10 * time.Minute // hard cap on how long a port stays draining
+)
+
 type TLSCert struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
@@ -109,6 +116,11 @@ type Config struct {
 	MediaTimeout         time.Duration   `yaml:"media_timeout"`
 	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
 	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	// RTPDrainingIdleTimeout / RTPDrainingDuration control how long a closed call's RTP
+	// port is kept bound and draining before it can be reallocated. Set to a negative
+	// value to disable. Zero uses the defaults.
+	RTPDrainingIdleTimeout time.Duration `yaml:"rtp_draining_idle_timeout"`
+	RTPDrainingDuration    time.Duration `yaml:"rtp_draining_duration"`
 	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
 	Codecs               map[string]bool `yaml:"codecs"`
 
@@ -182,6 +194,16 @@ func (c *Config) Init() error {
 	}
 	if c.RTPPort.End == 0 {
 		c.RTPPort.End = DefaultRTPPortRange.End
+	}
+	if c.RTPDrainingIdleTimeout == 0 {
+		c.RTPDrainingIdleTimeout = DefaultRTPDrainingIdleTimeout
+	} else if c.RTPDrainingIdleTimeout < 0 {
+		c.RTPDrainingIdleTimeout = 0 // disabled
+	}
+	if c.RTPDrainingDuration == 0 {
+		c.RTPDrainingDuration = DefaultRTPDrainingDuration
+	} else if c.RTPDrainingDuration < 0 {
+		c.RTPDrainingDuration = 0 // disabled
 	}
 	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
 		c.MaxCpuUtilization = 0.9

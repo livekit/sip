@@ -20,6 +20,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,10 +50,11 @@ func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
 }
 
 type testUDPConn struct {
-	addr   netip.AddrPort
-	closed chan struct{}
-	buf    chan []byte
-	peer   atomic.Pointer[testUDPConn]
+	addr     netip.AddrPort
+	closed   chan struct{}
+	buf      chan []byte
+	peer     atomic.Pointer[testUDPConn]
+	deadline chan time.Time
 }
 
 func (c *testUDPConn) Read(b []byte) (int, error) {
@@ -73,10 +75,15 @@ func (c *testUDPConn) RemoteAddr() net.Addr {
 }
 
 func (c *testUDPConn) SetDeadline(t time.Time) error {
+	c.SetReadDeadline(t)
 	return nil
 }
 
 func (c *testUDPConn) SetReadDeadline(t time.Time) error {
+	select {
+	case c.deadline <- t:
+	default:
+	}
 	return nil
 }
 
@@ -89,16 +96,31 @@ func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, erro
 	if peer == nil {
 		return 0, netip.AddrPort{}, io.ErrClosedPipe
 	}
-	select {
-	case <-c.closed:
-		return 0, netip.AddrPort{}, io.ErrClosedPipe
-	case data := <-c.buf:
-		n := copy(buf, data)
-		var err error
-		if n < len(data) {
-			err = io.ErrShortBuffer
+	var curDeadline time.Time
+
+	for {
+		var deadlineCh <-chan time.Time = nil
+		if !curDeadline.IsZero() {
+			deadlineCh = time.After(time.Until(curDeadline))
 		}
-		return n, peer.addr, err
+		select {
+		case <-c.closed:
+			return 0, netip.AddrPort{}, io.ErrClosedPipe
+		case <-deadlineCh:
+			return 0, netip.AddrPort{}, os.ErrDeadlineExceeded
+		case newDeadline := <-c.deadline:
+			if !newDeadline.IsZero() && (newDeadline.Before(curDeadline) || curDeadline.IsZero()) {
+				curDeadline = newDeadline
+			}
+			continue
+		case data := <-c.buf:
+			n := copy(buf, data)
+			var err error
+			if n < len(data) {
+				err = io.ErrShortBuffer
+			}
+			return n, peer.addr, err
+		}
 	}
 }
 
@@ -140,8 +162,9 @@ func newTestConn(i int) *testUDPConn {
 			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
 			uint16(10000*i),
 		),
-		buf:    make(chan []byte, 10),
-		closed: make(chan struct{}),
+		buf:      make(chan []byte, 10),
+		closed:   make(chan struct{}),
+		deadline: make(chan time.Time, 1),
 	}
 }
 
