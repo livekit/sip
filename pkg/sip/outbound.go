@@ -1246,8 +1246,9 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	case <-ctx.Done():
 		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
 	case <-callDone:
-		// At this point, REFER was accepted, but we received a BYE, nothing to do, also not an error
-		c.log.Infow("refer canceled by BYE from remote")
+		// REFER was accepted (2xx) but the call ended before it completed —
+		// remote BYE, room deletion, or local hangup.
+		c.log.Infow("refer canceled: call ended before transfer completed")
 		return nil
 	case err := <-c.referDone:
 		if err != nil {
