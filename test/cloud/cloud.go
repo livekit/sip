@@ -46,8 +46,8 @@ func (s *CloudTestService) CreateSIPParticipant(ctx context.Context, req *liveki
 
 	callID := sip.NewCallID()
 	trunk := &livekit.SIPOutboundTrunkInfo{}
-	r, err := rpc.NewCreateSIPParticipantRequest(ProjectID, callID, Host, s.conf.WsUrl, token, req, trunk)
-	if err != nil {
+	r, errs := rpc.NewCreateSIPParticipantRequest(ProjectID, callID, Host, s.conf.WsUrl, token, req, trunk)
+	if err := livekit.LogSoftErrors(logger.GetLogger(), errs); err != nil {
 		logger.Errorw("failed to build CreateSIPParticipantRequest", err)
 		return nil, err
 	}
