@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -32,6 +33,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -801,4 +803,76 @@ func TestSymmetricRTP(t *testing.T) {
 		require.NotNil(t, curDstPtr)
 		require.Equal(t, newAddr.String(), curDstPtr.String())
 	})
+}
+
+func generateDTMFPackets(t *testing.T, digits string) [][]*rtp.Packet {
+	t.Helper()
+	var buf rtp.Buffer
+	packets := make([][]*rtp.Packet, len(digits))
+	last := len(buf)
+	w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+	timestamp := uint32(1000)
+	for i := range digits {
+		err := dtmf.Write(context.Background(), nil, w, timestamp, digits[i:i+1])
+		require.NoError(t, err)
+		require.NotEmpty(t, buf)
+		timestamp += uint32(dtmf.SampleRate / 2)
+		packets[i] = slices.Clone(buf[last:])
+		last = len(buf)
+	}
+	return packets
+}
+
+func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Packet {
+	t.Helper()
+	switch dropType {
+	case "none":
+		return packets
+	case "first":
+		require.Greater(t, len(packets), 3)
+		return packets[3:]
+	case "last":
+		require.Greater(t, len(packets), 3)
+		return packets[:len(packets)-3]
+	case "middle":
+		require.Greater(t, len(packets), 6)
+		ret := slices.Clone(packets[:3])
+		ret = append(ret, packets[len(packets)-3:]...)
+		return ret
+	default:
+		t.Fatal("unknown drop type: " + dropType)
+		return nil
+	}
+}
+
+func TestMediaPortDTMF(t *testing.T) {
+	digitCases := []string{"1", "12", "123"}
+	lossCases := []string{"none", "first", "last", "middle"}
+
+	for _, digits := range digitCases {
+		packets := generateDTMFPackets(t, digits)
+		for _, lossPackets := range lossCases {
+			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
+				p := &MediaPort{}
+				p.lastDTMFTimestamp.Store(math.MaxUint32)
+				got := ""
+				p.HandleDTMF(func(ev dtmf.Event) {
+					t.Logf("received DTMF event: %+v", ev)
+					got = fmt.Sprintf("%s%s", got, strconv.Itoa(int(ev.Code)))
+				})
+				for _, digitPackets := range packets {
+					sendPackets := dropPackets(t, lossPackets, digitPackets)
+					t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
+					for _, pkt := range sendPackets {
+						h := pkt.Header
+						t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
+						require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
+					}
+				}
+				t.Logf("sent: %s", digits)
+				t.Logf("got: %s", got)
+				require.Equal(t, digits, got)
+			})
+		}
+	}
 }
