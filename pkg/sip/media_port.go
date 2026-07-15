@@ -1020,8 +1020,8 @@ func (p *MediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
 	if fnc == nil {
 		return nil
 	}
-	// RFC 4733 requires a given digit to identical timestamps across packets.
-	// The marker bit can be used, is prone to occasional loss.
+	// RFC 4733 requires all packets of a given digit to share identical timestamps.
+	// The marker bit could be used instead, but it is prone to occasional loss.
 	if h.Timestamp == p.lastDTMFTimestamp.Load() {
 		return nil
 	}
