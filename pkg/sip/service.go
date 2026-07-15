@@ -44,6 +44,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
+	"github.com/livekit/sip/pkg/media/opus"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
@@ -216,6 +217,24 @@ func (s *Service) Start() error {
 		}
 	}
 	msdk.CodecsSetEnabled(s.conf.Codecs)
+
+	// enable_opus is authoritative: apply it after the generic codecs map so it
+	// wins over any opus entry there, and update both the per-call and global
+	// codec sets.
+	SetOpusEnabled(s.conf.EnableOpus)
+	if s.conf.EnableOpus {
+		SetOpusOptions(opus.EncodeOptions{
+			Bitrate:           s.conf.Opus.Bitrate,
+			Complexity:        s.conf.Opus.Complexity,
+			FEC:               s.conf.Opus.FEC,
+			PacketLossPercent: s.conf.Opus.PacketLossPercent,
+		})
+		s.log.Infow("opus codec enabled",
+			"bitrate", s.conf.Opus.Bitrate,
+			"complexity", s.conf.Opus.Complexity,
+			"fec", s.conf.Opus.FEC,
+		)
+	}
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err

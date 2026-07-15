@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -236,13 +237,19 @@ func TestMediaPort(t *testing.T) {
 			codecs := msdk.NewCodecSet()
 			codecs.SetEnabled(info.SDPName, true)
 
-			sub := strings.SplitN(info.SDPName, "/", 2)
+			// SDP names are "name/rate" or, for Opus, "name/rate/channels".
+			sub := strings.Split(info.SDPName, "/")
 			codecName := sub[0]
 			nativeRateSDP, err := strconv.Atoi(sub[1])
 			nativeRate := nativeRateSDP
 			require.NoError(t, err)
 			switch codecName {
 			case "telephone-event":
+				t.SkipNow()
+			case "opus":
+				// Opus is a lossy 48kHz codec; the strict waveform-fidelity and
+				// pipeline-string assertions in this generic harness don't apply to
+				// it. Opus has dedicated coverage in media_codecs_opus_test.go.
 				t.SkipNow()
 			case "G722":
 				nativeRate *= 2 // error in RFC
@@ -506,7 +513,10 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 	}
 	c1, c2 := newUDPPipe()
 
-	codecs := defaultCodecs
+	// Pin G722 so this RTP symmetry/timeout helper stays deterministic and
+	// independent of the default codec preference (Opus is preferred by default).
+	codecs := msdk.NewCodecSet()
+	codecs.SetEnabled(g722.SDPNameAndRate, true)
 
 	opt1.IP = ip1
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}
@@ -801,4 +811,122 @@ func TestSymmetricRTP(t *testing.T) {
 		require.NotNil(t, curDstPtr)
 		require.Equal(t, newAddr.String(), curDstPtr.String())
 	})
+}
+
+// countingPCMSink is a thread-safe PCM16Writer that tracks received sample
+// count and signal energy, so a test goroutine can poll receive progress
+// without racing the media read loop.
+type countingPCMSink struct {
+	rate int
+	mu   sync.Mutex
+	n    int
+	e    int64
+}
+
+func (s *countingPCMSink) String() string  { return "counting" }
+func (s *countingPCMSink) SampleRate() int { return s.rate }
+func (s *countingPCMSink) Close() error    { return nil }
+func (s *countingPCMSink) WriteSample(d msdk.PCM16Sample) error {
+	s.mu.Lock()
+	s.n += len(d)
+	for _, v := range d {
+		s.e += int64(v) * int64(v)
+	}
+	s.mu.Unlock()
+	return nil
+}
+func (s *countingPCMSink) stats() (samples int, energy int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n, s.e
+}
+
+// TestMediaPortOpusRoundTrip drives Opus through the full MediaPort RTP path
+// (PCM -> encode -> SeqWriter/RTP -> UDP pipe -> depacketize -> decode -> PCM).
+// Opus is lossy, so we validate timestamp cadence, sample count, non-silence,
+// and absence of errors rather than exact waveforms. Writes are paced by
+// polling received progress (no fixed sleeps) so the bounded UDP pipe never
+// overflows and the test is deterministic on CI.
+func TestMediaPortOpusRoundTrip(t *testing.T) {
+	enableOpusForTest(t)
+
+	codecs := msdk.NewCodecSet()
+	codecs.SetEnabled(OpusSDPName, true)
+
+	c1, c2 := newUDPPipe()
+	log := logger.GetLogger()
+	const (
+		ip1   = "1.1.1.1"
+		ip2   = "2.2.2.2"
+		port1 = 10000
+		port2 = 20000
+		rate  = RoomSampleRate // 48000, Opus's native rate
+	)
+
+	alice, err := NewMediaPortWith(1, log.WithName("Alice"), newTestCallMonitor(t), c1, &MediaOptions{
+		IP:    newIP(ip1),
+		Ports: rtcconfig.PortRange{Start: port1},
+	}, rate)
+	require.NoError(t, err)
+	defer alice.Close()
+
+	bob, err := NewMediaPortWith(2, log.WithName("Bob"), newTestCallMonitor(t), c2, &MediaOptions{
+		IP:    newIP(ip2),
+		Ports: rtcconfig.PortRange{Start: port2},
+	}, rate)
+	require.NoError(t, err)
+	defer bob.Close()
+
+	// Negotiate.
+	offer, err := alice.NewOffer(codecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerData, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+	answer, bobConf, err := bob.SetOffer(offerData, codecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+	answerData, err := answer.SDP.Marshal()
+	require.NoError(t, err)
+	aliceConf, _, err := alice.SetAnswer(offer, answerData, codecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+	require.NoError(t, alice.SetConfig(aliceConf))
+	require.NoError(t, bob.SetConfig(bobConf))
+
+	require.Equal(t, OpusSDPName, alice.Config().Audio.Codec.Info().SDPName, "Opus must be negotiated")
+	require.Equal(t, OpusSDPName, bob.Config().Audio.Codec.Info().SDPName)
+
+	sink := &countingPCMSink{rate: rate}
+	bob.WriteAudioTo(sink)
+
+	w := alice.GetAudioWriter()
+	const (
+		frames   = 20
+		frameLen = rate / 50 // 960 samples = 20ms @ 48kHz
+	)
+	frame := make(msdk.PCM16Sample, frameLen)
+	for i := range frame {
+		frame[i] = int16(8000 * math.Sin(2*math.Pi*10*float64(i)/float64(frameLen)))
+	}
+
+	tsBefore := alice.audioOutRTP.GetCurrentTimestamp()
+	for i := 0; i < frames; i++ {
+		require.NoError(t, w.WriteSample(frame))
+		// Pace writes by waiting for this frame to be received/decoded before
+		// sending the next. This keeps the bounded (10-slot) UDP pipe from
+		// overflowing without any fixed sleep, and makes the test deterministic.
+		want := (i + 1) * frameLen
+		require.Eventually(t, func() bool {
+			got, _ := sink.stats()
+			return got >= want
+		}, 5*time.Second, time.Millisecond, "timed out waiting for frame %d to be decoded", i+1)
+	}
+	tsAfter := alice.audioOutRTP.GetCurrentTimestamp()
+
+	// Timestamp cadence: 48kHz clock advances exactly 960 ticks per 20ms packet.
+	// This is synchronous on the send side and independent of receive timing.
+	require.Equal(t, uint32(frames*frameLen), tsAfter-tsBefore, "RTP timestamp cadence must be 960/frame")
+
+	// All frames decoded (contiguous stream, no loss), and the audio is non-silent.
+	gotSamples, energy := sink.stats()
+	require.GreaterOrEqual(t, gotSamples, frames*frameLen, "all sent frames should decode to PCM")
+	require.Positive(t, energy, "decoded Opus audio must be non-silent")
 }
