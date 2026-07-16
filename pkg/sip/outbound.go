@@ -1173,7 +1173,7 @@ func (c *sipOutbound) sendBye(ctx context.Context, headers map[string]string) {
 	}
 	c.setCSeq(r)
 	c.drop()
-	sendAndACK(ctx, c, r)
+	sendBye(ctx, c.log, c, r)
 }
 
 func (c *sipOutbound) sendCancel(ctx context.Context, headers map[string]string) {

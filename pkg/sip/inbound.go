@@ -2141,7 +2141,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	c.setCSeq(r)
 	c.swapSrcDst(r)
 	c.drop()
-	sendAndACK(ctx, c, r)
+	sendBye(ctx, c.log, c, r)
 }
 
 func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[string]string) {
