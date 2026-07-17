@@ -12,8 +12,6 @@ import (
 	"github.com/ory/dockertest/v3"
 )
 
-const dockerBridgeIP = "172.17.0.1"
-
 var Docker *dockertest.Pool
 
 func TestMain(m *testing.M) {
