@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sipgo/sip"
@@ -225,18 +226,17 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 	}
 }
 
-func sendAndACK(ctx context.Context, c Signaling, req *sip.Request) {
+// sendBye sends a BYE and waits for its final response. BYE is a non-INVITE
+// transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.
+func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) {
 	tx, err := c.Transaction(req)
 	if err != nil {
+		log.Infow("cannot send BYE", "error", err)
 		return
 	}
 	defer tx.Terminate()
-	r, err := sipResponse(ctx, tx, nil, nil)
-	if err != nil {
-		return
-	}
-	if r.StatusCode == 200 {
-		_ = c.WriteRequest(sip.NewAckRequest(req, r, nil))
+	if _, err := sipResponse(ctx, tx, nil, nil); err != nil {
+		log.Infow("no response to BYE", "error", err)
 	}
 }
 
