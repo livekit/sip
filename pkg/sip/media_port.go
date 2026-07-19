@@ -241,7 +241,7 @@ func (c *udpConn) SetDst(addr netip.AddrPort) {
 	if addr.IsValid() {
 		prev := c.dst.Swap(&addr)
 		if prev == nil || !prev.IsValid() {
-			c.log.Infow("setting media destination", "addr", addr.String())
+			c.log.Debugw("setting media destination", "addr", addr.String())
 		} else if *prev != addr {
 			changeCount := c.dstChangeCount.Add(1)
 			now := time.Now().UnixNano()
@@ -263,7 +263,7 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 	}
 	prev := c.src.Swap(&addr)
 	if prev == nil || !prev.IsValid() {
-		c.log.Infow("setting media source", "addr", addr.String())
+		c.log.Debugw("setting media source", "addr", addr.String())
 	} else if *prev != addr {
 		changeCount := c.srcChangeCount.Add(1)
 		now := time.Now().UnixNano()
@@ -318,7 +318,7 @@ func (c *udpConn) discardLoop() error {
 		packetsDiscarded++
 	}
 	if err != nil || packetsDiscarded > 0 {
-		c.log.Infow("Stopped discarding packets", "packetsDiscarded", packetsDiscarded, "error", err)
+		c.log.Debugw("Stopped discarding packets", "packetsDiscarded", packetsDiscarded, "error", err)
 	}
 	err = c.UDPConn.SetReadDeadline(time.Time{}) // clear deadline
 	if err != nil && !errors.Is(err, net.ErrClosed) {
@@ -758,7 +758,7 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 	if c.Crypto != nil {
 		crypto = c.Crypto.Profile.String()
 	}
-	p.log.Infow("using codecs",
+	p.log.Debugw("using codecs",
 		"audio-codec", c.Audio.Codec.Info().SDPName, "audio-rtp", c.Audio.Type,
 		"dtmf-rtp", c.Audio.DTMFType,
 		"srtp", crypto,
@@ -813,7 +813,7 @@ func (p *MediaPort) rtpLoop(tid traceid.ID, sess rtp.Session) {
 		p.stats.Streams.Add(1)
 		p.mediaReceived.Break()
 		log := p.log.WithValues("ssrc", ssrc)
-		log.Infow("accepting RTP stream")
+		log.Debugw("accepting RTP stream")
 		go p.rtpReadLoop(tid, log, r)
 	}
 }
