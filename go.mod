@@ -11,10 +11,10 @@ require (
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
 	github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9
 	github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0
-	github.com/livekit/protocol v1.48.1-0.20260624204523-bd5703442db6
+	github.com/livekit/protocol v1.49.0
 	github.com/livekit/psrpc v0.7.2
-	github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260625120102-b6d1838861e7
-	github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb
+	github.com/livekit/server-sdk-go/v2 v2.17.0
+	github.com/livekit/sipgo v0.13.2-0.20250410120437-ca5b8ca7b53d
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/rtp v1.10.2
