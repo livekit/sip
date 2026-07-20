@@ -537,7 +537,7 @@ func (r *Room) sendDTMF(ctx context.Context, msg *livekit.SipDTMF) {
 	// TODO: Separate goroutine?
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	r.log.Infow("forwarding dtmf to sip", "digit", msg.Digit)
+	r.log.Debugw("forwarding dtmf to sip", "digit", msg.Digit)
 	_ = (*outDTMF).WriteDTMF(ctx, msg.Digit)
 }
 
