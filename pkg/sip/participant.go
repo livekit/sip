@@ -69,6 +69,9 @@ const (
 	//
 	// For outbound, this sets a timeout for the other end to pick up the call.
 	defaultRingingTimeout = 3 * time.Minute
+	// defaultTransferTimeout bounds how long a REFER-based transfer is allowed to
+	// take. It is independent of the call's ringing timeout.
+	defaultTransferTimeout = 120 * time.Second
 )
 
 const (

@@ -357,13 +357,10 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 		s.log.Debugw("repeated request for call transfer", "callID", req.SipCallId, "transferTo", req.TransferTo)
 		// TODO: Maybe just bump the psrpc timeout? It gets auto retried anyway internally.
 	} else {
-		// Initial transfer request for this call
-		timeout := req.RingingTimeout.AsDuration()
-		if timeout <= 0 {
-			// RingingTimeout is either specified by caller, or defaults to 30 seconds.
-			// This code should be pretty much unreachable.
-			timeout = 120 * time.Second
-		}
+		// Initial transfer request for this call.
+		// RingingTimeout on the request is intentionally ignored: it governs how long
+		// a call waits to connect/ring, which is unrelated to bounding a REFER transfer.
+		timeout := defaultTransferTimeout
 
 		go func() {
 			ctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), timeout)

@@ -16,7 +16,6 @@ import (
 	"errors"
 
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -861,9 +860,6 @@ func TestTransfer(t *testing.T) {
 				TransferTo:   to,
 				Headers:      headers,
 				PlayDialtone: dialtone,
-			}
-			if deadline, ok := ctx.Deadline(); ok {
-				transferReq.RingingTimeout = durationpb.New(time.Until(deadline) + (5 * time.Millisecond))
 			}
 			_, err := st.Service.TransferSIPParticipant(ctx, transferReq)
 			if err != nil {
