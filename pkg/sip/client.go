@@ -36,6 +36,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
+	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -432,6 +433,18 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		featureFlags:    req.FeatureFlags,
 		mediaConfig:     mconf,
 	}
+	// Dedup a retried CreateSIPParticipant before dialing. The controller stamps
+	// the client request id into the participant attributes (lk.request_id). If a
+	// participant with this identity already exists in the room carrying the same
+	// request id, the first attempt already joined and dialed — return it instead
+	// of placing a second call.
+	if reqID := req.ParticipantAttributes[sipRequestIDAttribute]; reqID != "" {
+		if existing := c.findParticipantForRequest(ctx, req, reqID, log); existing != nil {
+			log.Infow("SIP participant already exists for request id, skipping dial")
+			return existing, nil
+		}
+	}
+
 	log.Infow("Creating SIP participant")
 	call, err := c.newCall(ctx, tid, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
 	if err != nil {
@@ -454,6 +467,36 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	}
 	go call.WaitClose(context.WithoutCancel(ctx))
 	return info, nil
+}
+
+// sipRequestIDAttribute must match the participant attribute the cloud controller
+// stamps with the client request id (service.RequestIDAttribute).
+const sipRequestIDAttribute = "lk.request_id"
+
+// findParticipantForRequest returns the SIP participant a prior attempt of this
+// request already created (same identity carrying the same request id), or nil.
+// Used to dedup a retried CreateSIPParticipant before placing a second call. Any
+// lookup error is treated as "not found" so the call proceeds normally.
+func (c *Client) findParticipantForRequest(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest, reqID string, log logger.Logger) *rpc.InternalCreateSIPParticipantResponse {
+	apiURL := strings.Replace(req.WsUrl, "wss://", "https://", 1)
+	apiURL = strings.Replace(apiURL, "ws://", "http://", 1)
+	api, err := lksdk.NewLiveKitAPI(lksdk.WithURL(apiURL), lksdk.WithToken(req.Token))
+	if err != nil {
+		log.Warnw("could not build room client for retry dedup", err)
+		return nil
+	}
+	p, err := api.Room().GetParticipant(ctx, &livekit.RoomParticipantIdentity{
+		Room:     req.RoomName,
+		Identity: req.ParticipantIdentity,
+	})
+	if err != nil || p == nil || p.Attributes[sipRequestIDAttribute] != reqID {
+		return nil
+	}
+	return &rpc.InternalCreateSIPParticipantResponse{
+		ParticipantId:       p.Sid,
+		ParticipantIdentity: p.Identity,
+		SipCallId:           p.Attributes[livekit.AttrSIPCallID],
+	}
 }
 
 func (c *Client) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
