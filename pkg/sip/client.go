@@ -157,7 +157,6 @@ func (c *Client) Stop() {
 	}
 	if c.sipCli != nil {
 		c.sipCli.Close()
-		c.sipCli = nil
 	}
 }
 
