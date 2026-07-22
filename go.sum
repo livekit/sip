@@ -130,8 +130,8 @@ github.com/livekit/amrwb-cgo v0.0.0-20260612153743-6d4b69dc1470 h1:pYml12Ue55jDh
 github.com/livekit/amrwb-cgo v0.0.0-20260612153743-6d4b69dc1470/go.mod h1:nGBFrVVLyO0RlyM2pWnP/VKaZO6W3rzecL/YlkTPkW8=
 github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 h1:9x+U2HGLrSw5ATTo469PQPkqzdoU7be46ryiCDO3boc=
 github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
-github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9 h1:GVMkuNwXQ74kVPwaXPWfUZR5c9tslhCcgatuHtVUcqY=
-github.com/livekit/media-sdk v0.0.0-20260612175532-3d4d26d136c9/go.mod h1:TuYRjSepaakL6ATsM9V2VMuksewW1PlhA32BG7Pxty0=
+github.com/livekit/media-sdk v0.0.0-20260716231240-b9ae943039a0 h1:oGWytrzbFVdLpJc9TcanXg1SkI/vf7NYn+y9gJXtm0c=
+github.com/livekit/media-sdk v0.0.0-20260716231240-b9ae943039a0/go.mod h1:TuYRjSepaakL6ATsM9V2VMuksewW1PlhA32BG7Pxty0=
 github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0 h1:XHNNzebIKZRkLimla/hFGrAIX5EMWHctrgt3hLw7s+I=
 github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0/go.mod h1:o8CFmAdrVwzJNOCsQCLUzXRjokkufNshnQHOe4fRaqU=
 github.com/livekit/protocol v1.48.1-0.20260624204523-bd5703442db6 h1:Z23fxGEJJS3akyX2Q6LGo5xfL+B+NcEBhOp5o0Cz5IE=
