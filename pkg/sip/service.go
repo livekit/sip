@@ -360,9 +360,8 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 		// Initial transfer request for this call
 		timeout := req.RingingTimeout.AsDuration()
 		if timeout <= 0 {
-			// RingingTimeout is either specified by caller, or defaults to 30 seconds.
-			// This code should be pretty much unreachable.
-			timeout = 120 * time.Second
+			// Match the caller's 30s API default; the node must not outlive the caller.
+			timeout = 30 * time.Second
 		}
 
 		go func() {
