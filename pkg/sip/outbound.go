@@ -241,8 +241,10 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	return c.waitClose(ctx, c.tid)
 }
 func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
-	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
+
+	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
+	defer cancel()
 
 	ticker := time.NewTicker(stateUpdateTick)
 	defer ticker.Stop()
@@ -270,6 +272,13 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
 			c.setErrStatus(ctx, err)
 			return err
+		case <-ctx.Done():
+			c.CloseWith(ctx, EndCall{
+				Status: CallHangup,
+				Term:   stats.Success("max-call-duration"),
+				Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+			})
+			return nil
 		case <-c.Closed():
 			return nil
 		}
