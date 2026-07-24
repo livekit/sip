@@ -478,9 +478,11 @@ type TestClientConfig struct {
 	GetIOClient  GetStateHandler  // MockIOInfoClient if nil
 	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
 	GetRoom      GetRoomFunc      // newTestRoom if nil
+	Handler      Handler          // empty TestHandler if nil
 }
 
 func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
+	t.Helper()
 	if cfg.Region == "" {
 		cfg.Region = "test"
 	}
@@ -537,8 +539,12 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	if cfg.GetRoom == nil {
 		cfg.GetRoom = newTestRoomConfig(nil)
 	}
+	if cfg.Handler == nil {
+		cfg.Handler = &TestHandler{}
+	}
+
 	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
-	client.SetHandler(&TestHandler{})
+	client.SetHandler(cfg.Handler)
 
 	// Set up service config with minimal values
 	localIP, err := config.GetLocalIP()
