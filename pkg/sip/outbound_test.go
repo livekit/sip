@@ -23,9 +23,35 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 )
+
+// recordingSIPClient is a SIPClient that records the requests written to it.
+type recordingSIPClient struct {
+	reqs []*sip.Request
+}
+
+func (c *recordingSIPClient) TransactionRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
+	return nil, nil
+}
+
+func (c *recordingSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) error {
+	c.reqs = append(c.reqs, req)
+	return nil
+}
+
+func (c *recordingSIPClient) Close() error { return nil }
+
+func (c *recordingSIPClient) methods() []sip.RequestMethod {
+	var m []sip.RequestMethod
+	for _, r := range c.reqs {
+		m = append(m, r.Method)
+	}
+	return m
+}
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	// Make sure the ACK doesn't carry over initial Route header.
@@ -245,6 +271,74 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 		require.Equal(t, testInviteTargetHost, ackReq.req.Recipient.Host)
 		require.Equal(t, "proxy.example.com:5060", ackReq.req.Destination())
 		require.NotEqual(t, testInviteCachedDestination, ackReq.req.Destination())
+	})
+}
+
+// sipResponse returns immediately on a cancelled context, sending a CANCEL.
+func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
+	tx := &testSIPClientTransaction{
+		log:       logger.GetLogger(),
+		responses: make(chan *sip.Response),
+		cancels:   make(chan struct{}, 1),
+		done:      make(chan struct{}),
+		err:       make(chan error, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := sipResponse(ctx, tx, nil, nil)
+	require.Error(t, err)
+	require.Nil(t, res)
+	require.Len(t, tx.cancels, 1, "CANCEL should be sent")
+}
+
+// watchCancelledInvite ACKs and BYEs a 2xx that races in after a CANCEL, and
+// stays quiet otherwise.
+func TestWatchCancelledInvite(t *testing.T) {
+	newInvite := func() *sip.Request {
+		req := sip.NewRequest(sip.INVITE, sip.Uri{User: "callee", Host: "sip.example.com"})
+		from := &sip.FromHeader{Address: sip.Uri{User: "caller", Host: "lk"}, Params: sip.NewParams()}
+		from.Params.Add("tag", "caller-tag")
+		req.AppendHeader(from)
+		req.AppendHeader(&sip.ToHeader{Address: sip.Uri{User: "callee", Host: "sip.example.com"}, Params: sip.NewParams()})
+		cid := sip.CallIDHeader("call-123")
+		req.AppendHeader(&cid)
+		req.AppendHeader(&sip.CSeqHeader{MethodName: sip.INVITE, SeqNo: 1})
+		via := &sip.ViaHeader{ProtocolName: "SIP", ProtocolVersion: "2.0", Transport: "UDP", Host: "lk", Port: 5060, Params: sip.NewParams()}
+		via.Params.Add("branch", "z9hG4bK.test")
+		req.AppendHeader(via)
+		return req
+	}
+	ok := sip.NewSDPResponseFromRequest(newInvite(), []byte(testMinimalSDP))
+	ackBye := []sip.RequestMethod{sip.ACK, sip.BYE}
+
+	for _, tt := range []struct {
+		name  string
+		resps []*sip.Response
+		want  []sip.RequestMethod
+	}{
+		{"2xx answered", []*sip.Response{ok}, ackBye},
+		{"provisional then 2xx", []*sip.Response{sip.NewResponse(sip.StatusRinging, "Ringing"), ok}, ackBye},
+		{"non-2xx final", []*sip.Response{sip.NewResponse(sip.StatusRequestTerminated, "Terminated")}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tx := &testSIPClientTransaction{log: logger.GetLogger(), responses: make(chan *sip.Response, len(tt.resps)), done: make(chan struct{})}
+			for _, r := range tt.resps {
+				tx.responses <- r
+			}
+			cli := &recordingSIPClient{}
+			watchCancelledInvite(logger.GetLogger(), cli, nil, newInvite(), tx)
+			require.Equal(t, tt.want, cli.methods())
+		})
+	}
+
+	t.Run("no answer within grace", func(t *testing.T) {
+		defer func(d time.Duration) { cancelResponseGrace = d }(cancelResponseGrace)
+		cancelResponseGrace = 10 * time.Millisecond
+		tx := &testSIPClientTransaction{log: logger.GetLogger(), responses: make(chan *sip.Response), done: make(chan struct{})}
+		cli := &recordingSIPClient{}
+		watchCancelledInvite(logger.GetLogger(), cli, nil, newInvite(), tx)
+		require.Empty(t, cli.methods())
 	})
 }
 
