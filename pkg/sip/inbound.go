@@ -1349,7 +1349,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			Status: "Request Terminated",
 		}
 	}
-	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Reason)
+	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Term.Reason)
 	defer func() {
 		c.stats.Update()
 		c.printStats(log)
