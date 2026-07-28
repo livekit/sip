@@ -498,7 +498,10 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
 				t.Logf("+%.3fs: Outbound participant disconnected: %s", secSince(start), rp.Identity())
 				if rp.Identity() != identityTest {
-					close(outClosed)
+					select {
+					case outClosed <- struct{}{}:
+					default:
+					}
 				}
 			},
 		},
@@ -608,7 +611,10 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
 				t.Logf("+%.3fs: Inbound participant disconnected: %s", secSince(start), rp.Identity())
 				if rp.Identity() != identityTest {
-					close(inClosed)
+					select {
+					case inClosed <- struct{}{}:
+					default:
+					}
 				}
 			},
 		},
