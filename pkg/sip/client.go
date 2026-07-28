@@ -459,9 +459,11 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 
 	// Detach this context from the context of the RPC so that the RPC returning
 	// doesn't cause the call to end prematurely.
-	detachedCtx, detatchedCancel := context.WithDeadline(ctx, deadline)
-	defer detatchedCancel()
-	go call.WaitClose(detachedCtx)
+	go func() {
+		detachedCtx, detatchedCancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		defer detatchedCancel()
+		call.WaitClose(detachedCtx)
+	}()
 	return info, nil
 }
 
