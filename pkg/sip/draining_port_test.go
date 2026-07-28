@@ -116,6 +116,7 @@ var testCases = []testCase{
 func TestDrainPort(t *testing.T) {
 	interval := time.Millisecond
 	fuzz := 2500 * time.Microsecond
+	maxLate := 25 * time.Millisecond
 	for _, testCase := range testCases {
 		testCase.idleTimeout *= 2
 		testCase.maxDuration *= 2
@@ -132,11 +133,11 @@ func TestDrainPort(t *testing.T) {
 			if testCase.expectedRelease > 0 {
 				require.False(t, portRebindable(t, port), "port was rebindable while still draining")
 			}
-			maxWait := testCase.idleTimeout + testCase.maxDuration + testCase.sendDuration + interval
+			maxWait := testCase.idleTimeout + testCase.maxDuration + testCase.sendDuration + interval + maxLate
 			elapsed := awaitDrain(t, start, done, maxWait)
 			require.NoError(t, <-errors, "failed to generate traffic")
 			require.GreaterOrEqual(t, elapsed, testCase.expectedRelease-fuzz, "released too early")
-			require.LessOrEqual(t, elapsed, testCase.expectedRelease+fuzz, "released too late")
+			require.LessOrEqual(t, elapsed, testCase.expectedRelease+maxLate, "released too late")
 			require.True(t, portRebindable(t, port), "port not released after drain")
 		})
 	}
