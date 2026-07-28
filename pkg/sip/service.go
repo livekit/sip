@@ -35,7 +35,6 @@ import (
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -215,7 +214,7 @@ func (s *Service) Start() error {
 			s.log.Warnw("codec disabled", nil, "name", name)
 		}
 	}
-	msdk.CodecsSetEnabled(s.conf.Codecs)
+	DefaultCodecs().SetEnabledMap(s.conf.Codecs)
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err

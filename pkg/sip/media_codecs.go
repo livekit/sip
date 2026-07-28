@@ -43,6 +43,10 @@ func init() {
 	})
 }
 
+func DefaultCodecs() *msdk.CodecSet {
+	return defaultCodecs
+}
+
 func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*sipMediaConfig, error) {
 	enc, err := sdpEncryption(m.Encryption)
 	if err != nil {
