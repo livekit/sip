@@ -241,9 +241,9 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	return c.waitClose(ctx, c.tid)
 }
 func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
+	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
 
-	ctx = context.WithoutCancel(ctx)
 	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
 	defer cancel()
 
