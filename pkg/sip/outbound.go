@@ -558,6 +558,46 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 	}
 }
 
+// cancelResponseGrace bounds how long a cancelled INVITE is watched for a 2xx.
+var cancelResponseGrace = 5 * time.Second
+
+// watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
+// the answered call is not orphaned. It owns tx and terminates it when done.
+func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction) {
+	defer tx.Terminate()
+	timer := time.NewTimer(cancelResponseGrace)
+	defer timer.Stop()
+	for {
+		select {
+		case res := <-tx.Responses():
+			if res == nil {
+				return
+			}
+			switch res.StatusCode / 100 {
+			case 1:
+				continue // provisional; keep waiting
+			case 2:
+				log.Infow("cancelled INVITE answered; sending ACK and BYE")
+				applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
+				_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
+				bye := sip.NewByeRequest(req, res, nil)
+				bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+				if getHeaders != nil {
+					for k, v := range getHeaders(nil) {
+						bye.AppendHeader(sip.NewHeader(k, v))
+					}
+				}
+				_ = cli.WriteRequest(bye)
+			}
+			return
+		case <-tx.Done():
+			return
+		case <-timer.C:
+			return
+		}
+	}
+}
+
 func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination, headers map[string]string) {
 	termCtx, cancel := context.WithCancel(context.Background()) // Do not use ctx
 	defer cancel()
@@ -710,6 +750,13 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 	c.sigTs.AckTime = time.Now()
 	joinDur()
+
+	if err := ctx.Err(); err != nil {
+		// Aborted while the callee answered: the 200 is ACKed, so error out to
+		// tear the dialog down with a BYE instead of leaking a zombie call.
+		c.log.Infow("outbound call answered after abort; hanging up", "error", err)
+		return err
+	}
 
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
@@ -1032,6 +1079,15 @@ authLoop:
 		return nil, psrpc.NewErrorf(psrpc.Internal, "no tag in To header in INVITE response")
 	}
 
+	applyInviteResponse(req, resp)
+	return c.inviteOk.Body(), nil
+}
+
+// applyInviteResponse rewrites the INVITE request in place so ACK/BYE built from
+// it reach the answering party: recipient from Contact, route set from
+// Record-Route, and the cached destination flushed when either changed. We don't
+// plumb the request back to the caller, so we mutate it to update the route set.
+func applyInviteResponse(req *sip.Request, resp *sip.Response) {
 	flushDestinationCache := false
 	if cont := resp.Contact(); cont != nil {
 		newContact := cont.Address
@@ -1059,7 +1115,6 @@ authLoop:
 	if flushDestinationCache {
 		req.MessageData.SetDestination("") // Undo destination fixing
 	}
-	return c.inviteOk.Body(), nil
 }
 
 func (c *sipOutbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
@@ -1111,7 +1166,12 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	if err != nil {
 		return nil, nil, err
 	}
-	defer tx.Terminate()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			tx.Terminate()
+		}
+	}()
 
 	// Log the actual local port used for TCP connections from the DialPort range
 	if req.Transport() == "TCP" {
@@ -1132,6 +1192,11 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 
 	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
+	if err != nil && resp == nil && (ctx.Err() != nil || c.c.closing.IsBroken()) {
+		// Cancelled: return now, but watch for a racing 2xx in the background.
+		handedOff = true
+		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
+	}
 	return req, resp, err
 }
 
