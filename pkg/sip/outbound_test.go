@@ -289,7 +289,6 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 		func(tr *transactionRequest, resp *sip.Response) {})
 	require.NotNil(t, sipClient)
 
-	// The call is answered; maxCallDuration should now hang it up on its own.
 	answerBYE(t, sipClient, 2*time.Second)
 
 	select {
