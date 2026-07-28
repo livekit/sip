@@ -432,11 +432,12 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		mediaConfig:     mconf,
 	}
 	log.Infow("Creating SIP participant")
-	deadline := time.Now().Add(sipConf.maxCallDuration)
 	call, err := c.newCall(ctx, tid, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
 	if err != nil {
 		return nil, err
 	}
+	deadline := time.Now().Add(call.sipConf.maxCallDuration)
+
 	p := call.Participant()
 	// Start actual SIP call async.
 
