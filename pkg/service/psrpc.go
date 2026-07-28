@@ -10,7 +10,7 @@ import (
 	"github.com/livekit/sip/pkg/sip"
 )
 
-func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call *rpc.SIPCall) (sip.AuthInfo, error) {
+func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, call *rpc.SIPCall) (sip.AuthInfo, error) {
 	ctx, span := sip.Tracer.Start(ctx, "service.GetAuthCredentials")
 	defer span.End()
 	resp, err := psrpcClient.GetSIPTrunkAuthentication(ctx, &rpc.GetSIPTrunkAuthenticationRequest{
@@ -77,7 +77,7 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoClient, call 
 	}, nil
 }
 
-func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoClient, log logger.Logger, info *sip.CallInfo) sip.CallDispatch {
+func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, log logger.Logger, info *sip.CallInfo) sip.CallDispatch {
 	ctx, span := sip.Tracer.Start(ctx, "service.DispatchCall")
 	defer span.End()
 	resp, err := psrpcClient.EvaluateSIPDispatchRules(ctx, &rpc.EvaluateSIPDispatchRulesRequest{

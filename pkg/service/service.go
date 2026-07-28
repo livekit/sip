@@ -49,7 +49,7 @@ type Service struct {
 	log  logger.Logger
 
 	psrpcServer rpc.SIPInternalServerImpl
-	psrpcClient rpc.IOInfoClient
+	psrpcClient rpc.IOInfoSIPClient
 	bus         psrpc.MessageBus
 
 	promServer   *http.Server
@@ -67,7 +67,7 @@ type Service struct {
 
 func NewService(
 	conf *config.Config, log logger.Logger, srv rpc.SIPInternalServerImpl, sipServiceStop sipServiceStopFunc,
-	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoClient, bus psrpc.MessageBus, mon *stats.Monitor,
+	sipServiceActiveCalls sipServiceActiveCallsFunc, cli rpc.IOInfoSIPClient, bus psrpc.MessageBus, mon *stats.Monitor,
 ) *Service {
 	s := &Service{
 		conf: conf,
