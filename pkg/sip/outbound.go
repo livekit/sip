@@ -276,7 +276,7 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 		case <-ctx.Done():
 			c.CloseWith(ctx, EndCall{
 				Status: CallHangup,
-				Term:   stats.Success("max-call-duration"),
+				Term:   stats.Success("hangup"),
 				Reason: livekit.DisconnectReason_CLIENT_INITIATED,
 			})
 			return nil

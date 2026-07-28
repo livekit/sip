@@ -387,7 +387,7 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 
 	select {
 	case end := <-ended:
-		require.Equal(t, "max-call-duration", end.reason)
+		require.Equal(t, "hangup", end.reason)
 		require.Equal(t, livekit.DisconnectReason_CLIENT_INITIATED, end.info.DisconnectReason)
 	case <-time.After(2 * time.Second):
 		require.Fail(t, "expected call to have already ended")
