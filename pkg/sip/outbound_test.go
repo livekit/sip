@@ -365,33 +365,56 @@ func TestWatchCancelledInvite(t *testing.T) {
 }
 
 func TestOutboundMaxCallDuration(t *testing.T) {
+
+	type testCase struct {
+		name              string
+		waitUntilAnswered bool
+	}
 	type sessionEnd struct {
 		reason string
 		info   *livekit.SIPCallInfo
 	}
-	ended := make(chan sessionEnd, 1)
 
-	clientCfg := TestClientConfig{Handler: &TestHandler{
-		OnSessionEndFunc: func(_ context.Context, _ *CallIdentifier, state *CallState, reason string) {
-			ended <- sessionEnd{reason: reason, info: state.Info()}
+	testCases := []testCase{
+		{
+			name:              "dial_async",
+			waitUntilAnswered: false,
 		},
-	}}
-
-	req := MinimalCreateSIPParticipantRequest()
-	req.MaxCallDuration = durationpb.New(100 * time.Millisecond)
-	sipClient, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
-		func(tr *transactionRequest, resp *sip.Response) {})
-	require.NotNil(t, sipClient)
-
-	answerBYE(t, sipClient, 2*time.Second)
-
-	select {
-	case end := <-ended:
-		require.Equal(t, "hangup", end.reason)
-		require.Equal(t, livekit.DisconnectReason_CLIENT_INITIATED, end.info.DisconnectReason)
-	case <-time.After(2 * time.Second):
-		require.Fail(t, "expected call to have already ended")
+		{
+			name:              "dial_sync",
+			waitUntilAnswered: true,
+		},
 	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ended := make(chan sessionEnd, 1)
+
+			clientCfg := TestClientConfig{Handler: &TestHandler{
+				OnSessionEndFunc: func(_ context.Context, _ *CallIdentifier, state *CallState, reason string) {
+					ended <- sessionEnd{reason: reason, info: state.Info()}
+				},
+			}}
+
+			req := MinimalCreateSIPParticipantRequest()
+			req.WaitUntilAnswered = testCase.waitUntilAnswered
+			req.MaxCallDuration = durationpb.New(100 * time.Millisecond)
+			sipClient, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
+				func(tr *transactionRequest, resp *sip.Response) {})
+			require.NotNil(t, sipClient)
+
+			answerBYE(t, sipClient, 2*time.Second)
+
+			select {
+			case end := <-ended:
+				require.Equal(t, "hangup", end.reason)
+				require.Equal(t, livekit.DisconnectReason_CLIENT_INITIATED, end.info.DisconnectReason)
+			case <-time.After(2 * time.Second):
+				require.Fail(t, "expected call to have already ended")
+			}
+		})
+	}
+
 }
 
 func TestBuildOutboundHeaders(t *testing.T) {

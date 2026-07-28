@@ -211,8 +211,6 @@ func (c *outboundCall) setErrStatus(ctx context.Context, err error) {
 func (c *outboundCall) Dial(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Dial")
 	defer span.End()
-	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
-	defer cancel()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 
@@ -241,11 +239,7 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	return c.waitClose(ctx, c.tid)
 }
 func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
-	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
-
-	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
-	defer cancel()
 
 	ticker := time.NewTicker(stateUpdateTick)
 	defer ticker.Stop()
@@ -289,8 +283,10 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 func (c *outboundCall) DialAsync(ctx context.Context) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.DialAsync")
 	defer span.End()
-	ctx = context.WithoutCancel(ctx)
+
 	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.sipConf.maxCallDuration)
+		defer cancel()
 		if err := c.Dial(ctx); err != nil {
 			return
 		}
