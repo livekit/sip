@@ -320,9 +320,9 @@ func (s *Server) withRecovery(handler sipgo.RequestHandler) sipgo.RequestHandler
 					err = fmt.Errorf("%v", r)
 				}
 				method := req.Method.String()
-				fields := []any{"method", method}
+				fields := []any{"method", method, "stacktrace", string(stack)}
 				if h := req.CallID(); h != nil {
-					fields = append(fields, "sipCallID", h.Value(), "stacktrace", string(stack))
+					fields = append(fields, "sipCallID", h.Value())
 				}
 				s.log.Errorw("panic in SIP request handler", err, fields...)
 			}
