@@ -498,7 +498,7 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 			SIPPortListen:     5060,
 			ListenIP:          localIP.String(),
 			LocalNet:          localIP.String() + "/24",
-			RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
+			RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
 			MaxCpuUtilization: 0.99, // Higher threshold for tests to avoid false positives
 			WsUrl:             "ws://localhost:7880",
 			ApiKey:            "test-api-key",
@@ -542,7 +542,6 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	if cfg.Handler == nil {
 		cfg.Handler = &TestHandler{}
 	}
-
 	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
 	client.SetHandler(cfg.Handler)
 

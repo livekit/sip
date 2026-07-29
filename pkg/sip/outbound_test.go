@@ -365,6 +365,8 @@ func TestWatchCancelledInvite(t *testing.T) {
 }
 
 func TestOutboundMaxCallDuration(t *testing.T) {
+	const maxCallDuration = time.Second
+	const waitSlack = time.Second
 
 	type testCase struct {
 		name              string
@@ -398,18 +400,18 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 
 			req := MinimalCreateSIPParticipantRequest()
 			req.WaitUntilAnswered = testCase.waitUntilAnswered
-			req.MaxCallDuration = durationpb.New(100 * time.Millisecond)
+			req.MaxCallDuration = durationpb.New(maxCallDuration)
 			sipClient, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
 				func(tr *transactionRequest, resp *sip.Response) {})
 			require.NotNil(t, sipClient)
 
-			answerBYE(t, sipClient, 2*time.Second)
+			answerBYE(t, sipClient, maxCallDuration+waitSlack)
 
 			select {
 			case end := <-ended:
 				require.Equal(t, "hangup", end.reason)
 				require.Equal(t, livekit.DisconnectReason_CLIENT_INITIATED, end.info.DisconnectReason)
-			case <-time.After(2 * time.Second):
+			case <-time.After(maxCallDuration + waitSlack):
 				require.Fail(t, "expected call to have already ended")
 			}
 		})

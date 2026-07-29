@@ -380,7 +380,9 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		// attributes_to_headers mapping in the setHeaders callback.
 		// See: https://github.com/livekit/sip/issues/404
 		c.stopSIP(ctx, end.Term, end.Headers)
-		c.media.Close()
+		if c.media != nil {
+			c.media.Close()
+		}
 
 		if r := c.lkRoom; r != nil {
 			_ = r.CloseOutput()
@@ -551,6 +553,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		case <-tx.Done():
 			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 		case res := <-tx.Responses():
+			if res == nil {
+				return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+			}
 			status := res.StatusCode
 			if setState != nil {
 				setState(res.StatusCode, res.Headers())
