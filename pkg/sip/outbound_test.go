@@ -170,7 +170,6 @@ func waitOutboundINVITEAndACK(
 	participantReq *rpc.InternalCreateSIPParticipantRequest,
 	mutate func(tr *transactionRequest, resp *sip.Response),
 ) (*testSIPClient, *transactionRequest, *sipRequest) {
-	t.Helper()
 
 	client := NewOutboundTestClient(t, clientCfg)
 	ctx, cancel := context.WithCancel(context.Background())
