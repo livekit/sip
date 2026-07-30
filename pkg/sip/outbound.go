@@ -211,8 +211,6 @@ func (c *outboundCall) setErrStatus(ctx context.Context, err error) {
 func (c *outboundCall) Dial(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Dial")
 	defer span.End()
-	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
-	defer cancel()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 
@@ -241,7 +239,6 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	return c.waitClose(ctx, c.tid)
 }
 func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
-	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
 
 	ticker := time.NewTicker(stateUpdateTick)
@@ -270,6 +267,13 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
 			c.setErrStatus(ctx, err)
 			return err
+		case <-ctx.Done():
+			c.CloseWith(ctx, EndCall{
+				Status: CallHangup,
+				Term:   stats.Success("hangup"),
+				Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+			})
+			return nil
 		case <-c.Closed():
 			return nil
 		}
@@ -279,8 +283,10 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 func (c *outboundCall) DialAsync(ctx context.Context) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.DialAsync")
 	defer span.End()
-	ctx = context.WithoutCancel(ctx)
+
 	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.sipConf.maxCallDuration)
+		defer cancel()
 		if err := c.Dial(ctx); err != nil {
 			return
 		}
@@ -374,7 +380,9 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		// attributes_to_headers mapping in the setHeaders callback.
 		// See: https://github.com/livekit/sip/issues/404
 		c.stopSIP(ctx, end.Term, end.Headers)
-		c.media.Close()
+		if c.media != nil {
+			c.media.Close()
+		}
 
 		if r := c.lkRoom; r != nil {
 			_ = r.CloseOutput()
@@ -545,6 +553,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		case <-tx.Done():
 			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 		case res := <-tx.Responses():
+			if res == nil {
+				return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+			}
 			status := res.StatusCode
 			if setState != nil {
 				setState(res.StatusCode, res.Headers())
