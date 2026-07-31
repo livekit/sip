@@ -758,7 +758,7 @@ func (p *MediaPort) SetConfig(c *MediaConf) error {
 	if c.Crypto != nil {
 		crypto = c.Crypto.Profile.String()
 	}
-	p.log.Debugw("using codecs",
+	p.log.Infow("using codecs",
 		"audio-codec", c.Audio.Codec.Info().SDPName, "audio-rtp", c.Audio.Type,
 		"dtmf-rtp", c.Audio.DTMFType,
 		"srtp", crypto,
