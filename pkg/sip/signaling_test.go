@@ -18,6 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/g711"
+	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
@@ -700,6 +704,24 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
 			require.Equal(t, initialRemote, ic.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
 		})
+
+		t.Run("codec_mismatch", func(t *testing.T) {
+			st := NewServiceTest(t, nil)
+			call, ic := st.CreateInboundCall(t)
+			initialRemote := ic.media.RemoteAddr()
+			conf := ic.media.Config()
+			require.NotNil(t, conf)
+			require.NotNil(t, conf.Audio.Codec)
+
+			offerBytes := mustIncompatibleAudioOffer(t, conf.Audio.Codec.Info().SDPName, netip.MustParseAddr("9.8.7.6"), 12345)
+			req, _, err := call.Invite(offerBytes)
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusNotAcceptableHere, resp.StatusCode,
+				"re-INVITE that removes negotiated codec must be rejected with 488")
+			require.Equal(t, initialRemote, ic.media.RemoteAddr(),
+				"rejected codec-changing re-INVITE must not change RTP destination")
+		})
 	})
 	t.Run("outbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
@@ -744,6 +766,24 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, initialRemote, oc.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
 		})
 
+		t.Run("codec_mismatch", func(t *testing.T) {
+			st := NewServiceTest(t, nil)
+			call, oc, _ := st.CreateOutboundCall(t)
+			initialRemote := oc.media.RemoteAddr()
+			conf := oc.media.Config()
+			require.NotNil(t, conf)
+			require.NotNil(t, conf.Audio.Codec)
+
+			offerBytes := mustIncompatibleAudioOffer(t, conf.Audio.Codec.Info().SDPName, netip.MustParseAddr("9.8.7.6"), 12345)
+			req, _, err := call.Invite(offerBytes)
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, false)
+			require.Equal(t, sip.StatusNotAcceptableHere, resp.StatusCode,
+				"re-INVITE that removes negotiated codec must be rejected with 488")
+			require.Equal(t, initialRemote, oc.media.RemoteAddr(),
+				"rejected codec-changing re-INVITE must not change RTP destination")
+		})
+
 		t.Run("miss", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
@@ -765,6 +805,24 @@ func TestReinvite(t *testing.T) {
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
 		})
 	})
+}
+
+// mustIncompatibleAudioOffer builds an SDP offer that intentionally excludes
+// negotiatedCodec so a re-INVITE cannot keep the established media session.
+func mustIncompatibleAudioOffer(t *testing.T, negotiatedCodec string, addr netip.Addr, port int) []byte {
+	t.Helper()
+	incompatible := msdk.NewCodecSet()
+	for _, name := range []string{g711.ULawSDPNameAndRate, g711.ALawSDPNameAndRate, g722.SDPNameAndRate} {
+		if name != negotiatedCodec {
+			incompatible.SetEnabled(name, true)
+		}
+	}
+	incompatible.SetEnabled(dtmf.SDPNameAndRate, true)
+	offer, err := sdp.NewOfferWith(incompatible, addr, port, sdp.EncryptionNone)
+	require.NoError(t, err)
+	offerBytes, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+	return offerBytes
 }
 
 func TestTransfer(t *testing.T) {

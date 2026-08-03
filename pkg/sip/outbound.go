@@ -522,8 +522,8 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
-func (c *outboundCall) updateRemoteFromSDP(body []byte) {
-	updateRemoteFromSDP(c.media, c.log, c.sipConf.mediaConfig.Codecs, body)
+func (c *outboundCall) applyReinviteSDP(body []byte) bool {
+	return applyReinviteSDP(c.media, c.log, c.sipConf.mediaConfig.Codecs, body)
 }
 
 func (c *outboundCall) connectMedia() {

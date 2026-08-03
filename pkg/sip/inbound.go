@@ -320,16 +320,61 @@ func sdpBodyFromRequest(req *sip.Request) []byte {
 	return req.Body()
 }
 
-func updateRemoteFromSDP(media *MediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
+// applyReinviteSDP updates the RTP destination from a re-INVITE SDP body when
+// the currently negotiated audio codec and payload type remain offered.
+//
+// An empty body is treated as a session refresh (ok=true, no media change).
+// Parse failures leave the destination unchanged and still return ok=true so
+// the dialog can be refreshed with the existing local SDP (historical behavior).
+//
+// When the offer removes the negotiated audio codec/payload, ok=false and the
+// caller must reject with 488 without changing the media path. Answering 200
+// with the cached local SDP would advertise a codec that was not in the offer
+// (see livekit/sip#766 / RFC 3264 §6.1).
+func applyReinviteSDP(media *MediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) (ok bool) {
 	if len(body) == 0 || media == nil {
-		return
+		return true
 	}
 	desc, err := sdp.ParseWith(codecs, body)
 	if err != nil {
 		log.Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
-		return
+		return true
+	}
+	if !reinviteOffersCurrentAudio(media, desc) {
+		cur := media.Config()
+		var curType byte
+		var curName string
+		if cur != nil && cur.Audio.Codec != nil {
+			curType = cur.Audio.Type
+			curName = cur.Audio.Codec.Info().SDPName
+		}
+		log.Infow("rejecting re-INVITE that removes negotiated audio codec",
+			"negotiatedType", curType,
+			"negotiatedCodec", curName,
+			"remote", desc.Addr,
+		)
+		return false
 	}
 	media.UpdateRemote(desc.Addr)
+	return true
+}
+
+func reinviteOffersCurrentAudio(media *MediaPort, desc *sdp.Description) bool {
+	conf := media.Config()
+	if conf == nil || conf.Audio.Codec == nil {
+		return true
+	}
+	curType := conf.Audio.Type
+	curName := conf.Audio.Codec.Info().SDPName
+	for _, c := range desc.MediaDesc.Codecs {
+		if c.Type != curType {
+			continue
+		}
+		if c.Codec == nil || c.Codec.Info().SDPName == curName {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
@@ -401,7 +446,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		existing.updateRemoteFromSDP(sdpBodyFromRequest(req))
+		body := sdpBodyFromRequest(req)
+		if !existing.applyReinviteSDP(body) {
+			cc.RejectAsKeepAlive(sip.StatusNotAcceptableHere, "Not Acceptable Here")
+			return nil
+		}
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
@@ -411,8 +460,13 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			localSDP := oc.cc.LocalSDP()
 			if len(localSDP) != 0 {
+				body := sdpBodyFromRequest(req)
+				if !oc.applyReinviteSDP(body) {
+					oc.log.Infow("rejecting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+					cc.RejectAsKeepAlive(sip.StatusNotAcceptableHere, "Not Acceptable Here")
+					return nil
+				}
 				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-				oc.updateRemoteFromSDP(sdpBodyFromRequest(req))
 				oc.cc.RecordInvite(newCSeq)
 				cc.AcceptAsKeepAlive(localSDP)
 				return nil
@@ -1483,10 +1537,10 @@ func (c *inboundCall) Shutdown(ctx context.Context) {
 	c.closeWithTerm(ctx, stats.ServerError("shutdown"))
 }
 
-func (c *inboundCall) updateRemoteFromSDP(body []byte) {
+func (c *inboundCall) applyReinviteSDP(body []byte) bool {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
-	updateRemoteFromSDP(c.media, c.log(), c.mediaCodecs, body)
+	return applyReinviteSDP(c.media, c.log(), c.mediaCodecs, body)
 }
 
 func (c *inboundCall) closeMedia() {
@@ -1981,6 +2035,14 @@ func (c *sipInbound) accepted(inviteOK *sip.Response) {
 
 func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
 	c.respondWithData(sip.StatusOK, "OK", "application/sdp", sdp)
+}
+
+// RejectAsKeepAlive rejects an in-dialog re-INVITE without tearing down the
+// established dialog. Unlike RespondAndDrop it does not cache the response in
+// rejectedInvites (which is keyed by Call-ID + From-tag and would poison later
+// in-dialog requests) and does not clear dialog state on the established call.
+func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
+	c.respond(status, reason)
 }
 
 func (c *sipInbound) OwnSDP() []byte {
