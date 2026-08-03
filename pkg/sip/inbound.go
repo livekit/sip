@@ -330,12 +330,8 @@ func providerLabel(p *livekit.ProviderInfo) string {
 
 		return internalPrefix + stats.ProviderUnknown
 	case livekit.ProviderType_PROVIDER_TYPE_EXTERNAL:
-		externalPrefix := "external/"
-		if name := p.GetName(); name != "" {
-			return externalPrefix + strings.ToLower(name)
-		}
-
-		return externalPrefix + stats.ProviderUnknown
+		// External names are customer-supplied trunk names, left out to keep the label bounded.
+		return "external"
 	default:
 		return stats.ProviderUnknown
 	}
