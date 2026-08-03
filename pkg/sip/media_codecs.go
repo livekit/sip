@@ -18,6 +18,7 @@ package sip
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
@@ -41,6 +42,33 @@ func init() {
 		amrwb.SDPNameAndRate:    false, // optional
 		dtmf.SDPNameAndRate:     true,
 	})
+}
+
+// Metric label used for advertised codecs that are not part of the internal
+// codec set, since their name is dropped during SDP parsing and to keep the
+// label bounded
+const codecOther = "other"
+
+func peerCodecNames(d sdp.MediaDesc) []string {
+	names := make([]string, 0, len(d.Codecs))
+	for _, c := range d.Codecs {
+		if d.DTMFType != 0 && c.Type == d.DTMFType {
+			// DTMF is parsed out of a=rtpmap into DTMFType, but its payload type is
+			// still listed in m=audio, where it resolves to no codec. Appended below.
+			continue
+		}
+		name := codecOther
+		if c.Codec != nil {
+			name = c.Codec.Info().SDPName
+		}
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	if d.DTMFType != 0 {
+		names = append(names, dtmf.SDPNameAndRate)
+	}
+	return names
 }
 
 func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*sipMediaConfig, error) {

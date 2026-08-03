@@ -75,6 +75,8 @@ type Monitor struct {
 	durStage                 *prometheus.HistogramVec
 	cpuLoad                  prometheus.Gauge
 	sdpSize                  *prometheus.HistogramVec
+	sdpParsed                *prometheus.CounterVec
+	codecOffered             *prometheus.CounterVec
 	nodeAvailable            prometheus.GaugeFunc
 	transfersTotal           *prometheus.CounterVec
 	transfersSucceeded       *prometheus.CounterVec
@@ -242,6 +244,22 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Buckets:     sizeBuckets,
 	}, []string{"type"}))
 
+	m.sdpParsed = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "sdp_parsed_total",
+		Help:        "Number of SDP bodies parsed successfully during SDP negotiation",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider"}))
+
+	m.codecOffered = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "codec_offered_total",
+		Help:        "Number of SDP bodies that advertised a given audio codec",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider", "codec"}))
+
 	m.nodeAvailable = mustRegister(m, prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   "livekit",
 		Subsystem:   "sip",
@@ -357,8 +375,26 @@ type CallMonitor struct {
 	dir        string
 	fromHost   string
 	toHost     string
+	provider   atomic.Pointer[string]
 	started    atomic.Bool
 	terminated atomic.Bool
+}
+
+// ProviderUnknown is used when there is no provider information
+const ProviderUnknown = "unknown"
+
+func (c *CallMonitor) SetProvider(provider string) {
+	if provider == "" {
+		return
+	}
+	c.provider.Store(&provider)
+}
+
+func (c *CallMonitor) providerLabel() string {
+	if p := c.provider.Load(); p != nil {
+		return *p
+	}
+	return ProviderUnknown
 }
 
 func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
@@ -486,6 +522,20 @@ func (c *CallMonitor) StageDur(stage string) prometheus.Observer {
 
 func (c *CallMonitor) StageDurTimer(stage string) func() time.Duration {
 	return prometheus.NewTimer(c.StageDur(stage)).ObserveDuration
+}
+
+// PeerSDP increments SDP count and each individual codec from the SDP body.
+// Should be called before codec selection such that failed negotiations are still counted
+func (c *CallMonitor) PeerSDP(names []string) {
+	provider := c.providerLabel()
+	c.m.sdpParsed.With(prometheus.Labels{"dir": c.dir, "provider": provider}).Inc()
+	for _, name := range names {
+		c.m.codecOffered.With(prometheus.Labels{
+			"dir":      c.dir,
+			"provider": provider,
+			"codec":    name,
+		}).Inc()
+	}
 }
 
 func (c *CallMonitor) SDPSize(sz int, isOffer bool) {

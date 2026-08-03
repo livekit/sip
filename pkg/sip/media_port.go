@@ -743,11 +743,21 @@ func (p *MediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.En
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
+	p.reportPeerCodecs(offer.MediaDesc)
 	answer, mc, err := offer.Answer(p.externalIP, p.Port(), enc)
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
 	return answer, &MediaConf{MediaConfig: *mc}, nil
+}
+
+// Reported for inbound (SetOffer) only since outbound (SetAnswer) only contains the
+// codec picked by the end user, and not what they actually support
+func (p *MediaPort) reportPeerCodecs(d sdp.MediaDesc) {
+	if p.mon == nil {
+		return
+	}
+	p.mon.PeerSDP(peerCodecNames(d))
 }
 
 func (p *MediaPort) SetConfig(c *MediaConf) error {
