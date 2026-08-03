@@ -739,7 +739,13 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, codecs *msdk.
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
 func (p *MediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
-	offer, err := sdp.ParseOfferWith(codecs, offerData)
+	// Strip AMR/AMR-WB formats we cannot answer per RFC 4867 (e.g. octet-align=1)
+	// before negotiation, then echo required fmtp on the answer (livekit/sip#747).
+	filteredOffer, err := filterAMROfferSDP(offerData)
+	if err != nil {
+		return nil, nil, SDPError{Err: err}
+	}
+	offer, err := sdp.ParseOfferWith(codecs, filteredOffer)
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
@@ -747,6 +753,7 @@ func (p *MediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.En
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
 	}
+	appendAMRFmtpToAnswer(&answer.SDP, filteredOffer)
 	return answer, &MediaConf{MediaConfig: *mc}, nil
 }
 
