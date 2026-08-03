@@ -422,11 +422,11 @@ func TestBuildOutboundHeaders(t *testing.T) {
 	newReq := func() *rpc.InternalCreateSIPParticipantRequest {
 		return &rpc.InternalCreateSIPParticipantRequest{}
 	}
-	check := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, defaultHost string, expURI, expFrom, expTo, expErr string) {
+	check := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, defaultHost string, uriUserPhone bool, expURI, expFrom, expTo, expErr string) {
 		if defaultHost == "" {
 			defaultHost = "sip.default.test"
 		}
-		uri, from, to, err := buildOutboundHeaders(req, defaultHost)
+		uri, from, to, err := buildOutboundHeaders(req, defaultHost, uriUserPhone)
 		if expErr != "" {
 			require.Error(t, err)
 			require.Equal(t, expErr, err.Error())
@@ -438,10 +438,13 @@ func TestBuildOutboundHeaders(t *testing.T) {
 		require.Equal(t, expTo, to.String())
 	}
 	expectErr := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, expErr string) {
-		check(t, req, "", "", "", "", expErr)
+		check(t, req, "", false, "", "", "", expErr)
 	}
 	expect := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, expURI, expFrom, expTo string) {
-		check(t, req, "", expURI, expFrom, expTo, "")
+		check(t, req, "", false, expURI, expFrom, expTo, "")
+	}
+	expectUserPhone := func(t testing.TB, req *rpc.InternalCreateSIPParticipantRequest, uriUserPhone bool, expURI, expFrom, expTo string) {
+		check(t, req, "", uriUserPhone, expURI, expFrom, expTo, "")
 	}
 	uriVals := func(u *livekit.SIPUri) *livekit.SIPRequestDest {
 		return &livekit.SIPRequestDest{
@@ -656,6 +659,53 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			`sip:222@sip.test.com;transport=tls`,
 			`From: "LK" <sip:111@example.com;transport=tls>`,
 			`To: "User" <sip:333@sip.another.com;transport=tls>`,
+		)
+	})
+	// livekit/sip#615 — Airtel and similar carriers require ;user=phone on telephone URIs.
+	t.Run("legacy user=phone via config", func(t *testing.T) {
+		req := newReq()
+		req.Address = "117.96.31.175:5076"
+		req.Number = "+911111111111"
+		req.CallTo = "+912222222222"
+		expectUserPhone(t, req, true,
+			`sip:+912222222222@117.96.31.175:5076;user=phone`,
+			`From: "+911111111111" <sip:+911111111111@sip.default.test;user=phone>`,
+			`To: <sip:+912222222222@117.96.31.175:5076;user=phone>`,
+		)
+	})
+	t.Run("legacy user=phone via feature flag", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.FeatureFlags = map[string]string{uriUserPhoneFeatureFlag: "true"}
+		expectUserPhone(t, req, false,
+			`sip:222@sip.test.com;user=phone`,
+			`From: "111" <sip:111@sip.default.test;user=phone>`,
+			`To: <sip:222@sip.test.com;user=phone>`,
+		)
+	})
+	t.Run("user=phone with transport", func(t *testing.T) {
+		req := newReq()
+		req.Transport = livekit.SIPTransport_SIP_TRANSPORT_UDP
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		expectUserPhone(t, req, true,
+			`sip:222@sip.test.com;transport=udp;user=phone`,
+			`From: "111" <sip:111@sip.default.test;transport=udp;user=phone>`,
+			`To: <sip:222@sip.test.com;transport=udp;user=phone>`,
+		)
+	})
+	t.Run("user=phone idempotent on raw", func(t *testing.T) {
+		req := newReq()
+		req.SipRequestUri = uriRaw(`sip:222@sip.test.com;user=phone`)
+		req.SipFromHeader = namedRaw("LK", `sip:111@example.com;user=phone`)
+		req.SipToHeader = namedRaw("User", `sip:333@sip.another.com;user=phone`)
+		expectUserPhone(t, req, true,
+			`sip:222@sip.test.com;user=phone`,
+			`From: "LK" <sip:111@example.com;user=phone>`,
+			`To: "User" <sip:333@sip.another.com;user=phone>`,
 		)
 	})
 }
