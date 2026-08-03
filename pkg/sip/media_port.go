@@ -785,7 +785,13 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
-	offer, err := parseOfferWith(p.log, p.mon, p.codecs, offerData)
+	// Strip AMR/AMR-WB formats we cannot answer per RFC 4867 (e.g. octet-align=1)
+	// before negotiation, then echo required fmtp on the answer (livekit/sip#747).
+	filteredOffer, err := filterAMROfferSDP(offerData)
+	if err != nil {
+		return nil, SDPError{Err: err}
+	}
+	offer, err := parseOfferWith(p.log, p.mon, p.codecs, filteredOffer)
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
@@ -797,6 +803,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
+	appendAMRFmtpToAnswer(&answer.SDP, filteredOffer)
 
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
