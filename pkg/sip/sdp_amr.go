@@ -123,6 +123,8 @@ func rtpmapCodecName(value string) string {
 // filterAMROfferSDP removes AMR/AMR-WB dynamic formats whose fmtp we cannot
 // answer correctly, returning a rewritten offer suitable for media-sdk Answer.
 // Remaining formats (including bandwidth-efficient AMR) are left intact.
+// On parse/marshal failure it returns the original offerData with an error;
+// callers should treat the error as non-fatal and continue with the original.
 func filterAMROfferSDP(offerData []byte) ([]byte, error) {
 	var offer sdp.SessionDescription
 	if err := offer.Unmarshal(offerData); err != nil {
