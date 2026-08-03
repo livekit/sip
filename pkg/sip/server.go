@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,14 +143,14 @@ type Handler interface {
 }
 
 type Server struct {
-	log          logger.Logger
-	mon          *stats.Monitor
-	region       string
-	sipSrv       *sipgo.Server
-	getStateHandler  GetStateHandler
-	getRoom      GetRoomFunc
-	sipListeners []io.Closer
-	sipUnhandled RequestHandler
+	log             logger.Logger
+	mon             *stats.Monitor
+	region          string
+	sipSrv          *sipgo.Server
+	getStateHandler GetStateHandler
+	getRoom         GetRoomFunc
+	sipListeners    []io.Closer
+	sipUnhandled    RequestHandler
 
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
@@ -210,7 +211,7 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		conf:               conf,
 		region:             region,
 		mon:                mon,
-		getStateHandler:        getStateHandler,
+		getStateHandler:    getStateHandler,
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
@@ -307,6 +308,29 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 
 type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
 
+// withRecovery wraps the given handler with a recover statement so that a panic
+// in the given handler does not crash the process.
+func (s *Server) withRecovery(handler sipgo.RequestHandler) sipgo.RequestHandler {
+	return func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				err, ok := r.(error)
+				if !ok {
+					err = fmt.Errorf("%v", r)
+				}
+				method := req.Method.String()
+				fields := []any{"method", method, "stacktrace", string(stack)}
+				if h := req.CallID(); h != nil {
+					fields = append(fields, "sipCallID", h.Value())
+				}
+				s.log.Errorw("panic in SIP request handler", err, fields...)
+			}
+		}()
+		handler(log, req, tx)
+	}
+}
+
 func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
 	s.sconf = sc
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
@@ -330,12 +354,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 		return err
 	}
 
-	s.sipSrv.OnOptions(s.onOptions)
-	s.sipSrv.OnInvite(s.onInvite)
-	s.sipSrv.OnAck(s.onAck)
-	s.sipSrv.OnBye(s.onBye)
-	s.sipSrv.OnNotify(s.onNotify)
-	s.sipSrv.OnNoRoute(s.OnNoRoute)
+	s.sipSrv.OnOptions(s.withRecovery(s.onOptions))
+	s.sipSrv.OnInvite(s.withRecovery(s.onInvite))
+	s.sipSrv.OnAck(s.withRecovery(s.onAck))
+	s.sipSrv.OnBye(s.withRecovery(s.onBye))
+	s.sipSrv.OnNotify(s.withRecovery(s.onNotify))
+	s.sipSrv.OnNoRoute(s.withRecovery(s.OnNoRoute))
 	s.sipUnhandled = unhandled
 
 	listenIP := s.conf.ListenIP

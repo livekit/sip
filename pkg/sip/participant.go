@@ -60,6 +60,18 @@ func terminationFromRoomDisconnect(reason livekit.DisconnectReason) stats.Termin
 	}
 }
 
+// disconnectReasonFromRoomClose returns the reason to report on SIPCallInfo for
+// a call ended by the LiveKit room closing, i.e. not by the SIP peer. The room
+// reason is the only account of why, so report it as-is (ROOM_DELETED,
+// SERVER_SHUTDOWN, ...) rather than flattening it to CLIENT_INITIATED.
+func disconnectReasonFromRoomClose(reason livekit.DisconnectReason) livekit.DisconnectReason {
+	if reason == livekit.DisconnectReason_UNKNOWN_REASON {
+		// No reason reported; keep the historical value.
+		return livekit.DisconnectReason_CLIENT_INITIATED
+	}
+	return reason
+}
+
 const (
 	// maxCallDuration sets a global max call duration.
 	maxCallDuration = 24 * time.Hour

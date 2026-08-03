@@ -1085,10 +1085,11 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			c.close(ctx, end)
 			return nil
 		case <-c.lkRoom.Closed():
+			roomReason := c.lkRoom.ClosedReason()
 			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-				info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+				info.DisconnectReason = disconnectReasonFromRoomClose(roomReason)
 			})
-			c.closeWithTerm(ctx, terminationFromRoomDisconnect(c.lkRoom.ClosedReason()))
+			c.closeWithTerm(ctx, terminationFromRoomDisconnect(roomReason))
 			return nil
 		case <-c.media.Timeout():
 			return c.mediaTimeout(ctx)
@@ -1367,7 +1368,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			Status: "Request Terminated",
 		}
 	}
-	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Reason)
+	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Term.Reason)
 	defer func() {
 		c.stats.Update()
 		c.printStats(log)

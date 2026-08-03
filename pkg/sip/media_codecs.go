@@ -44,6 +44,10 @@ func init() {
 	})
 }
 
+func DefaultCodecs() *msdk.CodecSet {
+	return defaultCodecs
+}
+
 // Metric label used for advertised codecs that are not part of the internal
 // codec set, since their name is dropped during SDP parsing and to keep the
 // label bounded

@@ -397,7 +397,7 @@ func (w *testSIPClient) TransactionRequest(req *sip.Request, options ...sipgo.Cl
 	w.sequence++
 	tx := &testSIPClientTransaction{
 		log:       w.log,
-		responses: make(chan *sip.Response),
+		responses: make(chan *sip.Response, 1),
 		cancels:   make(chan struct{}),
 		done:      make(chan struct{}),
 		err:       make(chan error),
@@ -478,9 +478,11 @@ type TestClientConfig struct {
 	GetIOClient  GetStateHandler  // MockIOInfoClient if nil
 	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
 	GetRoom      GetRoomFunc      // newTestRoom if nil
+	Handler      Handler          // empty TestHandler if nil
 }
 
 func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
+	t.Helper()
 	if cfg.Region == "" {
 		cfg.Region = "test"
 	}
@@ -496,7 +498,7 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 			SIPPortListen:     5060,
 			ListenIP:          localIP.String(),
 			LocalNet:          localIP.String() + "/24",
-			RTPPort:           rtcconfig.PortRange{Start: 20000, End: 20010},
+			RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
 			MaxCpuUtilization: 0.99, // Higher threshold for tests to avoid false positives
 			WsUrl:             "ws://localhost:7880",
 			ApiKey:            "test-api-key",
@@ -537,8 +539,11 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	if cfg.GetRoom == nil {
 		cfg.GetRoom = newTestRoomConfig(nil)
 	}
+	if cfg.Handler == nil {
+		cfg.Handler = &TestHandler{}
+	}
 	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
-	client.SetHandler(&TestHandler{})
+	client.SetHandler(cfg.Handler)
 
 	// Set up service config with minimal values
 	localIP, err := config.GetLocalIP()

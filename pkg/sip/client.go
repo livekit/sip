@@ -436,6 +436,8 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if err != nil {
 		return nil, err
 	}
+	deadline := time.Now().Add(call.sipConf.maxCallDuration)
+
 	p := call.Participant()
 	// Start actual SIP call async.
 
@@ -448,10 +450,21 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		call.DialAsync(ctx)
 		return info, nil
 	}
-	if err := call.Dial(ctx); err != nil {
+
+	dialCtx, dialCancel := context.WithDeadline(ctx, deadline)
+	defer dialCancel()
+
+	if err := call.Dial(dialCtx); err != nil {
 		return nil, err
 	}
-	go call.WaitClose(context.WithoutCancel(ctx))
+
+	// Detach this context from that of the RPC so that when the RPC returns,
+	// the call doesn't end prematurely.
+	go func() {
+		detachedCtx, detachedCancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		defer detachedCancel()
+		call.WaitClose(detachedCtx)
+	}()
 	return info, nil
 }
 
