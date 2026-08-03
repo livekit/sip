@@ -69,6 +69,8 @@ type Service struct {
 	srv     *Server
 	closers []io.Closer
 
+	registrants []*registrant
+
 	mu               sync.Mutex
 	pendingTransfers map[LocalTag]*PendingTransfer
 }
@@ -105,6 +107,9 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	var err error
 	s.sconf, err = GetServiceConfig(s.conf)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRegistrations(conf); err != nil {
 		return nil, err
 	}
 
@@ -191,7 +196,19 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	return st
 }
 
+// StopRegistrations withdraws this node's registrations. Calling it before draining stops a
+// provider from routing new inbound calls to a node that is shutting down; Stop calls it too,
+// so it is safe either way.
+func (s *Service) StopRegistrations() {
+	for _, r := range s.registrants {
+		r.Stop()
+	}
+	s.registrants = nil
+}
+
 func (s *Service) Stop() {
+	// Unregister while the SIP client is still usable.
+	s.StopRegistrations()
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
@@ -311,7 +328,64 @@ func (s *Service) Start() error {
 	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
 		return err
 	}
+	if err := s.startRegistrations(ua); err != nil {
+		return err
+	}
 	s.log.Debugw("sip service ready")
+	return nil
+}
+
+// startRegistrations registers this node with the configured registrars. It runs after the
+// server is listening so that registrations go out from the SIP signaling socket.
+func (s *Service) startRegistrations(ua *sipgo.UserAgent) error {
+	if len(s.conf.SIPRegistrations) == 0 {
+		return nil
+	}
+	var registrants []*registrant
+	for _, rc := range s.conf.SIPRegistrations {
+		r, err := newRegistrant(s.log, s.cli.sipCli, s.mon, s.conf, s.sconf, rc)
+		if err != nil {
+			return err
+		}
+		registrants = append(registrants, r)
+	}
+	// Only UDP reuses the server's listener, and one wait covers every registration on it.
+	// Registering before it exists would send from an ephemeral port for good, so this is
+	// fatal rather than a warning.
+	if tp := ua.TransportLayer(); tp != nil {
+		for _, r := range registrants {
+			if r.transport != strings.ToUpper(string(TransportUDP)) {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), signalingSocketTimeout)
+			err := waitForSignalingSocket(ctx, tp, r.dest())
+			cancel()
+			if err != nil {
+				return fmt.Errorf("SIP signaling socket did not come up: %w", err)
+			}
+			break
+		}
+	}
+	s.registrants = registrants
+	s.log.Infow("registering with SIP registrars", "count", len(registrants))
+	for _, r := range registrants {
+		r.Start()
+	}
+	return nil
+}
+
+// validateRegistrations reports configuration this node cannot act on, at construction time
+// rather than once the listeners are already up.
+func validateRegistrations(conf *config.Config) error {
+	for i, rc := range conf.SIPRegistrations {
+		u, err := parseRegistrarURI(rc.Registrar)
+		if err != nil {
+			return fmt.Errorf("sip_registrations[%d]: %w", i, err)
+		}
+		if registrarTransport(&u) == TransportTLS && conf.TLS == nil {
+			return fmt.Errorf("sip_registrations[%d]: a TLS registrar requires the tls config", i)
+		}
+	}
 	return nil
 }
 

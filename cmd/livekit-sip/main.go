@@ -104,6 +104,7 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 	svc := service.NewService(conf, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
+	svc.SetSIPServiceDrain(sipsrv.StopRegistrations)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
