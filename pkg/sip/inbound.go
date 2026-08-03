@@ -420,10 +420,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 	}
 
-	// New dialogs only: reject while draining / overloaded so graceful shutdown
-	// and OPTIONS-based load balancers stop sending fresh calls here (#764).
+	// New dialogs only: reject while draining / not started so graceful
+	// shutdown and OPTIONS-based load balancers stop sending fresh calls (#764).
+	// Do not reject on HealthUnderLoad — transient CPU spikes must not drop
+	// inbound INVITEs (outbound CreateSIPParticipant already gates on HealthOK).
 	// In-dialog re-INVITEs for active calls were handled above.
-	if h := s.mon.Health(); h != stats.HealthOK {
+	if h := s.mon.Health(); h == stats.HealthStopped || h == stats.HealthNotStarted {
 		log.Infow("rejecting new invite, node not ready", "health", h.String())
 		cmon := s.mon.NewCall(stats.Inbound, cc.From().Host, cc.To().Host)
 		cmon.InviteReq()
@@ -572,9 +574,26 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 }
 
 func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	// SIP proxies often probe backends with OPTIONS and remove unhealthy
-	// destinations from the pool. Mirror CreateSIPParticipant / HTTP health:
-	// only answer 200 when the node is ready to take new work (#764).
+	// In-dialog OPTIONS are session keepalives from SBCs for active calls.
+	// Answer 200 even while draining so existing calls are not torn down (#764).
+	if tag, err := GetLocalTagUAS(req); err == nil {
+		s.cmu.RLock()
+		c := s.byLocalTag[tag]
+		s.cmu.RUnlock()
+		if c != nil {
+			_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+			return
+		}
+		if s.cli != nil {
+			if oc := s.cli.getActiveCall(tag); oc != nil {
+				_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+				return
+			}
+		}
+	}
+
+	// Out-of-dialog OPTIONS are used by SIP proxies as health probes.
+	// Mirror CreateSIPParticipant / HTTP health: only answer 200 when ready.
 	if h := s.mon.Health(); h != stats.HealthOK {
 		log.Debug("OPTIONS rejected", "health", h.String())
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil))
