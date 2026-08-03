@@ -537,6 +537,20 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 	return err
 }
 
+// reinviteOfferDropsAudio reports whether a re-INVITE offer removes the audio
+// codec currently negotiated for this call (see
+// reinviteOfferDropsNegotiatedAudio). When true the caller must reject the
+// re-INVITE with 488 without changing the media path.
+func (c *outboundCall) reinviteOfferDropsAudio(body []byte) bool {
+	var mp MediaPort
+
+	c.mu.Lock()
+	mp = c.media
+	c.mu.Unlock()
+
+	return reinviteOfferDropsNegotiatedAudio(mp, c.sipConf.mediaConfig.Codecs, c.log, body)
+}
+
 func (c *outboundCall) connectMedia() {
 	if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
 		old.Close()
