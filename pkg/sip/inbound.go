@@ -420,6 +420,18 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 	}
 
+	// New dialogs only: reject while draining / overloaded so graceful shutdown
+	// and OPTIONS-based load balancers stop sending fresh calls here (#764).
+	// In-dialog re-INVITEs for active calls were handled above.
+	if h := s.mon.Health(); h != stats.HealthOK {
+		log.Infow("rejecting new invite, node not ready", "health", h.String())
+		cmon := s.mon.NewCall(stats.Inbound, cc.From().Host, cc.To().Host)
+		cmon.InviteReq()
+		cmon.InviteErrorShort(stats.ServerError("not-ready"))
+		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service Unavailable")
+		return psrpc.NewErrorf(psrpc.Unavailable, "sip node health: %s", h.String())
+	}
+
 	from, to := cc.From(), cc.To()
 
 	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
@@ -560,6 +572,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 }
 
 func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	// SIP proxies often probe backends with OPTIONS and remove unhealthy
+	// destinations from the pool. Mirror CreateSIPParticipant / HTTP health:
+	// only answer 200 when the node is ready to take new work (#764).
+	if h := s.mon.Health(); h != stats.HealthOK {
+		log.Debug("OPTIONS rejected", "health", h.String())
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil))
+		return
+	}
 	_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
 }
 
