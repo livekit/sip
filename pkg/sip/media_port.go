@@ -789,7 +789,9 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	// before negotiation, then echo required fmtp on the answer (livekit/sip#747).
 	filteredOffer, err := filterAMROfferSDP(offerData)
 	if err != nil {
-		return nil, SDPError{Err: err}
+		// Non-fatal: fall back to the original offer and let media-sdk parse it.
+		p.log.Debugw("cannot filter AMR formats from offer", "error", err)
+		filteredOffer = offerData
 	}
 	offer, err := parseOfferWith(p.log, p.mon, p.codecs, filteredOffer)
 	if err != nil {

@@ -96,6 +96,38 @@ a=sendrecv
 	require.Contains(t, string(out), "a=fmtp:98 mode-change-capability=2")
 }
 
+func TestAppendAMRFmtpToAnswer_MergesWithExistingFmtp(t *testing.T) {
+	// Since livekit/sip#781 media-sdk emits its own AMR fmtp (octet-align=0).
+	// The echoed offer params must be merged into it, not appended twice.
+	offer := []byte(`v=0
+o=- 0 0 IN IP4 1.2.3.4
+s=-
+c=IN IP4 1.2.3.4
+t=0 0
+m=audio 10000 RTP/AVP 98
+a=rtpmap:98 AMR-WB/16000
+a=fmtp:98 mode-change-capability=2
+`)
+	var answer sdp.SessionDescription
+	require.NoError(t, answer.Unmarshal([]byte(`v=0
+o=- 0 0 IN IP4 5.6.7.8
+s=LiveKit
+c=IN IP4 5.6.7.8
+t=0 0
+m=audio 20000 RTP/AVP 98
+a=rtpmap:98 AMR-WB/16000
+a=fmtp:98 octet-align=0
+a=ptime:20
+a=sendrecv
+`)))
+	appendAMRFmtpToAnswer(&answer, offer)
+	out, err := answer.Marshal()
+	require.NoError(t, err)
+	s := string(out)
+	require.Contains(t, s, "a=fmtp:98 octet-align=0;mode-change-capability=2")
+	require.NotContains(t, s, "octet-align=1")
+}
+
 func TestAMRFmtpForAnswer(t *testing.T) {
 	require.Equal(t, "", amrFmtpForAnswer("octet-align=1;mode-change-capability=2"))
 	require.Equal(t, "mode-change-capability=2", amrFmtpForAnswer("mode-change-capability=2"))
@@ -161,7 +193,9 @@ a=fmtp:97 0-15
 	require.NoError(t, err)
 	s := string(answerData)
 	require.Contains(t, s, "a=rtpmap:98 AMR-WB/16000")
-	require.Contains(t, s, "a=fmtp:98 mode-change-capability=2")
+	// media-sdk emits octet-align=0 (livekit/sip#781); the echoed offer fmtp is
+	// merged into it per RFC 4867 §8.3.1.
+	require.Contains(t, s, "a=fmtp:98 octet-align=0;mode-change-capability=2")
 	require.NotContains(t, s, "rtpmap:96")
 	// Ensure we did not invent octet-align=1 in the answer.
 	require.False(t, strings.Contains(s, "octet-align=1"))

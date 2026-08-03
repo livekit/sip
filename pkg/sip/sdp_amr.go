@@ -123,6 +123,8 @@ func rtpmapCodecName(value string) string {
 // filterAMROfferSDP removes AMR/AMR-WB dynamic formats whose fmtp we cannot
 // answer correctly, returning a rewritten offer suitable for media-sdk Answer.
 // Remaining formats (including bandwidth-efficient AMR) are left intact.
+// On parse/marshal failure it returns the original offerData with an error;
+// callers should treat the error as non-fatal and continue with the original.
 func filterAMROfferSDP(offerData []byte) ([]byte, error) {
 	var offer sdp.SessionDescription
 	if err := offer.Unmarshal(offerData); err != nil {
@@ -240,21 +242,14 @@ func appendAMRFmtpToAnswer(answer *sdp.SessionDescription, offerData []byte) {
 		if md.MediaName.Media != "audio" {
 			continue
 		}
-		haveFmtp := map[string]struct{}{}
 		rtpNames := map[string]string{}
 		for _, a := range md.Attributes {
-			switch a.Key {
-			case "fmtp":
-				haveFmtp[attrPayloadType(a.Value)] = struct{}{}
-			case "rtpmap":
+			if a.Key == "rtpmap" {
 				rtpNames[attrPayloadType(a.Value)] = rtpmapCodecName(a.Value)
 			}
 		}
 		for pt, name := range rtpNames {
 			if !isAMRName(name) {
-				continue
-			}
-			if _, ok := haveFmtp[pt]; ok {
 				continue
 			}
 			offerFmtp, ok := offerFmtpByPT[pt]
@@ -265,10 +260,51 @@ func appendAMRFmtpToAnswer(answer *sdp.SessionDescription, offerData []byte) {
 			if echo == "" {
 				continue
 			}
-			md.Attributes = append(md.Attributes, sdp.Attribute{
-				Key:   "fmtp",
-				Value: pt + " " + echo,
-			})
+			// media-sdk already emits its own fmtp for AMR (e.g. octet-align=0
+			// since livekit/sip#781); merge the echoed offer params into it
+			// instead of appending a duplicate attribute.
+			merged := false
+			for i := range md.Attributes {
+				a := &md.Attributes[i]
+				if a.Key != "fmtp" || attrPayloadType(a.Value) != pt {
+					continue
+				}
+				_, existing, _ := strings.Cut(a.Value, " ")
+				a.Value = pt + " " + mergeFmtp(existing, echo)
+				merged = true
+			}
+			if !merged {
+				md.Attributes = append(md.Attributes, sdp.Attribute{
+					Key:   "fmtp",
+					Value: pt + " " + echo,
+				})
+			}
 		}
 	}
+}
+
+// mergeFmtp appends the params from echo to existing without duplicating keys
+// that existing already declares.
+func mergeFmtp(existing, echo string) string {
+	if echo == "" {
+		return existing
+	}
+	have := parseFmtpParams(existing)
+	var b strings.Builder
+	b.WriteString(existing)
+	for _, part := range strings.Split(echo, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, _, _ := strings.Cut(part, "=")
+		if _, ok := have[strings.ToLower(strings.TrimSpace(k))]; ok {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(";")
+		}
+		b.WriteString(part)
+	}
+	return b.String()
 }
