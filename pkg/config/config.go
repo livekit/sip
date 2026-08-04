@@ -61,7 +61,10 @@ type TLSConfig struct {
 	Port       int       `yaml:"port"`        // announced SIP signaling port
 	ListenPort int       `yaml:"port_listen"` // SIP signaling port to listen on
 	Certs      []TLSCert `yaml:"certs"`
-	KeyLog     string    `yaml:"key_log"`
+	// ClientCerts are presented on outbound SIP/TLS dials when the peer
+	// requests a client certificate (mTLS). When empty, Certs are reused.
+	ClientCerts []TLSCert `yaml:"client_certs"`
+	KeyLog      string    `yaml:"key_log"`
 
 	MinVersion string `yaml:"min_version"` // min TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
 	MaxVersion string `yaml:"max_version"` // max TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"

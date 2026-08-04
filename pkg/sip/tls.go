@@ -18,9 +18,39 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 
 	"github.com/livekit/protocol/logger"
+
+	"github.com/livekit/sip/pkg/config"
 )
+
+// loadTLSCertificates loads PEM certificate/key pairs from disk.
+func loadTLSCertificates(certs []config.TLSCert) ([]tls.Certificate, error) {
+	out := make([]tls.Certificate, 0, len(certs))
+	for _, c := range certs {
+		cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS cert %q: %w", c.CertFile, err)
+		}
+		out = append(out, cert)
+	}
+	return out, nil
+}
+
+// clientCertificateFunc returns a GetClientCertificate hook that always
+// presents the first configured certificate when the peer requests client
+// auth. Go's default selection can return no certificate when the peer's
+// acceptable CAs don't match our leaf, which breaks outbound SIP trunks that
+// require mTLS (livekit/sip#530).
+func clientCertificateFunc(certs []tls.Certificate) func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	return func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		if len(certs) == 0 {
+			return nil, nil
+		}
+		return &certs[0], nil
+	}
+}
 
 func makeTLSCipherMap(CipherSuites []*tls.CipherSuite) map[string]*tls.CipherSuite {
 	cipherSuitesMap := make(map[string]*tls.CipherSuite)
