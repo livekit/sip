@@ -539,7 +539,9 @@ func (r *registrant) setChallenge(resp *sip.Response) error {
 	}
 	chal, err := digest.ParseChallenge(h.Value())
 	if err != nil {
-		return fmt.Errorf("invalid %s challenge %q: %w", name, h.Value(), err)
+		// The header itself is not repeated: it carries the registrar's nonce and opaque,
+		// which do not belong in logs that are kept.
+		return fmt.Errorf("invalid %s challenge: %w", name, err)
 	}
 	// A repeat of a nonce we already answered, without stale=true, means the credentials were
 	// wrong rather than expired. Retrying would send the same digest and loop.
