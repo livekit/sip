@@ -553,15 +553,20 @@ func TestRefreshAfter(t *testing.T) {
 	}{
 		{granted: time.Second, want: registerMinRefreshInterval}, // interval floor
 		{granted: 10 * time.Second, want: 5 * time.Second},       // margin floor
+		{granted: 11 * time.Second, want: 5500 * time.Millisecond},
 		{granted: 60 * time.Second, want: 50 * time.Second},
 		{granted: 600 * time.Second, want: 540 * time.Second},
 		{granted: time.Hour, want: time.Hour - time.Minute}, // margin ceiling
 	}
+	var prev time.Duration
 	for _, c := range cases {
 		t.Run(c.granted.String(), func(t *testing.T) {
 			got := refreshAfter(c.granted)
 			require.Equal(t, c.want, got)
 			require.LessOrEqual(t, got, c.granted, "a refresh must not be scheduled past the expiry")
+			// A longer lifetime must never mean a shorter interval.
+			require.GreaterOrEqual(t, got, prev)
+			prev = got
 		})
 	}
 }
@@ -761,10 +766,10 @@ func TestRegistrantKeepsPingingAfterRefreshFails(t *testing.T) {
 		default:
 			if !refused {
 				refused = true
-				// Long enough that the binding is still live when the refresh fails, short
-				// enough that the refresh is due almost immediately.
+				// The refresh comes due at half of this, leaving the binding live for the
+				// same span again while it fails.
 				resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
-				resp.AppendHeader(sip.NewHeader("Expires", "11"))
+				resp.AppendHeader(sip.NewHeader("Expires", "10"))
 				return resp
 			}
 			return sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
@@ -779,7 +784,7 @@ func TestRegistrantKeepsPingingAfterRefreshFails(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return r.State().Error != nil
-	}, 5*time.Second, 10*time.Millisecond, "the refresh never failed")
+	}, 8*time.Second, 10*time.Millisecond, "the refresh never failed")
 	// The binding has not expired yet, so it is still reported and still held open.
 	require.True(t, r.State().Registered)
 
@@ -790,7 +795,7 @@ func TestRegistrantKeepsPingingAfterRefreshFails(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return gotAfter > before
-	}, 5*time.Second, 10*time.Millisecond, "keepalives stopped once the refresh failed")
+	}, 4*time.Second, 10*time.Millisecond, "keepalives stopped once the refresh failed")
 }
 
 func TestRegistrantAuthenticatesUnregister(t *testing.T) {

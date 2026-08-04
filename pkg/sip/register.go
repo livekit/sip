@@ -258,7 +258,7 @@ func (r *registrant) State() RegistrationState {
 func (r *registrant) setState(st RegistrationState) {
 	r.state.Store(&st)
 	if r.mon != nil {
-		r.mon.RegistrationActive(r.registrar.String(), st.Registered)
+		r.mon.RegistrationActive(r.registrar.String(), r.aor.String(), st.Registered)
 	}
 }
 
@@ -371,9 +371,11 @@ func refreshAfter(d time.Duration) time.Duration {
 	} else if margin > registerMaxRefreshMargin {
 		margin = registerMaxRefreshMargin
 	}
+	// Never wait less than half the lifetime: subtracting a fixed margin alone would make a
+	// grant just over it refresh far more often than a slightly shorter one.
 	after := d - margin
-	if d <= margin {
-		after = d / 2
+	if half := d / 2; after < half {
+		after = half
 	}
 	if after < registerMinRefreshInterval {
 		after = registerMinRefreshInterval

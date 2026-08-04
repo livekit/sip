@@ -171,7 +171,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "registrations_active",
 		Help:        "Whether this node currently has a binding at a SIP registrar",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"registrar"}))
+	}, []string{"registrar", "aor"}))
 
 	m.callsTerminated = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -506,13 +506,14 @@ func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
 }
 
 // RegistrationActive records whether a SIP registration currently has a binding. Inbound calls
-// on a registered trunk stop arriving when it does not, so it is worth alerting on.
-func (m *Monitor) RegistrationActive(registrar string, active bool) {
+// on a registered trunk stop arriving when it does not, so it is worth alerting on. The
+// address-of-record is a label of its own because several accounts can share one registrar.
+func (m *Monitor) RegistrationActive(registrar, aor string, active bool) {
 	v := float64(0)
 	if active {
 		v = 1
 	}
-	m.registrationsActive.WithLabelValues(registrar).Set(v)
+	m.registrationsActive.WithLabelValues(registrar, aor).Set(v)
 }
 
 func (m *Monitor) TransferStarted(dir CallDir) {
