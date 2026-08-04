@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
@@ -43,12 +44,29 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+const (
+	parsedMetric  = "livekit_sip_sdp_parsed_total"
+	offeredMetric = "livekit_sip_codec_offered_total"
+)
+
 func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
 	mon, err := stats.NewMonitor(&config.Config{})
 	require.NoError(t, err)
 	require.NoError(t, mon.Start(&config.Config{}))
 	t.Cleanup(mon.Stop)
 	return mon.NewCall(stats.Inbound, "test", "test")
+}
+
+func newTestMediaPort(t testing.TB, provider string) *MediaPort {
+	t.Helper()
+	mon := newTestCallMonitor(t)
+	mon.SetProvider(provider)
+	mp, err := NewMediaPortWith(1, logger.GetLogger(), mon, nil, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, 8000)
+	require.NoError(t, err)
+	t.Cleanup(func() { mp.Close() })
+	return mp
 }
 
 type testUDPConn struct {
@@ -875,4 +893,91 @@ func TestMediaPortDTMF(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Test util for incrementing prometheus counter metrics.
+func gatherCounter(t testing.TB, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	var total float64
+	for _, f := range families {
+		// Matching metric
+		if f.GetName() != name {
+			continue
+		}
+	metrics:
+		for _, m := range f.GetMetric() {
+			got := make(map[string]string, len(m.GetLabel()))
+			for _, l := range m.GetLabel() {
+				got[l.GetName()] = l.GetValue()
+			}
+			// Matching labels
+			for k, v := range labels {
+				if got[k] != v {
+					continue metrics
+				}
+			}
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// Report codecs offered during SDP even when the offer fails to match any codecs
+func TestSetOfferReportsCodecsBeforeFailing(t *testing.T) {
+	mp := newTestMediaPort(t, "internal/somecarrier")
+
+	parsed := map[string]string{"dir": "in", "provider": "internal/somecarrier"}
+	other := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": codecOther}
+	pcmu := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": "PCMU/8000"}
+
+	parsedBefore := gatherCounter(t, parsedMetric, parsed)
+	otherBefore := gatherCounter(t, offeredMetric, other)
+	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
+
+	offer := sdpWithMedia("m=audio 5004 RTP/AVP 96", "a=rtpmap:96 SPEEX/16000")
+	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
+
+	// Codecs that are not part of the internal set are classified as "other"
+	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
+	require.Equal(t, otherBefore+1, gatherCounter(t, offeredMetric, other))
+	require.Equal(t, pcmuBefore, gatherCounter(t, offeredMetric, pcmu))
+}
+
+func TestSetOfferReportsCodecsPerProvider(t *testing.T) {
+	mp := newTestMediaPort(t, "internal/somecarrier")
+
+	parsed := map[string]string{"dir": "in", "provider": "internal/somecarrier"}
+	pcmu := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": "PCMU/8000"}
+	g722 := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": "G722/8000"}
+
+	parsedBefore := gatherCounter(t, parsedMetric, parsed)
+	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
+	g722Before := gatherCounter(t, offeredMetric, g722)
+
+	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 9",
+		"a=rtpmap:0 PCMU/8000", "a=rtpmap:9 G722/8000")
+	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+
+	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
+	require.Equal(t, pcmuBefore+1, gatherCounter(t, offeredMetric, pcmu))
+	require.Equal(t, g722Before+1, gatherCounter(t, offeredMetric, g722))
+}
+
+// Without SetProvider - the pre-auth path - offers still land somewhere rather
+// than being dropped.
+func TestSetOfferReportsUnknownProvider(t *testing.T) {
+	mp := newTestMediaPort(t, "")
+
+	parsed := map[string]string{"dir": "in", "provider": stats.ProviderUnknown}
+	before := gatherCounter(t, parsedMetric, parsed)
+
+	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
+	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+
+	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))
 }

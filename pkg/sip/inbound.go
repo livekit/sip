@@ -320,6 +320,23 @@ func sdpBodyFromRequest(req *sip.Request) []byte {
 	return req.Body()
 }
 
+func providerLabel(p *livekit.ProviderInfo) string {
+	switch p.GetType() {
+	case livekit.ProviderType_PROVIDER_TYPE_INTERNAL:
+		internalPrefix := "internal/"
+		if name := p.GetName(); name != "" {
+			return internalPrefix + strings.ToLower(name)
+		}
+
+		return internalPrefix + stats.ProviderUnknown
+	case livekit.ProviderType_PROVIDER_TYPE_EXTERNAL:
+		// External names are customer-supplied trunk names, left out to keep the label bounded.
+		return "external"
+	default:
+		return stats.ProviderUnknown
+	}
+}
+
 func updateRemoteFromSDP(media *MediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
 	if len(body) == 0 || media == nil {
 		return
@@ -478,6 +495,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if r.TrunkID != "" {
 		log = log.WithValues("sipTrunk", r.TrunkID)
 	}
+	cmon.SetProvider(providerLabel(r.ProviderInfo))
 
 	initial := &livekit.SIPCallInfo{
 		CallId:        string(cc.ID()),
