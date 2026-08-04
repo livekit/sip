@@ -80,11 +80,13 @@ type outboundCall struct {
 	jitterBuf bool
 	projectID string
 
-	mu       sync.RWMutex
-	mon      *stats.CallMonitor
-	lkRoom   RoomInterface
-	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
-	sipConf  sipOutboundConfig
+	mu          sync.RWMutex
+	mon         *stats.CallMonitor
+	lkRoom      RoomInterface
+	lkRoomIn    msdk.PCM16Writer // output to room; OPUS at 48k
+	sipConf     sipOutboundConfig
+	attrsMu     sync.Mutex
+	cachedAttrs map[string]string // last-seen participant attrs for BYE after room teardown (#404)
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
@@ -167,11 +169,41 @@ func (c *outboundCall) setAttrsToHeaders(headers map[string]string) map[string]s
 	if len(c.sipConf.attrsToHeaders) == 0 {
 		return headers
 	}
-	r := c.lkRoom.Room()
-	if r == nil {
+	attrs := c.participantAttributes()
+	if len(attrs) == 0 {
 		return headers
 	}
-	return AttrsToHeaders(r.LocalParticipant.Attributes(), c.sipConf.attrsToHeaders, headers)
+	return AttrsToHeaders(attrs, c.sipConf.attrsToHeaders, headers)
+}
+
+func (c *outboundCall) snapshotParticipantAttrs() {
+	if c == nil || c.lkRoom == nil {
+		return
+	}
+	r := c.lkRoom.Room()
+	if r == nil || r.LocalParticipant == nil {
+		return
+	}
+	attrs := r.LocalParticipant.Attributes() // clones
+	c.attrsMu.Lock()
+	c.cachedAttrs = attrs
+	c.attrsMu.Unlock()
+}
+
+func (c *outboundCall) storeParticipantAttrs(attrs map[string]string) {
+	if c == nil || len(attrs) == 0 {
+		return
+	}
+	c.attrsMu.Lock()
+	c.cachedAttrs = maps.Clone(attrs)
+	c.attrsMu.Unlock()
+}
+
+func (c *outboundCall) participantAttributes() map[string]string {
+	c.snapshotParticipantAttrs()
+	c.attrsMu.Lock()
+	defer c.attrsMu.Unlock()
+	return maps.Clone(c.cachedAttrs)
 }
 
 func (c *outboundCall) ensureClosed(ctx context.Context) {
@@ -371,10 +403,10 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 			info.DisconnectReason = end.Reason
 		})
 
+		// Snapshot attrs before teardown so attributes_to_headers still works
+		// when the room was already deleted (livekit/sip#404).
+		c.snapshotParticipantAttrs()
 		// Send BYE _before_ closing media/room connection.
-		// This ensures participant attributes are still available for
-		// attributes_to_headers mapping in the setHeaders callback.
-		// See: https://github.com/livekit/sip/issues/404
 		c.stopSIP(ctx, end.Term, end.Headers)
 		if c.media != nil {
 			c.media.Close()
@@ -474,6 +506,8 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	}
 	c.lkRoom = r
 	c.lkRoomIn = local
+	c.storeParticipantAttrs(attrs)
+	c.snapshotParticipantAttrs()
 	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
 		return err
 	}
@@ -672,6 +706,7 @@ func (c *outboundCall) setStatus(v CallStatus) {
 	r.LocalParticipant.SetAttributes(map[string]string{
 		livekit.AttrSIPCallStatus: attr,
 	})
+	c.snapshotParticipantAttrs()
 }
 
 func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, cc Signaling, hdrs Headers) {
@@ -680,6 +715,7 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 		room := c.lkRoom.Room()
 		if room != nil {
 			room.LocalParticipant.SetAttributes(extra)
+			c.snapshotParticipantAttrs()
 		} else {
 			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
 		}
