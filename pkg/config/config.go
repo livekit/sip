@@ -60,7 +60,10 @@ type TLSConfig struct {
 	Port       int       `yaml:"port"`        // announced SIP signaling port
 	ListenPort int       `yaml:"port_listen"` // SIP signaling port to listen on
 	Certs      []TLSCert `yaml:"certs"`
-	KeyLog     string    `yaml:"key_log"`
+	// ClientCerts are presented on outbound SIP/TLS dials when the peer
+	// requests a client certificate (mTLS). When empty, Certs are reused.
+	ClientCerts []TLSCert `yaml:"client_certs"`
+	KeyLog      string    `yaml:"key_log"`
 
 	MinVersion string `yaml:"min_version"` // min TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
 	MaxVersion string `yaml:"max_version"` // max TLS version, accepts: "tls1.0", "tls1.1", "tls1.2", "tls1.3"
@@ -113,16 +116,16 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
-	MediaTimeout         time.Duration   `yaml:"media_timeout"`
-	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
-	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	MediaTimeout        time.Duration `yaml:"media_timeout"`
+	MediaTimeoutInitial time.Duration `yaml:"media_timeout_initial"`
+	SymmetricRTP        bool          `yaml:"symmetric_rtp"`
 	// RTPDrainingIdleTimeout / RTPDrainingDuration control how long a closed call's RTP
 	// port is kept bound and draining before it can be reallocated. Set to a negative
 	// value to disable. Zero uses the defaults.
-	RTPDrainingIdleTimeout time.Duration `yaml:"rtp_draining_idle_timeout"`
-	RTPDrainingDuration    time.Duration `yaml:"rtp_draining_duration"`
-	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
-	Codecs               map[string]bool `yaml:"codecs"`
+	RTPDrainingIdleTimeout time.Duration   `yaml:"rtp_draining_idle_timeout"`
+	RTPDrainingDuration    time.Duration   `yaml:"rtp_draining_duration"`
+	IgnoreLocalAddrInSDP   bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
+	Codecs                 map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
