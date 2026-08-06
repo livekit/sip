@@ -159,12 +159,12 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	})
 
 	// Set up minimal participant info
-	room.p = ParticipantInfo{
+	room.p.Store(&ParticipantInfo{
 		ID:       "test-participant-id",
 		RoomName: "test-room",
 		Identity: "test-participant",
 		Name:     "Test Participant",
-	}
+	})
 
 	return &testRoom{room: room}
 }
@@ -173,11 +173,11 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 func (r *testRoom) Connect(_ context.Context, conf *config.Config, rconf RoomConfig) error {
 	// Update participant info from config
 	partConf := rconf.Participant
-	r.room.p = ParticipantInfo{
+	r.room.p.Store(&ParticipantInfo{
 		RoomName: rconf.RoomName,
 		Identity: partConf.Identity,
 		Name:     partConf.Name,
-	}
+	})
 	// Skip actual connection - room is already set up
 	return nil
 }
