@@ -127,7 +127,7 @@ func (h TestHandler) OnSessionEnd(ctx context.Context, callIdentifier *CallIdent
 	}
 }
 
-func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction)) {
+func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction), serverOpts ...ServerOption) {
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)
@@ -144,7 +144,9 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	}, serverOpts...)
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -286,7 +288,9 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	s.SetHandler(h)
@@ -384,7 +388,9 @@ func TestService_OnSessionEnd(t *testing.T) {
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -425,6 +431,60 @@ func TestService_OnSessionEnd(t *testing.T) {
 	require.Equal(t, expectedCallID, receivedCallInfo.CallId, "CallInfo.CallId should match")
 	require.Equal(t, expectedSipCallID, receivedCallInfo.ParticipantAttributes[AttrSIPCallIDFull], "CallInfo.ParticipantAttributes[sip.callIDFull] should match")
 	require.Equal(t, expectedReason, receivedReason, "Reason should match")
+}
+
+type interceptorRecorder struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (l *interceptorRecorder) loggingInterceptor(name string) HandlerInterceptor {
+	return func(handler sipgo.RequestHandler) sipgo.RequestHandler {
+		return func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+			l.log(fmt.Sprintf("enter %s", name))
+			handler(log, req, tx)
+			l.log(fmt.Sprintf("exit %s", name))
+		}
+	}
+}
+
+func (l *interceptorRecorder) log(msg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logs = append(l.logs, msg)
+}
+
+func TestService_Interceptors(t *testing.T) {
+	h := &TestHandler{}
+	done := make(chan struct{}, 1)
+
+	sentinel := func(handler sipgo.RequestHandler) sipgo.RequestHandler {
+		return func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+			handler(log, req, tx)
+			done <- struct{}{}
+		}
+	}
+
+	recorder := &interceptorRecorder{}
+
+	testInvite(t, h, true, "from-user", "to-user", func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(180), res.StatusCode)
+	}, WithInterceptors(sentinel, recorder.loggingInterceptor("a"), recorder.loggingInterceptor("b")))
+
+	select {
+	case <-done:
+	case <-time.After(time.Second * 2):
+		t.Fatal("handler did not return")
+	}
+
+	wantLogs := []string{
+		"enter a",
+		"enter b",
+		"exit b",
+		"exit a",
+	}
+	require.ElementsMatch(t, wantLogs, recorder.logs)
 }
 
 // TestDigestAuthSimultaneousCalls tests that simultaneous calls from the same "from" number
@@ -488,7 +548,9 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -695,7 +757,9 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -949,7 +1013,9 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 

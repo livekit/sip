@@ -80,7 +80,7 @@ type Service struct {
 // is the SIPCallInfo that NewCallState will own immediately after.
 type GetStateHandler func(projectID string, obs *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) StateHandler
 
-func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getStateHandler GetStateHandler) (*Service, error) {
+func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getStateHandler GetStateHandler, opts ...ServerOption) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -94,12 +94,13 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
 	}
 	cli := NewClient(region, conf, log, mon, getStateHandler)
+	options := append([]ServerOption{WithClient(cli)}, opts...)
 	s := &Service{
 		conf:             conf,
 		log:              log,
 		mon:              mon,
 		cli:              cli,
-		srv:              NewServer(region, conf, log, mon, getStateHandler, WithClient(cli)),
+		srv:              NewServer(region, conf, log, mon, getStateHandler, options...),
 		pendingTransfers: make(map[LocalTag]*PendingTransfer),
 	}
 	var err error
