@@ -23,7 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,6 +142,9 @@ type Handler interface {
 	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string)
 }
 
+// HandlerInterceptor wraps a handler function.
+type HandlerInterceptor func(sipgo.RequestHandler) sipgo.RequestHandler
+
 type Server struct {
 	log             logger.Logger
 	mon             *stats.Monitor
@@ -166,9 +169,10 @@ type Server struct {
 		byLocalTag *expirable.LRU[LocalTag, *inboundCallInfo]
 	}
 
-	handler Handler
-	conf    *config.Config
-	sconf   *ServiceConfig
+	handler      Handler
+	conf         *config.Config
+	sconf        *ServiceConfig
+	interceptors []HandlerInterceptor
 
 	cli *Client // optional, for outbound reinvite handling
 
@@ -199,6 +203,15 @@ func WithGetRoomServer(fn GetRoomFunc) ServerOption {
 func WithClient(cli *Client) ServerOption {
 	return func(s *Server) {
 		s.cli = cli
+	}
+}
+
+// WithInterceptors configures all sip handlers to be wrapped with the given set
+// of interceptors. Interceptors are applied s.t. the first interceptor is the
+// outermost one.
+func WithInterceptors(interceptors ...HandlerInterceptor) ServerOption {
+	return func(s *Server) {
+		s.interceptors = interceptors
 	}
 }
 
@@ -308,27 +321,12 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 
 type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
 
-// withRecovery wraps the given handler with a recover statement so that a panic
-// in the given handler does not crash the process.
-func (s *Server) withRecovery(handler sipgo.RequestHandler) sipgo.RequestHandler {
-	return func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-		defer func() {
-			if r := recover(); r != nil {
-				stack := debug.Stack()
-				err, ok := r.(error)
-				if !ok {
-					err = fmt.Errorf("%v", r)
-				}
-				method := req.Method.String()
-				fields := []any{"method", method, "stacktrace", string(stack)}
-				if h := req.CallID(); h != nil {
-					fields = append(fields, "sipCallID", h.Value())
-				}
-				s.log.Errorw("panic in SIP request handler", err, fields...)
-			}
-		}()
-		handler(log, req, tx)
+func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler {
+	ret := handler
+	for _, interceptor := range slices.Backward(s.interceptors) {
+		ret = interceptor(ret)
 	}
+	return ret
 }
 
 func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
@@ -354,12 +352,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 		return err
 	}
 
-	s.sipSrv.OnOptions(s.withRecovery(s.onOptions))
-	s.sipSrv.OnInvite(s.withRecovery(s.onInvite))
-	s.sipSrv.OnAck(s.withRecovery(s.onAck))
-	s.sipSrv.OnBye(s.withRecovery(s.onBye))
-	s.sipSrv.OnNotify(s.withRecovery(s.onNotify))
-	s.sipSrv.OnNoRoute(s.withRecovery(s.OnNoRoute))
+	s.sipSrv.OnOptions(s.wrapHandler(s.onOptions))
+	s.sipSrv.OnInvite(s.wrapHandler(s.onInvite))
+	s.sipSrv.OnAck(s.wrapHandler(s.onAck))
+	s.sipSrv.OnBye(s.wrapHandler(s.onBye))
+	s.sipSrv.OnNotify(s.wrapHandler(s.onNotify))
+	s.sipSrv.OnNoRoute(s.wrapHandler(s.OnNoRoute))
 	s.sipUnhandled = unhandled
 
 	listenIP := s.conf.ListenIP
