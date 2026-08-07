@@ -31,17 +31,20 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/jitter"
+	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/sip"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
-	"github.com/livekit/media-sdk/mixer"
-
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/media/opus"
 )
+
+// errRoomClosed is returned when the room handle is gone, which happens once the
+// call has been torn down.
+var errRoomClosed = errors.New("room is closed")
 
 type RoomStatsSnapshot struct {
 	// Stats quantifying total incoming traffic from all tracks
@@ -65,6 +68,13 @@ type RoomStatsSnapshot struct {
 	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
 	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
 
+	TrackSubscribes uint64 `json:"track_subscribes"`
+	Resumes         uint64 `json:"resumes"`
+	Reconnects      uint64 `json:"reconnects"`
+	// Recovering reports whether the signal connection was down when the
+	// snapshot was taken. PublishedFrames and PublishTX are unreliable while set.
+	Recovering bool `json:"recovering"`
+
 	LatencyOutRecv LatencyStatsSnapshot `json:"latency_out_recv"`
 
 	Closed bool `json:"closed"`
@@ -77,6 +87,23 @@ type RoomStats struct {
 
 	rtpStats    rtpCountingStats
 	dataPackets atomic.Uint64
+
+	// TrackSubscribes counts subscribe requests issued for remote tracks.
+	// Attempts, not confirmations.
+	TrackSubscribes atomic.Uint64
+
+	// Resumes and Reconnects count the two ways the signal connection recovers
+	// during a call, and are mutually exclusive. A resume keeps the peer
+	// connections and subscriptions; a reconnect rebuilds them. Neither is
+	// counted until the recovery succeeds.
+	Resumes    atomic.Uint64
+	Reconnects atomic.Uint64
+
+	// Recovering is set while the signal connection is down. PublishedFrames
+	// and PublishTX are counted before the track write, so they keep reporting a
+	// healthy rate even though the audio is being dropped. Read them only when
+	// this is false.
+	Recovering atomic.Bool
 
 	JitterBufferPacketsLost    atomic.Uint64
 	JitterBufferPacketsDropped atomic.Uint64
@@ -109,6 +136,11 @@ func (s *RoomStats) Load() RoomStatsSnapshot {
 		DataPackets:                s.dataPackets.Load(),
 		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
 		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
+
+		TrackSubscribes: s.TrackSubscribes.Load(),
+		Resumes:         s.Resumes.Load(),
+		Reconnects:      s.Reconnects.Load(),
+		Recovering:      s.Recovering.Load(),
 
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
@@ -173,13 +205,17 @@ func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
 }
 
 type Room struct {
-	log        logger.Logger
-	roomLog    logger.Logger // deferred logger
-	room       *lksdk.Room
-	mix        *mixer.Mixer
-	out        *msdk.SwitchWriter
-	outDtmf    atomic.Pointer[dtmf.Writer]
-	p          ParticipantInfo
+	log     logger.Logger
+	roomLog logger.Logger // deferred logger
+	// room is cleared on close while SDK callback goroutines still read it.
+	room    atomic.Pointer[lksdk.Room]
+	mix     *mixer.Mixer
+	out     *msdk.SwitchWriter
+	outDtmf atomic.Pointer[dtmf.Writer]
+	// p is replaced on every reconnect, since the server issues a new
+	// participant SID, and read concurrently by Participant().
+	p          atomic.Pointer[ParticipantInfo]
+	reconnect  atomic.Pointer[reconnectState]
 	ready      core.Fuse
 	subscribe  atomic.Bool
 	subscribed core.Fuse
@@ -224,8 +260,8 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 	go func() {
 		select {
 		case <-r.ready.Watch():
-			if r.room != nil {
-				resolve.Resolve("room", r.room.Name(), "roomID", r.room.SID())
+			if room := r.room.Load(); room != nil {
+				resolve.Resolve("room", room.Name(), "roomID", room.SID())
 			} else {
 				resolve.Resolve()
 			}
@@ -250,10 +286,14 @@ func (r *Room) Closed() <-chan struct{} {
 // fired. Returns livekit.DisconnectReason_UNKNOWN_REASON if the room hasn't
 // disconnected or no reason was reported.
 func (r *Room) ClosedReason() livekit.DisconnectReason {
-	if r == nil || r.room == nil {
+	if r == nil {
 		return livekit.DisconnectReason_UNKNOWN_REASON
 	}
-	return r.room.DisconnectReason()
+	room := r.room.Load()
+	if room == nil {
+		return livekit.DisconnectReason_UNKNOWN_REASON
+	}
+	return room.DisconnectReason()
 }
 
 func (r *Room) Subscribed() <-chan struct{} {
@@ -267,7 +307,7 @@ func (r *Room) Room() *lksdk.Room {
 	if r == nil {
 		return nil
 	}
-	return r.room
+	return r.room.Load()
 }
 
 func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
@@ -295,6 +335,7 @@ func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemotePa
 		return
 	}
 	log.Debugw("subscribing to a track")
+	r.stats.TrackSubscribes.Add(1)
 	if err := pub.SetSubscribed(true); err != nil {
 		log.Errorw("cannot subscribe to the track", err)
 		return
@@ -307,12 +348,89 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 		rconf.WsUrl = conf.WsUrl
 	}
 	partConf := rconf.Participant
-	r.p = ParticipantInfo{
+	r.p.Store(&ParticipantInfo{
 		RoomName: rconf.RoomName,
 		Identity: partConf.Identity,
 		Name:     partConf.Name,
+	})
+	roomCallback := r.newRoomCallback(conf, rconf)
+
+	if rconf.Token == "" {
+		// TODO: Remove this code path, always sign tokens on LiveKit server.
+		//       For now, match Cloud behavior and do not send extra attrs in the token.
+		tokenAttrs := make(map[string]string, len(partConf.Attributes))
+		for _, k := range []string{
+			livekit.AttrSIPCallID,
+			livekit.AttrSIPTrunkID,
+			livekit.AttrSIPDispatchRuleID,
+			livekit.AttrSIPTrunkNumber,
+			livekit.AttrSIPPhoneNumber,
+		} {
+			if v, ok := partConf.Attributes[k]; ok {
+				tokenAttrs[k] = v
+			}
+		}
+		var err error
+		rconf.Token, err = sip.BuildSIPToken(sip.SIPTokenParams{
+			APIKey:                conf.ApiKey,
+			APISecret:             conf.ApiSecret,
+			RoomName:              rconf.RoomName,
+			ParticipantIdentity:   partConf.Identity,
+			ParticipantName:       partConf.Name,
+			ParticipantMetadata:   partConf.Metadata,
+			ParticipantAttributes: tokenAttrs,
+			RoomPreset:            rconf.RoomPreset,
+			RoomConfig:            rconf.RoomConfig,
+		})
+		if err != nil {
+			return err
+		}
 	}
-	roomCallback := &lksdk.RoomCallback{
+	room := lksdk.NewRoom(roomCallback)
+	room.SetLogger(newRoomOverrideLogger(r.log))
+	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
+		lksdk.WithAutoSubscribe(false),
+		lksdk.WithExtraAttributes(partConf.Attributes),
+	)
+	if err != nil {
+		return err
+	}
+	r.room.Store(room)
+	r.setParticipantFromRoom()
+	p := r.Participant()
+	r.log = r.log.WithValues("room", room.Name(), "roomID", room.SID(), "participant", p.Identity, "participantID", p.ID)
+	r.log.Infow("SIP participant joined room")
+	room.LocalParticipant.SetAttributes(partConf.Attributes)
+	r.ready.Break()
+	r.subscribe.Store(false) // already false, but keep for visibility
+
+	// Not subscribing to any tracks just yet!
+	return nil
+}
+
+// setParticipantFromRoom refreshes the cached participant identifiers from the
+// SDK room. Runs on recovery too, since a reconnect gets a new SID.
+//
+// Does not rebuild r.log, which is read without synchronisation elsewhere in
+// this file. The reconnect handler logs the SID change instead.
+func (r *Room) setParticipantFromRoom() {
+	room := r.room.Load()
+	if room == nil {
+		return
+	}
+	p := ParticipantInfo{}
+	if cur := r.p.Load(); cur != nil {
+		p = *cur
+	}
+	p.ID = room.LocalParticipant.SID()
+	p.Identity = room.LocalParticipant.Identity()
+	r.p.Store(&p)
+}
+
+// newRoomCallback builds the LiveKit room callback for this SIP participant.
+// Separate from Connect so tests can build it without joining a room.
+func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.RoomCallback {
+	return &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
 			log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID())
 			if !r.subscribe.Load() {
@@ -414,74 +532,139 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
+		OnReconnecting: func() {
+			r.onReconnecting()
+		},
+		OnReconnected: func() {
+			r.onReconnected()
+		},
 		OnDisconnected: func() {
 			r.stopped.Break()
 		},
+		OnDisconnectedWithReason: func(reason lksdk.DisconnectionReason) {
+			// OnDisconnected fires first and owns the teardown. This only
+			// records the reason, which CloseWithReason may clear later.
+			r.roomLog.Infow("disconnected from room", "reason", reason)
+		},
+	}
+}
+
+// reconnectState is captured when the signal connection drops so onReconnected
+// can tell a resume from a reconnect and report the gap.
+type reconnectState struct {
+	startedAt time.Time
+	sid       string
+}
+
+func recoveryKind(resumed bool) string {
+	if resumed {
+		return "resume"
+	}
+	return "reconnect"
+}
+
+// onReconnecting runs when the SDK loses the signal connection and starts
+// recovering. Audio published until onReconnected may be dropped: a reconnect
+// detaches our track from its peer connection while the connection is rebuilt,
+// and writes to a detached track are discarded without an error.
+func (r *Room) onReconnecting() {
+	var sid string
+	if room := r.room.Load(); room != nil {
+		sid = room.LocalParticipant.SID()
+	}
+	r.reconnect.Store(&reconnectState{startedAt: time.Now(), sid: sid})
+	r.stats.Recovering.Store(true)
+	r.roomLog.Infow("lost connection to room, recovering", "participantID", sid)
+}
+
+// onReconnected runs when the SDK recovers the signal connection, either by
+// resuming the old session or reconnecting from scratch.
+//
+// A resume keeps the peer connections, and the SDK replays subscription state
+// itself, so leave it alone. A reconnect builds a new subscriber peer
+// connection with no subscriptions and the SDK restores only what we publish,
+// so re-issue the subscriptions here.
+func (r *Room) onReconnected() {
+	prev := r.reconnect.Swap(nil)
+	r.stats.Recovering.Store(false)
+
+	room := r.room.Load()
+	if room == nil {
+		return
 	}
 
-	if rconf.Token == "" {
-		// TODO: Remove this code path, always sign tokens on LiveKit server.
-		//       For now, match Cloud behavior and do not send extra attrs in the token.
-		tokenAttrs := make(map[string]string, len(partConf.Attributes))
-		for _, k := range []string{
-			livekit.AttrSIPCallID,
-			livekit.AttrSIPTrunkID,
-			livekit.AttrSIPDispatchRuleID,
-			livekit.AttrSIPTrunkNumber,
-			livekit.AttrSIPPhoneNumber,
-		} {
-			if v, ok := partConf.Attributes[k]; ok {
-				tokenAttrs[k] = v
+	// The SID is stable across a resume and changes on a reconnect. Treat an
+	// unknown previous SID as a reconnect: re-subscribing is idempotent, while
+	// missing one leaves the call with no inbound room audio.
+	sid := room.LocalParticipant.SID()
+	resumed := prev != nil && prev.sid == sid
+
+	var gap time.Duration
+	if prev != nil {
+		gap = time.Since(prev.startedAt)
+	}
+	if resumed {
+		r.stats.Resumes.Add(1)
+	} else {
+		r.stats.Reconnects.Add(1)
+	}
+
+	r.setParticipantFromRoom()
+	r.roomLog.Infow("recovered connection to room",
+		"kind", recoveryKind(resumed),
+		"gap", gap,
+		"participantID", sid,
+		"previousParticipantID", func() string {
+			if prev == nil {
+				return ""
 			}
-		}
-		var err error
-		rconf.Token, err = sip.BuildSIPToken(sip.SIPTokenParams{
-			APIKey:                conf.ApiKey,
-			APISecret:             conf.ApiSecret,
-			RoomName:              rconf.RoomName,
-			ParticipantIdentity:   partConf.Identity,
-			ParticipantName:       partConf.Name,
-			ParticipantMetadata:   partConf.Metadata,
-			ParticipantAttributes: tokenAttrs,
-			RoomPreset:            rconf.RoomPreset,
-			RoomConfig:            rconf.RoomConfig,
-		})
-		if err != nil {
-			return err
-		}
-	}
-	room := lksdk.NewRoom(roomCallback)
-	room.SetLogger(newRoomOverrideLogger(r.log))
-	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
-		lksdk.WithAutoSubscribe(false),
-		lksdk.WithExtraAttributes(partConf.Attributes),
+			return prev.sid
+		}(),
 	)
-	if err != nil {
-		return err
-	}
-	r.room = room
-	r.p.ID = r.room.LocalParticipant.SID()
-	r.p.Identity = r.room.LocalParticipant.Identity()
-	r.log = r.log.WithValues("room", r.room.Name(), "roomID", r.room.SID(), "participant", r.p.Identity, "participantID", r.p.ID)
-	r.log.Infow("SIP participant joined room")
-	room.LocalParticipant.SetAttributes(partConf.Attributes)
-	r.ready.Break()
-	r.subscribe.Store(false) // already false, but keep for visibility
 
-	// Not subscribing to any tracks just yet!
-	return nil
+	if resumed {
+		return
+	}
+	if !r.subscribe.Load() {
+		// Call is not answered yet, so subscribing here would pull room audio
+		// into a leg that has not been accepted.
+		return
+	}
+	// The SDK calls this from the reconnect itself, inside the join's timeout,
+	// and subscribing does a blocking websocket write per track. Pass the room we
+	// already read so a concurrent close cannot make this a nil dereference.
+	go r.resubscribeAfterReconnect(room)
+}
+
+func (r *Room) resubscribeAfterReconnect(room *lksdk.Room) {
+	if r.closed.IsBroken() || r.stopped.IsBroken() {
+		return
+	}
+	r.roomLog.Infow("re-subscribing to remote tracks after reconnect")
+	r.subscribeAll(room)
 }
 
 func (r *Room) RegisterRpcCtxMethod(method string, handler lksdk.RpcHandlerCtxFunc) error {
-	return r.room.RegisterRpcCtxMethod(method, handler)
+	room := r.room.Load()
+	if room == nil {
+		return errRoomClosed
+	}
+	return room.RegisterRpcCtxMethod(method, handler)
 }
 
 func (r *Room) Subscribe() {
-	if r.room == nil {
+	room := r.room.Load()
+	if room == nil {
 		return
 	}
 	r.subscribe.Store(true)
-	list := r.room.GetRemoteParticipants()
+	r.subscribeAll(room)
+}
+
+// subscribeAll subscribes to every remote audio track in the room. Safe to
+// repeat, since a duplicate subscribe is a no-op server side.
+func (r *Room) subscribeAll(room *lksdk.Room) {
+	list := room.GetRemoteParticipants()
 	r.log.Debugw("subscribing to existing room participants", "participants", len(list))
 	for _, rp := range list {
 		r.participantJoin(rp)
@@ -556,9 +739,8 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 		r.subscribe.Store(false)
 		err = r.CloseOutput()
 		r.SetDTMFOutput(nil)
-		if r.room != nil {
-			r.room.DisconnectWithReason(reason)
-			r.room = nil
+		if room := r.room.Swap(nil); room != nil {
+			room.DisconnectWithReason(reason)
 		}
 		if r.mix != nil {
 			r.mix.Stop()
@@ -571,7 +753,10 @@ func (r *Room) Participant() ParticipantInfo {
 	if r == nil {
 		return ParticipantInfo{}
 	}
-	return r.p
+	if p := r.p.Load(); p != nil {
+		return *p
+	}
+	return ParticipantInfo{}
 }
 
 func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
@@ -579,7 +764,11 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	if err != nil {
 		return nil, err
 	}
-	p := r.room.LocalParticipant
+	room := r.room.Load()
+	if room == nil {
+		return nil, errRoomClosed
+	}
+	p := room.LocalParticipant
 	if _, err = p.PublishTrack(track, &lksdk.TrackPublicationOptions{
 		Name: p.Identity(),
 	}); err != nil {
@@ -597,7 +786,11 @@ func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) 
 	if r == nil || !r.ready.IsBroken() || r.closed.IsBroken() {
 		return nil
 	}
-	return r.room.LocalParticipant.PublishDataPacket(data, opts...)
+	room := r.room.Load()
+	if room == nil {
+		return nil
+	}
+	return room.LocalParticipant.PublishDataPacket(data, opts...)
 }
 
 func (r *Room) NewTrack() *mixer.Input {

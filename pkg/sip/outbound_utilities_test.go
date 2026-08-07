@@ -141,7 +141,8 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	room.roomLog = roomLog
 
 	// Create a minimal lksdk.Room without connecting
-	room.room = lksdk.NewRoom(nil)
+	sdkRoom := lksdk.NewRoom(nil)
+	room.room.Store(sdkRoom)
 
 	// Set ready immediately (skip connection)
 	room.ready.Break()
@@ -150,7 +151,7 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	}
 	resolve.Resolve()
 
-	room.room.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
+	sdkRoom.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
 		Name:            "test-room",
 		Metadata:        "test-metadata",
 		Sid:             "test-room-sid",
@@ -159,12 +160,12 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	})
 
 	// Set up minimal participant info
-	room.p = ParticipantInfo{
+	room.p.Store(&ParticipantInfo{
 		ID:       "test-participant-id",
 		RoomName: "test-room",
 		Identity: "test-participant",
 		Name:     "Test Participant",
-	}
+	})
 
 	return &testRoom{room: room}
 }
@@ -173,11 +174,11 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 func (r *testRoom) Connect(_ context.Context, conf *config.Config, rconf RoomConfig) error {
 	// Update participant info from config
 	partConf := rconf.Participant
-	r.room.p = ParticipantInfo{
+	r.room.p.Store(&ParticipantInfo{
 		RoomName: rconf.RoomName,
 		Identity: partConf.Identity,
 		Name:     partConf.Name,
-	}
+	})
 	// Skip actual connection - room is already set up
 	return nil
 }
