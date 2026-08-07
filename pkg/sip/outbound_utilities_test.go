@@ -141,7 +141,8 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	room.roomLog = roomLog
 
 	// Create a minimal lksdk.Room without connecting
-	room.room = lksdk.NewRoom(nil)
+	sdkRoom := lksdk.NewRoom(nil)
+	room.room.Store(sdkRoom)
 
 	// Set ready immediately (skip connection)
 	room.ready.Break()
@@ -150,7 +151,7 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	}
 	resolve.Resolve()
 
-	room.room.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
+	sdkRoom.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
 		Name:            "test-room",
 		Metadata:        "test-metadata",
 		Sid:             "test-room-sid",

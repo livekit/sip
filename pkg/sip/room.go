@@ -41,6 +41,10 @@ import (
 	"github.com/livekit/sip/pkg/media/opus"
 )
 
+// errRoomClosed is returned when the room handle is gone, which happens once the
+// call has been torn down.
+var errRoomClosed = errors.New("room is closed")
+
 type RoomStatsSnapshot struct {
 	// Stats quantifying total incoming traffic from all tracks
 	InputPackets   uint64 `json:"input_packets"`
@@ -200,7 +204,8 @@ func DefaultGetRoomFunc(log logger.Logger, st *RoomStats) RoomInterface {
 type Room struct {
 	log     logger.Logger
 	roomLog logger.Logger // deferred logger
-	room    *lksdk.Room
+	// room is cleared on close while SDK callback goroutines still read it.
+	room    atomic.Pointer[lksdk.Room]
 	mix     *mixer.Mixer
 	out     *msdk.SwitchWriter
 	outDtmf atomic.Pointer[dtmf.Writer]
@@ -252,8 +257,8 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 	go func() {
 		select {
 		case <-r.ready.Watch():
-			if r.room != nil {
-				resolve.Resolve("room", r.room.Name(), "roomID", r.room.SID())
+			if room := r.room.Load(); room != nil {
+				resolve.Resolve("room", room.Name(), "roomID", room.SID())
 			} else {
 				resolve.Resolve()
 			}
@@ -278,10 +283,14 @@ func (r *Room) Closed() <-chan struct{} {
 // fired. Returns livekit.DisconnectReason_UNKNOWN_REASON if the room hasn't
 // disconnected or no reason was reported.
 func (r *Room) ClosedReason() livekit.DisconnectReason {
-	if r == nil || r.room == nil {
+	if r == nil {
 		return livekit.DisconnectReason_UNKNOWN_REASON
 	}
-	return r.room.DisconnectReason()
+	room := r.room.Load()
+	if room == nil {
+		return livekit.DisconnectReason_UNKNOWN_REASON
+	}
+	return room.DisconnectReason()
 }
 
 func (r *Room) Subscribed() <-chan struct{} {
@@ -295,7 +304,7 @@ func (r *Room) Room() *lksdk.Room {
 	if r == nil {
 		return nil
 	}
-	return r.room
+	return r.room.Load()
 }
 
 func (r *Room) participantJoin(rp *lksdk.RemoteParticipant) {
@@ -383,7 +392,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	if err != nil {
 		return err
 	}
-	r.room = room
+	r.room.Store(room)
 	r.setParticipantFromRoom()
 	p := r.Participant()
 	r.log = r.log.WithValues("room", room.Name(), "roomID", room.SID(), "participant", p.Identity, "participantID", p.ID)
@@ -402,7 +411,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 // Does not rebuild r.log, which is read without synchronisation elsewhere in
 // this file. The reconnect handler logs the SID change instead.
 func (r *Room) setParticipantFromRoom() {
-	room := r.room
+	room := r.room.Load()
 	if room == nil {
 		return
 	}
@@ -550,7 +559,7 @@ type reconnectState struct {
 // and writes to a detached track are discarded without an error.
 func (r *Room) onReconnecting() {
 	var sid string
-	if room := r.room; room != nil {
+	if room := r.room.Load(); room != nil {
 		sid = room.LocalParticipant.SID()
 	}
 	r.reconnect.Store(&reconnectState{startedAt: time.Now(), sid: sid})
@@ -570,7 +579,7 @@ func (r *Room) onReconnected() {
 	prev := r.reconnect.Swap(nil)
 	r.stats.Reconnecting.Store(false)
 
-	room := r.room
+	room := r.room.Load()
 	if room == nil {
 		return
 	}
@@ -625,13 +634,15 @@ func (r *Room) resubscribeAfterRejoin(room *lksdk.Room) {
 }
 
 func (r *Room) RegisterRpcCtxMethod(method string, handler lksdk.RpcHandlerCtxFunc) error {
-	return r.room.RegisterRpcCtxMethod(method, handler)
+	room := r.room.Load()
+	if room == nil {
+		return errRoomClosed
+	}
+	return room.RegisterRpcCtxMethod(method, handler)
 }
 
 func (r *Room) Subscribe() {
-	// CloseWithReason clears r.room from another goroutine. Copy it first so the
-	// nil check and the use below see the same value.
-	room := r.room
+	room := r.room.Load()
 	if room == nil {
 		return
 	}
@@ -717,9 +728,8 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 		r.subscribe.Store(false)
 		err = r.CloseOutput()
 		r.SetDTMFOutput(nil)
-		if r.room != nil {
-			r.room.DisconnectWithReason(reason)
-			r.room = nil
+		if room := r.room.Swap(nil); room != nil {
+			room.DisconnectWithReason(reason)
 		}
 		if r.mix != nil {
 			r.mix.Stop()
@@ -743,7 +753,11 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	if err != nil {
 		return nil, err
 	}
-	p := r.room.LocalParticipant
+	room := r.room.Load()
+	if room == nil {
+		return nil, errRoomClosed
+	}
+	p := room.LocalParticipant
 	if _, err = p.PublishTrack(track, &lksdk.TrackPublicationOptions{
 		Name: p.Identity(),
 	}); err != nil {
@@ -761,7 +775,11 @@ func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) 
 	if r == nil || !r.ready.IsBroken() || r.closed.IsBroken() {
 		return nil
 	}
-	return r.room.LocalParticipant.PublishDataPacket(data, opts...)
+	room := r.room.Load()
+	if room == nil {
+		return nil
+	}
+	return room.LocalParticipant.PublishDataPacket(data, opts...)
 }
 
 func (r *Room) NewTrack() *mixer.Input {
