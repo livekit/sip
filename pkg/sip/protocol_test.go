@@ -91,6 +91,16 @@ func TestParseReason(t *testing.T) {
 			Normal: true,
 		},
 		{
+			Name:   "SIP no cause",
+			Header: `SIP;description="User Hung Up"`,
+			Reason: ReasonHeader{
+				Type:  "sip",
+				Cause: 0,
+				Text:  "User Hung Up",
+			},
+			Normal: true,
+		},
+		{
 			Name:   "Q.850",
 			Header: `Q.850;cause=16;text="Terminated"`,
 			Reason: ReasonHeader{

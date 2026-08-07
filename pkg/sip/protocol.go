@@ -535,6 +535,8 @@ func (r ReasonHeader) IsNormal() bool {
 		}
 	case "sip":
 		switch r.Cause {
+		case 0: // not set, assume success
+			return true
 		case 200:
 			return true
 		}
@@ -571,6 +573,10 @@ func ParseReasonHeader(header string) (ReasonHeader, error) {
 			r.Cause, _ = strconv.Atoi(val)
 		case "text":
 			r.Text, _ = strconv.Unquote(val)
+		case "description":
+			if r.Text == "" {
+				r.Text, _ = strconv.Unquote(val)
+			}
 		case "reasoncode":
 			reasonCode = val
 		}
