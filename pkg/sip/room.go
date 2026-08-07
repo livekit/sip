@@ -68,11 +68,11 @@ type RoomStatsSnapshot struct {
 	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
 
 	TrackSubscribes uint64 `json:"track_subscribes"`
+	Resumes         uint64 `json:"resumes"`
 	Reconnects      uint64 `json:"reconnects"`
-	Rejoins         uint64 `json:"rejoins"`
-	// Reconnecting reports whether the signal connection was down when the
+	// Recovering reports whether the signal connection was down when the
 	// snapshot was taken. PublishedFrames and PublishTX are unreliable while set.
-	Reconnecting bool `json:"reconnecting"`
+	Recovering bool `json:"recovering"`
 
 	LatencyOutRecv LatencyStatsSnapshot `json:"latency_out_recv"`
 
@@ -91,16 +91,18 @@ type RoomStats struct {
 	// Attempts, not confirmations.
 	TrackSubscribes atomic.Uint64
 
-	// Reconnects counts signal connections lost and recovered during this call.
-	// Rejoins is the subset that rebuilt the peer connections.
+	// Resumes and Reconnects count the two ways the signal connection recovers
+	// during a call, and are mutually exclusive. A resume keeps the peer
+	// connections and subscriptions; a reconnect rebuilds them. Neither is
+	// counted until the recovery succeeds.
+	Resumes    atomic.Uint64
 	Reconnects atomic.Uint64
-	Rejoins    atomic.Uint64
 
-	// Reconnecting is set while the signal connection is down. PublishedFrames
+	// Recovering is set while the signal connection is down. PublishedFrames
 	// and PublishTX are counted before the track write, so they keep reporting a
 	// healthy rate even though the audio is being dropped. Read them only when
 	// this is false.
-	Reconnecting atomic.Bool
+	Recovering atomic.Bool
 
 	JitterBufferPacketsLost    atomic.Uint64
 	JitterBufferPacketsDropped atomic.Uint64
@@ -135,9 +137,9 @@ func (s *RoomStats) Load() RoomStatsSnapshot {
 		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
 
 		TrackSubscribes: s.TrackSubscribes.Load(),
+		Resumes:         s.Resumes.Load(),
 		Reconnects:      s.Reconnects.Load(),
-		Rejoins:         s.Rejoins.Load(),
-		Reconnecting:    s.Reconnecting.Load(),
+		Recovering:      s.Recovering.Load(),
 
 		PublishedFrames:  s.PublishedFrames.Load(),
 		PublishedSamples: s.PublishedSamples.Load(),
@@ -209,7 +211,7 @@ type Room struct {
 	mix     *mixer.Mixer
 	out     *msdk.SwitchWriter
 	outDtmf atomic.Pointer[dtmf.Writer]
-	// p is replaced on every full rejoin, since the server issues a new
+	// p is replaced on every reconnect, since the server issues a new
 	// participant SID, and read concurrently by Participant().
 	p          atomic.Pointer[ParticipantInfo]
 	reconnect  atomic.Pointer[reconnectState]
@@ -406,7 +408,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 }
 
 // setParticipantFromRoom refreshes the cached participant identifiers from the
-// SDK room. Runs on reconnect too, since a full rejoin gets a new SID.
+// SDK room. Runs on recovery too, since a reconnect gets a new SID.
 //
 // Does not rebuild r.log, which is read without synchronisation elsewhere in
 // this file. The reconnect handler logs the SID change instead.
@@ -547,14 +549,21 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 }
 
 // reconnectState is captured when the signal connection drops so onReconnected
-// can tell a resume from a full rejoin and report the gap.
+// can tell a resume from a reconnect and report the gap.
 type reconnectState struct {
 	startedAt time.Time
 	sid       string
 }
 
+func recoveryKind(resumed bool) string {
+	if resumed {
+		return "resume"
+	}
+	return "reconnect"
+}
+
 // onReconnecting runs when the SDK loses the signal connection and starts
-// recovering. Audio published until onReconnected may be dropped: a full rejoin
+// recovering. Audio published until onReconnected may be dropped: a reconnect
 // detaches our track from its peer connection while the connection is rebuilt,
 // and writes to a detached track are discarded without an error.
 func (r *Room) onReconnecting() {
@@ -563,44 +572,45 @@ func (r *Room) onReconnecting() {
 		sid = room.LocalParticipant.SID()
 	}
 	r.reconnect.Store(&reconnectState{startedAt: time.Now(), sid: sid})
-	r.stats.Reconnecting.Store(true)
-	r.stats.Reconnects.Add(1)
-	r.roomLog.Infow("lost connection to room, reconnecting", "participantID", sid)
+	r.stats.Recovering.Store(true)
+	r.roomLog.Infow("lost connection to room, recovering", "participantID", sid)
 }
 
 // onReconnected runs when the SDK recovers the signal connection, either by
-// resuming the old session or rejoining from scratch.
+// resuming the old session or reconnecting from scratch.
 //
 // A resume keeps the peer connections, and the SDK replays subscription state
-// itself, so leave it alone. A full rejoin builds a new subscriber peer
+// itself, so leave it alone. A reconnect builds a new subscriber peer
 // connection with no subscriptions and the SDK restores only what we publish,
 // so re-issue the subscriptions here.
 func (r *Room) onReconnected() {
 	prev := r.reconnect.Swap(nil)
-	r.stats.Reconnecting.Store(false)
+	r.stats.Recovering.Store(false)
 
 	room := r.room.Load()
 	if room == nil {
 		return
 	}
 
-	// The SID is stable across a resume and changes on a full rejoin. Treat an
-	// unknown previous SID as a rejoin: re-subscribing is idempotent, while
+	// The SID is stable across a resume and changes on a reconnect. Treat an
+	// unknown previous SID as a reconnect: re-subscribing is idempotent, while
 	// missing one leaves the call with no inbound room audio.
 	sid := room.LocalParticipant.SID()
-	rejoined := prev == nil || prev.sid != sid
+	resumed := prev != nil && prev.sid == sid
 
 	var gap time.Duration
 	if prev != nil {
 		gap = time.Since(prev.startedAt)
 	}
-	if rejoined {
-		r.stats.Rejoins.Add(1)
+	if resumed {
+		r.stats.Resumes.Add(1)
+	} else {
+		r.stats.Reconnects.Add(1)
 	}
 
 	r.setParticipantFromRoom()
-	r.roomLog.Infow("reconnected to room",
-		"rejoined", rejoined,
+	r.roomLog.Infow("recovered connection to room",
+		"kind", recoveryKind(resumed),
 		"gap", gap,
 		"participantID", sid,
 		"previousParticipantID", func() string {
@@ -611,7 +621,7 @@ func (r *Room) onReconnected() {
 		}(),
 	)
 
-	if !rejoined {
+	if resumed {
 		return
 	}
 	if !r.subscribe.Load() {
@@ -619,17 +629,17 @@ func (r *Room) onReconnected() {
 		// into a leg that has not been accepted.
 		return
 	}
-	// The SDK calls this from the rejoin itself, inside the join's timeout, and
-	// subscribing does a blocking websocket write per track. Pass the room we
+	// The SDK calls this from the reconnect itself, inside the join's timeout,
+	// and subscribing does a blocking websocket write per track. Pass the room we
 	// already read so a concurrent close cannot make this a nil dereference.
-	go r.resubscribeAfterRejoin(room)
+	go r.resubscribeAfterReconnect(room)
 }
 
-func (r *Room) resubscribeAfterRejoin(room *lksdk.Room) {
+func (r *Room) resubscribeAfterReconnect(room *lksdk.Room) {
 	if r.closed.IsBroken() || r.stopped.IsBroken() {
 		return
 	}
-	r.roomLog.Infow("re-subscribing to remote tracks after rejoin")
+	r.roomLog.Infow("re-subscribing to remote tracks after reconnect")
 	r.subscribeAll(room)
 }
 

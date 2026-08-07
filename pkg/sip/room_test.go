@@ -48,8 +48,8 @@ func testLocalInfo(sid string) *livekit.ParticipantInfo {
 }
 
 // testRemoteInfo is the other party in the room, holding one audio track. It
-// never reconnects, so its SIDs stay the same across our rejoin, which is what
-// makes the SDK treat its track as already known.
+// never reconnects, so its SIDs stay the same across our reconnect, which is
+// what makes the SDK treat its track as already known.
 func testRemoteInfo() []*livekit.ParticipantInfo {
 	return []*livekit.ParticipantInfo{{
 		Sid:      testRemoteSID,
@@ -110,17 +110,17 @@ func (f *reconnectFixture) join(t *testing.T) {
 	f.published.Store(0) // only count what happens from here on
 }
 
-// rejoinEscalated simulates a failed resume escalating to a full rejoin, where
+// reconnectEscalated simulates a failed resume escalating to a reconnect, where
 // the SDK skips OnRestarting.
-func (f *reconnectFixture) rejoinEscalated() {
+func (f *reconnectFixture) reconnectEscalated() {
 	f.sdk.OnResuming()
 	f.sdk.OnRoomJoined(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo(), &livekit.ServerInfo{}, nil)
 	f.sdk.OnRestarted(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo())
 }
 
-// rejoinServerInitiated simulates the server asking for a full reconnect, where
-// OnRestarting does run.
-func (f *reconnectFixture) rejoinServerInitiated() {
+// reconnectServerInitiated simulates the server asking for a reconnect directly,
+// where OnRestarting does run.
+func (f *reconnectFixture) reconnectServerInitiated() {
 	f.sdk.OnRestarting()
 	f.sdk.OnRoomJoined(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo(), &livekit.ServerInfo{}, nil)
 	f.sdk.OnRestarted(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo())
@@ -136,47 +136,48 @@ func (f *reconnectFixture) rejoinServerInitiated() {
 // Only participants connected to the affected pod reconnect. Everyone other
 // participant in that room is unaffected and keep their session and their SIDs.
 // So "clearing participants" below means dropping our own view of them, not
-// removing anyone from the room. There are two ways to reach a full rejoin:
+// removing anyone from the room. There are two ways to reach a reconnect:
 //
-//	  1- server-initiated: rejoin is attempted right away, participants affected
+//	  1- server-initiated: the reconnect is attempted right away, affected participants
 //			drop their participant map, and then rebuild it from the OnRoomJoined
 //			snapshot and re-announce their tracks.
 //	  2- resume-then-escalate: resume is first attempted. If it fails, then switch
-//			to a rejoin, and the stale participant map survives and no tracks are announced.
+//			to a reconnect, and the stale participant map survives so no tracks are
+//			announced.
 func TestRoomReconnect(t *testing.T) {
-	t.Run("escalated rejoin does not re-announce tracks from remote participants", func(t *testing.T) {
+	t.Run("escalated reconnect does not re-announce tracks from remote participants", func(t *testing.T) {
 		f := newReconnectFixture(t)
 		f.join(t)
 
-		f.rejoinEscalated()
+		f.reconnectEscalated()
 
 		require.EqualValues(t, 0, f.published.Load(),
 			"OnTrackPublished must not re-fire on the escalated path")
 	})
 
 	// The other path does re-announce, which is why lost audio is intermittent.
-	t.Run("server initiated rejoin re-announces tracks from remote participants", func(t *testing.T) {
+	t.Run("server initiated reconnect re-announces tracks from remote participants", func(t *testing.T) {
 		f := newReconnectFixture(t)
 		f.join(t)
 
-		f.rejoinServerInitiated()
+		f.reconnectServerInitiated()
 
 		require.EqualValues(t, 1, f.published.Load(),
 			"OnTrackPublished is expected to re-fire when OnRestarting cleared the participants")
 	})
 
-	// However the rejoin was reached, SIP must re-issue its subscriptions.
-	t.Run("resubscribes after escalated rejoin", func(t *testing.T) {
+	// However the reconnect was reached, SIP must re-issue its subscriptions.
+	t.Run("resubscribes after escalated reconnect", func(t *testing.T) {
 		f := newReconnectFixture(t)
 		f.join(t)
 
 		before := f.room.stats.TrackSubscribes.Load()
-		f.rejoinEscalated()
+		f.reconnectEscalated()
 
 		require.Eventually(t, func() bool {
 			return f.room.stats.TrackSubscribes.Load() > before
 		}, time.Second, 10*time.Millisecond,
-			"SIP must re-subscribe to remote tracks after a full rejoin")
+			"SIP must re-subscribe to remote tracks after a reconnect")
 	})
 
 	// An outbound call joins the room and publishes before it starts dialing, but
@@ -190,7 +191,7 @@ func TestRoomReconnect(t *testing.T) {
 		require.False(t, f.room.subscribe.Load())
 
 		before := f.room.stats.TrackSubscribes.Load()
-		f.rejoinEscalated()
+		f.reconnectEscalated()
 
 		require.Never(t, func() bool {
 			return f.room.stats.TrackSubscribes.Load() > before
@@ -214,18 +215,20 @@ func TestRoomReconnect(t *testing.T) {
 			"re-subscribing on resume would race the SDK's own sendSyncState")
 	})
 
-	t.Run("counts rejoins separately from resumes", func(t *testing.T) {
+	// The two counters are mutually exclusive, so a recovery lands in exactly one.
+	t.Run("counts resumes and reconnects separately", func(t *testing.T) {
 		f := newReconnectFixture(t)
 		f.join(t)
 
-		f.rejoinEscalated()
-		require.EqualValues(t, 1, f.room.stats.Rejoins.Load())
+		f.reconnectEscalated()
+		require.EqualValues(t, 1, f.room.stats.Reconnects.Load())
+		require.EqualValues(t, 0, f.room.stats.Resumes.Load())
 
 		f.sdk.OnResuming()
 		f.sdk.OnResumed()
-		require.EqualValues(t, 2, f.room.stats.Reconnects.Load())
-		require.EqualValues(t, 1, f.room.stats.Rejoins.Load(), "a resume must not count as a rejoin")
-		require.False(t, f.room.stats.Reconnecting.Load())
+		require.EqualValues(t, 1, f.room.stats.Reconnects.Load(), "a resume must not count as a reconnect")
+		require.EqualValues(t, 1, f.room.stats.Resumes.Load())
+		require.False(t, f.room.stats.Recovering.Load())
 	})
 
 	// PublishedFrames and PublishTX keep climbing during a gap whether or not
@@ -235,11 +238,11 @@ func TestRoomReconnect(t *testing.T) {
 		f.join(t)
 
 		f.sdk.OnResuming()
-		require.True(t, f.room.stats.Load().Reconnecting, "gap must be visible while it is happening")
+		require.True(t, f.room.stats.Load().Recovering, "gap must be visible while it is happening")
 
 		f.sdk.OnResumed()
-		require.False(t, f.room.stats.Load().Reconnecting)
-		require.EqualValues(t, 1, f.room.stats.Load().Reconnects)
+		require.False(t, f.room.stats.Load().Recovering)
+		require.EqualValues(t, 1, f.room.stats.Load().Resumes)
 	})
 
 	// A SIP leg can hang up at any point, including mid-recovery, so teardown
@@ -254,7 +257,7 @@ func TestRoomReconnect(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			f.rejoinEscalated()
+			f.reconnectEscalated()
 		}()
 		go func() {
 			defer wg.Done()
@@ -265,18 +268,18 @@ func TestRoomReconnect(t *testing.T) {
 		require.Nil(t, f.room.Room(), "close must clear the room handle")
 	})
 
-	// The SID changes on every full rejoin and feeds call state.
-	t.Run("refreshes participant SID after rejoin", func(t *testing.T) {
+	// The SID changes on every reconnect and feeds call state.
+	t.Run("refreshes participant SID after reconnect", func(t *testing.T) {
 		f := newReconnectFixture(t)
 		f.join(t)
 		f.room.setParticipantFromRoom()
 		require.Equal(t, "PA_sip_1", f.room.Participant().ID)
 
-		f.rejoinEscalated()
+		f.reconnectEscalated()
 
 		require.Eventually(t, func() bool {
 			return f.room.Participant().ID == "PA_sip_2"
 		}, time.Second, 10*time.Millisecond,
-			"cached participant SID must be refreshed after a rejoin")
+			"cached participant SID must be refreshed after a reconnect")
 	})
 }
