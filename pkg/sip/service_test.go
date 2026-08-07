@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -454,6 +455,12 @@ func (l *interceptorRecorder) log(msg string) {
 	l.logs = append(l.logs, msg)
 }
 
+func (l *interceptorRecorder) get() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.logs)
+}
+
 func TestService_Interceptors(t *testing.T) {
 	h := &TestHandler{}
 	done := make(chan struct{}, 1)
@@ -484,7 +491,7 @@ func TestService_Interceptors(t *testing.T) {
 		"exit b",
 		"exit a",
 	}
-	require.ElementsMatch(t, wantLogs, recorder.logs)
+	require.ElementsMatch(t, wantLogs, recorder.get())
 }
 
 // TestDigestAuthSimultaneousCalls tests that simultaneous calls from the same "from" number
