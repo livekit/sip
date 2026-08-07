@@ -474,10 +474,45 @@ func TestService_Interceptors(t *testing.T) {
 
 	recorder := &interceptorRecorder{}
 
-	testInvite(t, h, true, "from-user", "to-user", func(tx sip.ClientTransaction) {
-		res := getResponseOrFail(t, tx)
-		require.Equal(t, sip.StatusCode(180), res.StatusCode)
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
+	s, err := NewService("", &config.Config{
+		HideInboundPort: false,
+		SIPPort:         sipPort,
+		SIPPortListen:   sipPort,
+		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
 	}, WithInterceptors(sentinel, recorder.loggingInterceptor("a"), recorder.loggingInterceptor("b")))
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent("from-user"),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	)
+	require.NoError(t, err)
+
+	client, err := sipgo.NewClient(sipUserAgent)
+	require.NoError(t, err)
+	recipient := sip.Uri{Host: sipServerAddress}
+	req := sip.NewRequest(sip.OPTIONS, recipient)
+	req.SetDestination(sipServerAddress)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	tx, err := client.TransactionRequest(req)
+	require.NoError(t, err)
+	t.Cleanup(tx.Terminate)
 
 	select {
 	case <-done:
@@ -491,7 +526,7 @@ func TestService_Interceptors(t *testing.T) {
 		"exit b",
 		"exit a",
 	}
-	require.ElementsMatch(t, wantLogs, recorder.get())
+	require.Equal(t, wantLogs, recorder.get())
 }
 
 // TestDigestAuthSimultaneousCalls tests that simultaneous calls from the same "from" number
