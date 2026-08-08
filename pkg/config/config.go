@@ -225,6 +225,16 @@ func (c *Config) Init() error {
 		return fmt.Errorf("media_use_external_ip and media_nat_1_to_1_ip can not both be set")
 	}
 
+	if c.MediaListenIP != "" {
+		ip, err := netip.ParseAddr(c.MediaListenIP)
+		if err != nil {
+			return fmt.Errorf("invalid media_listen_ip %q: %w", c.MediaListenIP, err)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("media_listen_ip must be a specific local address, got %q", c.MediaListenIP)
+		}
+	}
+
 	return nil
 }
 
