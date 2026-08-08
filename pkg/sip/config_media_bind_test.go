@@ -40,53 +40,40 @@ func TestParseSpecificListenIP(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestIsLocalInterfaceIP(t *testing.T) {
-	t.Parallel()
-
-	require.True(t, isLocalInterfaceIP(netip.MustParseAddr("127.0.0.1")))
-	require.False(t, isLocalInterfaceIP(netip.MustParseAddr("8.8.8.8")))
-}
-
 func TestResolveMediaBindIP(t *testing.T) {
 	t.Parallel()
 
 	loopback := netip.MustParseAddr("127.0.0.1")
-	publicNAT := netip.MustParseAddr("203.0.113.10") // TEST-NET-3, not local
 
 	t.Run("media_listen_ip wins", func(t *testing.T) {
 		got := resolveMediaBindIP(&config.Config{
 			MediaListenIP: "127.0.0.1",
-			ListenIP:      "127.0.0.1",
-		}, &ServiceConfig{SignalingIPLocal: publicNAT})
+			ListenIP:      "10.0.0.1",
+		})
 		require.Equal(t, loopback, got)
 	})
 
 	t.Run("listen_ip when media_listen_ip empty", func(t *testing.T) {
 		got := resolveMediaBindIP(&config.Config{
 			ListenIP: "127.0.0.1",
-		}, &ServiceConfig{SignalingIPLocal: publicNAT})
+		})
 		require.Equal(t, loopback, got)
 	})
 
 	t.Run("wildcard listen_ip ignored", func(t *testing.T) {
 		got := resolveMediaBindIP(&config.Config{
 			ListenIP: "0.0.0.0",
-		}, &ServiceConfig{SignalingIPLocal: publicNAT})
-		require.False(t, got.IsValid(), "classic nat_1_to_1 public IP must not become BindIP")
-	})
-
-	t.Run("local SignalingIPLocal used", func(t *testing.T) {
-		got := resolveMediaBindIP(&config.Config{}, &ServiceConfig{SignalingIPLocal: loopback})
-		require.Equal(t, loopback, got)
-	})
-
-	t.Run("non-local SignalingIPLocal falls back", func(t *testing.T) {
-		got := resolveMediaBindIP(&config.Config{
-			NAT1To1IP: publicNAT.String(),
-		}, &ServiceConfig{
-			SignalingIP:      publicNAT,
-			SignalingIPLocal: publicNAT,
 		})
+		require.False(t, got.IsValid())
+	})
+
+	t.Run("default remains unspecified", func(t *testing.T) {
+		got := resolveMediaBindIP(&config.Config{})
+		require.False(t, got.IsValid(), "without explicit listen config RTP must stay on 0.0.0.0")
+	})
+
+	t.Run("nil config", func(t *testing.T) {
+		got := resolveMediaBindIP(nil)
 		require.False(t, got.IsValid())
 	})
 }

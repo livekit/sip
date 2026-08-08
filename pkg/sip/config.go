@@ -134,23 +134,22 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 	return netip.Addr{}, fmt.Errorf("no local interface found")
 }
 
-// resolveMediaBindIP chooses the local address for RTP sockets.
+// resolveMediaBindIP chooses an explicit local address for RTP sockets.
 //
-// SignalingIPLocal is an announce/discovery value and, with nat_1_to_1_ip, may be a public
-// address that is not assigned to any interface. Binding RTP to that address fails with
-// EADDRNOTAVAIL. Prefer an explicit listen address, then only use SignalingIPLocal when it
-// is actually present on the host.
-func resolveMediaBindIP(conf *config.Config, sconf *ServiceConfig) netip.Addr {
-	if conf != nil {
-		if ip, ok := parseSpecificListenIP(conf.MediaListenIP); ok {
-			return ip
-		}
-		if ip, ok := parseSpecificListenIP(conf.ListenIP); ok {
-			return ip
-		}
+// Binding is opt-in: only media_listen_ip or a specific listen_ip pin the socket.
+// Otherwise RTP keeps listening on 0.0.0.0 so multi-interface deployments are unchanged.
+// Do not infer from SignalingIPLocal — with nat_1_to_1_ip that value may be a public
+// announce address not assigned locally, and even when local it may be an arbitrary
+// first NIC from getLocalIP (e.g. docker0).
+func resolveMediaBindIP(conf *config.Config) netip.Addr {
+	if conf == nil {
+		return netip.Addr{}
 	}
-	if sconf != nil && sconf.SignalingIPLocal.IsValid() && isLocalInterfaceIP(sconf.SignalingIPLocal) {
-		return sconf.SignalingIPLocal
+	if ip, ok := parseSpecificListenIP(conf.MediaListenIP); ok {
+		return ip
+	}
+	if ip, ok := parseSpecificListenIP(conf.ListenIP); ok {
+		return ip
 	}
 	return netip.Addr{}
 }
@@ -165,37 +164,4 @@ func parseSpecificListenIP(s string) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return ip, true
-}
-
-func isLocalInterfaceIP(ip netip.Addr) bool {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return false
-	}
-	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			var cand net.IP
-			switch v := a.(type) {
-			case *net.IPNet:
-				cand = v.IP
-			case *net.IPAddr:
-				cand = v.IP
-			default:
-				continue
-			}
-			addr, ok := netip.AddrFromSlice(cand)
-			if !ok {
-				continue
-			}
-			addr = addr.Unmap()
-			if addr == ip.Unmap() {
-				return true
-			}
-		}
-	}
-	return false
 }

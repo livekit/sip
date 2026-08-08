@@ -113,9 +113,8 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 	// MediaListenIP binds RTP sockets to a specific local interface. Empty falls back to
-	// ListenIP (when specific), then SignalingIPLocal only if that address is assigned
-	// locally; otherwise RTP listens on 0.0.0.0. Distinct from media_nat_1_to_1_ip, which
-	// only affects the announced address in SDP.
+	// ListenIP when that is a specific address; otherwise RTP listens on 0.0.0.0.
+	// Distinct from media_nat_1_to_1_ip, which only affects the announced address in SDP.
 	MediaListenIP string `yaml:"media_listen_ip"`
 
 	MediaTimeout         time.Duration   `yaml:"media_timeout"`
