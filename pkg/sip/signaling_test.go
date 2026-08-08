@@ -278,7 +278,23 @@ func (s *sipUATest) NewRequest(method sip.RequestMethod, fromUser string, toUser
 	return req
 }
 
+// ackFunc decides how a 2xx INVITE response is acknowledged. It returns the SDP body for
+// the ACK (delayed offer flow), and whether to send the ACK at all.
+type ackFunc func(resp *sip.Response) (sdp []byte, send bool)
+
 func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request, isFromUAC bool) *sip.Response {
+	t.Helper()
+	return s.transactionRequest(t, req, nil)
+}
+
+// TransactionRequestWithACK is like TransactionRequest, but lets the caller control the ACK
+// for a 2xx INVITE response: send an SDP answer in it, or skip it entirely.
+func (s *sipUATest) TransactionRequestWithACK(t *testing.T, req *sip.Request, ack ackFunc) *sip.Response {
+	t.Helper()
+	return s.transactionRequest(t, req, ack)
+}
+
+func (s *sipUATest) transactionRequest(t *testing.T, req *sip.Request, ack ackFunc) *sip.Response {
 	t.Helper()
 	tx, err := s.Client.TransactionRequest(req)
 	require.NoError(t, err)
@@ -287,9 +303,21 @@ func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request, isFromUAC
 	resp := getFinalResponseOrFail(t, tx, req)
 	if req.Method == sip.INVITE && resp.StatusCode < 300 {
 		// Need to send ACK for 2xx INVITE, sipgo already sends ACK for 3xx+
-		ack := sip.NewAckRequest(req, resp, nil)
-		err = s.Client.WriteRequest(ack)
-		require.NoError(t, err)
+		var (
+			body []byte
+			send = true
+		)
+		if ack != nil {
+			body, send = ack(resp)
+		}
+		if send {
+			ackReq := sip.NewAckRequest(req, resp, body)
+			if len(body) != 0 {
+				ackReq.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+			}
+			err = s.Client.WriteRequest(ackReq)
+			require.NoError(t, err)
+		}
 	}
 	return resp
 }
@@ -764,6 +792,151 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
 		})
+	})
+}
+
+// TestLateOffer covers the delayed offer flow (RFC 3261, Sec. 13.2.1) on the inbound path:
+// the INVITE carries no SDP, we offer in the 200 OK and expect the answer in the ACK.
+func TestLateOffer(t *testing.T) {
+	// answerTo builds an SDP answer for the offer the server sent in the 200 OK.
+	answerTo := func(t *testing.T, offerData []byte, addr netip.AddrPort) []byte {
+		t.Helper()
+		offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+		require.NoError(t, err)
+		answer, _, err := offer.Answer(addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
+		require.NoError(t, err)
+		data, err := answer.SDP.Marshal()
+		require.NoError(t, err)
+		return data
+	}
+	// findCall resolves the inbound call created by the INVITE, and updates the dialog state.
+	findCall := func(t *testing.T, st *serviceTest, call *sipUADialogTest, resp *sip.Response) *inboundCall {
+		t.Helper()
+		remoteTag, ok := resp.To().Params.Get("tag")
+		require.True(t, ok, "remote tag should be present")
+		call.SetRemoteTag(LocalTag(remoteTag))
+		call.SetRemoteSDP(resp.Body())
+		call.SetRouteSet(resp, true)
+
+		st.Server.cmu.Lock()
+		defer st.Server.cmu.Unlock()
+		ic, ok := st.Server.byLocalTag[call.remoteTag]
+		require.True(t, ok, "call should be registered")
+		return ic
+	}
+	expectBye := func(t *testing.T, byeSink <-chan *sipUARequest, timeout time.Duration) {
+		t.Helper()
+		select {
+		case msg := <-byeSink:
+			require.NotNil(t, msg, "unexpected nil message")
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
+		case <-time.After(timeout):
+			require.Fail(t, "timeout waiting for BYE")
+		}
+	}
+
+	t.Run("accept", func(t *testing.T) {
+		st := NewServiceTest(t, nil)
+		call := newTestCall(st.TestUA, false)
+		remoteMedia := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0xB0B)
+
+		var ownOffer []byte
+		resp := st.TestUA.TransactionRequestWithACK(t, call.NewRequest(sip.INVITE), func(resp *sip.Response) ([]byte, bool) {
+			ownOffer = resp.Body()
+			return answerTo(t, ownOffer, remoteMedia), true
+		})
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+		require.NotEmpty(t, ownOffer, "200 OK must carry our own offer")
+		_, err := sdp.ParseOfferWith(defaultCodecs, ownOffer)
+		require.NoError(t, err, "200 OK must carry a valid offer")
+
+		ic := findCall(t, st, call, resp)
+		require.Eventually(t, func() bool {
+			return ic.media.RemoteAddr() == remoteMedia
+		}, 10*time.Second, 10*time.Millisecond, "answer from the ACK should set the RTP destination")
+
+		mc := ic.media.Config()
+		require.NotNil(t, mc, "media config should be set from the answer")
+		require.NotEmpty(t, mc.Audio.Codec.Info().SDPName, "audio codec should be negotiated")
+
+		// A bodiless re-INVITE keep-alive must echo the negotiated SDP, not our raw offer.
+		negotiated := ic.cc.OwnSDP()
+		require.NotEmpty(t, negotiated)
+		reResp := st.TestUA.TransactionRequest(t, call.NewRequest(sip.INVITE), true)
+		require.Equal(t, sip.StatusCode(200), reResp.StatusCode, "body-less re-INVITE should get 200 OK")
+		require.Equal(t, negotiated, reResp.Body(), "body-less re-INVITE should return the negotiated SDP")
+	})
+
+	t.Run("no_ack", func(t *testing.T) {
+		st := NewServiceTest(t, nil)
+		call := newTestCall(st.TestUA, false)
+		byeSink := call.RegisterRequestChannel("BYE")
+
+		resp := st.TestUA.TransactionRequestWithACK(t, call.NewRequest(sip.INVITE), func(*sip.Response) ([]byte, bool) {
+			return nil, false // never ACK the 200 OK
+		})
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+		require.NotEmpty(t, resp.Body(), "200 OK must carry our own offer")
+
+		// The call is unusable without the answer, so it must be terminated with a BYE.
+		expectBye(t, byeSink, 30*time.Second)
+	})
+
+	t.Run("no_sdp_in_ack", func(t *testing.T) {
+		st := NewServiceTest(t, nil)
+		call := newTestCall(st.TestUA, false)
+		byeSink := call.RegisterRequestChannel("BYE")
+
+		// Default ACK carries no body.
+		resp := st.TestUA.TransactionRequest(t, call.NewRequest(sip.INVITE), true)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+
+		expectBye(t, byeSink, 10*time.Second)
+	})
+
+	t.Run("bad_sdp_in_ack", func(t *testing.T) {
+		st := NewServiceTest(t, nil)
+		call := newTestCall(st.TestUA, false)
+		byeSink := call.RegisterRequestChannel("BYE")
+
+		resp := st.TestUA.TransactionRequestWithACK(t, call.NewRequest(sip.INVITE), func(*sip.Response) ([]byte, bool) {
+			return []byte("definitely not an sdp"), true
+		})
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+
+		expectBye(t, byeSink, 10*time.Second)
+	})
+
+	t.Run("pin_prompt", func(t *testing.T) {
+		st := NewServiceTest(t, nil)
+		st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			if info.Pin == "" && !info.NoPin {
+				return CallDispatch{Result: DispatchRequestPin}
+			}
+			return CallDispatch{
+				Result: DispatchAccept,
+				Room: RoomConfig{
+					RoomName:    "test-room",
+					Participant: ParticipantConfig{Identity: "test-participant"},
+				},
+			}
+		}
+
+		call := newTestCall(st.TestUA, false)
+		remoteMedia := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0xB0C)
+		resp := st.TestUA.TransactionRequestWithACK(t, call.NewRequest(sip.INVITE), func(resp *sip.Response) ([]byte, bool) {
+			return answerTo(t, resp.Body(), remoteMedia), true
+		})
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+		require.NotEmpty(t, resp.Body(), "200 OK must carry our own offer")
+
+		// The pin prompt plays audio and reads DTMF, so the answer must be applied
+		// before the prompt starts, i.e. as part of accepting the call.
+		ic := findCall(t, st, call, resp)
+		require.Eventually(t, func() bool {
+			return ic.media.Config() != nil && ic.media.RemoteAddr() == remoteMedia
+		}, 10*time.Second, 10*time.Millisecond, "answer from the ACK should be applied before the pin prompt")
 	})
 }
 

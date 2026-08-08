@@ -39,7 +39,8 @@ type SignalingTimestamps struct {
 	// Outbound only: time the API request was received (call creation).
 	APITime time.Time
 
-	// Outbound only: ACK sent after receiving 200 OK.
+	// Outbound: ACK sent after receiving 200 OK.
+	// Inbound: ACK received for the 200 OK, delayed offer flow only.
 	AckTime time.Time
 }
 

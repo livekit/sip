@@ -887,6 +887,15 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		pinPrompt = true
 	}
 
+	// Delayed offer (RFC 3261, Sec. 13.2.1): the INVITE carries no SDP, so we generate
+	// the offer for the 200 OK and only learn the remote media params from the ACK.
+	var (
+		lateOffer bool
+		ownOffer  *sdp.Offer
+	)
+
+	// runMedia starts the media port and returns the SDP body for the 200 OK.
+	// It's either an answer to the offer from the INVITE, or our own offer, if the INVITE had none.
 	runMedia := func(m *sipMediaConfig) ([]byte, error) {
 		log := c.log()
 		if h := req.ContentLength(); h != nil {
@@ -902,9 +911,20 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		} else {
 			log.Infow("no offer type specified")
 		}
-		rawSDP := req.Body()
+		rawSDP := sdpBodyFromRequest(req)
+		lateOffer = len(rawSDP) == 0
 		tmedia := c.mon.StageDurTimer("start-media")
-		answerData, err := c.runMediaConn(tid, rawSDP, m, conf, disp.EnabledFeatures, disp.FeatureFlags)
+		var (
+			sdpData []byte
+			err     error
+		)
+		if lateOffer {
+			log.Infow("no offer in INVITE, using delayed offer")
+			c.cc.SetLateOffer()
+			ownOffer, sdpData, err = c.runMediaOffer(tid, m, conf, disp.FeatureFlags)
+		} else {
+			sdpData, err = c.runMediaConn(tid, rawSDP, m, conf, disp.EnabledFeatures, disp.FeatureFlags)
+		}
 		tmedia()
 		if err != nil {
 			sipReason := sip.StatusInternalServerError
@@ -932,7 +952,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			})
 			return nil, err
 		}
-		return answerData, nil
+		return sdpData, nil
 	}
 
 	// If we do not wait for ACK during Accept, we could wait for it later.
@@ -941,6 +961,39 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		ackReceived <-chan struct{}
 		ackTimeout  <-chan time.Time
 	)
+
+	// applyLateAnswer applies the SDP answer that the remote sent in the ACK.
+	// The call is already accepted at this point, so any failure must terminate it with a BYE.
+	applyLateAnswer := func() (bool, error) {
+		c.sigTs.AckTime = time.Now()
+		answerData := c.cc.ACKSDP()
+		if len(answerData) == 0 {
+			c.log().Errorw("No SDP answer in ACK", nil)
+			c.close(ctx, EndCall{
+				Status: callMediaFailed,
+				Term:   stats.ClientError("no-sdp-in-ack"),
+			})
+			return false, psrpc.NewErrorf(psrpc.InvalidArgument, "no SDP answer in ACK")
+		}
+		localSDP, err := c.applyMediaAnswer(ownOffer, answerData, mconf, disp.EnabledFeatures, disp.FeatureFlags)
+		if err != nil {
+			c.log().Warnw("Cannot apply SDP answer from ACK", err, "sdp", string(answerData))
+			term := stats.ClientError("sdp-error")
+			if errors.Is(err, sdp.ErrNoCommonMedia) {
+				term = stats.ClientError("no-common-codec")
+			} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
+				term = stats.ClientError("no-common-crypto")
+			}
+			c.close(ctx, EndCall{
+				Status: callMediaFailed,
+				Term:   term,
+			})
+			return false, err
+		}
+		// Bodiless re-INVITE keep-alives must echo the negotiated SDP, not our raw offer.
+		c.cc.SetOwnSDP(localSDP)
+		return true, nil
+	}
 
 	// We need to start media first, otherwise we won't be able to send audio prompts to the caller, or receive DTMF.
 	acceptCall := func(answerData []byte) (bool, error) {
@@ -967,7 +1020,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			})
 			return false, err
 		}
-		if !c.s.conf.Experimental.InboundWaitACK {
+		if lateOffer {
+			// Accept only returns once the ACK arrives, so the answer is already here.
+			if ok, err := applyLateAnswer(); !ok {
+				return false, err
+			}
+		} else if !c.s.conf.Experimental.InboundWaitACK {
 			ackReceived = c.cc.InviteACK()
 			// Start this timer right after the Accept.
 			ackTimeout = time.After(inviteOkAckLateTimeout)
@@ -1026,11 +1084,20 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
 		return fmt.Errorf("failed joining room: %w", err)
 	}
-	// Publish our own track.
-	if err := c.publishTrack(); err != nil {
-		c.log().Errorw("Cannot publish track", err)
-		c.closeWithTerm(ctx, stats.ServerError("publish-failed"))
-		return fmt.Errorf("publishing track to room failed: %w", err)
+	publishTrack := func() error {
+		if err := c.publishTrack(); err != nil {
+			c.log().Errorw("Cannot publish track", err)
+			c.closeWithTerm(ctx, stats.ServerError("publish-failed"))
+			return fmt.Errorf("publishing track to room failed: %w", err)
+		}
+		return nil
+	}
+	// Publish our own track. On the delayed offer path the media config is only known
+	// after the ACK, so publishing is deferred until the call is accepted.
+	if !lateOffer {
+		if err := publishTrack(); err != nil {
+			return err
+		}
 	}
 	tsub := c.mon.StageDurTimer("track-subscribe")
 	c.lkRoom.Subscribe()
@@ -1044,6 +1111,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		}
 		if ok, err := acceptCall(answerData); !ok {
 			return err // already sent a response. Could be success if caller hung up
+		}
+	}
+	if lateOffer {
+		if err := publishTrack(); err != nil {
+			return err
 		}
 	}
 
@@ -1105,12 +1177,8 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 	}
 }
 
-func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
-	c.mmu.Lock()
-	defer c.mmu.Unlock()
-	c.mon.SDPSize(len(offerData), true)
-	c.log().Debugw("SDP offer", "sdp", string(offerData))
-
+// newMediaPort creates the media port for the call. Must be called with c.mmu held.
+func (c *inboundCall) newMediaPort(tid traceid.ID, mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) error {
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
@@ -1128,29 +1196,24 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 		DrainingDuration:     conf.RTPDrainingDuration,
 	}, RoomSampleRate)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c.media = mp
 	c.mediaCodecs = mconf.Codecs
 	mp.EnableTimeout(false) // enabled once we accept the call
 	mp.DisableOut()         // disabled until we send 200
 	mp.SetDTMFAudio(conf.AudioDTMF)
+	return nil
+}
 
-	answer, mc, err := mp.SetOffer(offerData, mconf.Codecs, mconf.Encryption)
-	if err != nil {
-		return nil, err
+// applyMediaConf accepts the negotiated media config and wires the media port to the room.
+// Must be called with c.mmu held.
+func (c *inboundCall) applyMediaConf(mc *MediaConf, features []livekit.SIPFeature, featureFlags map[string]string) error {
+	mp := c.media
+	if err := mp.SetConfig(mc); err != nil {
+		return err
 	}
-	answerData, err = answer.SDP.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	c.mon.SDPSize(len(answerData), false)
-	c.log().Debugw("SDP answer", "sdp", string(answerData))
-
-	if err = mp.SetConfig(mc); err != nil {
-		return nil, err
-	}
-	mc.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
+	mc.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: mp.InputSampleRate()})
 	if mc.Audio.DTMFType != 0 {
 		mp.HandleDTMF(c.handleDTMF)
 	}
@@ -1165,7 +1228,71 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
 	})
+	return nil
+}
+
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
+	c.mon.SDPSize(len(offerData), true)
+	c.log().Debugw("SDP offer", "sdp", string(offerData))
+
+	if err := c.newMediaPort(tid, mconf, conf, featureFlags); err != nil {
+		return nil, err
+	}
+	answer, mc, err := c.media.SetOffer(offerData, mconf.Codecs, mconf.Encryption)
+	if err != nil {
+		return nil, err
+	}
+	answerData, err = answer.SDP.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	c.mon.SDPSize(len(answerData), false)
+	c.log().Debugw("SDP answer", "sdp", string(answerData))
+
+	if err = c.applyMediaConf(mc, features, featureFlags); err != nil {
+		return nil, err
+	}
 	return answerData, nil
+}
+
+// runMediaOffer starts the media port and generates our own SDP offer for the delayed offer flow.
+// The answer is expected in the ACK, see applyMediaAnswer.
+func (c *inboundCall) runMediaOffer(tid traceid.ID, mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) (*sdp.Offer, []byte, error) {
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
+	if err := c.newMediaPort(tid, mconf, conf, featureFlags); err != nil {
+		return nil, nil, err
+	}
+	offer, err := c.media.NewOffer(mconf.Codecs, mconf.Encryption)
+	if err != nil {
+		return nil, nil, err
+	}
+	offerData, err := offer.SDP.Marshal()
+	if err != nil {
+		return nil, nil, err
+	}
+	c.mon.SDPSize(len(offerData), true)
+	c.log().Debugw("SDP offer", "sdp", string(offerData))
+	return offer, offerData, nil
+}
+
+// applyMediaAnswer applies the SDP answer received in the ACK and returns the negotiated local SDP.
+func (c *inboundCall) applyMediaAnswer(offer *sdp.Offer, answerData []byte, mconf *sipMediaConfig, features []livekit.SIPFeature, featureFlags map[string]string) ([]byte, error) {
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
+	c.mon.SDPSize(len(answerData), false)
+	c.log().Debugw("SDP answer", "sdp", string(answerData))
+
+	mc, localSDP, err := c.media.SetAnswer(offer, answerData, mconf.Codecs, mconf.Encryption)
+	if err != nil {
+		return nil, err
+	}
+	if err = c.applyMediaConf(mc, features, featureFlags); err != nil {
+		return nil, err
+	}
+	return localSDP, nil
 }
 
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
@@ -1788,8 +1915,13 @@ type sipInbound struct {
 	legTr      Transport
 	referDone  chan error
 
+	// ackSDP is set by AcceptAck before breaking the acked fuse. It cannot be guarded by
+	// mu, because Accept holds mu while waiting for the ACK.
+	ackSDP atomic.Pointer[[]byte]
+
 	mu              sync.RWMutex
 	lastSDP         []byte
+	lateOffer       bool
 	inviteOk        *sip.Response
 	nextRequestCSeq uint32
 	referCseq       uint32
@@ -2007,6 +2139,30 @@ func (c *sipInbound) OwnSDP() []byte {
 	return c.lastSDP
 }
 
+// SetOwnSDP overrides the SDP echoed back for bodiless re-INVITEs. Used by the delayed offer
+// flow to replace our raw offer with the negotiated SDP.
+func (c *sipInbound) SetOwnSDP(sdpData []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastSDP = sdpData
+}
+
+// SetLateOffer marks the call as using the delayed offer flow (RFC 3261, Sec. 13.2.1),
+// where our own offer is sent in the 200 OK and the answer arrives in the ACK.
+func (c *sipInbound) SetLateOffer() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lateOffer = true
+}
+
+// ACKSDP returns the SDP body of the ACK, if any. Only valid once InviteACK fires.
+func (c *sipInbound) ACKSDP() []byte {
+	if p := c.ackSDP.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.Accept")
 	defer span.End()
@@ -2028,9 +2184,17 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
 	c.stopRinging()
+	// The delayed offer flow always waits for the ACK: the call is unusable without the answer it carries.
+	waitACK := c.s.conf.Experimental.InboundWaitACK || c.lateOffer
+	var txAcks <-chan *sip.Request
+	if !c.lateOffer {
+		// Transaction-level ACKs only fire for non-2xx and never carry the answer,
+		// so the delayed offer flow must rely on onAck instead.
+		txAcks = c.inviteTx.Acks()
+	}
 	retryAfter := inviteOkRetryInterval
 	maxRetries := inviteOKRetryAttempts
-	if !c.s.conf.Experimental.InboundWaitACK {
+	if !waitACK {
 		// Still retry, but limit it to ~750ms.
 		maxRetries = inviteOKRetryAttemptsNoACK
 	}
@@ -2045,13 +2209,13 @@ retries:
 		if err := c.inviteTx.Respond(r); err != nil {
 			return err
 		}
-		if c.legTr != TransportUDP && !c.s.conf.Experimental.InboundWaitACK {
+		if c.legTr != TransportUDP && !waitACK {
 			// Reliable transport and we are not waiting for ACK - return immediately.
 			break retries
 		}
 		t := time.NewTimer(retryAfter)
 		select {
-		case <-c.inviteTx.Acks():
+		case <-txAcks:
 			t.Stop()
 			break retries
 		case <-c.acked.Watch():
@@ -2062,7 +2226,7 @@ retries:
 		if try > maxRetries {
 			// Only set error if an option is enabled.
 			// Otherwise, ignore missing ACK for now.
-			if c.s.conf.Experimental.InboundWaitACK {
+			if waitACK {
 				acceptErr = errNoACK
 			}
 			break retries
@@ -2076,6 +2240,10 @@ retries:
 }
 
 func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
+	// The ACK carries the SDP answer in the delayed offer flow. Store it before breaking
+	// the fuse, so that whoever waits on it also observes the body.
+	body := sdpBodyFromRequest(req)
+	c.ackSDP.Store(&body)
 	c.acked.Break()
 }
 
