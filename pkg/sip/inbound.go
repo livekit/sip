@@ -1115,7 +1115,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
 		IP:                   c.s.sconf.MediaIP,
-		BindIP:               c.s.sconf.SignalingIPLocal,
+		BindIP:               resolveMediaBindIP(c.s.conf, c.s.sconf),
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:         mconf.MediaTimeout,

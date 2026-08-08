@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -131,4 +132,70 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 	}
 
 	return netip.Addr{}, fmt.Errorf("no local interface found")
+}
+
+// resolveMediaBindIP chooses the local address for RTP sockets.
+//
+// SignalingIPLocal is an announce/discovery value and, with nat_1_to_1_ip, may be a public
+// address that is not assigned to any interface. Binding RTP to that address fails with
+// EADDRNOTAVAIL. Prefer an explicit listen address, then only use SignalingIPLocal when it
+// is actually present on the host.
+func resolveMediaBindIP(conf *config.Config, sconf *ServiceConfig) netip.Addr {
+	if conf != nil {
+		if ip, ok := parseSpecificListenIP(conf.MediaListenIP); ok {
+			return ip
+		}
+		if ip, ok := parseSpecificListenIP(conf.ListenIP); ok {
+			return ip
+		}
+	}
+	if sconf != nil && sconf.SignalingIPLocal.IsValid() && isLocalInterfaceIP(sconf.SignalingIPLocal) {
+		return sconf.SignalingIPLocal
+	}
+	return netip.Addr{}
+}
+
+func parseSpecificListenIP(s string) (netip.Addr, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	ip, err := netip.ParseAddr(s)
+	if err != nil || !ip.IsValid() || ip.IsUnspecified() {
+		return netip.Addr{}, false
+	}
+	return ip, true
+}
+
+func isLocalInterfaceIP(ip netip.Addr) bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var cand net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				cand = v.IP
+			case *net.IPAddr:
+				cand = v.IP
+			default:
+				continue
+			}
+			addr, ok := netip.AddrFromSlice(cand)
+			if !ok {
+				continue
+			}
+			addr = addr.Unmap()
+			if addr == ip.Unmap() {
+				return true
+			}
+		}
+	}
+	return false
 }
