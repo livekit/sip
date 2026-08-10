@@ -150,8 +150,6 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		})
 		return nil, err
 	}
-	call.media.EnableTimeout(false)
-	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
 		call.close(ctx, EndCall{
 			Report: fmt.Errorf("room join failed: %w", err),
@@ -513,8 +511,11 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	if digits := c.sipConf.dtmf; digits != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
-		if err := c.media.WriteDTMF(ctx, digits); err != nil {
-			return err
+		dtmfWriter := c.media.GetDTMFWriter()
+		for i := range len(digits) {
+			dtmfWriter.WriteSample(&livekit.SipDTMF{
+				Digit: string(digits[i]),
+			})
 		}
 	}
 	c.setStatus(CallActive)
@@ -529,7 +530,7 @@ func (c *outboundCall) connectMedia() {
 	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
 
 	c.media.WriteAudioTo(c.lkRoomIn)
-	c.media.WriteDTMFTo(c.handleDTMF)
+	c.media.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 }
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
@@ -737,8 +738,6 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		return err
 	}
 
-	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
-
 	c.mon.InviteAccept()
 	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
@@ -756,22 +755,38 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
-	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = mc.Audio.Codec.Info().SDPName
-		if r := c.lkRoom.Room(); r != nil {
-			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
-		}
-	})
+	if audio := c.media.NegotiatedAudio(); audio != nil {
+		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+			info.AudioCodec = audio.Codec.Info().SDPName
+			if r := c.lkRoom.Room(); r != nil {
+				info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
+			}
+		})
+
+	}
 	return nil
 }
 
-func (c *outboundCall) handleDTMF(ev dtmf.Event) {
+func (c *outboundCall) handleDTMF(msg *livekit.SipDTMF) {
 	if c.lkRoom == nil {
 		return
 	}
+
+	if msg == nil {
+		return
+	}
+
+	code := byte(msg.Code)
+	digit := byte(0)
+	if len(msg.Digit) == 1 {
+		digit = msg.Digit[0]
+	} else {
+		digit = dtmf.CodeToChar(code)
+	}
+
 	_ = c.lkRoom.SendData(&livekit.SipDTMF{
-		Code:  uint32(ev.Code),
-		Digit: string([]byte{ev.Digit}),
+		Code:  uint32(code),
+		Digit: string([]byte{digit}),
 	}, lksdk.WithDataPublishReliable(true))
 }
 

@@ -406,7 +406,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		existing.updateRemoteFromSDP(sdpBodyFromRequest(req))
+		if _, err = existing.media.GenerateAnswer(sdpBodyFromRequest(req)); err != nil {
+			log.Errorw("failed to update outbound call SDP", err)
+		}
+
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
@@ -414,10 +417,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
-			localSDP := oc.cc.LocalSDP()
-			if len(localSDP) != 0 {
+			if localSDP, err := oc.media.GetLocalSDP(); err == nil && len(localSDP) > 0 {
 				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-				oc.updateRemoteFromSDP(sdpBodyFromRequest(req))
+				if _, err = oc.media.GenerateAnswer(sdpBodyFromRequest(req)); err != nil {
+					log.Errorw("failed to update outbound call SDP", err)
+					return nil
+				}
 				oc.cc.RecordInvite(newCSeq)
 				cc.AcceptAsKeepAlive(localSDP)
 				return nil
@@ -709,6 +714,7 @@ type inboundCall struct {
 	sigTs       SignalingTimestamps
 	jitterBuf   bool
 	projectID   string
+	audioOut    *msdk.WriteCloserSwitch[msdk.PCM16Sample]
 }
 
 func (s *Server) newInboundCall(
@@ -738,6 +744,7 @@ func (s *Server) newInboundCall(
 		endCall:    make(chan EndCall, 1),
 		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
 		projectID:  "", // Will be set in handleInvite when available
+		audioOut:   msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
 	}
 	c.stats.Update()
 	c.setLog(log.WithValues("jitterBuf", c.jitterBuf))
@@ -960,8 +967,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			// Start this timer right after the Accept.
 			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
-		c.media.EnableTimeout(true)
-		c.media.EnableOut()
+		c.audioOut.Swap(c.media.GetAudioWriter())
 		if ok, err := c.waitMedia(ctx); !ok {
 			return false, err
 		}
@@ -1079,7 +1085,7 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			})
 			c.closeWithTerm(ctx, terminationFromRoomDisconnect(roomReason))
 			return nil
-		case <-c.media.Timeout():
+		case <-c.media.MediaTimeout():
 			return c.mediaTimeout(ctx)
 		case <-ackReceived:
 			ackTimeout = nil // all good, disable timeout
@@ -1088,12 +1094,33 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log().Warnw("Call accepted, but no ACK received", errNoACK)
 			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
-			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
+			c.media.SetTimeoutForDelayedAck(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
 		}
 	}
 }
 
-func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) (answerData []byte, _ error) {
+type dtmfEventWriter struct {
+	handler func(msg *livekit.SipDTMF)
+}
+
+func (w *dtmfEventWriter) String() string {
+	return "dtmfEventWriter"
+}
+
+func (w *dtmfEventWriter) SampleRate() int {
+	return dtmf.SampleRate
+}
+
+func (w *dtmfEventWriter) Close() error {
+	return nil
+}
+
+func (w *dtmfEventWriter) WriteSample(sample *livekit.SipDTMF) error {
+	w.handler(sample)
+	return nil
+}
+
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) ([]byte, error) {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	c.mon.SDPSize(len(offerData), true)
@@ -1122,35 +1149,30 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	}
 	c.media = mp
 	c.mediaCodecs = mconf.Codecs
-	mp.EnableTimeout(false) // enabled once we accept the call
-	mp.DisableOut()         // disabled until we send 200
 
 	answerData, err := mp.GenerateAnswer(offerData)
 	if err != nil {
 		return nil, err
 	}
+
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mc.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
-
-	if mc.Audio.DTMFType != 0 {
-		mp.HandleDTMF(c.handleDTMF)
-	}
+	mp.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 
 	// Must be set earlier to send the pin prompts.
-	if w := c.lkRoom.SwapOutput(mp.GetAudioWriter()); w != nil {
+	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
 		_ = w.Close()
 	}
-	if mc.Audio.DTMFType != 0 {
-		c.lkRoom.SetDTMFOutput(mp.GetDTMFWriter())
+	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
+
+	if audio := mp.NegotiatedAudio(); audio != nil {
+		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+			info.AudioCodec = audio.Codec.Info().SDPName
+		})
 	}
-	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = mc.Audio.Codec.Info().SDPName
-	})
 	return answerData, nil
 }
-
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
 	defer c.mon.StageDurTimer("wait-media")()
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitMedia")
@@ -1599,17 +1621,33 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []msdk.PCM16Sample) 
 	_ = msdk.PlayAudio[msdk.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
 }
 
-func (c *inboundCall) handleDTMF(tone dtmf.Event) {
+func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
+	if msg == nil {
+		return
+	}
+
+	code := byte(msg.Code)
+	digit := byte(0)
+	if len(msg.Digit) == 1 {
+		digit = msg.Digit[0]
+	} else {
+		digit = dtmf.CodeToChar(code)
+	}
+	event := dtmf.Event{
+		Code:  code,
+		Digit: digit,
+	}
+
 	if c.forwardDTMF.Load() {
 		_ = c.lkRoom.SendData(&livekit.SipDTMF{
-			Code:  uint32(tone.Code),
-			Digit: string([]byte{tone.Digit}),
+			Code:  uint32(code),
+			Digit: string([]byte{digit}),
 		}, lksdk.WithDataPublishReliable(true))
 		return
 	}
 	// We should have enough buffer here.
 	select {
-	case c.dtmf <- tone:
+	case c.dtmf <- event:
 	default:
 	}
 }
@@ -1639,9 +1677,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		}()
 
 		go func() {
-			aw := c.media.GetAudioWriter()
-
-			err := tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, c.audioOut, ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log().Infow("cannot play dial tone", "error", err)
 			}

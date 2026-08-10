@@ -28,7 +28,6 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/mixer"
@@ -188,7 +187,7 @@ type RoomInterface interface {
 	Output() msdk.Writer[msdk.PCM16Sample]
 	SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer
 	CloseOutput() error
-	SetDTMFOutput(w dtmf.Writer)
+	SetDTMFOutput(w msdk.WriteCloser[*livekit.SipDTMF])
 	Close() error
 	CloseWithReason(reason livekit.DisconnectReason) error
 	Participant() ParticipantInfo
@@ -211,7 +210,7 @@ type Room struct {
 	room    atomic.Pointer[lksdk.Room]
 	mix     *mixer.Mixer
 	out     *msdk.SwitchWriter
-	outDtmf atomic.Pointer[dtmf.Writer]
+	outDtmf atomic.Pointer[msdk.WriteCloser[*livekit.SipDTMF]]
 	// p is replaced on every reconnect, since the server issues a new
 	// participant SID, and read concurrently by Participant().
 	p          atomic.Pointer[ParticipantInfo]
@@ -700,7 +699,7 @@ func (r *Room) CloseOutput() error {
 	return w.Close()
 }
 
-func (r *Room) SetDTMFOutput(w dtmf.Writer) {
+func (r *Room) SetDTMFOutput(w msdk.WriteCloser[*livekit.SipDTMF]) {
 	if r == nil {
 		return
 	}
@@ -718,10 +717,8 @@ func (r *Room) sendDTMF(ctx context.Context, msg *livekit.SipDTMF) {
 		return
 	}
 	// TODO: Separate goroutine?
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	r.log.Debugw("forwarding dtmf to sip", "digit", msg.Digit)
-	_ = (*outDTMF).WriteDTMF(ctx, msg.Digit)
+	(*outDTMF).WriteSample(msg)
 }
 
 func (r *Room) Close() error {
