@@ -36,8 +36,9 @@ import (
 )
 
 const (
-	DefaultSIPPort    int = 5060
-	DefaultSIPPortTLS int = 5061
+	DefaultSIPPort              int = 5060
+	DefaultSIPPortTLS           int = 5061
+	DefaultRingingTimeoutStatus int = 486 // Busy Here
 )
 
 var (
@@ -94,6 +95,7 @@ type Config struct {
 	SIPHostname          string              `yaml:"sip_hostname"`
 	OutboundRouteHeaders []string            `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
 	SIPRingingInterval   time.Duration       `yaml:"sip_ringing_interval"`   // from 1 sec up to 60 (default '1s')
+	RingingTimeoutStatus int                 `yaml:"ringing_timeout_status"` // status when a call rings out, 3xx-6xx (default '486')
 	TCP                  *TCPConfig          `yaml:"tcp"`
 	TLS                  *TLSConfig          `yaml:"tls"`
 	RTPPort              rtcconfig.PortRange `yaml:"rtp_port"`
@@ -207,6 +209,12 @@ func (c *Config) Init() error {
 	}
 	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
 		c.MaxCpuUtilization = 0.9
+	}
+	if c.RingingTimeoutStatus == 0 {
+		c.RingingTimeoutStatus = DefaultRingingTimeoutStatus
+	} else if c.RingingTimeoutStatus < 300 || c.RingingTimeoutStatus > 699 {
+		return psrpc.NewErrorf(psrpc.InvalidArgument,
+			"ringing_timeout_status must be a SIP failure status between 300 and 699, got %d", c.RingingTimeoutStatus)
 	}
 
 	if err := c.InitLogger(); err != nil {
