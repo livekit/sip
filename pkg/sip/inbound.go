@@ -337,7 +337,7 @@ func providerLabel(p *livekit.ProviderInfo) string {
 	}
 }
 
-func updateRemoteFromSDP(media *MediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
+func updateRemoteFromSDP(media *mediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
 	if len(body) == 0 || media == nil {
 		return
 	}
@@ -707,7 +707,7 @@ type inboundCall struct {
 	closeReason atomic.Pointer[ReasonHeader]
 	call        *rpc.SIPCall
 	mmu         sync.Mutex
-	media       *MediaPort
+	media       *mediaPort
 	mediaCodecs *msdk.CodecSet
 	dtmf        chan dtmf.Event // buffered
 	endCall     chan EndCall    // buffered
@@ -1113,7 +1113,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
-	mp, err := NewMediaPort(tid, c.log(), c.mon, &MediaOptions{
+	mp, err := NewmediaPort(tid, c.log(), c.mon, &MediaOptions{
 		IP:                   c.s.sconf.MediaIP,
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.s.conf.MediaTimeoutInitial,
