@@ -126,7 +126,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	var err error
 
-	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
+	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
 		IP:                   c.sconf.MediaIP,
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.conf.MediaTimeoutInitial,
@@ -138,6 +138,9 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		Stats:                &call.stats.Port,
 		DrainingIdleTimeout:  conf.RTPDrainingIdleTimeout,
 		DrainingDuration:     conf.RTPDrainingDuration,
+		DTMFAudio:            conf.AudioDTMF,
+		Codecs:               sipConf.mediaConfig.Codecs,
+		Encryption:           sipConf.mediaConfig.Encryption,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(ctx, EndCall{
@@ -147,7 +150,6 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		})
 		return nil, err
 	}
-	call.media.SetDTMFAudio(conf.AudioDTMF)
 	call.media.EnableTimeout(false)
 	call.media.DisableOut() // disabled until we get 200
 	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
@@ -260,7 +262,7 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 				Reason: disconnectReasonFromRoomClose(roomReason),
 			})
 			return nil
-		case <-c.media.Timeout():
+		case <-c.media.MediaTimeout():
 			c.closeWithTimeout(ctx)
 			err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
 			c.setErrStatus(ctx, err)
@@ -520,18 +522,14 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
-func (c *outboundCall) updateRemoteFromSDP(body []byte) {
-	updateRemoteFromSDP(c.media, c.log, c.sipConf.mediaConfig.Codecs, body)
-}
-
 func (c *outboundCall) connectMedia() {
 	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
 		_ = w.Close()
 	}
-	c.lkRoom.SetDTMFOutput(c.media)
+	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
 
 	c.media.WriteAudioTo(c.lkRoomIn)
-	c.media.HandleDTMF(c.handleDTMF)
+	c.media.WriteDTMFTo(c.handleDTMF)
 }
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
@@ -676,12 +674,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		cancel()
 	}()
 
-	mconf := c.sipConf.mediaConfig
-	sdpOffer, err := c.media.NewOffer(mconf.Codecs, mconf.Encryption)
-	if err != nil {
-		return err
-	}
-	sdpOfferData, err := sdpOffer.SDP.Marshal()
+	sdpOfferData, err := c.media.GenerateOffer()
 	if err != nil {
 		return err
 	}
@@ -739,19 +732,14 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
 
-	mc, localSDP, err := c.media.SetAnswer(sdpOffer, sdpResp, mconf.Codecs, mconf.Encryption)
+	err = c.media.ProcessAnswer(sdpResp)
 	if err != nil {
 		return err
 	}
-	if err = c.media.SetConfig(mc); err != nil {
-		return err
-	}
+
 	mc.Processor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
-	c.cc.SetLocalSDP(localSDP)
 
 	c.mon.InviteAccept()
-	c.media.EnableOut()
-	c.media.EnableTimeout(true)
 	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
@@ -878,7 +866,6 @@ type sipOutbound struct {
 	callID     string
 	invite     *sip.Request
 	inviteOk   *sip.Response
-	localSDP   []byte // SDP Offer, constrained by the answer
 	nextCSeq   uint32
 	getHeaders setHeadersFunc
 
@@ -937,20 +924,6 @@ func (c *sipOutbound) RecordInvite(cseq uint32) {
 	if cseq > c.latestInviteCSeq {
 		c.latestInviteCSeq = cseq
 	}
-}
-
-// SetLocalSDP stores the precomputed local SDP for re-INVITE (from ApplyWithLocal).
-func (c *sipOutbound) SetLocalSDP(localSDP []byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.localSDP = localSDP
-}
-
-// LocalSDP returns the precomputed local SDP for re-INVITE (from ApplyWithLocal).
-func (c *sipOutbound) LocalSDP() []byte {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.localSDP
 }
 
 // Returns the original SDP offer.
