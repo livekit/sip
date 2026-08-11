@@ -365,8 +365,7 @@ type MediaOptions struct {
 	DrainingDuration     time.Duration
 }
 
-
-// MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
+// mediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
 // and audio/DTMF endpoints. It does not know about calls, rooms, or SIP dialogs.
 type MediaPort interface {
 	Close()
@@ -386,11 +385,11 @@ type MediaPort interface {
 	MediaTimeout() <-chan struct{}
 }
 
-func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
-	return NewMediaPortWith(tid, log, mon, nil, opts, sampleRate)
+func NewmediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*mediaPort, error) {
+	return NewmediaPortWith(tid, log, mon, nil, opts, sampleRate)
 }
 
-func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
+func NewmediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, conn UDPConn, opts *MediaOptions, sampleRate int) (*mediaPort, error) {
 	if opts == nil {
 		opts = &MediaOptions{}
 	}
@@ -416,7 +415,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	if opts.NoInputResample {
 		inSampleRate = -1 // set only after SDP is accepted
 	}
-	p := &MediaPort{
+	p := &mediaPort{
 		tid:              tid,
 		log:              log,
 		opts:             opts,
@@ -444,8 +443,8 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	return p, nil
 }
 
-// MediaPort combines all functionality related to sending and accepting SIP media.
-type MediaPort struct {
+// mediaPort combines all functionality related to sending and accepting SIP media.
+type mediaPort struct {
 	tid              traceid.ID
 	log              logger.Logger
 	opts             *MediaOptions
@@ -482,28 +481,28 @@ type MediaPort struct {
 	lastDTMFTimestamp atomic.Uint32 // rtp timestamp of last DTMF packet seen
 }
 
-func (p *MediaPort) DisableOut() {
+func (p *mediaPort) DisableOut() {
 	p.audioOut.Disable()
 }
 
-func (p *MediaPort) EnableOut() {
+func (p *mediaPort) EnableOut() {
 	p.audioOut.Enable()
 }
 
-func (p *MediaPort) kickTimeoutLoop() {
+func (p *mediaPort) kickTimeoutLoop() {
 	select {
 	case p.timeoutKick <- struct{}{}:
 	default: // already pending
 	}
 }
 
-func (p *MediaPort) disableTimeout() {
+func (p *mediaPort) disableTimeout() {
 	p.log.Debugw("media timeout disabled")
 	p.timeoutStart.Store(nil)
 	p.kickTimeoutLoop()
 }
 
-func (p *MediaPort) enableTimeout(initial, general time.Duration) {
+func (p *mediaPort) enableTimeout(initial, general time.Duration) {
 	if initial <= 0 || general <= 0 {
 		p.log.Warnw("attempting to set zero media timeout", nil, "initial", initial, "timeout", general)
 		if initial <= 0 {
@@ -525,7 +524,7 @@ func (p *MediaPort) enableTimeout(initial, general time.Duration) {
 	p.kickTimeoutLoop()
 }
 
-func (p *MediaPort) EnableTimeout(enabled bool) {
+func (p *mediaPort) EnableTimeout(enabled bool) {
 	if !enabled {
 		p.disableTimeout()
 		return
@@ -533,11 +532,11 @@ func (p *MediaPort) EnableTimeout(enabled bool) {
 	p.enableTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
 }
 
-func (p *MediaPort) SetTimeout(initial, general time.Duration) {
+func (p *mediaPort) SetTimeout(initial, general time.Duration) {
 	p.enableTimeout(initial, general)
 }
 
-func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
+func (p *mediaPort) timeoutLoop(timeoutCallback func()) {
 	defer p.log.Infow("media timeout loop stopped")
 
 	const disabledPark = time.Hour
@@ -638,7 +637,7 @@ func (p *MediaPort) timeoutLoop(timeoutCallback func()) {
 	}
 }
 
-func (p *MediaPort) Close() {
+func (p *mediaPort) Close() {
 	p.closed.Once(func() {
 		defer p.stats.Closed.Store(true)
 
@@ -677,11 +676,11 @@ func (p *MediaPort) Close() {
 	})
 }
 
-func (p *MediaPort) Port() int {
+func (p *mediaPort) Port() int {
 	return p.port.LocalAddr().(*net.UDPAddr).Port
 }
 
-func (p *MediaPort) RemoteAddr() netip.AddrPort {
+func (p *mediaPort) RemoteAddr() netip.AddrPort {
 	dst := p.port.dst.Load()
 	if dst == nil {
 		return netip.AddrPort{}
@@ -689,21 +688,21 @@ func (p *MediaPort) RemoteAddr() netip.AddrPort {
 	return *dst
 }
 
-func (p *MediaPort) UpdateRemote(addr netip.AddrPort) {
+func (p *mediaPort) UpdateRemote(addr netip.AddrPort) {
 	if addr.IsValid() && !addr.Addr().IsUnspecified() {
 		p.port.SetDst(addr)
 	}
 }
 
-func (p *MediaPort) Received() <-chan struct{} {
+func (p *mediaPort) Received() <-chan struct{} {
 	return p.mediaReceived.Watch()
 }
 
-func (p *MediaPort) Timeout() <-chan struct{} {
+func (p *mediaPort) Timeout() <-chan struct{} {
 	return p.mediaTimeout
 }
 
-func (p *MediaPort) Config() *MediaConf {
+func (p *mediaPort) Config() *MediaConf {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.conf
@@ -711,12 +710,12 @@ func (p *MediaPort) Config() *MediaConf {
 
 // InputSampleRate returns the expected sample rate for incoming audio from SIP.
 // Must be called after SetConfig, which sets the audioIn sample rate.
-func (p *MediaPort) InputSampleRate() int {
+func (p *mediaPort) InputSampleRate() int {
 	return p.audioIn.SampleRate()
 }
 
 // WriteAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
-func (p *MediaPort) WriteAudioTo(w msdk.PCM16Writer) {
+func (p *mediaPort) WriteAudioTo(w msdk.PCM16Writer) {
 	if processor := p.conf.Processor; processor != nil {
 		w = processor(w)
 	}
@@ -726,18 +725,18 @@ func (p *MediaPort) WriteAudioTo(w msdk.PCM16Writer) {
 }
 
 // GetAudioWriter returns audio writer that will send PCM to the destination via RTP.
-func (p *MediaPort) GetAudioWriter() msdk.PCM16Writer {
+func (p *mediaPort) GetAudioWriter() msdk.PCM16Writer {
 	return p.audioOut
 }
 
 // NewOffer generates an SDP offer for the media.
-func (p *MediaPort) NewOffer(codecs *msdk.CodecSet, encrypted sdp.Encryption) (*sdp.Offer, error) {
+func (p *mediaPort) NewOffer(codecs *msdk.CodecSet, encrypted sdp.Encryption) (*sdp.Offer, error) {
 	return sdp.NewOfferWith(codecs, p.externalIP, p.Port(), encrypted)
 }
 
 // SetAnswer decodes and applies SDP answer for offer from NewOffer.
 // SetConfig must be called with the decoded configuration.
-func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*MediaConf, []byte, error) {
+func (p *mediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*MediaConf, []byte, error) {
 	answer, err := sdp.ParseAnswerWith(codecs, answerData)
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
@@ -754,7 +753,7 @@ func (p *MediaPort) SetAnswer(offer *sdp.Offer, answerData []byte, codecs *msdk.
 }
 
 // SetOffer decodes the offer from another party and returns encoded answer. To accept the offer, call SetConfig.
-func (p *MediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
+func (p *mediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.Encryption) (*sdp.Answer, *MediaConf, error) {
 	offer, err := sdp.ParseOfferWith(codecs, offerData)
 	if err != nil {
 		return nil, nil, SDPError{Err: err}
@@ -769,7 +768,7 @@ func (p *MediaPort) SetOffer(offerData []byte, codecs *msdk.CodecSet, enc sdp.En
 
 // Reported for inbound (SetOffer) only since outbound (SetAnswer) only contains the
 // codec picked by the end user, and not what they actually support
-func (p *MediaPort) reportPeerCodecs(d sdp.MediaDesc) {
+func (p *mediaPort) reportPeerCodecs(d sdp.MediaDesc) {
 	if p.mon == nil {
 		return
 	}
@@ -777,12 +776,12 @@ func (p *MediaPort) reportPeerCodecs(d sdp.MediaDesc) {
 }
 
 // SetDTMFAudio forces SIP to generate audio dTMF tones in addition to digital signals.
-func (p *MediaPort) SetDTMFAudio(enabled bool) {
+func (p *mediaPort) SetDTMFAudio(enabled bool) {
 	p.dtmfAudioEnabled = enabled
 }
 
 // HandleDTMF sets an incoming DTMF handler.
-func (p *MediaPort) HandleDTMF(h func(ev dtmf.Event)) {
+func (p *mediaPort) HandleDTMF(h func(ev dtmf.Event)) {
 	if h == nil {
 		p.dtmfIn.Store(nil)
 	} else {
