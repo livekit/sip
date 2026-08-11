@@ -365,6 +365,27 @@ type MediaOptions struct {
 	DrainingDuration     time.Duration
 }
 
+
+// MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
+// and audio/DTMF endpoints. It does not know about calls, rooms, or SIP dialogs.
+type MediaPort interface {
+	Close()
+	CloseWait()
+
+	GetAudioWriter() msdk.PCM16Writer
+	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
+	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
+	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
+
+	GenerateOffer() ([]byte, error)
+	GenerateAnswer(offer []byte) ([]byte, error)
+	ProcessAnswer(answer []byte) error
+	GetLocalSDP() ([]byte, error)
+
+	Received() <-chan struct{}
+	MediaTimeout() <-chan struct{}
+}
+
 func NewMediaPort(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor, opts *MediaOptions, sampleRate int) (*MediaPort, error) {
 	return NewMediaPortWith(tid, log, mon, nil, opts, sampleRate)
 }
