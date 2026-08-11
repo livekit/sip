@@ -73,7 +73,7 @@ type outboundCall struct {
 	state     *CallState
 	callStart time.Time
 	cc        *sipOutbound
-	media     *MediaPort
+	media     *mediaPort
 	started   core.Fuse
 	stopped   core.Fuse
 	closing   core.Fuse
@@ -126,7 +126,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	var err error
 
-	call.media, err = NewMediaPort(tid, call.log, call.mon, &MediaOptions{
+	call.media, err = NewmediaPort(tid, call.log, call.mon, &MediaOptions{
 		IP:                   c.sconf.MediaIP,
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.conf.MediaTimeoutInitial,

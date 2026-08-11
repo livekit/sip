@@ -57,11 +57,11 @@ func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
 	return mon.NewCall(stats.Inbound, "test", "test")
 }
 
-func newTestMediaPort(t testing.TB, provider string) *MediaPort {
+func newTestMediaPort(t testing.TB, provider string) *mediaPort {
 	t.Helper()
 	mon := newTestCallMonitor(t)
 	mon.SetProvider(provider)
-	mp, err := NewMediaPortWith(1, logger.GetLogger(), mon, nil, &MediaOptions{
+	mp, err := NewmediaPortWith(1, logger.GetLogger(), mon, nil, &MediaOptions{
 		IP: netip.MustParseAddr("127.0.0.1"),
 	}, 8000)
 	require.NoError(t, err)
@@ -196,7 +196,7 @@ func newUDPPipe() (c1, c2 *testUDPConn) {
 	return
 }
 
-func PrintAudioInWriter(p *MediaPort) string {
+func PrintAudioInWriter(p *mediaPort) string {
 	return p.audioInHandler.(fmt.Stringer).String()
 }
 
@@ -214,7 +214,7 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 
 	// newUDPPipe wires two in-memory testUDPConn together.
 	c1, _ := newUDPPipe()
-	mp, err := NewMediaPortWith(1, log, mon, c1, &MediaOptions{
+	mp, err := NewmediaPortWith(1, log, mon, c1, &MediaOptions{
 		IP: netip.MustParseAddr("127.0.0.1"),
 	}, 8000)
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func TestMediaPort(t *testing.T) {
 					testRate := tconf.Rate
 					bobToAliceNoResample := testRate == 8000
 
-					alicePort, err := NewMediaPortWith(1, log.WithName("Alice"), newTestCallMonitor(t), c1, &MediaOptions{
+					alicePort, err := NewmediaPortWith(1, log.WithName("Alice"), newTestCallMonitor(t), c1, &MediaOptions{
 						IP:              newIP(ip1),
 						Ports:           rtcconfig.PortRange{Start: port1},
 						NoInputResample: bobToAliceNoResample,
@@ -301,7 +301,7 @@ func TestMediaPort(t *testing.T) {
 					require.NoError(t, err)
 					defer alicePort.Close()
 
-					bobPort, err := NewMediaPortWith(2, log.WithName("Bob"), newTestCallMonitor(t), c2, &MediaOptions{
+					bobPort, err := NewmediaPortWith(2, log.WithName("Bob"), newTestCallMonitor(t), c2, &MediaOptions{
 						IP:    newIP(ip2),
 						Ports: rtcconfig.PortRange{Start: port2},
 					}, testRate)
@@ -513,11 +513,11 @@ func checkPCM(t testing.TB, name string, exp, got msdk.PCM16Sample) {
 	)
 }
 
-func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
+func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *mediaPort) {
 	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2)
 }
 
-func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
+func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions) (m1, m2 *mediaPort) {
 	if opt1 == nil {
 		opt1 = &MediaOptions{}
 	}
@@ -541,11 +541,11 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 	var err error
 
-	m1, err = NewMediaPortWith(1, log.WithName("one"), newTestCallMonitor(t), c1, opt1, rate)
+	m1, err = NewmediaPortWith(1, log.WithName("one"), newTestCallMonitor(t), c1, opt1, rate)
 	require.NoError(t, err)
 	t.Cleanup(m1.Close)
 
-	m2, err = NewMediaPortWith(2, log.WithName("two"), newTestCallMonitor(t), c2, opt2, rate)
+	m2, err = NewmediaPortWith(2, log.WithName("two"), newTestCallMonitor(t), c2, opt2, rate)
 	require.NoError(t, err)
 	t.Cleanup(m2.Close)
 
@@ -871,7 +871,7 @@ func TestMediaPortDTMF(t *testing.T) {
 		packets := generateDTMFPackets(t, digits)
 		for _, lossPackets := range lossCases {
 			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
-				p := &MediaPort{}
+				p := &mediaPort{}
 				p.lastDTMFTimestamp.Store(math.MaxUint32)
 				got := ""
 				p.HandleDTMF(func(ev dtmf.Event) {
