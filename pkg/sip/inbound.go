@@ -337,18 +337,6 @@ func providerLabel(p *livekit.ProviderInfo) string {
 	}
 }
 
-func updateRemoteFromSDP(media *mediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
-	if len(body) == 0 || media == nil {
-		return
-	}
-	desc, err := sdp.ParseWith(codecs, body)
-	if err != nil {
-		log.Warnw("failed to parse re-INVITE SDP, RTP destination not updated", err)
-		return
-	}
-	media.UpdateRemote(desc.Addr)
-}
-
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
 	_ = s.processInvite(req, tx)
@@ -707,7 +695,7 @@ type inboundCall struct {
 	closeReason atomic.Pointer[ReasonHeader]
 	call        *rpc.SIPCall
 	mmu         sync.Mutex
-	media       *mediaPort
+	media       MediaPort
 	mediaCodecs *msdk.CodecSet
 	dtmf        chan dtmf.Event // buffered
 	endCall     chan EndCall    // buffered
@@ -1113,7 +1101,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 
 	logSignalChanges := false
 	logSignalChanges, _ = strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
-	mp, err := NewmediaPort(tid, c.log(), c.mon, &MediaOptions{
+	mp, err := NewMediaPort(c.log(), c.mon, &MediaOptions{
 		IP:                   c.s.sconf.MediaIP,
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.s.conf.MediaTimeoutInitial,
@@ -1123,9 +1111,11 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 		EnableJitterBuffer:   c.jitterBuf,
 		LogSignalChanges:     logSignalChanges,
 		Stats:                &c.stats.Port,
-		NoInputResample:      !RoomResample,
 		DrainingIdleTimeout:  conf.RTPDrainingIdleTimeout,
 		DrainingDuration:     conf.RTPDrainingDuration,
+		Codecs:               mconf.Codecs,
+		Encryption:           mconf.Encryption,
+		DTMFAudio:            conf.AudioDTMF,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
@@ -1134,23 +1124,16 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mediaCodecs = mconf.Codecs
 	mp.EnableTimeout(false) // enabled once we accept the call
 	mp.DisableOut()         // disabled until we send 200
-	mp.SetDTMFAudio(conf.AudioDTMF)
 
-	answer, mc, err := mp.SetOffer(offerData, mconf.Codecs, mconf.Encryption)
-	if err != nil {
-		return nil, err
-	}
-	answerData, err = answer.SDP.Marshal()
+	answerData, err := mp.GenerateAnswer(offerData)
 	if err != nil {
 		return nil, err
 	}
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	if err = mp.SetConfig(mc); err != nil {
-		return nil, err
-	}
 	mc.Processor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: c.media.InputSampleRate()})
+
 	if mc.Audio.DTMFType != 0 {
 		mp.HandleDTMF(c.handleDTMF)
 	}
@@ -1160,7 +1143,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 		_ = w.Close()
 	}
 	if mc.Audio.DTMFType != 0 {
-		c.lkRoom.SetDTMFOutput(mp)
+		c.lkRoom.SetDTMFOutput(mp.GetDTMFWriter())
 	}
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
@@ -1193,7 +1176,7 @@ func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
 	case <-c.lkRoom.Closed():
 		c.closeWithHangup(ctx)
 		return false, psrpc.NewErrorf(psrpc.Canceled, "room closed")
-	case <-c.media.Timeout():
+	case <-c.media.MediaTimeout():
 		return false, c.mediaTimeout(ctx)
 	case end := <-c.endCall:
 		c.close(ctx, end)
@@ -1220,7 +1203,7 @@ func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) 
 	case <-c.lkRoom.Closed():
 		c.closeWithHangup(ctx)
 		return false, psrpc.NewErrorf(psrpc.Canceled, "room closed")
-	case <-c.media.Timeout():
+	case <-c.media.MediaTimeout():
 		return false, c.mediaTimeout(ctx)
 	case end := <-c.endCall:
 		c.close(ctx, end)
@@ -1249,7 +1232,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 		case <-ctx.Done():
 			c.closeWithHangup(ctx)
 			return disp, false, nil
-		case <-c.media.Timeout():
+		case <-c.media.MediaTimeout():
 			return disp, false, c.mediaTimeout(ctx)
 		case b, ok := <-c.dtmf:
 			if !ok {
@@ -1499,12 +1482,6 @@ func (c *inboundCall) Close() error {
 // close() is idempotent via c.done, so concurrent paths cannot double-emit.
 func (c *inboundCall) Shutdown(ctx context.Context) {
 	c.closeWithTerm(ctx, stats.ServerError("shutdown"))
-}
-
-func (c *inboundCall) updateRemoteFromSDP(body []byte) {
-	c.mmu.Lock()
-	defer c.mmu.Unlock()
-	updateRemoteFromSDP(c.media, c.log(), c.mediaCodecs, body)
 }
 
 func (c *inboundCall) closeMedia() {
