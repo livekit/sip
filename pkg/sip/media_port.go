@@ -469,6 +469,7 @@ type mediaPort struct {
 
 	mu       sync.RWMutex
 	pipeline *mediaPortPipeline
+	localSDP []byte
 	offer    *sdp.Offer
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
@@ -625,7 +626,7 @@ func (p *mediaPort) timeoutLoop() {
 	}
 }
 
-func (p *mediaPort) closePipeline() {
+func (p *mediaPort) closePipelineLocked() {
 	// Lock must already be held
 	// p.audioIn & p.dtmfIn are set by external sources, need to be externally closed
 
@@ -649,7 +650,7 @@ func (p *mediaPort) Close() {
 
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		p.closePipeline()
+		p.closePipelineLocked()
 		p.port.Close()
 		conn := p.port.unwrap()
 		if uc, ok := conn.(*net.UDPConn); ok {
@@ -787,17 +788,17 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 func (p *mediaPort) GetLocalSDP() ([]byte, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if p.pipeline == nil || len(p.pipeline.localSDP) == 0 {
+	if p.pipeline == nil || len(p.localSDP) == 0 {
 		return nil, errors.New("no SDP provided, no local SDP available")
 	}
-	return p.pipeline.localSDP, nil
+	return p.localSDP, nil
 }
 
 // Building pipeline
 
 func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	// Map the durable udpConn + WriteCloserSwitch anchors onto a fresh mediaPortPipeline.
-	// Rebuild from scratch under mu: closePipeline (soft-closes the session via udpConn),
+	// Rebuild from scratch under mu: closePipelineLocked (soft-closes the session via udpConn),
 	// Reopen the port, then Configure a new generation and Swap TX leaves into the anchors.
 
 	p.mu.Lock() // No concurrent rebuilding of the pipeline
@@ -809,11 +810,10 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 	// TODO: Avoid reconfiguring if mc unchanged; maybe only adjust direction
 
-	p.closePipeline()
+	p.closePipelineLocked()
 	p.port.Reopen() // Allow reads from socket again
 
-	newPipeline := &mediaPortPipeline{
-		localSDP:  localSDP,
+	pipelineConfig := &MediaPortPipelineConfig{
 		log:       p.log,
 		opts:      p.opts,
 		mon:       p.mon,
@@ -821,19 +821,25 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		onNewSSRC: p.mediaReceived.Break,
 		onPacket:  p.onNewMediaPacket,
 	}
-	audioToPort, dtmfToPort, err := newPipeline.Configure(c, p.port, p.audioIn, &p.dtmfIn)
+	newPipeline, err := NewMediaPortPipeline(
+		pipelineConfig,
+		c,
+		p.port,
+		p.audioIn,
+		&p.dtmfIn,
+		p.audioOut.SampleRate(),
+	)
 	if err != nil {
-		// Close orphan pipeline, then error leads to mediaPort teardown
-		newPipeline.Close()
 		return err
 	}
-	// Note: audioToPort & dtmfToPort are not propagating Close()
+
+	audioToPort, dtmfToPort := newPipeline.GetConnectors() // These are not propagating Close()
 	p.pipeline = newPipeline
 
 	if c.PeerDirection == psdp.DirectionSendOnly || c.Remote.Addr().IsUnspecified() {
 		// Older hold semantics: c=0.0.0.0; Newer hold semantics: a=sendonly
 		// TODO: Support a=recvonly/inactive; requires toggling media timeout;
-		//		maybe gate these on timers being actibe on the session to prevend dud calls
+		//		maybe gate these on timers being active on the session to prevent dud calls
 		audioToPort = nil
 		dtmfToPort = nil
 		zero := netip.IPv4Unspecified()
@@ -851,6 +857,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		_ = old.Close()
 	}
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
+	p.localSDP = localSDP
 	return nil
 }
 

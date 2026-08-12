@@ -233,7 +233,7 @@ func newPipelineHarness(t *testing.T, dtmfType byte, dtmfAudio bool) *pipelineHa
 	h.audioIn.Swap(msdk.NewPCM16BufferWriter(h.roomAudio, RoomSampleRate))
 	h.dtmfIn.Swap(h.roomDTMF)
 
-	pipe := &mediaPortPipeline{
+	pipelineConfig := &MediaPortPipelineConfig{
 		log:   log,
 		opts:  &MediaOptions{DTMFAudio: dtmfAudio},
 		stats: &PortStats{},
@@ -254,8 +254,9 @@ func newPipelineHarness(t *testing.T, dtmfType byte, dtmfAudio bool) *pipelineHa
 			DTMFType: dtmfType,
 		},
 	}
-	audioToPort, dtmfToPort, err := pipe.Configure(mc, port, &h.audioIn, &h.dtmfIn)
+	pipe, err := NewMediaPortPipeline(pipelineConfig, mc, port, &h.audioIn, &h.dtmfIn, RoomSampleRate)
 	require.NoError(t, err)
+	audioToPort, dtmfToPort := pipe.GetConnectors()
 	h.pipeline = pipe
 
 	if old := h.audioOut.Swap(audioToPort); old != nil {
@@ -390,9 +391,9 @@ func TestMediaPipelinePermutations(t *testing.T) {
 					return len(*h.roomAudio) > before
 				}, time.Second, 5*time.Millisecond, "decoded PCM should reach room (packets=%d input=%d failed=%d ignored=%d room=%d)",
 					h.packetCount.Load(),
-					h.pipeline.stats.InputPackets.Load(),
-					h.pipeline.stats.FailedPackets.Load(),
-					h.pipeline.stats.IgnoredPackets.Load(),
+					h.pipeline.conf.stats.InputPackets.Load(),
+					h.pipeline.conf.stats.FailedPackets.Load(),
+					h.pipeline.conf.stats.IgnoredPackets.Load(),
 					len(*h.roomAudio),
 				)
 				got := (*h.roomAudio)[before:]
@@ -511,7 +512,7 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 		roomBuf := new(msdk.PCM16Sample)
 		audioIn.Swap(msdk.NewPCM16BufferWriter(roomBuf, RoomSampleRate))
 
-		pipe := &mediaPortPipeline{
+		pipelineConfig := &MediaPortPipelineConfig{
 			log:   log,
 			opts:  &MediaOptions{},
 			stats: &PortStats{},
@@ -525,8 +526,9 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 				DTMFType: testDTMFPT,
 			},
 		}
-		audioToPort, dtmfToPort, err := pipe.Configure(mc, port, &audioIn, &dtmfIn)
+		pipe, err := NewMediaPortPipeline(pipelineConfig, mc, port, &audioIn, &dtmfIn, RoomSampleRate)
 		require.NoError(t, err)
+		audioToPort, dtmfToPort := pipe.GetConnectors()
 		_ = audioOut.Swap(audioToPort)
 		_ = dtmfToPort // unused in this test
 		return pipe, &audioOut
