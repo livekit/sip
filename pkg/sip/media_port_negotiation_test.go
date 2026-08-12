@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
@@ -136,8 +137,8 @@ func TestMediaPortCodecSet(t *testing.T) {
 			}
 			names = append(names, c.Codec.Info().SDPName)
 		}
-		require.Equal(t, []string{g711.ALawSDPNameAndRate}, names)
-		require.NotZero(t, offer.DTMFType, "DTMF should still be offered")
+		assert.Equal(t, []string{g711.ALawSDPNameAndRate}, names)
+		assert.NotZero(t, offer.DTMFType, "DTMF should still be offered")
 	})
 
 	t.Run("answer picks an enabled codec", func(t *testing.T) {
@@ -148,7 +149,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 			"a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000")
 		answerData, err := m.GenerateAnswer(offer)
 		require.NoError(t, err)
-		require.Equal(t, g711.ALawSDPNameAndRate, answerCodec(t, answerData))
+		assert.Equal(t, g711.ALawSDPNameAndRate, answerCodec(t, answerData))
 	})
 
 	t.Run("offer without an enabled codec is rejected", func(t *testing.T) {
@@ -175,10 +176,10 @@ func TestMediaPortRenegotiation(t *testing.T) {
 
 			local, err := m1.GetLocalSDP()
 			require.NoError(t, err)
-			require.NotEmpty(t, local)
+			assert.NotEmpty(t, local)
 
 			// The room-facing writers survive the rebuild, and the new pipeline sends.
-			require.NotNil(t, m1.audioOut.Get())
+			assert.NotNil(t, m1.audioOut.Get())
 			requireAudioFlows(t, m1, recv2)
 		}
 	})
@@ -261,15 +262,16 @@ func TestMediaPortHold(t *testing.T) {
 			// m1 no longer sends: no destination to write to, and the room-facing
 			// writer is detached. Room audio is dropped rather than erroring.
 			dst := m1.port.dst.Load()
-			require.NotNil(t, dst)
-			require.True(t, dst.Addr().IsUnspecified(), "held port kept a destination: %v", dst)
-			require.Nil(t, m1.audioOut.Get(), "held port still accepts room audio")
-			require.NoError(t, m1.GetAudioWriter().WriteSample(roomFrame()))
+			if assert.NotNil(t, dst) {
+				assert.True(t, dst.Addr().IsUnspecified(), "held port kept a destination: %v", dst)
+			}
+			assert.Nil(t, m1.audioOut.Get(), "held port still accepts room audio")
+			assert.NoError(t, m1.GetAudioWriter().WriteSample(roomFrame()))
 
 			sent := recv2.count()
 			writeFrames(m1, 10)
 			time.Sleep(100 * time.Millisecond)
-			require.Equal(t, sent, recv2.count(), "held port kept sending")
+			assert.Equal(t, sent, recv2.count(), "held port kept sending")
 
 			// ...while m2's media still reaches us.
 			requireAudioFlows(t, m2, recv1)
@@ -279,10 +281,11 @@ func TestMediaPortHold(t *testing.T) {
 			require.NoError(t, err)
 
 			dst = m1.port.dst.Load()
-			require.NotNil(t, dst)
-			require.False(t, dst.Addr().IsUnspecified(), "destination not restored")
-			require.Equal(t, m2.Port(), int(dst.Port()))
-			require.NotNil(t, m1.audioOut.Get())
+			if assert.NotNil(t, dst) {
+				assert.False(t, dst.Addr().IsUnspecified(), "destination not restored")
+				assert.Equal(t, m2.Port(), int(dst.Port()))
+			}
+			assert.NotNil(t, m1.audioOut.Get())
 
 			requireAudioFlows(t, m1, recv2)
 		})

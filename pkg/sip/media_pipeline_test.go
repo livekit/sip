@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/pion/rtp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
@@ -462,8 +463,9 @@ func TestMediaPipelinePermutations(t *testing.T) {
 					return len(h.roomDTMF.snapshot()) > before
 				}, time.Second, 5*time.Millisecond)
 				got := h.roomDTMF.snapshot()[before:]
-				require.NotEmpty(t, got)
-				require.Equal(t, "7", got[0].Digit)
+				if assert.NotEmpty(t, got) {
+					assert.Equal(t, "7", got[0].Digit)
+				}
 			})
 		})
 	}
@@ -480,7 +482,7 @@ func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return h.ssrcCount.Load() >= 2
 	}, time.Second, 5*time.Millisecond, "expected AcceptStream for two SSRCs")
-	require.GreaterOrEqual(t, h.packetCount.Load(), uint64(2))
+	assert.GreaterOrEqual(t, h.packetCount.Load(), uint64(2))
 
 	done := make(chan error, 1)
 	go func() {
@@ -541,7 +543,7 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	case raw := <-remote.buf:
 		var pkt rtp.Packet
 		require.NoError(t, pkt.Unmarshal(raw))
-		require.Equal(t, testAudioPT, pkt.PayloadType)
+		assert.Equal(t, testAudioPT, pkt.PayloadType)
 	case <-time.After(time.Second):
 		t.Fatal("first pipeline produced no RTP")
 	}
@@ -560,7 +562,7 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	case raw := <-remote.buf:
 		var pkt rtp.Packet
 		require.NoError(t, pkt.Unmarshal(raw))
-		require.Equal(t, testAudioPT, pkt.PayloadType)
+		assert.Equal(t, testAudioPT, pkt.PayloadType)
 	case <-time.After(time.Second):
 		t.Fatal("second pipeline produced no RTP after Reopen")
 	}
