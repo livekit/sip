@@ -801,6 +801,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
+// TODO(alexfish): Update Room so that we don't need this adapter.
 func (c *outboundCall) handleDTMF(msg *livekit.SipDTMF) {
 	if c.lkRoom == nil {
 		return

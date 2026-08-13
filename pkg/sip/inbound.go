@@ -1114,6 +1114,7 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 	}
 }
 
+// TODO(alexfish): Update Room so that we don't need this adapater.
 type dtmfEventWriter struct {
 	handler func(msg *livekit.SipDTMF)
 }
