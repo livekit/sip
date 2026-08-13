@@ -53,7 +53,7 @@ func newTestMediaPort(t testing.TB, provider string) MediaPort {
 	t.Helper()
 	mon := newTestCallMonitor(t)
 	mon.SetProvider(provider)
-	mp, err := NewMediaPortWith(logger.GetLogger(), mon, nil, &MediaOptions{
+	mp, err := NewMediaPortWith(logger.NewTestLogger(t), mon, nil, &MediaOptions{
 		IP: netip.MustParseAddr("127.0.0.1"),
 	}, 8000)
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 	const rate = 16000
 
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 
 	m1 = newTestPort(t, log.WithName("one"), c1, opt1, rate)
 	m2 = newTestPort(t, log.WithName("two"), c2, opt2, rate)

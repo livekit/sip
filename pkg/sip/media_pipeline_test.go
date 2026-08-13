@@ -51,8 +51,9 @@ func mustAudioCodec(t testing.TB, name string) msdk.AudioCodec {
 
 // Opus is not a registered SIP SDP codec; wrap media-sdk/opus so the pipeline
 // can encode/decode at RoomSampleRate (no resample).
-func testOpusCodec() msdk.AudioCodec {
-	log := logger.GetLogger()
+func testOpusCodec(t testing.TB) msdk.AudioCodec {
+	t.Helper()
+	log := logger.NewTestLogger(t)
 	return msdk.NewAudioCodec(msdk.CodecInfo{
 		SDPName:      "opus/48000",
 		SampleRate:   RoomSampleRate,
@@ -124,7 +125,7 @@ func newPipelineHarness(t *testing.T, audioType byte, codec msdk.AudioCodec, dtm
 	t.Helper()
 	local, remote := newUDPPipe()
 
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 	port := newUDPConn(log, local, false)
 	h := &pipelineHarness{
 		t:         t,
@@ -256,7 +257,7 @@ func pcmEnergy(s msdk.PCM16Sample) int64 {
 
 func TestMediaPipelinePermutations(t *testing.T) {
 	pcmu := mustAudioCodec(t, g711.ULawSDPNameAndRate)
-	opus := testOpusCodec()
+	opus := testOpusCodec(t)
 	cases := []struct {
 		name      string
 		codec     msdk.AudioCodec
@@ -419,10 +420,10 @@ func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
 
 func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	local, remote := newUDPPipe()
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 	port := newUDPConn(log, local, false)
 
-	codec := testOpusCodec()
+	codec := testOpusCodec(t)
 	frame := codec.Info().SampleRate / int(time.Second/msrtp.DefFrameDur)
 	sample := tonePCM(codec.Info().SampleRate, frame, 9000)
 

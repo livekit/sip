@@ -56,7 +56,7 @@ func PrintAudioInWriter(p *MediaPort) string {
 }
 
 func TestMediaPortUpdateRemote(t *testing.T) {
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 	mon := newTestCallMonitor(t)
 
 	// newUDPPipe wires two in-memory testUDPConn together.
@@ -129,7 +129,7 @@ func TestMediaPort(t *testing.T) {
 				t.Run(fmt.Sprintf("%d%s", tconf.Rate, suff), func(t *testing.T) {
 					c1, c2 := newUDPPipe()
 
-					log := logger.GetLogger()
+					log := logger.NewTestLogger(t)
 
 					const (
 						ip1   = "1.1.1.1"
