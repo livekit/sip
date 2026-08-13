@@ -219,11 +219,11 @@ func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	return answerData
 }
 
-func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *mediaPort) {
-	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2)
+func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions, codec string) (m1, m2 *mediaPort) {
+	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2, codec)
 }
 
-func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions) (m1, m2 *mediaPort) {
+func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions, codec string) (m1, m2 *mediaPort) {
 	if opt1 == nil {
 		opt1 = &MediaOptions{}
 	}
@@ -234,19 +234,27 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 	opt1.IP = ip1
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}
+	rate1 := RoomSampleRate
+	if codec != "" {
+		opt1.Codecs = testCodecSet(codec)
+		rate1 = opt1.Codecs.ListEnabled()[0].Info().SampleRate
+	}
 	// TODO(port-refactor): MediaOptions.NoInputResample is gone, the pipeline always
 	// resamples the receive side to RoomSampleRate.
 	// opt1.NoInputResample = true
 
 	opt2.IP = ip2
 	opt2.Ports = rtcconfig.PortRange{Start: 20000}
-
-	const rate = 16000
+	rate2 := RoomSampleRate
+	if codec != "" {
+		opt2.Codecs = testCodecSet(codec)
+		rate2 = opt2.Codecs.ListEnabled()[0].Info().SampleRate
+	}
 
 	log := logger.NewTestLogger(t)
 
-	m1 = newTestPort(t, log.WithName("one"), c1, opt1, rate)
-	m2 = newTestPort(t, log.WithName("two"), c2, opt2, rate)
+	m1 = newTestPort(t, log.WithName("one"), c1, opt1, rate1)
+	m2 = newTestPort(t, log.WithName("two"), c2, opt2, rate2)
 
 	negotiate(t, m1, m2)
 
@@ -260,6 +268,7 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 func TestMediaTimeout(t *testing.T) {
 	const (
+		codec   = "G722/8000"
 		timeout = time.Second / 4
 		initial = timeout * 2
 		dt      = timeout / 4
@@ -269,7 +278,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
+		}, nil, codec)
 
 		targ := time.Now().Add(initial)
 		select {
@@ -289,7 +298,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 		err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -312,7 +321,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 
@@ -332,7 +341,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 
@@ -364,7 +373,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
+		}, nil, codec)
 
 		// No media has ever arrived. SetTimeout re-arms startTime, and since the
 		// port has never seen an RTP packet, the new initial window applies from
@@ -390,7 +399,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 
@@ -419,8 +428,10 @@ func TestMediaTimeout(t *testing.T) {
 }
 
 func TestSymmetricRTP(t *testing.T) {
+	const codec = "G722/8000"
+
 	t.Run("disabled", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil)
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil, codec)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
 		dst := *dstPtr
@@ -445,7 +456,7 @@ func TestSymmetricRTP(t *testing.T) {
 	})
 
 	t.Run("enabled", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil)
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil, codec)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
 		require.True(t, dstPtr.IsValid())
@@ -472,6 +483,7 @@ func TestSymmetricRTP(t *testing.T) {
 		m1, m2 := newMediaPairWithAddr(t,
 			newIP("1.1.1.1"), newIP("10.10.10.10"),
 			&MediaOptions{IgnoreLocalAddrInSDP: true}, nil,
+			codec,
 		)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
