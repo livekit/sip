@@ -394,10 +394,45 @@ type MediaPort interface {
 	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]                                   // To Port
 	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] // From Port
 
+	// If there is no offer, this generates an offer.
+	// If there is an offer, this simply returns the SDP of that offer.
+	// An offer is cleared once a negotiation is successful.
 	GenerateOffer() ([]byte, error)
+
+	// GenerateAnswer returns an encoded SDP answer for the given offer.
+	//
+	// SIDE EFFECT: May cause a rebuild of the pipeline.
 	GenerateAnswer(offer []byte) ([]byte, error)
+
+	// ProcessAnswer processes an encoded SDP answer from the remote client. Returns an
+	// error if the answer is invalid, the offer has not yet been generated, or
+	// if media has already been negotiated.
+	//
+	// SIDE EFFECT: May cause a rebuild of the pipeline.
 	ProcessAnswer(answer []byte) error
+
 	GetLocalSDP() ([]byte, error)
+
+	// NegotiatedAudio returns the audio configuration chosen by SDP negotiation.
+	// Returns nil if media has not been negotiated yet.
+	//
+	// REQUIRES: The caller should not mutate the returned audio config.
+	NegotiatedAudio() *sdp.AudioConfig
+
+	// SetTimeout resets the media timeout with the given values.
+	//
+	// NOTE: This method will be removed at some point in the future and is only
+	// used by one caller. Do not call this method: specify media timeout
+	// settings when constructing a MediaPort.
+	//
+	// We would like to enforce the fact that all invites must be ACKed.
+	// Sometimes, though, for whatever reason, we do not see ACKs for invites
+	// (e.g due to possible issues with load balancing). In such cases where
+	// we require an invite to be ACKed (guarded by the `InboundWaitACK`
+	// setting), if we don't see the ACK within some amount of time, then we
+	// restrict the timeout with this method so that the call might end earlier
+	// than if the timeout were never shortened.
+	SetTimeoutForDelayedAck(initial, general time.Duration)
 
 	Received() <-chan struct{}
 	MediaTimeout() <-chan struct{}
@@ -467,10 +502,11 @@ type mediaPort struct {
 	codecs           *msdk.CodecSet
 	encryption       sdp.Encryption
 
-	mu       sync.RWMutex
-	pipeline *mediaPortPipeline
-	localSDP []byte
-	offer    *sdp.Offer
+	mu        sync.RWMutex
+	pipeline  *mediaPortPipeline
+	localSDP  []byte
+	offer     *sdp.Offer
+	audioConf *sdp.AudioConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -483,12 +519,6 @@ func (p *mediaPort) kickTimeoutLoop() {
 	case p.timeoutKick <- struct{}{}:
 	default: // already pending
 	}
-}
-
-func (p *mediaPort) disableTimeout() {
-	p.log.Debugw("media timeout disabled")
-	p.timeoutStart.Store(nil)
-	p.kickTimeoutLoop()
 }
 
 func (p *mediaPort) enableTimeout(initial, general time.Duration) {
@@ -513,15 +543,11 @@ func (p *mediaPort) enableTimeout(initial, general time.Duration) {
 	p.kickTimeoutLoop()
 }
 
-func (p *mediaPort) EnableTimeout(enabled bool) {
-	if !enabled {
-		p.disableTimeout()
-		return
-	}
+func (p *mediaPort) enableTimeoutWithDefaults() {
 	p.enableTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
 }
 
-func (p *mediaPort) SetTimeout(initial, general time.Duration) {
+func (p *mediaPort) SetTimeoutForDelayedAck(initial, general time.Duration) {
 	p.enableTimeout(initial, general)
 }
 
@@ -628,7 +654,6 @@ func (p *mediaPort) timeoutLoop() {
 
 func (p *mediaPort) closePipelineLocked() {
 	// Lock must already be held
-	// p.audioIn & p.dtmfIn are set by external sources, need to be externally closed
 
 	// Close switch -> port
 	if closer := p.audioOut.Swap(nil); closer != nil {
@@ -794,6 +819,12 @@ func (p *mediaPort) GetLocalSDP() ([]byte, error) {
 	return p.localSDP, nil
 }
 
+func (p *mediaPort) NegotiatedAudio() *sdp.AudioConfig {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.audioConf
+}
+
 // Building pipeline
 
 func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
@@ -867,6 +898,8 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	}
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
 	p.localSDP = localSDP
+	p.audioConf = &c.Audio
+	p.enableTimeoutWithDefaults()
 	return nil
 }
 
