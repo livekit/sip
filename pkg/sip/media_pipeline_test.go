@@ -422,10 +422,9 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	log := logger.GetLogger()
 	port := newUDPConn(log, local, false)
 
-	codec, ok := sdp.CodecByName(g711.ULawSDPNameAndRate).(msdk.AudioCodec)
-	require.True(t, ok)
-	frame := testCodecRate / int(time.Second/msrtp.DefFrameDur)
-	sample := tonePCM(testCodecRate, frame, 9000)
+	codec := testOpusCodec()
+	frame := codec.Info().SampleRate / int(time.Second/msrtp.DefFrameDur)
+	sample := tonePCM(codec.Info().SampleRate, frame, 9000)
 
 	build := func(t *testing.T) (*mediaPortPipeline, *msdk.WriteCloserSwitch[msdk.PCM16Sample]) {
 		t.Helper()

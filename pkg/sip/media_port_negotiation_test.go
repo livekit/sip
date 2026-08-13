@@ -115,7 +115,7 @@ func answerCodec(t testing.TB, answerData []byte) string {
 // A port only offers and accepts the codecs it was configured with.
 func TestMediaPortCodecSet(t *testing.T) {
 	newLocked := func(t *testing.T, names ...string) *mediaPort {
-		return newTestPort(t, logger.GetLogger(), nil, &MediaOptions{
+		return newTestPort(t, logger.GetLogger(), newTestConn(1), &MediaOptions{
 			IP:     newIP("127.0.0.1"),
 			Codecs: testCodecSet(names...),
 		}, RoomSampleRate)
