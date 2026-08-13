@@ -725,8 +725,7 @@ type inboundCall struct {
 	sigTs            SignalingTimestamps
 	jitterBuf        bool
 	projectID        string
-	audioOut         *msdk.WriteCloserSwitch[msdk.PCM16Sample]
-	audioIn          *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	audioOut         *msdk.WriteCloserSwitch[msdk.PCM16Sample] // inner writer owned by MediaPort
 	audioInProcessor msdk.PCM16Processor
 }
 
@@ -758,7 +757,6 @@ func (s *Server) newInboundCall(
 		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
 		projectID:  "", // Will be set in handleInvite when available
 		audioOut:   msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
-		audioIn:    msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate), // TODO(alexfish): Close this.
 	}
 	c.stats.Update()
 	c.setLog(log.WithValues("jitterBuf", c.jitterBuf))
@@ -981,7 +979,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			// Start this timer right after the Accept.
 			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
-		c.audioOut.Swap(c.media.GetAudioWriter())
+		if old := c.audioOut.Swap(c.media.GetAudioWriter()); old != nil {
+			c.log().Warnw("unexpected audio out writer", nil)
+			old.Close()
+		}
 		if ok, err := c.waitMedia(ctx); !ok {
 			return false, err
 		}
@@ -1417,9 +1418,6 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	if callDurFn := c.callDur; callDurFn != nil {
 		callDurFn()
 	}
-	if old := c.audioIn.Swap(nil); old != nil {
-		old.Close()
-	}
 	c.s.cmu.Lock()
 	delete(c.s.byLocalTag, c.cc.ID())
 	c.s.cmu.Unlock()
@@ -1614,13 +1612,11 @@ func (c *inboundCall) publishTrack() error {
 		_ = c.lkRoom.Close()
 		return err
 	}
+
 	if c.audioInProcessor != nil {
 		local = c.audioInProcessor(local)
 	}
-	if old := c.audioIn.Swap(local); old != nil {
-		old.Close()
-	}
-	c.media.WriteAudioTo(c.audioIn)
+	c.media.WriteAudioTo(local)
 	return nil
 }
 

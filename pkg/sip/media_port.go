@@ -654,7 +654,6 @@ func (p *mediaPort) timeoutLoop() {
 
 func (p *mediaPort) closePipelineLocked() {
 	// Lock must already be held
-	// p.audioIn & p.dtmfIn are set by external sources, need to be externally closed
 
 	// Close switch -> port
 	if closer := p.audioOut.Swap(nil); closer != nil {

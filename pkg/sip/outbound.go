@@ -82,12 +82,14 @@ type outboundCall struct {
 	jitterBuf bool
 	projectID string
 
-	mu               sync.RWMutex
-	mon              *stats.CallMonitor
-	lkRoom           RoomInterface
-	lkRoomIn         msdk.PCM16Writer // output to room; OPUS at 48k
-	sipConf          sipOutboundConfig
-	audioInProcessor msdk.PCM16Processor
+	mu       sync.RWMutex
+	mon      *stats.CallMonitor
+	lkRoom   RoomInterface
+	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
+
+	sipConf sipOutboundConfig
+
+	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // inner writer owned by MediaPort
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
@@ -116,6 +118,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		sigTs:     SignalingTimestamps{APITime: now},
 		jitterBuf: jitterBuf,
 		projectID: projectID,
+		audioOut:  msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate), // inner writer owned by MediaPort
 	}
 	call.stats.Update()
 	call.cc = c.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
@@ -387,8 +390,11 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 			_ = r.CloseOutput()
 			_ = r.CloseWithReason(end.Status.DisconnectReason())
 		}
-		if err := c.lkRoomIn.Close(); err != nil {
-			log.Warnw("error closing livekit room audio input", err)
+
+		if c.lkRoomIn != nil {
+			if err := c.lkRoomIn.Close(); err != nil {
+				log.Warnw("error closing livekit room audio input", err)
+			}
 		}
 		c.lkRoomIn = nil
 
@@ -474,9 +480,6 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 		return err
 	}
 	c.lkRoom = r
-	if c.audioInProcessor != nil {
-		local = c.audioInProcessor(local)
-	}
 	c.lkRoomIn = local
 	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
 		return err
@@ -519,12 +522,10 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
 		dtmfWriter := c.media.GetDTMFWriter()
-		for i := range len(digits) {
-			if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
-				Digit: string(digits[i]),
-			}); err != nil {
-				return fmt.Errorf("error writing digits (%s): %w", string(digits[i]))
-			}
+		if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
+			Digit: digits,
+		}); err != nil {
+			return fmt.Errorf("error writing digits (%s): %w", digits, err)
 		}
 	}
 	c.setStatus(CallActive)
@@ -546,11 +547,14 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 }
 
 func (c *outboundCall) connectMedia() {
-	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
+	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
 		_ = w.Close()
 	}
 	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
 
+	if processor := c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
+		c.lkRoomIn = processor(c.lkRoomIn)
+	}
 	c.media.WriteAudioTo(c.lkRoomIn)
 	c.media.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 }
@@ -760,9 +764,12 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		return err
 	}
 
-	c.audioInProcessor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate})
-
 	c.mon.InviteAccept()
+	if old := c.audioOut.Swap(c.media.GetAudioWriter()); old != nil {
+		c.log.Warnw("unexpected audio out writer", nil)
+		old.Close()
+	}
+
 	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
@@ -844,9 +851,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		}()
 
 		go func() {
-			aw := c.media.GetAudioWriter()
-
-			err := tones.Play(rctx, aw, ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, c.audioOut, ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
