@@ -388,10 +388,10 @@ type MediaPort interface {
 	Close()
 	CloseWait()
 
-	GetAudioWriter() msdk.PCM16Writer
-	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
-	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
-	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
+	GetAudioWriter() msdk.PCM16Writer                                                    // To Port
+	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer                                    // From Port
+	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]                                   // To Port
+	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] // From Port
 
 	GenerateOffer() ([]byte, error)
 	GenerateAnswer(offer []byte) ([]byte, error)
@@ -805,6 +805,15 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
+	}
+
+	if p.pipeline != nil {
+		// This block is here to preserve compatibility with pre-refactor code.
+		// We will remove this code shortly, once the existing behavior is verified via new code.
+		if !c.Remote.Addr().IsUnspecified() { // Compat with older code
+			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
+		}
+		return nil
 	}
 
 	// TODO: Avoid reconfiguring if mc unchanged; maybe only adjust direction
