@@ -398,7 +398,6 @@ type MediaSegment interface {
 
 	// WriteInboundAudioTo tells the MediaSegment where to write inbound SIP audio.
 	WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
-
 	// WriteInboundDTMFTo tells the MediaSegment where to write inbound SIP DTMF.
 	WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 }

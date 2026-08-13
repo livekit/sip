@@ -31,14 +31,12 @@ import (
 	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -385,7 +383,6 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		}
 
 		if r := c.lkRoom; r != nil {
-			_ = r.CloseOutput()
 			_ = r.CloseWithReason(end.Status.DisconnectReason())
 		}
 
@@ -545,16 +542,14 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 }
 
 func (c *outboundCall) connectMedia() {
-	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
-		_ = w.Close()
-	}
-	c.lkRoom.SetDTMFOutput(c.media.GetOutboundDTMFWriter())
+	c.lkRoom.WriteOutboundAudioTo(c.audioOut)
+	c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter())
 
 	if processor := c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
 	c.media.WriteInboundAudioTo(c.lkRoomIn)
-	c.media.WriteInboundDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
+	c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter())
 }
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
@@ -799,30 +794,6 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
-// TODO(alexfish): Update Room so that we don't need this adapter.
-func (c *outboundCall) handleDTMF(msg *livekit.SipDTMF) {
-	if c.lkRoom == nil {
-		return
-	}
-
-	if msg == nil {
-		return
-	}
-
-	code := byte(msg.Code)
-	digit := byte(0)
-	if len(msg.Digit) == 1 {
-		digit = msg.Digit[0]
-	} else {
-		digit = dtmf.CodeToChar(code)
-	}
-
-	_ = c.lkRoom.SendData(&livekit.SipDTMF{
-		Code:  uint32(code),
-		Digit: string([]byte{digit}),
-	}, lksdk.WithDataPublishReliable(true))
-}
-
 func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.transferCall")
 	defer span.End()
@@ -839,13 +810,13 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		defer rcancel()
 
 		// mute the room audio to the SIP participant
-		w := c.lkRoom.SwapOutput(nil)
+		c.lkRoom.WriteOutboundAudioTo(nil)
 
 		defer func() {
 			if retErr != nil && !c.stopped.IsBroken() {
-				c.lkRoom.SwapOutput(w)
+				c.lkRoom.WriteOutboundAudioTo(c.audioOut)
 			} else {
-				w.Close()
+				c.audioOut.Close()
 			}
 		}()
 

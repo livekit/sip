@@ -45,7 +45,6 @@ import (
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -1113,9 +1112,8 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 	}
 }
 
-// TODO(alexfish): Update Room so that we don't need this adapater.
 type dtmfEventWriter struct {
-	handler func(msg *livekit.SipDTMF)
+	c *inboundCall
 }
 
 func (w *dtmfEventWriter) String() string {
@@ -1130,9 +1128,29 @@ func (w *dtmfEventWriter) Close() error {
 	return nil
 }
 
-func (w *dtmfEventWriter) WriteSample(sample *livekit.SipDTMF) error {
-	w.handler(sample)
+func (w *dtmfEventWriter) WriteSample(msg *livekit.SipDTMF) error {
+	if msg == nil {
+		return nil
+	}
+
+	if w.c.forwardDTMF.Load() {
+		if err := w.c.lkRoom.GetInboundDTMFWriter().WriteSample(msg); err != nil {
+			w.c.log().Errorw("failed to send dtmf to room", err)
+		}
+	}
+
+	// TODO(alexfish): Just have the channel accept the message instead?
+	event := dtmfEventFromSipDTMF(msg)
+	// We should have enough buffer here.
+	select {
+	case w.c.dtmf <- event:
+	default:
+	}
 	return nil
+}
+
+func (c *inboundCall) getNewInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
+	return &dtmfEventWriter{c}
 }
 
 func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) ([]byte, error) {
@@ -1173,13 +1191,11 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mp.WriteInboundDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
+	mp.WriteInboundDTMFTo(c.getNewInboundDTMFWriter())
 
 	// Must be set earlier to send the pin prompts.
-	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
-		_ = w.Close()
-	}
-	c.lkRoom.SetDTMFOutput(c.media.GetOutboundDTMFWriter())
+	c.lkRoom.WriteOutboundAudioTo(c.audioOut)
+	c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter())
 
 	audio := mp.NegotiatedAudio()
 	if audio == nil {
@@ -1607,16 +1623,16 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 
 func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags map[string]string) error {
 	defer c.mon.StageDurTimer("track-publish")()
-	local, err := c.lkRoom.NewParticipantTrack(RoomSampleRate)
+	inboundAudio, err := c.lkRoom.GetInboundAudioWriter()
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err
 	}
 
 	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
-		local = audioInProcessor(local)
+		inboundAudio = audioInProcessor(inboundAudio)
 	}
-	c.media.WriteInboundAudioTo(local)
+	c.media.WriteInboundAudioTo(inboundAudio)
 	return nil
 }
 
@@ -1657,11 +1673,7 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []msdk.PCM16Sample) 
 	_ = msdk.PlayAudio[msdk.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
 }
 
-func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
-	if msg == nil {
-		return
-	}
-
+func dtmfEventFromSipDTMF(msg *livekit.SipDTMF) dtmf.Event {
 	code := byte(msg.Code)
 	digit := byte(0)
 	if len(msg.Digit) == 1 {
@@ -1669,18 +1681,24 @@ func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
 	} else {
 		digit = dtmf.CodeToChar(code)
 	}
-	event := dtmf.Event{
+	return dtmf.Event{
 		Code:  code,
 		Digit: digit,
 	}
+}
 
-	if c.forwardDTMF.Load() {
-		_ = c.lkRoom.SendData(&livekit.SipDTMF{
-			Code:  uint32(code),
-			Digit: string([]byte{digit}),
-		}, lksdk.WithDataPublishReliable(true))
+func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
+	if msg == nil {
 		return
 	}
+
+	if c.forwardDTMF.Load() {
+		c.lkRoom.GetInboundDTMFWriter().WriteSample(msg)
+		return
+	}
+
+	// TODO(alexfish): Just have the channel accept the message instead?
+	event := dtmfEventFromSipDTMF(msg)
 	// We should have enough buffer here.
 	select {
 	case c.dtmf <- event:
@@ -1702,13 +1720,13 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer rcancel()
 
 		// mute the room audio to the SIP participant
-		w := c.lkRoom.SwapOutput(nil)
+		c.lkRoom.WriteOutboundAudioTo(nil)
 
 		defer func() {
 			if retErr != nil && !c.done.Load() {
-				c.lkRoom.SwapOutput(w)
-			} else if w != nil {
-				w.Close()
+				c.lkRoom.WriteOutboundAudioTo(c.audioOut)
+			} else {
+				c.audioOut.Close()
 			}
 		}()
 
