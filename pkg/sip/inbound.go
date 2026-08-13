@@ -417,9 +417,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if s.cli != nil { // Process reinvite for existing outbound calls
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
-		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
-			localSDP := oc.GetLocalSDP()
-			if len(localSDP) > 0 {
+		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq && oc.media != nil {
+			localSDP, err := oc.media.GetLocalSDP() // eror
+			if err == nil && len(localSDP) > 0 {
 				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 				if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
 					log.Errorw("failed to update outbound call SDP", err)

@@ -518,7 +518,7 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 			if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
 				Digit: string(digits[i]),
 			}); err != nil {
-				errs = append(errs, fmt.Errorf("error writing digit no. %d (%q): %w", i, string(digits), err))
+				errs = append(errs, fmt.Errorf("error writing digit no. %d (%s): %w", i, string(digits[i]), err))
 			}
 		}
 	}
@@ -539,13 +539,6 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 	}
 	_, err := mp.GenerateAnswer(body)
 	return err
-}
-
-func (c *outboundCall) GetLocalSDP() []byte {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	sdp, _ := c.media.GetLocalSDP()
-	return sdp
 }
 
 func (c *outboundCall) connectMedia() {
