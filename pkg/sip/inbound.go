@@ -978,7 +978,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			// Start this timer right after the Accept.
 			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
-		if old := c.audioOut.Swap(c.media.GetAudioWriter()); old != nil {
+		if old := c.audioOut.Swap(c.media.GetOutboundAudioWriter()); old != nil {
 			c.log().Warnw("unexpected audio out writer", nil)
 			old.Close()
 		}
@@ -1173,13 +1173,13 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mp.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
+	mp.WriteInboundDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 
 	// Must be set earlier to send the pin prompts.
 	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
 		_ = w.Close()
 	}
-	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
+	c.lkRoom.SetDTMFOutput(c.media.GetOutboundDTMFWriter())
 
 	audio := mp.NegotiatedAudio()
 	if audio == nil {
@@ -1616,7 +1616,7 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
 		local = audioInProcessor(local)
 	}
-	c.media.WriteAudioTo(local)
+	c.media.WriteInboundAudioTo(local)
 	return nil
 }
 

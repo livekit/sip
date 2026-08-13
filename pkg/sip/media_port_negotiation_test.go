@@ -169,7 +169,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 		m1, m2 := newMediaPair(t, nil, nil, "")
 
 		recv2 := &recvBuffer{}
-		m2.WriteAudioTo(recv2)
+		m2.WriteInboundAudioTo(recv2)
 		requireAudioFlows(t, m1, recv2)
 
 		for range 3 {
@@ -203,7 +203,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 		require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answerData))
 
 		recv2 := &recvBuffer{}
-		m2.WriteAudioTo(recv2)
+		m2.WriteInboundAudioTo(recv2)
 		requireAudioFlows(t, m1, recv2)
 
 		// G722 samples at 16k, so the encode leaf changes sample rate under the same
@@ -247,9 +247,9 @@ func TestMediaPortHold(t *testing.T) {
 			m1, m2 := newMediaPair(t, nil, nil, "")
 
 			recv1 := &recvBuffer{}
-			m1.WriteAudioTo(recv1)
+			m1.WriteInboundAudioTo(recv1)
 			recv2 := &recvBuffer{}
-			m2.WriteAudioTo(recv2)
+			m2.WriteInboundAudioTo(recv2)
 
 			// Baseline: m1 sends to m2.
 			require.NotNil(t, m1.audioOut.Get())

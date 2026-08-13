@@ -391,10 +391,16 @@ func (o *MediaOptions) ApplyDefaults() {
 }
 
 type MediaSegment interface {
-	GetAudioWriter() msdk.PCM16Writer
-	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
-	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
-	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
+	// GetOutboundAudioWriter returns the LK room -> SIP writer.
+	GetOutboundAudioWriter() msdk.PCM16Writer
+	// GetOutboundDTMFWriter returns the LK room -> SIP DTMF writer.
+	GetOutboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
+
+	// WriteInboundAudioTo tells the MediaSegment where to write inbound SIP audio.
+	WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
+
+	// WriteInboundDTMFTo tells the MediaSegment where to write inbound SIP DTMF.
+	WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 }
 
 // MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
@@ -731,20 +737,20 @@ func (p *mediaPort) reportPeerCodecs(d sdp.MediaDesc) {
 
 // Plumbing
 
-func (p *mediaPort) GetAudioWriter() msdk.PCM16Writer {
+func (p *mediaPort) GetOutboundAudioWriter() msdk.PCM16Writer {
 	return p.audioOut
 }
 
-// WriteAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
-func (p *mediaPort) WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
+// WriteInboundAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
+func (p *mediaPort) WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
 	return p.audioIn.Swap(w)
 }
 
-func (p *mediaPort) GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
+func (p *mediaPort) GetOutboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
 	return &p.dtmfOut
 }
 
-func (p *mediaPort) WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
+func (p *mediaPort) WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
 	return p.dtmfIn.Swap(w)
 }
 

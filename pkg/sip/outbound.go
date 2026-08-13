@@ -519,7 +519,7 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	if digits := c.sipConf.dtmf; digits != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
-		dtmfWriter := c.media.GetDTMFWriter()
+		dtmfWriter := c.media.GetOutboundDTMFWriter()
 		if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
 			Digit: digits,
 		}); err != nil {
@@ -548,13 +548,13 @@ func (c *outboundCall) connectMedia() {
 	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
 		_ = w.Close()
 	}
-	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
+	c.lkRoom.SetDTMFOutput(c.media.GetOutboundDTMFWriter())
 
 	if processor := c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
-	c.media.WriteAudioTo(c.lkRoomIn)
-	c.media.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
+	c.media.WriteInboundAudioTo(c.lkRoomIn)
+	c.media.WriteInboundDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 }
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
@@ -763,7 +763,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 
 	c.mon.InviteAccept()
-	if old := c.audioOut.Swap(c.media.GetAudioWriter()); old != nil {
+	if old := c.audioOut.Swap(c.media.GetOutboundAudioWriter()); old != nil {
 		c.log.Warnw("unexpected audio out writer", nil)
 		old.Close()
 	}

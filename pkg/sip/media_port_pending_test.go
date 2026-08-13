@@ -197,11 +197,11 @@ func TestMediaPort(t *testing.T) {
 
 					var aliceRecvBuf msdk.PCM16Sample
 					aliceHandler := msdk.NewPCM16BufferWriter(&aliceRecvBuf, testRate)
-					alicePort.WriteAudioTo(aliceHandler)
+					alicePort.WriteInboundAudioTo(aliceHandler)
 
 					var bobRecvBuf msdk.PCM16Sample
 					bobHandler := msdk.NewPCM16BufferWriter(&bobRecvBuf, testRate)
-					bobPort.WriteAudioTo(bobHandler)
+					bobPort.WriteInboundAudioTo(bobHandler)
 
 					aliceToBob := alicePort.GetAudioWriter()
 					bobToAlice := bobPort.GetAudioWriter()
