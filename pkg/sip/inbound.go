@@ -73,6 +73,7 @@ const (
 var allowHeader = sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE")
 
 var errNoACK = errors.New("no ACK received for 200 OK")
+var errInternal = errors.New("internal error")
 
 // hashPassword creates a SHA256 hash of the password for logging purposes
 func hashPassword(password string) string {
@@ -417,19 +418,25 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if s.cli != nil { // Process reinvite for existing outbound calls
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
-		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq && oc.media != nil {
-			localSDP, err := oc.media.GetLocalSDP() // eror
-			if err == nil && len(localSDP) > 0 {
-				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-				if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
-					log.Errorw("failed to update outbound call SDP", err)
-					return err
-				}
-				oc.cc.RecordInvite(newCSeq)
-				// TODO(alexfish): Reply with the new SDP.
-				cc.AcceptAsKeepAlive(localSDP)
-				return nil
+		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
+			if oc.media == nil {
+				oc.log.Errorw("outbound call media has not been negotiated", nil)
+				return errInternal
 			}
+			localSDP, err := oc.media.GetLocalSDP()
+			if err != nil || len(localSDP) == 0 {
+				oc.log.Errorw("outbound call does not have an SDP", nil)
+				return errInternal
+			}
+			oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+			if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+				log.Errorw("failed to update outbound call SDP", err)
+				return errInternal
+			}
+			oc.cc.RecordInvite(newCSeq)
+			// TODO(alexfish): Reply with the new SDP.
+			cc.AcceptAsKeepAlive(localSDP)
+			return nil
 		}
 
 	}

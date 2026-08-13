@@ -773,15 +773,18 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
-	if audio := c.media.NegotiatedAudio(); audio != nil {
-		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-			info.AudioCodec = audio.Codec.Info().SDPName
-			if r := c.lkRoom.Room(); r != nil {
-				info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
-			}
-		})
-
+	audio := c.media.NegotiatedAudio()
+	if audio == nil {
+		return fmt.Errorf("call media does not have negotiated audio")
 	}
+
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.AudioCodec = audio.Codec.Info().SDPName
+		if r := c.lkRoom.Room(); r != nil {
+			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
+		}
+	})
+
 	return nil
 }
 
