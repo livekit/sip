@@ -527,6 +527,27 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	return errors.Join(errs...)
 }
 
+func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
+	var mp MediaPort
+
+	c.mu.Lock()
+	mp = c.media
+	c.mu.Unlock()
+
+	if mp == nil {
+		return nil
+	}
+	_, err := mp.GenerateAnswer(body)
+	return err
+}
+
+func (c *outboundCall) GetLocalSDP() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sdp, _ := c.media.GetLocalSDP()
+	return sdp
+}
+
 func (c *outboundCall) connectMedia() {
 	if w := c.lkRoom.SwapOutput(c.media.GetAudioWriter()); w != nil {
 		_ = w.Close()
