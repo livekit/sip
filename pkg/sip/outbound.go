@@ -86,9 +86,7 @@ type outboundCall struct {
 	mon      *stats.CallMonitor
 	lkRoom   RoomInterface
 	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
-
-	sipConf sipOutboundConfig
-
+	sipConf  sipOutboundConfig
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // inner writer owned by MediaPort
 }
 
