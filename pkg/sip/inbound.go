@@ -404,26 +404,29 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	s.cmu.RLock()
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
-	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
+	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() && existing.media != nil {
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		if _, err = existing.media.GenerateAnswer(sdpBodyFromRequest(req)); err != nil {
 			log.Errorw("failed to update outbound call SDP", err)
+			return err
 		}
 
+		// TODO(rework): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
-		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
+		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq && oc.media != nil {
 			if localSDP, err := oc.media.GetLocalSDP(); err == nil && len(localSDP) > 0 {
 				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 				if _, err = oc.media.GenerateAnswer(sdpBodyFromRequest(req)); err != nil {
 					log.Errorw("failed to update outbound call SDP", err)
-					return nil
+					return err
 				}
 				oc.cc.RecordInvite(newCSeq)
+				// TODO(rework): Reply with the new SDP.
 				cc.AcceptAsKeepAlive(localSDP)
 				return nil
 			}

@@ -508,19 +508,23 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 		return err
 	}
 
+	var errs []error
+
 	if digits := c.sipConf.dtmf; digits != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
 		dtmfWriter := c.media.GetDTMFWriter()
 		for i := range len(digits) {
-			dtmfWriter.WriteSample(&livekit.SipDTMF{
+			if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
 				Digit: string(digits[i]),
-			})
+			}); err != nil {
+				errs = append(errs, fmt.Errorf("error writing digit no. %d (%q): %w", i, string(digits), err))
+			}
 		}
 	}
 	c.setStatus(CallActive)
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func (c *outboundCall) connectMedia() {
