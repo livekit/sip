@@ -433,25 +433,27 @@ func (w *dtmfOutWriter) Close() error {
 }
 
 func (w *dtmfOutWriter) WriteSample(sample *livekit.SipDTMF) error {
-	if sample == nil || len(sample.Digit) > 1 || sample.Code >= 0x10 {
+	if sample == nil || sample.Code >= 0x10 || (len(sample.Digit) == 0 && sample.Code == 0) {
 		return fmt.Errorf("invalid DTMF sample: %v", sample)
 	}
-	digit := byte(0)
-	if len(sample.Digit) == 1 {
-		digit = sample.Digit[0]
-	} else {
-		digit = dtmf.CodeToChar(byte(sample.Code))
-	}
-	if digit == 0 {
-		return fmt.Errorf("invalid DTMF sample: %v", sample)
+	digits := sample.Digit
+	if len(digits) == 0 {
+		digit := dtmf.CodeToChar(byte(sample.Code))
+		if digit == 0 {
+			return fmt.Errorf("code %d not supoported", sample.Code)
+		}
+		digits = string([]byte{digit})
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	var rtpTs uint32
 	if w.dtmfEvents != nil {
 		rtpTs = w.getTimestamp() // TODO: Maybe time to introduce the auto timestamp feature?
 	}
-	return dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, rtpTs, string([]byte{digit}))
+	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, rtpTs, digits)
+	if err != nil {
+		return err
+	}
+	return nil
 }
