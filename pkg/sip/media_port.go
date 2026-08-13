@@ -35,6 +35,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -381,6 +382,19 @@ func (o *MediaOptions) ApplyDefaults() {
 	if o.Codecs == nil {
 		o.Codecs = defaultCodecs
 	}
+	if o.Ports.Start == 0 {
+		o.Ports.Start = config.DefaultRTPPortRange.Start
+	}
+	if o.Ports.End == 0 {
+		o.Ports.End = config.DefaultRTPPortRange.End
+	}
+}
+
+type MediaSegment interface {
+	GetAudioWriter() msdk.PCM16Writer
+	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
+	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
+	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 }
 
 // MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
@@ -389,10 +403,7 @@ type MediaPort interface {
 	Close()
 	CloseWait()
 
-	GetAudioWriter() msdk.PCM16Writer                                                    // To Port
-	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer                                    // From Port
-	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]                                   // To Port
-	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] // From Port
+	MediaSegment
 
 	// If there is no offer, this generates an offer.
 	// If there is an offer, this simply returns the SDP of that offer.

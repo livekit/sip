@@ -911,7 +911,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		}
 		rawSDP := req.Body()
 		tmedia := c.mon.StageDurTimer("start-media")
-		answerData, err := c.runMediaConn(tid, rawSDP, m, conf, disp.EnabledFeatures, disp.FeatureFlags)
+		answerData, err := c.runMediaConn(tid, rawSDP, m, conf, disp.FeatureFlags)
 		tmedia()
 		if err != nil {
 			sipReason := sip.StatusInternalServerError
@@ -1036,7 +1036,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return fmt.Errorf("failed joining room: %w", err)
 	}
 	// Publish our own track.
-	if err := c.publishTrack(); err != nil {
+	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {
 		c.log().Errorw("Cannot publish track", err)
 		c.closeWithTerm(ctx, stats.ServerError("publish-failed"))
 		return fmt.Errorf("publishing track to room failed: %w", err)
@@ -1136,7 +1136,7 @@ func (w *dtmfEventWriter) WriteSample(sample *livekit.SipDTMF) error {
 	return nil
 }
 
-func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, features []livekit.SIPFeature, featureFlags map[string]string) ([]byte, error) {
+func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) ([]byte, error) {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	c.mon.SDPSize(len(offerData), true)
@@ -1174,7 +1174,6 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	c.audioInProcessor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate})
 	mp.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 
 	// Must be set earlier to send the pin prompts.
@@ -1192,6 +1191,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	})
 	return answerData, nil
 }
+
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
 	defer c.mon.StageDurTimer("wait-media")()
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitMedia")
@@ -1606,7 +1606,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	return nil
 }
 
-func (c *inboundCall) publishTrack() error {
+func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags map[string]string) error {
 	defer c.mon.StageDurTimer("track-publish")()
 	local, err := c.lkRoom.NewParticipantTrack(RoomSampleRate)
 	if err != nil {
@@ -1614,7 +1614,7 @@ func (c *inboundCall) publishTrack() error {
 		return err
 	}
 
-	if c.audioInProcessor != nil {
+	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
 		local = c.audioInProcessor(local)
 	}
 	c.media.WriteAudioTo(local)
