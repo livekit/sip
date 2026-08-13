@@ -16,11 +16,6 @@ package sip
 
 import (
 	"context"
-	"io"
-	"net"
-	"net/netip"
-	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,6 +28,7 @@ import (
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
+	msdkopus "github.com/livekit/media-sdk/opus"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
@@ -40,131 +36,43 @@ import (
 )
 
 const (
-	testAudioPT   = byte(0) // PCMU
+	testAudioPT   = byte(0)  // PCMU
+	testOpusPT    = byte(96) // dynamic
 	testDTMFPT    = byte(101)
 	testCodecRate = 8000
 )
 
-// In-memory UDP pipe for pipeline tests (same shape as media_port_test's testUDPConn).
-type pipelineUDPConn struct {
-	addr     netip.AddrPort
-	closed   chan struct{}
-	buf      chan []byte
-	peer     atomic.Pointer[pipelineUDPConn]
-	deadline chan time.Time
+func mustAudioCodec(t testing.TB, name string) msdk.AudioCodec {
+	t.Helper()
+	codec, ok := sdp.CodecByName(name).(msdk.AudioCodec)
+	require.True(t, ok, "codec %s", name)
+	return codec
 }
 
-func (c *pipelineUDPConn) Read(b []byte) (int, error) {
-	n, _, err := c.ReadFromUDPAddrPort(b)
-	return n, err
-}
-
-func (c *pipelineUDPConn) Write(b []byte) (int, error) {
-	return c.WriteToUDPAddrPort(b, netip.AddrPort{})
-}
-
-func (c *pipelineUDPConn) RemoteAddr() net.Addr {
-	p := c.peer.Load()
-	if p == nil {
-		return &net.UDPAddr{}
-	}
-	return p.LocalAddr()
-}
-
-func (c *pipelineUDPConn) SetDeadline(t time.Time) error {
-	return c.SetReadDeadline(t)
-}
-
-func (c *pipelineUDPConn) SetReadDeadline(t time.Time) error {
-	select {
-	case c.deadline <- t:
-	default:
-	}
-	return nil
-}
-
-func (c *pipelineUDPConn) SetWriteDeadline(time.Time) error { return nil }
-
-func (c *pipelineUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, error) {
-	peer := c.peer.Load()
-	if peer == nil {
-		return 0, netip.AddrPort{}, io.ErrClosedPipe
-	}
-	var curDeadline time.Time
-	for {
-		var deadlineCh <-chan time.Time
-		if !curDeadline.IsZero() {
-			deadlineCh = time.After(time.Until(curDeadline))
-		}
-		select {
-		case <-c.closed:
-			return 0, netip.AddrPort{}, io.ErrClosedPipe
-		case <-deadlineCh:
-			return 0, netip.AddrPort{}, os.ErrDeadlineExceeded
-		case newDeadline := <-c.deadline:
-			if !newDeadline.IsZero() && (newDeadline.Before(curDeadline) || curDeadline.IsZero()) {
-				curDeadline = newDeadline
+// Opus is not a registered SIP SDP codec; wrap media-sdk/opus so the pipeline
+// can encode/decode at RoomSampleRate (no resample).
+func testOpusCodec() msdk.AudioCodec {
+	log := logger.GetLogger()
+	return msdk.NewAudioCodec(msdk.CodecInfo{
+		SDPName:      "opus/48000",
+		SampleRate:   RoomSampleRate,
+		RTPClockRate: RoomSampleRate,
+	},
+		func(w msdk.PCM16Writer) msdk.WriteCloser[msdkopus.Sample] {
+			d, err := msdkopus.Decode(w, 1, log)
+			if err != nil {
+				panic(err)
 			}
-			continue
-		case data := <-c.buf:
-			n := copy(buf, data)
-			var err error
-			if n < len(data) {
-				err = io.ErrShortBuffer
+			return d
+		},
+		func(w msdk.WriteCloser[msdkopus.Sample]) msdk.PCM16Writer {
+			e, err := msdkopus.Encode(w, 1, log)
+			if err != nil {
+				panic(err)
 			}
-			return n, peer.addr, err
-		}
-	}
-}
-
-func (c *pipelineUDPConn) WriteToUDPAddrPort(buf []byte, addr netip.AddrPort) (int, error) {
-	peer := c.peer.Load()
-	if peer == nil {
-		return 0, io.ErrClosedPipe
-	} else if peer.addr.String() != addr.String() {
-		panic("unexpected address")
-	}
-	buf = slices.Clone(buf)
-	select {
-	default:
-		return 0, io.ErrShortWrite
-	case <-peer.closed:
-		return 0, io.ErrClosedPipe
-	case peer.buf <- buf:
-		return len(buf), nil
-	}
-}
-
-func (c *pipelineUDPConn) LocalAddr() net.Addr {
-	return &net.UDPAddr{
-		IP:   c.addr.Addr().AsSlice(),
-		Port: int(c.addr.Port()),
-	}
-}
-
-func (c *pipelineUDPConn) Close() error {
-	if c.peer.Swap(nil) != nil {
-		close(c.closed)
-	}
-	return nil
-}
-
-func newPipelineUDPPipe() (c1, c2 *pipelineUDPConn) {
-	c1 = &pipelineUDPConn{
-		addr:     netip.AddrPortFrom(netip.AddrFrom4([4]byte{1, 1, 1, 1}), 10000),
-		buf:      make(chan []byte, 256),
-		closed:   make(chan struct{}),
-		deadline: make(chan time.Time, 1),
-	}
-	c2 = &pipelineUDPConn{
-		addr:     netip.AddrPortFrom(netip.AddrFrom4([4]byte{2, 2, 2, 2}), 20000),
-		buf:      make(chan []byte, 256),
-		closed:   make(chan struct{}),
-		deadline: make(chan time.Time, 1),
-	}
-	c1.peer.Store(c2)
-	c2.peer.Store(c1)
-	return c1, c2
+			return e
+		},
+	)
 }
 
 type dtmfCollector struct {
@@ -195,8 +103,8 @@ func (c *dtmfCollector) snapshot() []*livekit.SipDTMF {
 
 type pipelineHarness struct {
 	t           *testing.T
-	local       *pipelineUDPConn
-	remote      *pipelineUDPConn
+	local       *testUDPConn
+	remote      *testUDPConn
 	port        *udpConn
 	audioIn     msdk.WriteCloserSwitch[msdk.PCM16Sample]
 	audioOut    msdk.WriteCloserSwitch[msdk.PCM16Sample]
@@ -207,13 +115,14 @@ type pipelineHarness struct {
 	pipeline    *mediaPortPipeline
 	ssrcCount   atomic.Uint64
 	packetCount atomic.Uint64
+	codec       msdk.AudioCodec
 	audioPT     byte
 	dtmfPT      byte
 }
 
-func newPipelineHarness(t *testing.T, dtmfType byte, dtmfAudio bool) *pipelineHarness {
+func newPipelineHarness(t *testing.T, audioType byte, codec msdk.AudioCodec, dtmfType byte, dtmfAudio bool) *pipelineHarness {
 	t.Helper()
-	local, remote := newPipelineUDPPipe()
+	local, remote := newUDPPipe()
 
 	log := logger.GetLogger()
 	port := newUDPConn(log, local, false)
@@ -224,12 +133,10 @@ func newPipelineHarness(t *testing.T, dtmfType byte, dtmfAudio bool) *pipelineHa
 		port:      port,
 		roomAudio: new(msdk.PCM16Sample),
 		roomDTMF:  &dtmfCollector{},
-		audioPT:   testAudioPT,
+		codec:     codec,
+		audioPT:   audioType,
 		dtmfPT:    dtmfType,
 	}
-
-	codec, ok := sdp.CodecByName(g711.ULawSDPNameAndRate).(msdk.AudioCodec)
-	require.True(t, ok)
 
 	h.audioIn.Swap(msdk.NewPCM16BufferWriter(h.roomAudio, RoomSampleRate))
 	h.dtmfIn.Swap(h.roomDTMF)
@@ -251,7 +158,7 @@ func newPipelineHarness(t *testing.T, dtmfType byte, dtmfAudio bool) *pipelineHa
 		Remote: remote.addr,
 		Audio: sdp.AudioConfig{
 			Codec:    codec,
-			Type:     testAudioPT,
+			Type:     audioType,
 			DTMFType: dtmfType,
 		},
 	}
@@ -296,18 +203,20 @@ func (h *pipelineHarness) injectRTP(pkt *rtp.Packet) {
 
 func (h *pipelineHarness) injectAudio(ssrc uint32, seq uint16, ts uint32, pcm msdk.PCM16Sample) {
 	h.t.Helper()
-	var ulaw g711.ULawSample
-	ulaw.Encode(pcm)
-	h.injectRTP(&rtp.Packet{
-		Header: rtp.Header{
-			Version:        2,
-			PayloadType:    h.audioPT,
-			SequenceNumber: seq,
-			Timestamp:      ts,
-			SSRC:           ssrc,
-		},
-		Payload: []byte(ulaw),
-	})
+	var buf msrtp.Buffer
+	stream := msrtp.NewSeqWriter(&buf).NewStream(h.audioPT, h.codec.Info().RTPClockRate)
+	enc := msrtp.EncodePCM(stream, h.codec)
+	require.NoError(h.t, enc.WriteSample(pcm))
+	require.NoError(h.t, enc.Close())
+	require.NotEmpty(h.t, buf, "codec produced no RTP")
+	for i, pkt := range buf {
+		pkt.Header.SSRC = ssrc
+		pkt.Header.SequenceNumber = seq + uint16(i)
+		if i == 0 {
+			pkt.Header.Timestamp = ts
+		}
+		h.injectRTP(pkt)
+	}
 }
 
 func (h *pipelineHarness) injectDTMFDigit(ssrc uint32, digit string, ts uint32) {
@@ -346,25 +255,34 @@ func pcmEnergy(s msdk.PCM16Sample) int64 {
 }
 
 func TestMediaPipelinePermutations(t *testing.T) {
+	pcmu := mustAudioCodec(t, g711.ULawSDPNameAndRate)
+	opus := testOpusCodec()
 	cases := []struct {
 		name      string
+		codec     msdk.AudioCodec
+		audioPT   byte
 		dtmfType  byte
 		dtmfAudio bool
 	}{
-		{name: "dtmf_disabled", dtmfType: 0, dtmfAudio: false},
-		{name: "dtmf_enabled", dtmfType: testDTMFPT, dtmfAudio: false},
-		{name: "dtmf_enabled_with_audio", dtmfType: testDTMFPT, dtmfAudio: true},
+		{name: "dtmf_disabled", codec: pcmu, audioPT: testAudioPT, dtmfType: 0, dtmfAudio: false},
+		{name: "dtmf_enabled", codec: pcmu, audioPT: testAudioPT, dtmfType: testDTMFPT, dtmfAudio: false},
+		{name: "dtmf_enabled_with_audio", codec: pcmu, audioPT: testAudioPT, dtmfType: testDTMFPT, dtmfAudio: true},
+		// PCMU is 8kHz: pipeline resamples 48kHz room PCM. Opus is 48kHz: ResampleWriter is a nop.
+		{name: "resample", codec: pcmu, audioPT: testAudioPT, dtmfType: 0, dtmfAudio: false},
+		{name: "no_resample", codec: opus, audioPT: testOpusPT, dtmfType: 0, dtmfAudio: false},
 	}
 
-	frame := testCodecRate / int(time.Second/msrtp.DefFrameDur)
+	roomFrame := RoomSampleRate / int(time.Second/msrtp.DefFrameDur)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newPipelineHarness(t, tc.dtmfType, tc.dtmfAudio)
+			h := newPipelineHarness(t, tc.audioPT, tc.codec, tc.dtmfType, tc.dtmfAudio)
 
 			t.Run("audio_to_port", func(t *testing.T) {
-				sample := tonePCM(testCodecRate, frame, 10000)
-				require.NoError(t, h.audioOut.WriteSample(sample))
+				sample := tonePCM(RoomSampleRate, roomFrame, 10000)
+				for range 5 {
+					require.NoError(t, h.audioOut.WriteSample(sample))
+				}
 				deadline := time.Now().Add(time.Second)
 				foundAudio := false
 				for time.Now().Before(deadline) && !foundAudio {
@@ -381,9 +299,12 @@ func TestMediaPipelinePermutations(t *testing.T) {
 
 			t.Run("audio_to_room", func(t *testing.T) {
 				before := len(*h.roomAudio)
-				sample := tonePCM(testCodecRate, frame, 12000)
+				codecRate := tc.codec.Info().SampleRate
+				codecFrame := codecRate / int(time.Second/msrtp.DefFrameDur)
+				clock := uint32(tc.codec.Info().RTPClockRate / int(time.Second/msrtp.DefFrameDur))
+				sample := tonePCM(codecRate, codecFrame, 12000)
 				for i := uint16(0); i < 5; i++ {
-					h.injectAudio(0xA11CE, 1+i, 160+uint32(i)*160, sample)
+					h.injectAudio(0xA11CE, 1+i, clock+uint32(i)*clock, sample)
 				}
 				require.Eventually(t, func() bool {
 					return h.packetCount.Load() >= 5
@@ -472,7 +393,7 @@ func TestMediaPipelinePermutations(t *testing.T) {
 }
 
 func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
-	h := newPipelineHarness(t, testDTMFPT, false)
+	h := newPipelineHarness(t, testAudioPT, mustAudioCodec(t, g711.ULawSDPNameAndRate), testDTMFPT, false)
 	frame := testCodecRate / int(time.Second/msrtp.DefFrameDur)
 	sample := tonePCM(testCodecRate, frame, 8000)
 
@@ -497,7 +418,7 @@ func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
 }
 
 func TestMediaPipelineReuseUDPConn(t *testing.T) {
-	local, remote := newPipelineUDPPipe()
+	local, remote := newUDPPipe()
 	log := logger.GetLogger()
 	port := newUDPConn(log, local, false)
 

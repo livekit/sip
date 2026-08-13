@@ -174,7 +174,7 @@ func newTestConn(i int) *testUDPConn {
 			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
 			uint16(10000*i),
 		),
-		buf:      make(chan []byte, 10),
+		buf:      make(chan []byte, 256),
 		closed:   make(chan struct{}),
 		deadline: make(chan time.Time, 1),
 	}
@@ -271,8 +271,6 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeout:        timeout,
 		}, nil)
 
-		m1.EnableTimeout(true)
-
 		targ := time.Now().Add(initial)
 		select {
 		case <-m1.MediaTimeout():
@@ -292,7 +290,6 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
 		}, nil)
-		m1.EnableTimeout(true)
 
 		w2 := m2.GetAudioWriter()
 		err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -316,7 +313,6 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
 		}, nil)
-		m1.EnableTimeout(true)
 
 		w2 := m2.GetAudioWriter()
 
@@ -337,7 +333,6 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
 		}, nil)
-		m1.EnableTimeout(true)
 
 		w2 := m2.GetAudioWriter()
 
@@ -356,7 +351,7 @@ func TestMediaTimeout(t *testing.T) {
 		// the general timeout applies relative to the last received RTP packet.
 		// Last packet arrived at most timeout/2 ago, so the timeout should fire
 		// within ~timeout from now, well before initial would elapse.
-		m1.SetTimeout(initial, timeout)
+		m1.SetTimeoutForDelayedAck(initial, timeout)
 
 		select {
 		case <-time.After(timeout + dt):
@@ -370,13 +365,12 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
 		}, nil)
-		m1.EnableTimeout(true)
 
 		// No media has ever arrived. SetTimeout re-arms startTime, and since the
 		// port has never seen an RTP packet, the new initial window applies from
 		// the moment of the SetTimeout call.
 		time.Sleep(initial / 2)
-		m1.SetTimeout(initial, timeout)
+		m1.SetTimeoutForDelayedAck(initial, timeout)
 
 		targ := time.Now().Add(initial)
 		select {
@@ -397,7 +391,6 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
 		}, nil)
-		m1.EnableTimeout(true)
 
 		w2 := m2.GetAudioWriter()
 
@@ -411,8 +404,6 @@ func TestMediaTimeout(t *testing.T) {
 				t.Fatal("timeout")
 			}
 		}
-
-		m1.SetTimeout(initial, timeout)
 
 		for i := 0; i < 5; i++ {
 			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
