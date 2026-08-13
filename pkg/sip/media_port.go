@@ -475,7 +475,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	p.port.startDiscarding()
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
 	p.timeoutGeneral.Store(&opts.MediaTimeout)
-	go p.timeoutLoop()
+	p.wg.Go(p.mediaTimeoutLoop)
 	p.log.Debugw("listening for media on UDP", "port", p.Port())
 	return p, nil
 }
@@ -483,6 +483,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 // mediaPort is the concrete MediaPort implementation.
 type mediaPort struct {
 	log            logger.Logger
+	wg             sync.WaitGroup
 	opts           *MediaOptions
 	mon            *stats.CallMonitor
 	externalIP     netip.Addr
@@ -551,7 +552,7 @@ func (p *mediaPort) SetTimeoutForDelayedAck(initial, general time.Duration) {
 	p.enableTimeout(initial, general)
 }
 
-func (p *mediaPort) timeoutLoop() {
+func (p *mediaPort) mediaTimeoutLoop() {
 	defer p.log.Infow("media timeout loop stopped")
 
 	const disabledPark = time.Hour
@@ -683,12 +684,17 @@ func (p *mediaPort) Close() {
 		} else {
 			_ = conn.Close()
 		}
+		p.audioIn.Close()  // Propagate Close() to onwards to room
+		p.dtmfIn.Close()   // Propagate Close() to onwards to room
+		p.audioOut.Close() // Pipeline insulated, but close switch
+		p.dtmfOut.Close()  // Pipeline insulated, but close switch
 	})
 }
 
 func (p *mediaPort) CloseWait() {
 	p.Close()
 	<-p.closed.Watch()
+	p.wg.Wait()
 }
 
 func (p *mediaPort) Port() int {
@@ -851,7 +857,8 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	// TODO: Avoid reconfiguring if mc unchanged; maybe only adjust direction
 
 	p.closePipelineLocked()
-	p.port.Reopen() // Allow reads from socket again
+	p.port.stopDiscarding() // Needs readDeadline. Must be ahead of Reopen() and NewMediaPortPipeline()
+	p.port.Reopen()         // Allow reads from socket again
 
 	pipelineConfig := &MediaPortPipelineConfig{
 		log:       p.log,
