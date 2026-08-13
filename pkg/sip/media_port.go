@@ -394,18 +394,21 @@ type MediaPort interface {
 	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
 	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 
-	// GenerateOffer returns an encoded SDP offer. Returns an error if an offer
-	// has been already been generated or media has already been negotiated.
+	// If there is no offer, this generates an offer.
+	// If there is an offer, this simply returns the SDP of that offer.
+	// An offer is cleared once a negotiation is successful.
 	GenerateOffer() ([]byte, error)
 
 	// GenerateAnswer returns an encoded SDP answer for the given offer.
 	//
-	// SIDE EFFECT: Rebuilds the media pipeline.
+	// SIDE EFFECT: May cause a rebuild of the pipeline.
 	GenerateAnswer(offer []byte) ([]byte, error)
 
 	// ProcessAnswer processes an encoded SDP answer from the remote client. Returns an
 	// error if the answer is invalid, the offer has not yet been generated, or
 	// if media has already been negotiated.
+	//
+	// SIDE EFFECT: May cause a rebuild of the pipeline.
 	ProcessAnswer(answer []byte) error
 
 	GetLocalSDP() ([]byte, error)
@@ -424,7 +427,7 @@ type MediaPort interface {
 	//
 	// We would like to enforce the fact that all invites must be ACKed.
 	// Sometimes, though, for whatever reason, we do not see ACKs for invites
-	// (presumably, this is due to an issue within sipfe). In such cases where
+	// (e.g due to possible issues with load balancing). In such cases where
 	// we require an invite to be ACKed (guarded by the `InboundWaitACK`
 	// setting), if we don't see the ACK within some amount of time, then we
 	// restrict the timeout with this method so that the call might end earlier

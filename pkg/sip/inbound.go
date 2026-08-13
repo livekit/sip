@@ -697,35 +697,37 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 }
 
 type inboundCall struct {
-	s           *Server
-	tid         traceid.ID
-	logPtr      atomic.Pointer[logger.Logger]
-	cc          *sipInbound
-	mon         *stats.CallMonitor
-	state       *CallState
-	callStart   time.Time
-	extraAttrs  map[string]string
-	attrsToHdr  map[string]string
-	ctx         context.Context
-	cancel      func()
-	closeReason atomic.Pointer[ReasonHeader]
-	call        *rpc.SIPCall
-	mmu         sync.Mutex
-	media       MediaPort
-	mediaCodecs *msdk.CodecSet
-	dtmf        chan dtmf.Event // buffered
-	endCall     chan EndCall    // buffered
-	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
-	callDur     func() time.Duration
-	joinDur     func() time.Duration
-	forwardDTMF atomic.Bool
-	done        atomic.Bool
-	started     core.Fuse
-	stats       Stats
-	sigTs       SignalingTimestamps
-	jitterBuf   bool
-	projectID   string
-	audioOut    *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	s                *Server
+	tid              traceid.ID
+	logPtr           atomic.Pointer[logger.Logger]
+	cc               *sipInbound
+	mon              *stats.CallMonitor
+	state            *CallState
+	callStart        time.Time
+	extraAttrs       map[string]string
+	attrsToHdr       map[string]string
+	ctx              context.Context
+	cancel           func()
+	closeReason      atomic.Pointer[ReasonHeader]
+	call             *rpc.SIPCall
+	mmu              sync.Mutex
+	media            MediaPort
+	mediaCodecs      *msdk.CodecSet
+	dtmf             chan dtmf.Event // buffered
+	endCall          chan EndCall    // buffered
+	lkRoom           RoomInterface   // LiveKit room; only active after correct pin is entered
+	callDur          func() time.Duration
+	joinDur          func() time.Duration
+	forwardDTMF      atomic.Bool
+	done             atomic.Bool
+	started          core.Fuse
+	stats            Stats
+	sigTs            SignalingTimestamps
+	jitterBuf        bool
+	projectID        string
+	audioOut         *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	audioIn          *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	audioInProcessor msdk.PCM16Processor
 }
 
 func (s *Server) newInboundCall(
@@ -756,6 +758,7 @@ func (s *Server) newInboundCall(
 		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
 		projectID:  "", // Will be set in handleInvite when available
 		audioOut:   msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
+		audioIn:    msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate), // TODO(alexfish): Close this.
 	}
 	c.stats.Update()
 	c.setLog(log.WithValues("jitterBuf", c.jitterBuf))
@@ -1169,6 +1172,7 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
+	c.audioInProcessor = c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate})
 	mp.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
 
 	// Must be set earlier to send the pin prompts.
@@ -1177,11 +1181,13 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	}
 	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
 
-	if audio := mp.NegotiatedAudio(); audio != nil {
-		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-			info.AudioCodec = audio.Codec.Info().SDPName
-		})
+	audio := mp.NegotiatedAudio()
+	if audio == nil {
+		return nil, fmt.Errorf("media does not have negotiated audio")
 	}
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.AudioCodec = audio.Codec.Info().SDPName
+	})
 	return answerData, nil
 }
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
@@ -1411,6 +1417,9 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	if callDurFn := c.callDur; callDurFn != nil {
 		callDurFn()
 	}
+	if old := c.audioIn.Swap(nil); old != nil {
+		old.Close()
+	}
 	c.s.cmu.Lock()
 	delete(c.s.byLocalTag, c.cc.ID())
 	c.s.cmu.Unlock()
@@ -1605,7 +1614,13 @@ func (c *inboundCall) publishTrack() error {
 		_ = c.lkRoom.Close()
 		return err
 	}
-	c.media.WriteAudioTo(local)
+	if c.audioInProcessor != nil {
+		local = c.audioInProcessor(local)
+	}
+	if old := c.audioIn.Swap(local); old != nil {
+		old.Close()
+	}
+	c.media.WriteAudioTo(c.audioIn)
 	return nil
 }
 

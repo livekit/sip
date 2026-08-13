@@ -82,11 +82,12 @@ type outboundCall struct {
 	jitterBuf bool
 	projectID string
 
-	mu       sync.RWMutex
-	mon      *stats.CallMonitor
-	lkRoom   RoomInterface
-	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
-	sipConf  sipOutboundConfig
+	mu               sync.RWMutex
+	mon              *stats.CallMonitor
+	lkRoom           RoomInterface
+	lkRoomIn         msdk.PCM16Writer // output to room; OPUS at 48k
+	sipConf          sipOutboundConfig
+	audioInProcessor msdk.PCM16Processor
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
@@ -386,6 +387,9 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 			_ = r.CloseOutput()
 			_ = r.CloseWithReason(end.Status.DisconnectReason())
 		}
+		if err := c.lkRoomIn.Close(); err != nil {
+			log.Warnw("error closing livekit room audio input", err)
+		}
 		c.lkRoomIn = nil
 
 		c.c.cmu.Lock()
@@ -470,6 +474,9 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 		return err
 	}
 	c.lkRoom = r
+	if c.audioInProcessor != nil {
+		local = c.audioInProcessor(local)
+	}
 	c.lkRoomIn = local
 	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
 		return err
@@ -508,8 +515,6 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 		return err
 	}
 
-	var errs []error
-
 	if digits := c.sipConf.dtmf; digits != "" {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
@@ -518,13 +523,12 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 			if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
 				Digit: string(digits[i]),
 			}); err != nil {
-				errs = append(errs, fmt.Errorf("error writing digit no. %d (%s): %w", i, string(digits[i]), err))
+				return fmt.Errorf("error writing digits (%s): %w", string(digits[i]))
 			}
 		}
 	}
 	c.setStatus(CallActive)
-
-	return errors.Join(errs...)
+	return nil
 }
 
 func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
@@ -755,6 +759,8 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
+
+	c.audioInProcessor = c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate})
 
 	c.mon.InviteAccept()
 	err = c.cc.AckInviteOK(ctx)
