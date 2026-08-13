@@ -287,6 +287,7 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 		}
 
 		p.dtmfToPort = &dtmfOutWriter{
+			log:          p.conf.log,
 			ctx:          p.ctx,
 			dtmfEvents:   s.NewStream(mc.Audio.DTMFType, dtmf.SampleRate),
 			dtmfAudio:    dtmfAudio,
@@ -410,6 +411,8 @@ func (p *mediaPortPipeline) Close() error {
 
 // dtmfOutWriter sends SipDTMF as RFC 4733 telephone-events (optional in-band audio).
 type dtmfOutWriter struct {
+	log logger.Logger
+
 	mu           sync.Mutex
 	ctx          context.Context // canceled by pipeline Close, aborts an in-flight digit train
 	dtmfEvents   *rtp.Stream
@@ -443,6 +446,9 @@ func (w *dtmfOutWriter) WriteSample(sample *livekit.SipDTMF) error {
 			return fmt.Errorf("code %d not supoported", sample.Code)
 		}
 		digits = string([]byte{digit})
+	} else if sample.Code > 0 {
+		// We can't distinguish between a code0 and no code, but better have something here
+		w.log.Warnw("code payload detected, ignored due to explicit digits", nil, "code", sample.Code, "digits", sample.Digit)
 	}
 
 	w.mu.Lock()
