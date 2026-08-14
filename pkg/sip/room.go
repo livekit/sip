@@ -28,6 +28,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/mixer"
@@ -184,17 +185,27 @@ type RoomInterface interface {
 	Subscribed() <-chan struct{}
 	Room() *lksdk.Room
 	Subscribe()
-	Output() msdk.Writer[msdk.PCM16Sample]
-	SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer
-	CloseOutput() error
-	SetDTMFOutput(w msdk.WriteCloser[*livekit.SipDTMF])
 	Close() error
 	CloseWithReason(reason livekit.DisconnectReason) error
 	Participant() ParticipantInfo
 	NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error)
-	SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error
 	NewTrack() *mixer.Input
 	lksdk.RoomRPCInterface
+
+	// WriteOutboundAudioTo tells the room where to send audio to.
+	// Returns the previously-set writer (if one exists).
+	WriteOutboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
+
+	// WriteOutboundDTMFTo tells the room where to send DTMF to.
+	// Returns the previously-set writer (if one exists).
+	WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
+
+	// GetInboundAudioWriter returns a writer that, when written to, writes
+	// audio to the room.
+	GetInboundAudioWriter() (msdk.PCM16Writer, error)
+	// GetInboundDTMFWriter returns a writer that, when weritten to, writes DTMF
+	// to the room.
+	GetInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
 }
 
 type GetRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
@@ -207,10 +218,13 @@ type Room struct {
 	log     logger.Logger
 	roomLog logger.Logger // deferred logger
 	// room is cleared on close while SDK callback goroutines still read it.
-	room    atomic.Pointer[lksdk.Room]
-	mix     *mixer.Mixer
-	out     *msdk.SwitchWriter
-	outDtmf atomic.Pointer[msdk.WriteCloser[*livekit.SipDTMF]]
+	room atomic.Pointer[lksdk.Room]
+	mix  *mixer.Mixer
+
+	outboundAudio *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	outboundDTMF  *msdk.WriteCloserSwitch[*livekit.SipDTMF]
+	inboundDTMF   inboundDTMFWriter
+
 	// p is replaced on every reconnect, since the server issues a new
 	// participant SID, and read concurrently by Participant().
 	p          atomic.Pointer[ParticipantInfo]
@@ -245,10 +259,17 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 	if st == nil {
 		st = &RoomStats{}
 	}
-	r := &Room{log: log, stats: st, out: msdk.NewSwitchWriter(RoomSampleRate)}
+	r := &Room{
+		log:   log,
+		stats: st,
+
+		outboundAudio: msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
+		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](0),
+	}
+	r.inboundDTMF = inboundDTMFWriter{r}
 
 	var err error
-	r.mix, err = mixer.NewMixer(r.out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
+	r.mix, err = mixer.NewMixer(r.outboundAudio, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
 	if err != nil {
 		panic(err)
 	}
@@ -675,50 +696,10 @@ func (r *Room) subscribeAll(room *lksdk.Room) {
 	}
 }
 
-func (r *Room) Output() msdk.Writer[msdk.PCM16Sample] {
-	return r.out.Get()
-}
-
-// SwapOutput sets room audio output and returns the old one.
-// Caller is responsible for closing the old writer.
-func (r *Room) SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer {
-	if r == nil {
-		return nil
-	}
-	if out == nil {
-		return r.out.Swap(nil)
-	}
-	return r.out.Swap(msdk.ResampleWriter(out, r.mix.SampleRate()))
-}
-
-func (r *Room) CloseOutput() error {
-	w := r.SwapOutput(nil)
-	if w == nil {
-		return nil
-	}
-	return w.Close()
-}
-
-func (r *Room) SetDTMFOutput(w msdk.WriteCloser[*livekit.SipDTMF]) {
-	if r == nil {
-		return
-	}
-	if w == nil {
-		r.outDtmf.Store(nil)
-		return
-	}
-	r.outDtmf.Store(&w)
-}
-
 func (r *Room) sendDTMF(ctx context.Context, msg *livekit.SipDTMF) {
-	outDTMF := r.outDtmf.Load()
-	if outDTMF == nil {
-		r.log.Infow("ignoring dtmf", "digit", msg.Digit)
-		return
-	}
 	// TODO: Separate goroutine?
 	r.log.Debugw("forwarding dtmf to sip", "digit", msg.Digit)
-	(*outDTMF).WriteSample(msg)
+	r.outboundDTMF.WriteSample(msg)
 }
 
 func (r *Room) Close() error {
@@ -729,13 +710,13 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 	if r == nil {
 		return nil
 	}
-	var err error
+	var errs []error
 	r.closed.Once(func() {
 		defer r.stats.Closed.Store(true)
 
 		r.subscribe.Store(false)
-		err = r.CloseOutput()
-		r.SetDTMFOutput(nil)
+		errs = append(errs, r.outboundAudio.Close())
+		errs = append(errs, r.outboundDTMF.Close())
 		if room := r.room.Swap(nil); room != nil {
 			room.DisconnectWithReason(reason)
 		}
@@ -743,7 +724,7 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 			r.mix.Stop()
 		}
 	})
-	return err
+	return errors.Join(errs...)
 }
 
 func (r *Room) Participant() ParticipantInfo {
@@ -756,6 +737,7 @@ func (r *Room) Participant() ParticipantInfo {
 	return ParticipantInfo{}
 }
 
+// TODO(alexfish): Remove this from the public interface.
 func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")
 	if err != nil {
@@ -795,6 +777,45 @@ func (r *Room) NewTrack() *mixer.Input {
 		return nil
 	}
 	return r.mix.NewInput()
+}
+
+func (r *Room) WriteOutboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
+	return r.outboundAudio.Swap(w)
+}
+
+func (r *Room) WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
+	return r.outboundDTMF.Swap(w)
+}
+
+func (r *Room) GetInboundAudioWriter() (msdk.PCM16Writer, error) {
+	return r.NewParticipantTrack(RoomSampleRate)
+}
+
+func (r *Room) GetInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
+	return &r.inboundDTMF
+}
+
+type inboundDTMFWriter struct {
+	r *Room
+}
+
+func (w *inboundDTMFWriter) String() string {
+	return "inboundDTMFWriter"
+}
+
+func (w *inboundDTMFWriter) SampleRate() int {
+	return dtmf.SampleRate
+}
+
+func (w *inboundDTMFWriter) Close() error {
+	return nil
+}
+
+func (w *inboundDTMFWriter) WriteSample(sample *livekit.SipDTMF) error {
+	if sample == nil {
+		return nil
+	}
+	return w.r.SendData(sample, lksdk.WithDataPublishReliable(true))
 }
 
 // roomOverrideLogger converts errors to warnings and ignore debug

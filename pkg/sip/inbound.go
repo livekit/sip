@@ -45,7 +45,6 @@ import (
 	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
-	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
@@ -718,7 +717,6 @@ type inboundCall struct {
 	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
 	callDur     func() time.Duration
 	joinDur     func() time.Duration
-	forwardDTMF atomic.Bool
 	done        atomic.Bool
 	started     core.Fuse
 	stats       Stats
@@ -978,7 +976,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			// Start this timer right after the Accept.
 			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
-		if old := c.audioOut.Swap(c.media.GetAudioWriter()); old != nil {
+		if old := c.audioOut.Swap(c.media.GetOutboundAudioWriter()); old != nil {
 			c.log().Warnw("unexpected audio out writer", nil)
 			old.Close()
 		}
@@ -1015,6 +1013,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			return err // already sent a response
 		}
 	}
+
 	p := &disp.Room.Participant
 	p.Attributes = HeadersToAttrs(p.Attributes, disp.HeadersToAttributes, disp.IncludeHeaders, c.cc, nil)
 	if disp.MaxCallDuration <= 0 || disp.MaxCallDuration > maxCallDuration {
@@ -1113,25 +1112,33 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 	}
 }
 
-// TODO(alexfish): Update Room so that we don't need this adapater.
-type dtmfEventWriter struct {
-	handler func(msg *livekit.SipDTMF)
+type pinDTMFWriter struct {
+	dtmfEvents chan<- dtmf.Event
 }
 
-func (w *dtmfEventWriter) String() string {
-	return "dtmfEventWriter"
+func (w *pinDTMFWriter) String() string {
+	return "pinDTMFWriter"
 }
 
-func (w *dtmfEventWriter) SampleRate() int {
+func (w *pinDTMFWriter) SampleRate() int {
 	return dtmf.SampleRate
 }
 
-func (w *dtmfEventWriter) Close() error {
+func (w *pinDTMFWriter) Close() error {
 	return nil
 }
 
-func (w *dtmfEventWriter) WriteSample(sample *livekit.SipDTMF) error {
-	w.handler(sample)
+func (w *pinDTMFWriter) WriteSample(msg *livekit.SipDTMF) error {
+	if msg == nil {
+		return nil
+	}
+
+	event := dtmfEventFromSipDTMF(msg)
+	// We should have enough buffer here.
+	select {
+	case w.dtmfEvents <- event:
+	default:
+	}
 	return nil
 }
 
@@ -1173,13 +1180,20 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mp.WriteDTMFTo(&dtmfEventWriter{handler: c.handleDTMF})
+	if old := mp.WriteInboundDTMFTo(&pinDTMFWriter{c.dtmf}); old != nil {
+		c.log().Warnw("media port has unexpected inbound DTMF writer", nil)
+	}
 
 	// Must be set earlier to send the pin prompts.
-	if w := c.lkRoom.SwapOutput(c.audioOut); w != nil {
-		_ = w.Close()
+	if old := c.lkRoom.WriteOutboundAudioTo(c.audioOut); old != nil {
+		c.log().Warnw("room has unexpected outbound audio writer", nil)
+		old.Close()
 	}
-	c.lkRoom.SetDTMFOutput(c.media.GetDTMFWriter())
+
+	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
+		c.log().Warnw("room has unexpected outbound audio DTMF writer", nil)
+		old.Close()
+	}
 
 	audio := mp.NegotiatedAudio()
 	if audio == nil {
@@ -1576,7 +1590,6 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 		partConf.Attributes[k] = v
 	}
 	partConf.Attributes[livekit.AttrSIPCallStatus] = status.Attribute()
-	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -1607,16 +1620,23 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 
 func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags map[string]string) error {
 	defer c.mon.StageDurTimer("track-publish")()
-	local, err := c.lkRoom.NewParticipantTrack(RoomSampleRate)
+	inboundAudio, err := c.lkRoom.GetInboundAudioWriter()
 	if err != nil {
 		_ = c.lkRoom.Close()
 		return err
 	}
 
 	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
-		local = audioInProcessor(local)
+		inboundAudio = audioInProcessor(inboundAudio)
 	}
-	c.media.WriteAudioTo(local)
+	if old := c.media.WriteInboundAudioTo(inboundAudio); old != nil {
+		c.log().Warnw("media port has unexpected inbound audio writer", nil)
+		old.Close()
+	}
+	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
+		c.log().Warnw("media port has unexpected inbound dtmf writer", nil)
+		old.Close()
+	}
 	return nil
 }
 
@@ -1657,11 +1677,7 @@ func (c *inboundCall) playAudio(ctx context.Context, frames []msdk.PCM16Sample) 
 	_ = msdk.PlayAudio[msdk.PCM16Sample](ctx, t, rtp.DefFrameDur, frames)
 }
 
-func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
-	if msg == nil {
-		return
-	}
-
+func dtmfEventFromSipDTMF(msg *livekit.SipDTMF) dtmf.Event {
 	code := byte(msg.Code)
 	digit := byte(0)
 	if len(msg.Digit) == 1 {
@@ -1669,22 +1685,9 @@ func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
 	} else {
 		digit = dtmf.CodeToChar(code)
 	}
-	event := dtmf.Event{
+	return dtmf.Event{
 		Code:  code,
 		Digit: digit,
-	}
-
-	if c.forwardDTMF.Load() {
-		_ = c.lkRoom.SendData(&livekit.SipDTMF{
-			Code:  uint32(code),
-			Digit: string([]byte{digit}),
-		}, lksdk.WithDataPublishReliable(true))
-		return
-	}
-	// We should have enough buffer here.
-	select {
-	case c.dtmf <- event:
-	default:
 	}
 }
 
@@ -1701,14 +1704,13 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
-		// mute the room audio to the SIP participant
-		w := c.lkRoom.SwapOutput(nil)
+		// Mute the room audio to the SIP participant.
+		// Skip closing the existing writer, which is c.audioOut.
+		_ = c.lkRoom.WriteOutboundAudioTo(nil)
 
 		defer func() {
 			if retErr != nil && !c.done.Load() {
-				c.lkRoom.SwapOutput(w)
-			} else if w != nil {
-				w.Close()
+				c.lkRoom.WriteOutboundAudioTo(c.audioOut)
 			}
 		}()
 
