@@ -93,7 +93,11 @@ type Config struct {
 	SIPPortListen        int                 `yaml:"sip_port_listen"` // SIP signaling port to listen on
 	SIPHostname          string              `yaml:"sip_hostname"`
 	OutboundRouteHeaders []string            `yaml:"outbound_route_headers"` // Route headers prepended to outbound requests, e.g. "<sip:proxy:5060;transport=tcp;lr>"
-	SIPRingingInterval   time.Duration       `yaml:"sip_ringing_interval"`   // from 1 sec up to 60 (default '1s')
+	// URIUserPhone appends ;user=phone to outbound INVITE Request-URI, From, and To.
+	// Required by some PSTN carriers (e.g. Airtel). Can also be enabled per-call via
+	// feature flag sip.uri_user_phone=true. See livekit/sip#615.
+	URIUserPhone         bool                `yaml:"uri_user_phone"`
+	SIPRingingInterval   time.Duration       `yaml:"sip_ringing_interval"` // from 1 sec up to 60 (default '1s')
 	TCP                  *TCPConfig          `yaml:"tcp"`
 	TLS                  *TLSConfig          `yaml:"tls"`
 	RTPPort              rtcconfig.PortRange `yaml:"rtp_port"`
