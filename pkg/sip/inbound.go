@@ -1014,7 +1014,6 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		}
 	}
 
-	c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter())
 	p := &disp.Room.Participant
 	p.Attributes = HeadersToAttrs(p.Attributes, disp.HeadersToAttributes, disp.IncludeHeaders, c.cc, nil)
 	if disp.MaxCallDuration <= 0 || disp.MaxCallDuration > maxCallDuration {
@@ -1632,6 +1631,11 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 	}
 	if old := c.media.WriteInboundAudioTo(inboundAudio); old != nil {
 		c.log().Warnw("media port has unexpected inbound audio writer", nil)
+		old.Close()
+	}
+	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
+		c.log().Warnw("media port has unexpected inbound dtmf writer", nil)
+		old.Close()
 	}
 	return nil
 }
