@@ -556,6 +556,10 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 	call.SetRemoteTag(LocalTag(remoteTag))
 	call.SetRemoteSDP(resp.Body())
 	call.SetRouteSet(resp, true)
+	t.Cleanup(func() {
+		bye := call.NewRequest(sip.BYE)
+		st.TestUA.TransactionRequest(t, bye, true)
+	})
 
 	st.Server.cmu.Lock()
 	defer st.Server.cmu.Unlock()
@@ -627,6 +631,10 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	case <-ctx.Done():
 		require.Fail(t, "timeout waiting for ACK")
 	}
+	t.Cleanup(func() {
+		bye := call.NewRequest(sip.BYE)
+		st.TestUA.TransactionRequest(t, bye, false)
+	})
 
 	st.Client.cmu.Lock()
 	defer st.Client.cmu.Unlock()
@@ -694,7 +702,13 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// re-INVITE with different tag
+			oldTag := call.remoteTag
 			call.remoteTag = "something-else"
+			t.Cleanup(func() {
+				req := call.NewRequest(sip.BYE)
+				st.TestUA.TransactionRequest(t, req, true)
+				call.remoteTag = oldTag
+			})
 			req, _, err = call.Invite(call.localSDP)
 			require.NoError(t, err)
 			resp = st.TestUA.TransactionRequest(t, req, true)
@@ -720,7 +734,8 @@ func TestReinvite(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := getMediaPortRemoteAddr(t, oc.media)
+			serverLocalSDP, err := oc.media.GetLocalSDP()
+			require.NoError(t, err)
 			require.NotEqual(t, call.localSDP, serverLocalSDP, "local and remote SDP should be different")
 
 			// Re-INVITE

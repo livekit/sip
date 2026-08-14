@@ -139,7 +139,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	require.NoError(t, err)
 
 	// Use a no-op logger to avoid panics from async logging after test completion
-	log := logger.LogRLogger(logr.Discard())
+	log := logger.NewTestLogger(t)
 	s, err := NewService("", &config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
