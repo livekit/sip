@@ -193,10 +193,12 @@ type RoomInterface interface {
 	lksdk.RoomRPCInterface
 
 	// WriteOutboundAudioTo tells the room where to send audio to.
-	WriteOutboundAudioTo(w msdk.PCM16Writer)
+	// Returns the previously-set writer (if one exists).
+	WriteOutboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
 
 	// WriteOutboundDTMFTo tells the room where to send DTMF to.
-	WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF])
+	// Returns the previously-set writer (if one exists).
+	WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 
 	// GetInboundAudioWriter returns a writer that, when written to, writes
 	// audio to the room.
@@ -777,16 +779,12 @@ func (r *Room) NewTrack() *mixer.Input {
 	return r.mix.NewInput()
 }
 
-func (r *Room) WriteOutboundAudioTo(w msdk.PCM16Writer) {
-	if old := r.outboundAudio.Swap(w); old != nil {
-		old.Close()
-	}
+func (r *Room) WriteOutboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
+	return r.outboundAudio.Swap(w)
 }
 
-func (r *Room) WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) {
-	if old := r.outboundDTMF.Swap(w); old != nil {
-		old.Close()
-	}
+func (r *Room) WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
+	return r.outboundDTMF.Swap(w)
 }
 
 func (r *Room) GetInboundAudioWriter() (msdk.PCM16Writer, error) {

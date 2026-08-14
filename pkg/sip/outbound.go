@@ -809,14 +809,13 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
-		// mute the room audio to the SIP participant
-		c.lkRoom.WriteOutboundAudioTo(nil)
+		// Mute the room audio to the SIP participant.
+		// Skip closing the existing writer, which is c.audioOut.
+		_ = c.lkRoom.WriteOutboundAudioTo(nil)
 
 		defer func() {
 			if retErr != nil && !c.stopped.IsBroken() {
 				c.lkRoom.WriteOutboundAudioTo(c.audioOut)
-			} else {
-				c.audioOut.Close()
 			}
 		}()
 
