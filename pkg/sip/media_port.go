@@ -29,6 +29,7 @@ import (
 	psdp "github.com/pion/sdp/v3"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -515,11 +516,12 @@ type mediaPort struct {
 	codecs           *msdk.CodecSet
 	encryption       sdp.Encryption
 
-	mu        sync.RWMutex
-	pipeline  *mediaPortPipeline
-	localSDP  []byte
-	offer     *sdp.Offer
-	audioConf *sdp.AudioConfig
+	mu               sync.RWMutex
+	negotiatedCodecs *msdk.CodecSet
+	pipeline         *mediaPortPipeline
+	localSDP         []byte
+	offer            *sdp.Offer
+	audioConf        *sdp.AudioConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -779,7 +781,14 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
-	offer, err := sdp.ParseOfferWith(p.codecs, offerData) // TODO: Consider limiting to previously negotiated codecs
+	codecs := p.codecs
+	p.mu.RLock()
+	if p.negotiatedCodecs != nil {
+		codecs = p.negotiatedCodecs
+	}
+	p.mu.RUnlock()
+
+	offer, err := sdp.ParseOfferWith(codecs, offerData)
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
@@ -847,6 +856,10 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	// Map the durable udpConn + WriteCloserSwitch anchors onto a fresh mediaPortPipeline.
 	// Rebuild from scratch under mu: closePipelineLocked (soft-closes the session via udpConn),
 	// Reopen the port, then Configure a new generation and Swap TX leaves into the anchors.
+
+	if c.Audio.Codec == nil {
+		return SDPError{Err: errors.New("no audio codec selected")}
+	}
 
 	p.mu.Lock() // No concurrent rebuilding of the pipeline
 	defer p.mu.Unlock()
@@ -916,6 +929,12 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
 	p.localSDP = localSDP
 	p.audioConf = &c.Audio
+	negotiated := msdk.NewCodecSet()
+	negotiated.SetEnabled(c.Audio.Codec.Info().SDPName, true)
+	if c.Audio.DTMFType != 0 {
+		negotiated.SetEnabled(dtmf.SDPNameAndRate, true)
+	}
+	p.negotiatedCodecs = negotiated
 	p.enableTimeoutWithDefaults()
 	return nil
 }

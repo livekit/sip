@@ -161,6 +161,31 @@ func TestMediaPortCodecSet(t *testing.T) {
 	})
 }
 
+func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
+	// TODO: change this test to confirm renegotiation when it's enabled
+	m := newTestPort(t, logger.NewTestLogger(t), newTestConn(1), &MediaOptions{
+		IP:     newIP("127.0.0.1"),
+		Codecs: testCodecSet(g711.ULawSDPNameAndRate, g722.SDPNameAndRate),
+	}, RoomSampleRate)
+
+	sdpA := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
+	sdpB := sdpWithMedia("m=audio 5004 RTP/AVP 9", "a=rtpmap:9 G722/8000")
+
+	// Offer codec A
+	answer, err := m.GenerateAnswer(sdpA)
+	require.NoError(t, err)
+	require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answer))
+
+	// Attempt to offer only codec B, expect failure
+	answer, err = m.GenerateAnswer(sdpB)
+	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
+
+	// Offer codec A again, expect success
+	answer, err = m.GenerateAnswer(sdpA)
+	require.NoError(t, err)
+	require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answer))
+}
+
 // Renegotiation rebuilds the pipeline under the same port and keeps audio flowing,
 // including across a codec change that moves the encoder's sample rate.
 func TestMediaPortRenegotiation(t *testing.T) {
