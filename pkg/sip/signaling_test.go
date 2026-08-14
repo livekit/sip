@@ -1293,3 +1293,190 @@ func TestRouteSet(t *testing.T) {
 		})
 	})
 }
+
+// TestTransferAuthorization verifies that the TransferSIPParticipant handler
+// rejects requests whose room/participant don't match the call being transferred,
+// before any REFER is sent to the peer.
+func TestTransferAuthorization(t *testing.T) {
+	const referTo = "tel:+15551234567"
+
+	directions := map[string]func(t *testing.T, st *serviceTest) (*sipUADialogTest, *CallState){
+		"inbound": func(t *testing.T, st *serviceTest) (*sipUADialogTest, *CallState) {
+			call, ic := st.CreateInboundCall(t)
+			return call, ic.state
+		},
+		"outbound": func(t *testing.T, st *serviceTest) (*sipUADialogTest, *CallState) {
+			call, oc, _ := st.CreateOutboundCall(t)
+			return call, oc.state
+		},
+	}
+
+	transferReq := func(call *sipUADialogTest, room, identity string) *rpc.InternalTransferSIPParticipantRequest {
+		return &rpc.InternalTransferSIPParticipantRequest{
+			SipCallId:           string(call.remoteTag),
+			TransferTo:          referTo,
+			RoomName:            room,
+			ParticipantIdentity: identity,
+			RingingTimeout:      durationpb.New(time.Second),
+		}
+	}
+
+	transferAccepted := func(t *testing.T, st *serviceTest, call *sipUADialogTest, room, identity string) {
+		t.Helper()
+
+		reqChan := call.RegisterRequestChannel("")
+		defer call.UnregisterRequestChannel("")
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+
+		transferRes := make(chan error, 1)
+		go func() {
+			defer close(transferRes)
+			_, err := st.Service.TransferSIPParticipant(ctx, transferReq(call, room, identity))
+			transferRes <- err
+		}()
+
+		select {
+		case msg := <-reqChan:
+			require.Equal(t, sip.REFER, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 202, "Accepted", nil)))
+		case err := <-transferRes:
+			require.Fail(t, "transfer returned before sending REFER", "%v", err)
+		case <-ctx.Done():
+			require.Fail(t, "timeout waiting for REFER")
+		}
+
+		notifyReq := call.NewRequest(sip.NOTIFY)
+		notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
+		notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
+		notifyReq.SetBody([]byte(sip.NewResponse(200, sipStatus(200)).String()))
+		require.Equal(t, sip.StatusCode(200), call.TransactionRequest(t, notifyReq).StatusCode)
+
+		// The service hangs up after a successful transfer.
+		select {
+		case msg := <-reqChan:
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, sipStatus(200), nil)))
+		case <-ctx.Done():
+			require.Fail(t, "timeout waiting for BYE")
+		}
+
+		select {
+		case err := <-transferRes:
+			require.NoError(t, err, "authorized transfer should succeed")
+		case <-ctx.Done():
+			require.Fail(t, "timeout waiting for transfer result")
+		}
+	}
+
+	// transferRejected asserts the request is rejected as an unknown call, and that
+	// no REFER is sent to the peer. Rejected requests never reach the transfer
+	// goroutine, so the handler returns synchronously.
+	transferRejected := func(t *testing.T, st *serviceTest, call *sipUADialogTest, room, identity string) {
+		t.Helper()
+
+		reqChan := call.RegisterRequestChannel(sip.REFER.String())
+		defer call.UnregisterRequestChannel(sip.REFER.String())
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+
+		_, err := st.Service.TransferSIPParticipant(ctx, transferReq(call, room, identity))
+		require.ErrorIs(t, err, errUnknownCall)
+
+		var psErr psrpc.Error
+		require.ErrorAs(t, err, &psErr)
+		require.Equal(t, psrpc.NotFound, psErr.Code())
+
+		select {
+		case msg := <-reqChan:
+			require.Fail(t, "no REFER should be sent for an unauthorized transfer", "%s", msg.req.Method)
+		case <-time.After(250 * time.Millisecond):
+		}
+
+		resp := call.TransactionRequest(t, call.NewRequest(sip.BYE))
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting BYE-200 OK")
+	}
+
+	for direction, setupCall := range directions {
+		t.Run(direction, func(t *testing.T) {
+			t.Run("authorized", func(t *testing.T) {
+				st := NewServiceTest(t, nil)
+				call, state := setupCall(t, st)
+
+				info := state.Info()
+				require.NotEmpty(t, info.RoomName)
+				require.NotEmpty(t, info.ParticipantIdentity)
+
+				transferAccepted(t, st, call, info.RoomName, info.ParticipantIdentity)
+			})
+
+			t.Run("legacy request skips the check", func(t *testing.T) {
+				// Older clients set neither field. Until they are updated, the
+				// request is allowed through without an authorization check.
+				st := NewServiceTest(t, nil)
+				call, _ := setupCall(t, st)
+
+				transferAccepted(t, st, call, "", "")
+			})
+
+			t.Run("wrong room", func(t *testing.T) {
+				st := NewServiceTest(t, nil)
+				call, state := setupCall(t, st)
+
+				transferRejected(t, st, call, "other-room", state.Info().ParticipantIdentity)
+			})
+
+			t.Run("wrong participant", func(t *testing.T) {
+				st := NewServiceTest(t, nil)
+				call, state := setupCall(t, st)
+
+				transferRejected(t, st, call, state.Info().RoomName, "other-participant")
+			})
+
+			t.Run("wrong room and participant", func(t *testing.T) {
+				st := NewServiceTest(t, nil)
+				call, _ := setupCall(t, st)
+
+				transferRejected(t, st, call, "other-room", "other-participant")
+			})
+
+			t.Run("partial request does not skip the check", func(t *testing.T) {
+				// Only one of the two fields set: the empty one still has to match.
+				st := NewServiceTest(t, nil)
+				call, state := setupCall(t, st)
+
+				transferRejected(t, st, call, state.Info().RoomName, "")
+			})
+		})
+	}
+
+	t.Run("call without state", func(t *testing.T) {
+		// A call that is registered but has no state yet cannot be authorized.
+		st := NewServiceTest(t, nil)
+
+		const callID = "call-without-state"
+		st.Client.cmu.Lock()
+		st.Client.activeCalls[LocalTag(callID)] = &outboundCall{}
+		st.Client.cmu.Unlock()
+		t.Cleanup(func() {
+			// The call is only a stub; drop it before the client tears down.
+			st.Client.cmu.Lock()
+			delete(st.Client.activeCalls, LocalTag(callID))
+			st.Client.cmu.Unlock()
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+
+		_, err := st.Service.TransferSIPParticipant(ctx, &rpc.InternalTransferSIPParticipantRequest{
+			SipCallId:           callID,
+			TransferTo:          referTo,
+			RoomName:            "test-room",
+			ParticipantIdentity: "test-participant",
+			RingingTimeout:      durationpb.New(time.Second),
+		})
+		require.ErrorIs(t, err, errUnknownCall)
+	})
+}
