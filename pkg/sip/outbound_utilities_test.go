@@ -33,7 +33,6 @@ import (
 	"github.com/livekit/sipgo/sip"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -216,7 +215,7 @@ func (r *testRoom) CloseOutput() error {
 	return r.room.CloseOutput()
 }
 
-func (r *testRoom) SetDTMFOutput(w dtmf.Writer) {
+func (r *testRoom) SetDTMFOutput(w msdk.WriteCloser[*livekit.SipDTMF]) {
 	r.room.SetDTMFOutput(w)
 }
 

@@ -53,7 +53,7 @@ func newTestMediaPort(t testing.TB, provider string) MediaPort {
 	t.Helper()
 	mon := newTestCallMonitor(t)
 	mon.SetProvider(provider)
-	mp, err := NewMediaPortWith(logger.GetLogger(), mon, nil, &MediaOptions{
+	mp, err := NewMediaPortWith(logger.NewTestLogger(t), mon, nil, &MediaOptions{
 		IP: netip.MustParseAddr("127.0.0.1"),
 	}, 8000)
 	require.NoError(t, err)
@@ -174,7 +174,7 @@ func newTestConn(i int) *testUDPConn {
 			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
 			uint16(10000*i),
 		),
-		buf:      make(chan []byte, 10),
+		buf:      make(chan []byte, 256),
 		closed:   make(chan struct{}),
 		deadline: make(chan time.Time, 1),
 	}
@@ -206,6 +206,45 @@ func newTestPort(t testing.TB, log logger.Logger, conn UDPConn, opts *MediaOptio
 	return mp.(*mediaPort)
 }
 
+func offerAt(t testing.TB, addr netip.AddrPort) []byte {
+	t.Helper()
+	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
+	require.NoError(t, err)
+	data, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+	return data
+}
+
+func TestMediaPortUpdateRemote(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, RoomSampleRate)
+
+	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any offer")
+
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	_, err := mp.GenerateAnswer(offerAt(t, addr))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "GenerateAnswer should set RemoteAddr from the offer")
+
+	// Body-less re-INVITE: empty offer returns the local SDP and must not change dest.
+	_, err = mp.GenerateAnswer(nil)
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
+
+	// Hold form c=0.0.0.0 must not clobber dest once media is established.
+	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
+
+	// successful re-INVITE update
+	addr = netip.MustParseAddrPort("10.10.10.10:54321")
+	_, err = mp.GenerateAnswer(offerAt(t, addr))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
+}
+
 // negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.
 func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	t.Helper()
@@ -219,11 +258,11 @@ func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	return answerData
 }
 
-func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *mediaPort) {
-	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2)
+func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions, codec string) (m1, m2 *mediaPort) {
+	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2, codec)
 }
 
-func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions) (m1, m2 *mediaPort) {
+func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions, codec string) (m1, m2 *mediaPort) {
 	if opt1 == nil {
 		opt1 = &MediaOptions{}
 	}
@@ -234,19 +273,27 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 	opt1.IP = ip1
 	opt1.Ports = rtcconfig.PortRange{Start: 10000}
+	rate1 := RoomSampleRate
+	if codec != "" {
+		opt1.Codecs = testCodecSet(codec)
+		rate1 = opt1.Codecs.ListEnabled()[0].Info().SampleRate
+	}
 	// TODO(port-refactor): MediaOptions.NoInputResample is gone, the pipeline always
 	// resamples the receive side to RoomSampleRate.
 	// opt1.NoInputResample = true
 
 	opt2.IP = ip2
 	opt2.Ports = rtcconfig.PortRange{Start: 20000}
+	rate2 := RoomSampleRate
+	if codec != "" {
+		opt2.Codecs = testCodecSet(codec)
+		rate2 = opt2.Codecs.ListEnabled()[0].Info().SampleRate
+	}
 
-	const rate = 16000
+	log := logger.NewTestLogger(t)
 
-	log := logger.GetLogger()
-
-	m1 = newTestPort(t, log.WithName("one"), c1, opt1, rate)
-	m2 = newTestPort(t, log.WithName("two"), c2, opt2, rate)
+	m1 = newTestPort(t, log.WithName("one"), c1, opt1, rate1)
+	m2 = newTestPort(t, log.WithName("two"), c2, opt2, rate2)
 
 	negotiate(t, m1, m2)
 
@@ -260,6 +307,7 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 func TestMediaTimeout(t *testing.T) {
 	const (
+		codec   = "G722/8000"
 		timeout = time.Second / 4
 		initial = timeout * 2
 		dt      = timeout / 4
@@ -269,9 +317,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-
-		m1.EnableTimeout(true)
+		}, nil, codec)
 
 		targ := time.Now().Add(initial)
 		select {
@@ -291,8 +337,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 		err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -315,8 +360,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 
@@ -336,8 +380,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 
@@ -356,7 +399,7 @@ func TestMediaTimeout(t *testing.T) {
 		// the general timeout applies relative to the last received RTP packet.
 		// Last packet arrived at most timeout/2 ago, so the timeout should fire
 		// within ~timeout from now, well before initial would elapse.
-		m1.SetTimeout(initial, timeout)
+		m1.SetTimeoutForDelayedAck(initial, timeout)
 
 		select {
 		case <-time.After(timeout + dt):
@@ -369,14 +412,13 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec)
 
 		// No media has ever arrived. SetTimeout re-arms startTime, and since the
 		// port has never seen an RTP packet, the new initial window applies from
 		// the moment of the SetTimeout call.
 		time.Sleep(initial / 2)
-		m1.SetTimeout(initial, timeout)
+		m1.SetTimeoutForDelayedAck(initial, timeout)
 
 		targ := time.Now().Add(initial)
 		select {
@@ -396,8 +438,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec)
 
 		w2 := m2.GetAudioWriter()
 
@@ -411,8 +452,6 @@ func TestMediaTimeout(t *testing.T) {
 				t.Fatal("timeout")
 			}
 		}
-
-		m1.SetTimeout(initial, timeout)
 
 		for i := 0; i < 5; i++ {
 			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -428,8 +467,10 @@ func TestMediaTimeout(t *testing.T) {
 }
 
 func TestSymmetricRTP(t *testing.T) {
+	const codec = "G722/8000"
+
 	t.Run("disabled", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil)
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil, codec)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
 		dst := *dstPtr
@@ -454,7 +495,7 @@ func TestSymmetricRTP(t *testing.T) {
 	})
 
 	t.Run("enabled", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil)
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil, codec)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
 		require.True(t, dstPtr.IsValid())
@@ -481,6 +522,7 @@ func TestSymmetricRTP(t *testing.T) {
 		m1, m2 := newMediaPairWithAddr(t,
 			newIP("1.1.1.1"), newIP("10.10.10.10"),
 			&MediaOptions{IgnoreLocalAddrInSDP: true}, nil,
+			codec,
 		)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)

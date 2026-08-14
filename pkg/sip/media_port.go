@@ -34,6 +34,7 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -380,6 +381,19 @@ func (o *MediaOptions) ApplyDefaults() {
 	if o.Codecs == nil {
 		o.Codecs = defaultCodecs
 	}
+	if o.Ports.Start == 0 {
+		o.Ports.Start = config.DefaultRTPPortRange.Start
+	}
+	if o.Ports.End == 0 {
+		o.Ports.End = config.DefaultRTPPortRange.End
+	}
+}
+
+type MediaSegment interface {
+	GetAudioWriter() msdk.PCM16Writer
+	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
+	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
+	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 }
 
 // MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
@@ -388,10 +402,7 @@ type MediaPort interface {
 	Close()
 	CloseWait()
 
-	GetAudioWriter() msdk.PCM16Writer                                                    // To Port
-	WriteAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer                                    // From Port
-	GetDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]                                   // To Port
-	WriteDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] // From Port
+	MediaSegment
 
 	// If there is no offer, this generates an offer.
 	// If there is an offer, this simply returns the SDP of that offer.
@@ -474,7 +485,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	p.port.startDiscarding()
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
 	p.timeoutGeneral.Store(&opts.MediaTimeout)
-	go p.timeoutLoop()
+	p.wg.Go(p.mediaTimeoutLoop)
 	p.log.Debugw("listening for media on UDP", "port", p.Port())
 	return p, nil
 }
@@ -482,6 +493,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 // mediaPort is the concrete MediaPort implementation.
 type mediaPort struct {
 	log            logger.Logger
+	wg             sync.WaitGroup
 	opts           *MediaOptions
 	mon            *stats.CallMonitor
 	externalIP     netip.Addr
@@ -550,7 +562,7 @@ func (p *mediaPort) SetTimeoutForDelayedAck(initial, general time.Duration) {
 	p.enableTimeout(initial, general)
 }
 
-func (p *mediaPort) timeoutLoop() {
+func (p *mediaPort) mediaTimeoutLoop() {
 	defer p.log.Infow("media timeout loop stopped")
 
 	const disabledPark = time.Hour
@@ -682,12 +694,17 @@ func (p *mediaPort) Close() {
 		} else {
 			_ = conn.Close()
 		}
+		p.audioIn.Close()  // Propagate Close() to onwards to room
+		p.dtmfIn.Close()   // Propagate Close() to onwards to room
+		p.audioOut.Close() // Pipeline insulated, but close switch
+		p.dtmfOut.Close()  // Pipeline insulated, but close switch
 	})
 }
 
 func (p *mediaPort) CloseWait() {
 	p.Close()
 	<-p.closed.Watch()
+	p.wg.Wait()
 }
 
 func (p *mediaPort) Port() int {
@@ -770,12 +787,10 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
-
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
 		return nil, err
 	}
-
 	return answerData, p.configure(mc, answerData)
 }
 
@@ -850,7 +865,8 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	// TODO: Avoid reconfiguring if mc unchanged; maybe only adjust direction
 
 	p.closePipelineLocked()
-	p.port.Reopen() // Allow reads from socket again
+	p.port.stopDiscarding() // Needs readDeadline. Must be ahead of Reopen() and NewMediaPortPipeline()
+	p.port.Reopen()         // Allow reads from socket again
 
 	pipelineConfig := &MediaPortPipelineConfig{
 		log:       p.log,
