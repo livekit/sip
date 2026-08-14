@@ -104,7 +104,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 		return
 	}
 
-	fmt.Println("Received INVITE, validating")
+	t.Log("Received INVITE, validating")
 
 	require.NotNil(t, tr)
 	require.NotNil(t, tr.req)
@@ -298,7 +298,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 // sipResponse returns immediately on a cancelled context, sending a CANCEL.
 func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	tx := &testSIPClientTransaction{
-		log:       logger.GetLogger(),
+		log:       logger.NewTestLogger(t),
 		responses: make(chan *sip.Response),
 		cancels:   make(chan struct{}, 1),
 		done:      make(chan struct{}),
@@ -343,12 +343,12 @@ func TestWatchCancelledInvite(t *testing.T) {
 		{"non-2xx final", []*sip.Response{sip.NewResponse(sip.StatusRequestTerminated, "Terminated")}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			tx := &testSIPClientTransaction{log: logger.GetLogger(), responses: make(chan *sip.Response, len(tt.resps)), done: make(chan struct{})}
+			tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response, len(tt.resps)), done: make(chan struct{})}
 			for _, r := range tt.resps {
 				tx.responses <- r
 			}
 			cli := &recordingSIPClient{}
-			watchCancelledInvite(logger.GetLogger(), cli, nil, newInvite(), tx)
+			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
 			require.Equal(t, tt.want, cli.methods())
 		})
 	}
@@ -356,9 +356,9 @@ func TestWatchCancelledInvite(t *testing.T) {
 	t.Run("no answer within grace", func(t *testing.T) {
 		defer func(d time.Duration) { cancelResponseGrace = d }(cancelResponseGrace)
 		cancelResponseGrace = 10 * time.Millisecond
-		tx := &testSIPClientTransaction{log: logger.GetLogger(), responses: make(chan *sip.Response), done: make(chan struct{})}
+		tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response), done: make(chan struct{})}
 		cli := &recordingSIPClient{}
-		watchCancelledInvite(logger.GetLogger(), cli, nil, newInvite(), tx)
+		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
 		require.Empty(t, cli.methods())
 	})
 }
