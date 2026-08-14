@@ -264,7 +264,7 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 		stats: st,
 
 		outboundAudio: msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
-		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](RoomSampleRate),
+		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](0),
 	}
 	r.inboundDTMF = inboundDTMFWriter{r}
 

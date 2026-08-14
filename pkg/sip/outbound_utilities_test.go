@@ -127,7 +127,7 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 		log:           log,
 		stats:         st,
 		outboundAudio: msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
-		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](RoomSampleRate),
+		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](0),
 		subscribe:     atomic.Bool{},
 	}
 	room.inboundDTMF = inboundDTMFWriter{room}
