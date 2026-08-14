@@ -17,7 +17,6 @@ package sip
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -419,7 +418,7 @@ func (w *testSIPClient) WriteRequest(req *sip.Request, options ...sipgo.ClientRe
 	if len(options) > 0 {
 		panic("options not supported for testSIPClient")
 	}
-	fmt.Printf("SIP WriteRequest sent on client %v:\n%s\n", w, req.String())
+	w.log.Infow("SIP WriteRequest sent on client", "client", w, "request", req.String())
 	w.FillRequestBlanks(req)
 	w.sequence++
 	reqReq := &sipRequest{

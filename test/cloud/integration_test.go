@@ -25,7 +25,7 @@ func TestSIP(t *testing.T) {
 	}
 
 	bus := psrpc.NewLocalMessageBus()
-	svc, err := NewService(conf, bus)
+	svc, err := NewService(t, conf, bus)
 	require.NoError(t, err)
 	defer svc.Stop(true)
 
