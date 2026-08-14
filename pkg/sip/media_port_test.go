@@ -299,7 +299,7 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 
 	// TODO(port-refactor): the encode chain gained the always-on 48k resampler, refresh
 	// the expected string once the package builds and this can be run.
-	// w2 := m2.GetAudioWriter()
+	// w2 := m2.GetOutboundAudioWriter()
 	// require.Equal(t, "Switch(16000) -> LatencyEntry -> G722(encode) -> ByteEncoder(16000) -> StatsWriter(G722/8000) -> LatencyExit -> RTPWriteStream(1.1.1.1:10000)", w2.String())
 
 	return m1, m2
@@ -339,7 +339,7 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeout:        timeout,
 		}, nil, codec)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 		err := w2.WriteSample(msdk.PCM16Sample{0, 0})
 		require.NoError(t, err)
 
@@ -362,7 +362,7 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeout:        timeout,
 		}, nil, codec)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 
 		for i := 0; i < 10; i++ {
 			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -382,7 +382,7 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeout:        timeout,
 		}, nil, codec)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 
 		for i := 0; i < 5; i++ {
 			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -440,7 +440,7 @@ func TestMediaTimeout(t *testing.T) {
 			MediaTimeout:        timeout,
 		}, nil, codec)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 
 		for i := 0; i < 5; i++ {
 			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
@@ -480,7 +480,7 @@ func TestSymmetricRTP(t *testing.T) {
 		newAddr := netip.AddrPortFrom(newIP("9.9.9.9"), 9999)
 		c2.addr = newAddr
 
-		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
+		err := m2.GetOutboundAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
 		require.NoError(t, err)
 
 		select {
@@ -504,7 +504,7 @@ func TestSymmetricRTP(t *testing.T) {
 		newAddr := netip.AddrPortFrom(newIP("9.9.9.9"), 9999)
 		c2.addr = newAddr
 
-		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
+		err := m2.GetOutboundAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
 		require.NoError(t, err)
 
 		select {
@@ -534,7 +534,7 @@ func TestSymmetricRTP(t *testing.T) {
 		newAddr := netip.AddrPortFrom(newIP("3.3.3.3"), 9999)
 		c2.addr = newAddr
 
-		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
+		err := m2.GetOutboundAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
 		require.NoError(t, err)
 
 		select {

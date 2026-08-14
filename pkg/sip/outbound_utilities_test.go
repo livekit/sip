@@ -102,6 +102,8 @@ type testRoom struct {
 	room *Room
 }
 
+var _ RoomInterface = (*testRoom)(nil)
+
 type testRoomConfig struct {
 	ringForever bool
 }
@@ -122,15 +124,17 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	}
 	// Create a Room with all the necessary structure but skip connection
 	room := &Room{
-		log:       log,
-		stats:     st,
-		out:       msdk.NewSwitchWriter(RoomSampleRate),
-		subscribe: atomic.Bool{},
+		log:           log,
+		stats:         st,
+		outboundAudio: msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
+		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](RoomSampleRate),
+		subscribe:     atomic.Bool{},
 	}
+	room.inboundDTMF = inboundDTMFWriter{room}
 
 	// Create mixer
 	var err error
-	room.mix, err = mixer.NewMixer(room.out, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
+	room.mix, err = mixer.NewMixer(room.outboundAudio, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
 	if err != nil {
 		panic(err)
 	}
@@ -202,20 +206,20 @@ func (r *testRoom) Subscribe() {
 	r.room.Subscribe()
 }
 
-func (r *testRoom) Output() msdk.Writer[msdk.PCM16Sample] {
-	return r.room.Output()
+func (r *testRoom) WriteOutboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
+	return r.room.WriteOutboundAudioTo(w)
 }
 
-func (r *testRoom) SwapOutput(out msdk.PCM16Writer) msdk.PCM16Writer {
-	return r.room.SwapOutput(out)
+func (r *testRoom) WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
+	return r.room.WriteOutboundDTMFTo(w)
 }
 
-func (r *testRoom) CloseOutput() error {
-	return r.room.CloseOutput()
+func (r *testRoom) GetInboundAudioWriter() (msdk.PCM16Writer, error) {
+	return r.NewParticipantTrack(RoomSampleRate)
 }
 
-func (r *testRoom) SetDTMFOutput(w msdk.WriteCloser[*livekit.SipDTMF]) {
-	r.room.SetDTMFOutput(w)
+func (r *testRoom) GetInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
+	return r.room.GetInboundDTMFWriter()
 }
 
 func (r *testRoom) Close() error {
@@ -254,10 +258,6 @@ func (w *noOpWriter) WriteSample(samples msdk.PCM16Sample) error {
 
 func (w *noOpWriter) Close() error {
 	return nil
-}
-
-func (r *testRoom) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {
-	return r.room.SendData(data, opts...)
 }
 
 func (r *testRoom) NewTrack() *mixer.Input {

@@ -72,7 +72,7 @@ func roomFrame() msdk.PCM16Sample {
 // writeFrames pushes room audio into the port. Write errors are ignored: the in-memory
 // UDP pipe is bounded, and a peer that is mid-renegotiation may not be draining it.
 func writeFrames(m *mediaPort, frames int) {
-	w := m.GetAudioWriter()
+	w := m.GetOutboundAudioWriter()
 	frame := roomFrame()
 	for range frames {
 		_ = w.WriteSample(frame)
@@ -268,7 +268,7 @@ func TestMediaPortHold(t *testing.T) {
 				assert.True(t, dst.Addr().IsUnspecified(), "held port kept a destination: %v", dst)
 			}
 			assert.Nil(t, m1.audioOut.Get(), "held port still accepts room audio")
-			assert.NoError(t, m1.GetAudioWriter().WriteSample(roomFrame()))
+			assert.NoError(t, m1.GetOutboundAudioWriter().WriteSample(roomFrame()))
 
 			sent := recv2.count()
 			writeFrames(m1, 10)
