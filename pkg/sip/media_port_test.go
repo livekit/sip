@@ -206,9 +206,9 @@ func newTestPort(t testing.TB, log logger.Logger, conn UDPConn, opts *MediaOptio
 	return mp.(*mediaPort)
 }
 
-func offerAt(t testing.TB, ip string, port int) []byte {
+func offerAt(t testing.TB, addr netip.AddrPort) []byte {
 	t.Helper()
-	offer, err := sdp.NewOfferWith(defaultCodecs, netip.MustParseAddr(ip), port, sdp.EncryptionNone)
+	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
 	require.NoError(t, err)
 	data, err := offer.SDP.Marshal()
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any offer")
 
 	addr := netip.MustParseAddrPort("9.8.7.6:12345")
-	_, err := mp.GenerateAnswer(offerAt(t, "9.8.7.6", 12345))
+	_, err := mp.GenerateAnswer(offerAt(t, addr))
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "GenerateAnswer should set RemoteAddr from the offer")
 
@@ -234,12 +234,13 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
 
 	// Hold form c=0.0.0.0 must not clobber dest once media is established.
-	_, err = mp.GenerateAnswer(offerAt(t, "0.0.0.0", 12345))
+	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
 
-	addr = netip.MustParseAddrPort("10.10.10.10:12345")
-	_, err = mp.GenerateAnswer(offerAt(t, "10.10.10.10", 12345))
+	// successful re-INVITE update
+	addr = netip.MustParseAddrPort("10.10.10.10:54321")
+	_, err = mp.GenerateAnswer(offerAt(t, addr))
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
 }

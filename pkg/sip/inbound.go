@@ -697,36 +697,35 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 }
 
 type inboundCall struct {
-	s                *Server
-	tid              traceid.ID
-	logPtr           atomic.Pointer[logger.Logger]
-	cc               *sipInbound
-	mon              *stats.CallMonitor
-	state            *CallState
-	callStart        time.Time
-	extraAttrs       map[string]string
-	attrsToHdr       map[string]string
-	ctx              context.Context
-	cancel           func()
-	closeReason      atomic.Pointer[ReasonHeader]
-	call             *rpc.SIPCall
-	mmu              sync.Mutex
-	media            MediaPort
-	mediaCodecs      *msdk.CodecSet
-	dtmf             chan dtmf.Event // buffered
-	endCall          chan EndCall    // buffered
-	lkRoom           RoomInterface   // LiveKit room; only active after correct pin is entered
-	callDur          func() time.Duration
-	joinDur          func() time.Duration
-	forwardDTMF      atomic.Bool
-	done             atomic.Bool
-	started          core.Fuse
-	stats            Stats
-	sigTs            SignalingTimestamps
-	jitterBuf        bool
-	projectID        string
-	audioOut         *msdk.WriteCloserSwitch[msdk.PCM16Sample] // inner writer owned by MediaPort
-	audioInProcessor msdk.PCM16Processor
+	s           *Server
+	tid         traceid.ID
+	logPtr      atomic.Pointer[logger.Logger]
+	cc          *sipInbound
+	mon         *stats.CallMonitor
+	state       *CallState
+	callStart   time.Time
+	extraAttrs  map[string]string
+	attrsToHdr  map[string]string
+	ctx         context.Context
+	cancel      func()
+	closeReason atomic.Pointer[ReasonHeader]
+	call        *rpc.SIPCall
+	mmu         sync.Mutex
+	media       MediaPort
+	mediaCodecs *msdk.CodecSet
+	dtmf        chan dtmf.Event // buffered
+	endCall     chan EndCall    // buffered
+	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
+	callDur     func() time.Duration
+	joinDur     func() time.Duration
+	forwardDTMF atomic.Bool
+	done        atomic.Bool
+	started     core.Fuse
+	stats       Stats
+	sigTs       SignalingTimestamps
+	jitterBuf   bool
+	projectID   string
+	audioOut    *msdk.WriteCloserSwitch[msdk.PCM16Sample] // inner writer owned by MediaPort
 }
 
 func (s *Server) newInboundCall(
@@ -1615,7 +1614,7 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 	}
 
 	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
-		local = c.audioInProcessor(local)
+		local = audioInProcessor(local)
 	}
 	c.media.WriteAudioTo(local)
 	return nil
