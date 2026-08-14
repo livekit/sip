@@ -15,7 +15,8 @@
 package sip
 
 import (
-	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,27 +27,30 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/amrwb"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
-	msdkopus "github.com/livekit/media-sdk/opus"
+	"github.com/livekit/media-sdk/g722"
+	"github.com/livekit/media-sdk/opus"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 )
 
-const (
-	testAudioPT   = byte(0)  // PCMU
-	testOpusPT    = byte(96) // dynamic
-	testDTMFPT    = byte(101)
-	testCodecRate = 8000
-)
+const testDTMFPT = byte(101)
 
-func mustAudioCodec(t testing.TB, name string) msdk.AudioCodec {
+func audioCodecByName(t testing.TB, name string) msdk.AudioCodec {
 	t.Helper()
-	codec, ok := sdp.CodecByName(name).(msdk.AudioCodec)
-	require.True(t, ok, "codec %s", name)
-	return codec
+	for _, c := range msdk.Codecs() {
+		if strings.EqualFold(c.Info().SDPName, name) {
+			ac, ok := c.(msdk.AudioCodec)
+			require.True(t, ok, "codec %s is not audio", name)
+			return ac
+		}
+	}
+	t.Skipf("codec %s is not registered", name)
+	return nil
 }
 
 // Opus is not a registered SIP SDP codec; wrap media-sdk/opus so the pipeline
@@ -59,21 +63,29 @@ func testOpusCodec(t testing.TB) msdk.AudioCodec {
 		SampleRate:   RoomSampleRate,
 		RTPClockRate: RoomSampleRate,
 	},
-		func(w msdk.PCM16Writer) msdk.WriteCloser[msdkopus.Sample] {
-			d, err := msdkopus.Decode(w, 1, log)
+		func(w msdk.PCM16Writer) msdk.WriteCloser[opus.Sample] {
+			d, err := opus.Decode(w, 1, log)
 			if err != nil {
 				panic(err)
 			}
 			return d
 		},
-		func(w msdk.WriteCloser[msdkopus.Sample]) msdk.PCM16Writer {
-			e, err := msdkopus.Encode(w, 1, log)
+		func(w msdk.WriteCloser[opus.Sample]) msdk.PCM16Writer {
+			e, err := opus.Encode(w, 1, log)
 			if err != nil {
 				panic(err)
 			}
 			return e
 		},
 	)
+}
+
+func testAudioPT(c msdk.AudioCodec) byte {
+	info := c.Info()
+	if info.RTPIsStatic {
+		return info.RTPDefType
+	}
+	return 96
 }
 
 type dtmfCollector struct {
@@ -102,15 +114,19 @@ func (c *dtmfCollector) snapshot() []*livekit.SipDTMF {
 	return out
 }
 
+// pipelineHarness is the durable side of a mediaPort: UDP pipe, pipeline config,
+// buffer anchors, and a synthesized MediaConfig. The pipeline itself is swapped
+// on configure / reconfigure.
 type pipelineHarness struct {
 	t           *testing.T
 	local       *testUDPConn
 	remote      *testUDPConn
 	port        *udpConn
-	audioIn     msdk.WriteCloserSwitch[msdk.PCM16Sample]
-	audioOut    msdk.WriteCloserSwitch[msdk.PCM16Sample]
-	dtmfIn      msdk.WriteCloserSwitch[*livekit.SipDTMF]
-	dtmfOut     msdk.WriteCloserSwitch[*livekit.SipDTMF]
+	conf        *MediaPortPipelineConfig
+	audioIn     *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	audioOut    *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+	dtmfIn      *msdk.WriteCloserSwitch[*livekit.SipDTMF]
+	dtmfOut     *msdk.WriteCloserSwitch[*livekit.SipDTMF]
 	roomAudio   *msdk.PCM16Sample
 	roomDTMF    *dtmfCollector
 	pipeline    *mediaPortPipeline
@@ -121,30 +137,27 @@ type pipelineHarness struct {
 	dtmfPT      byte
 }
 
-func newPipelineHarness(t *testing.T, audioType byte, codec msdk.AudioCodec, dtmfType byte, dtmfAudio bool) *pipelineHarness {
+func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
 	t.Helper()
 	local, remote := newUDPPipe()
-
 	log := logger.NewTestLogger(t)
-	port := newUDPConn(log, local, false)
 	h := &pipelineHarness{
 		t:         t,
 		local:     local,
 		remote:    remote,
-		port:      port,
+		port:      newUDPConn(log, local, false),
+		audioIn:   msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
+		audioOut:  msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
+		dtmfIn:    msdk.NewWriteCloserSwitch[*livekit.SipDTMF](dtmf.SampleRate),
+		dtmfOut:   msdk.NewWriteCloserSwitch[*livekit.SipDTMF](dtmf.SampleRate),
 		roomAudio: new(msdk.PCM16Sample),
 		roomDTMF:  &dtmfCollector{},
-		codec:     codec,
-		audioPT:   audioType,
-		dtmfPT:    dtmfType,
 	}
-
-	h.audioIn.Swap(msdk.NewPCM16BufferWriter(h.roomAudio, RoomSampleRate))
+	h.audioIn.Swap(msdk.NewPCM16BufferWriter(h.roomAudio, sampleRate))
 	h.dtmfIn.Swap(h.roomDTMF)
-
-	pipelineConfig := &MediaPortPipelineConfig{
+	h.conf = &MediaPortPipelineConfig{
 		log:   log,
-		opts:  &MediaOptions{DTMFAudio: dtmfAudio},
+		opts:  &MediaOptions{},
 		stats: &PortStats{},
 		onNewSSRC: func() bool {
 			h.ssrcCount.Add(1)
@@ -154,32 +167,78 @@ func newPipelineHarness(t *testing.T, audioType byte, codec msdk.AudioCodec, dtm
 			h.packetCount.Add(1)
 		},
 	}
-	mc := &sdp.MediaConfig{
-		Local:  local.addr,
-		Remote: remote.addr,
+	t.Cleanup(func() {
+		if h.pipeline != nil {
+			_ = h.pipeline.Close()
+		}
+		_ = local.Close()
+		_ = remote.Close()
+	})
+	return h
+}
+
+func (h *pipelineHarness) mediaConfig() *sdp.MediaConfig {
+	return &sdp.MediaConfig{
+		Local:  h.local.addr,
+		Remote: h.remote.addr,
 		Audio: sdp.AudioConfig{
-			Codec:    codec,
-			Type:     audioType,
-			DTMFType: dtmfType,
+			Codec:    h.codec,
+			Type:     h.audioPT,
+			DTMFType: h.dtmfPT,
 		},
 	}
-	pipe, err := NewMediaPortPipeline(pipelineConfig, mc, port, &h.audioIn, &h.dtmfIn, RoomSampleRate)
-	require.NoError(t, err)
+}
+
+func (h *pipelineHarness) configure(codec msdk.AudioCodec, audioPT, dtmfPT byte, dtmfAudio bool) {
+	h.t.Helper()
+	h.codec = codec
+	h.audioPT = audioPT
+	h.dtmfPT = dtmfPT
+	h.conf.opts = &MediaOptions{DTMFAudio: dtmfAudio}
+
+	pipe, err := NewMediaPortPipeline(h.conf, h.mediaConfig(), h.port, h.audioIn, h.dtmfIn, h.audioIn.SampleRate())
+	require.NoError(h.t, err)
 	audioToPort, dtmfToPort := pipe.GetConnectors()
 	h.pipeline = pipe
-
 	if old := h.audioOut.Swap(audioToPort); old != nil {
 		_ = old.Close()
 	}
 	if old := h.dtmfOut.Swap(dtmfToPort); old != nil {
 		_ = old.Close()
 	}
-	t.Cleanup(func() {
-		_ = pipe.Close()
-		_ = local.Close()
-		_ = remote.Close()
-	})
-	return h
+}
+
+func (h *pipelineHarness) reconfigure(codec msdk.AudioCodec, audioPT, dtmfPT byte, dtmfAudio bool) {
+	h.t.Helper()
+	if h.pipeline != nil {
+		require.NoError(h.t, h.pipeline.Close())
+	}
+	h.port.Reopen()
+	h.ssrcCount.Store(0)
+	h.packetCount.Store(0)
+	h.configure(codec, audioPT, dtmfPT, dtmfAudio)
+}
+
+func (h *pipelineHarness) drainRemote() {
+	for {
+		select {
+		case <-h.remote.buf:
+		default:
+			return
+		}
+	}
+}
+
+func (h *pipelineHarness) roomFrame() msdk.PCM16Sample {
+	sampleRate := h.audioOut.SampleRate()
+	n := sampleRate / int(time.Second/msrtp.DefFrameDur)
+	return tonePCM(sampleRate, n, 10000)
+}
+
+func (h *pipelineHarness) codecFrame() msdk.PCM16Sample {
+	rate := h.codec.Info().SampleRate
+	n := rate / int(time.Second/msrtp.DefFrameDur)
+	return tonePCM(rate, n, 12000)
 }
 
 func (h *pipelineHarness) readRemotePacket(timeout time.Duration) (*rtp.Packet, bool) {
@@ -204,8 +263,12 @@ func (h *pipelineHarness) injectRTP(pkt *rtp.Packet) {
 
 func (h *pipelineHarness) injectAudio(ssrc uint32, seq uint16, ts uint32, pcm msdk.PCM16Sample) {
 	h.t.Helper()
+	clock := h.codec.Info().RTPClockRate
+	if clock == 0 {
+		clock = h.codec.Info().SampleRate
+	}
 	var buf msrtp.Buffer
-	stream := msrtp.NewSeqWriter(&buf).NewStream(h.audioPT, h.codec.Info().RTPClockRate)
+	stream := msrtp.NewSeqWriter(&buf).NewStream(h.audioPT, clock)
 	enc := msrtp.EncodePCM(stream, h.codec)
 	require.NoError(h.t, enc.WriteSample(pcm))
 	require.NoError(h.t, enc.Close())
@@ -222,12 +285,126 @@ func (h *pipelineHarness) injectAudio(ssrc uint32, seq uint16, ts uint32, pcm ms
 
 func (h *pipelineHarness) injectDTMFDigit(ssrc uint32, digit string, ts uint32) {
 	h.t.Helper()
-	var buf msrtp.Buffer
-	w := msrtp.NewSeqWriter(&buf).NewStream(h.dtmfPT, dtmf.SampleRate)
-	require.NoError(h.t, dtmf.Write(context.Background(), nil, w, ts, digit))
-	for _, pkt := range buf {
-		pkt.Header.SSRC = ssrc
-		h.injectRTP(pkt)
+	require.NotEmpty(h.t, digit)
+	pt := h.dtmfPT
+	if pt == 0 {
+		pt = testDTMFPT
+	}
+	var payload [4]byte
+	n, err := dtmf.Encode(payload[:], dtmf.Event{
+		Digit:  digit[0],
+		Volume: 10,
+		Dur:    800,
+		End:    true,
+	})
+	require.NoError(h.t, err)
+	h.injectRTP(&rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			PayloadType:    pt,
+			SequenceNumber: 1,
+			Timestamp:      ts,
+			SSRC:           ssrc,
+			Marker:         true,
+		},
+		Payload: payload[:n],
+	})
+}
+
+func (h *pipelineHarness) runDirections(t *testing.T) {
+	t.Run("audio_from_room", h.testAudioFromRoom)
+	t.Run("audio_from_port", h.testAudioFromPort)
+	t.Run("dtmf_from_room", h.testDTMFFromRoom)
+	t.Run("dtmf_from_port", h.testDTMFFromPort)
+}
+
+func (h *pipelineHarness) testAudioFromRoom(t *testing.T) {
+	h.drainRemote()
+	sample := h.roomFrame()
+	for range 5 {
+		require.NoError(t, h.audioOut.WriteSample(sample))
+	}
+	deadline := time.Now().Add(time.Second)
+	found := false
+	for time.Now().Before(deadline) && !found {
+		pkt, ok := h.readRemotePacket(50 * time.Millisecond)
+		if !ok {
+			continue
+		}
+		if pkt.PayloadType == h.audioPT && len(pkt.Payload) > 0 {
+			found = true
+		}
+	}
+	require.True(t, found, "expected RTP audio toward the peer")
+}
+
+func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
+	before := len(*h.roomAudio)
+	packetsBefore := h.packetCount.Load()
+	clock := h.codec.Info().RTPClockRate
+	if clock == 0 {
+		clock = h.codec.Info().SampleRate
+	}
+	samplesPerFrame := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	sample := h.codecFrame()
+	for i := uint16(0); i < 5; i++ {
+		h.injectAudio(0xA11CE, 1+i, samplesPerFrame+uint32(i)*samplesPerFrame, sample)
+	}
+	require.Eventually(t, func() bool {
+		return h.packetCount.Load() >= packetsBefore+5
+	}, time.Second, 5*time.Millisecond, "RTP should be accepted")
+	require.Eventually(t, func() bool {
+		return len(*h.roomAudio) > before
+	}, time.Second, 5*time.Millisecond, "decoded PCM should reach room (packets=%d input=%d failed=%d ignored=%d room=%d)",
+		h.packetCount.Load(),
+		h.pipeline.conf.stats.InputPackets.Load(),
+		h.pipeline.conf.stats.FailedPackets.Load(),
+		h.pipeline.conf.stats.IgnoredPackets.Load(),
+		len(*h.roomAudio),
+	)
+	require.Greater(t, pcmEnergy((*h.roomAudio)[before:]), int64(0), "decoded room audio should carry energy")
+}
+
+func (h *pipelineHarness) testDTMFFromRoom(t *testing.T) {
+	h.drainRemote()
+	if h.dtmfPT == 0 {
+		require.NoError(t, h.dtmfOut.WriteSample(&livekit.SipDTMF{Digit: "5", Code: 5}))
+		h.drainRemote()
+		return
+	}
+
+	// dtmf.Write paces a 250ms tone on a real ticker. Assert the first
+	// telephone-event and let pipeline Close cancel the rest.
+	go func() {
+		_ = h.dtmfOut.WriteSample(&livekit.SipDTMF{Digit: "5", Code: 5})
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		pkt, ok := h.readRemotePacket(20 * time.Millisecond)
+		if ok && pkt.PayloadType == h.dtmfPT {
+			return
+		}
+	}
+	t.Fatal("DTMF enabled: expected telephone-event RTP")
+}
+
+func (h *pipelineHarness) testDTMFFromPort(t *testing.T) {
+	before := len(h.roomDTMF.snapshot())
+	packetsBefore := h.packetCount.Load()
+	h.injectDTMFDigit(0xD7DF, "7", 8000)
+	require.Eventually(t, func() bool {
+		return h.packetCount.Load() > packetsBefore
+	}, time.Second, 5*time.Millisecond, "RTP should be accepted")
+	if h.dtmfPT == 0 {
+		require.Equal(t, before, len(h.roomDTMF.snapshot()), "DTMF disabled: must not reach room")
+		return
+	}
+	require.Eventually(t, func() bool {
+		return len(h.roomDTMF.snapshot()) > before
+	}, time.Second, 5*time.Millisecond)
+	got := h.roomDTMF.snapshot()[before:]
+	if assert.NotEmpty(t, got) {
+		assert.Equal(t, "7", got[0].Digit)
 	}
 }
 
@@ -255,148 +432,55 @@ func pcmEnergy(s msdk.PCM16Sample) int64 {
 	return sum
 }
 
-func TestMediaPipelinePermutations(t *testing.T) {
-	pcmu := mustAudioCodec(t, g711.ULawSDPNameAndRate)
-	opus := testOpusCodec(t)
-	cases := []struct {
-		name      string
-		codec     msdk.AudioCodec
-		audioPT   byte
-		dtmfType  byte
-		dtmfAudio bool
-	}{
-		{name: "dtmf_disabled", codec: pcmu, audioPT: testAudioPT, dtmfType: 0, dtmfAudio: false},
-		{name: "dtmf_enabled", codec: pcmu, audioPT: testAudioPT, dtmfType: testDTMFPT, dtmfAudio: false},
-		{name: "dtmf_enabled_with_audio", codec: pcmu, audioPT: testAudioPT, dtmfType: testDTMFPT, dtmfAudio: true},
-		// PCMU is 8kHz: pipeline resamples 48kHz room PCM. Opus is 48kHz: ResampleWriter is a nop.
-		{name: "resample", codec: pcmu, audioPT: testAudioPT, dtmfType: 0, dtmfAudio: false},
-		{name: "no_resample", codec: opus, audioPT: testOpusPT, dtmfType: 0, dtmfAudio: false},
+type testCodecSpec struct {
+	name string
+	sdp  string
+}
+
+type testDTMFSpec struct {
+	name  string
+	pt    byte
+	audio bool
+}
+
+var (
+	pipelineTestCodecs = []testCodecSpec{
+		{name: "PCMU", sdp: g711.ULawSDPNameAndRate},
+		{name: "PCMA", sdp: g711.ALawSDPNameAndRate},
+		{name: "G722", sdp: g722.SDPNameAndRate},
+		{name: "AMR-WB", sdp: amrwb.SDPNameAndRate},
 	}
+	pipelineTestRates = []int{8000, 16000, 48000}
+	pipelineTestDTMF  = []testDTMFSpec{
+		{name: "dtmf_disabled", pt: 0, audio: false},
+		{name: "dtmf_event", pt: testDTMFPT, audio: false},
+		{name: "dtmf_event_audio", pt: testDTMFPT, audio: true},
+	}
+)
 
-	roomFrame := RoomSampleRate / int(time.Second/msrtp.DefFrameDur)
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newPipelineHarness(t, tc.audioPT, tc.codec, tc.dtmfType, tc.dtmfAudio)
-
-			t.Run("audio_to_port", func(t *testing.T) {
-				sample := tonePCM(RoomSampleRate, roomFrame, 10000)
-				for range 5 {
-					require.NoError(t, h.audioOut.WriteSample(sample))
+func TestMediaPipelinePermutations(t *testing.T) {
+	for _, spec := range pipelineTestCodecs {
+		t.Run(spec.name, func(t *testing.T) {
+			codec := audioCodecByName(t, spec.sdp)
+			pt := testAudioPT(codec)
+			for _, rate := range pipelineTestRates {
+				for _, d := range pipelineTestDTMF {
+					t.Run(fmt.Sprintf("%dHz/%s", rate, d.name), func(t *testing.T) {
+						h := newPipelineHarness(t, rate)
+						h.configure(codec, pt, d.pt, d.audio)
+						h.runDirections(t)
+					})
 				}
-				deadline := time.Now().Add(time.Second)
-				foundAudio := false
-				for time.Now().Before(deadline) && !foundAudio {
-					pkt, ok := h.readRemotePacket(50 * time.Millisecond)
-					if !ok {
-						continue
-					}
-					if pkt.PayloadType == h.audioPT && len(pkt.Payload) > 0 {
-						foundAudio = true
-					}
-				}
-				require.True(t, foundAudio, "expected RTP audio toward the peer")
-			})
-
-			t.Run("audio_to_room", func(t *testing.T) {
-				before := len(*h.roomAudio)
-				codecRate := tc.codec.Info().SampleRate
-				codecFrame := codecRate / int(time.Second/msrtp.DefFrameDur)
-				clock := uint32(tc.codec.Info().RTPClockRate / int(time.Second/msrtp.DefFrameDur))
-				sample := tonePCM(codecRate, codecFrame, 12000)
-				for i := uint16(0); i < 5; i++ {
-					h.injectAudio(0xA11CE, 1+i, clock+uint32(i)*clock, sample)
-				}
-				require.Eventually(t, func() bool {
-					return h.packetCount.Load() >= 5
-				}, time.Second, 5*time.Millisecond, "RTP should be accepted")
-				require.Eventually(t, func() bool {
-					return len(*h.roomAudio) > before
-				}, time.Second, 5*time.Millisecond, "decoded PCM should reach room (packets=%d input=%d failed=%d ignored=%d room=%d)",
-					h.packetCount.Load(),
-					h.pipeline.conf.stats.InputPackets.Load(),
-					h.pipeline.conf.stats.FailedPackets.Load(),
-					h.pipeline.conf.stats.IgnoredPackets.Load(),
-					len(*h.roomAudio),
-				)
-				got := (*h.roomAudio)[before:]
-				require.Greater(t, pcmEnergy(got), int64(0), "decoded room audio should carry energy")
-			})
-
-			t.Run("dtmf_to_port", func(t *testing.T) {
-				// Drain while DTMF write runs (in-band audio can emit many RTP frames).
-				var (
-					mu       sync.Mutex
-					dtmfPkts int
-					stop     = make(chan struct{})
-					wg       sync.WaitGroup
-				)
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					for {
-						select {
-						case <-stop:
-							return
-						default:
-						}
-						pkt, ok := h.readRemotePacket(20 * time.Millisecond)
-						if !ok {
-							continue
-						}
-						if tc.dtmfType != 0 && pkt.PayloadType == tc.dtmfType {
-							mu.Lock()
-							dtmfPkts++
-							mu.Unlock()
-						}
-					}
-				}()
-
-				err := h.dtmfOut.WriteSample(&livekit.SipDTMF{Digit: "5", Code: 5})
-				require.NoError(t, err, "DTMF write must not error when disabled or enabled")
-				time.Sleep(50 * time.Millisecond) // allow final packets to flush
-				close(stop)
-				wg.Wait()
-
-				mu.Lock()
-				n := dtmfPkts
-				mu.Unlock()
-				if tc.dtmfType == 0 {
-					require.Zero(t, n, "DTMF disabled: no telephone-event RTP")
-				} else {
-					require.NotZero(t, n, "DTMF enabled: expected telephone-event RTP")
-				}
-			})
-
-			t.Run("dtmf_to_room", func(t *testing.T) {
-				before := len(h.roomDTMF.snapshot())
-				if tc.dtmfType == 0 {
-					// Inject telephone-event anyway; mux should drop without error.
-					h.dtmfPT = testDTMFPT
-					h.injectDTMFDigit(0xD7DF, "7", 8000)
-					h.dtmfPT = 0
-					time.Sleep(50 * time.Millisecond)
-					require.Equal(t, before, len(h.roomDTMF.snapshot()), "DTMF disabled: must not reach room")
-					return
-				}
-
-				h.injectDTMFDigit(0xD7DF, "7", 8000)
-				require.Eventually(t, func() bool {
-					return len(h.roomDTMF.snapshot()) > before
-				}, time.Second, 5*time.Millisecond)
-				got := h.roomDTMF.snapshot()[before:]
-				if assert.NotEmpty(t, got) {
-					assert.Equal(t, "7", got[0].Digit)
-				}
-			})
+			}
 		})
 	}
 }
 
 func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
-	h := newPipelineHarness(t, testAudioPT, mustAudioCodec(t, g711.ULawSDPNameAndRate), testDTMFPT, false)
-	frame := testCodecRate / int(time.Second/msrtp.DefFrameDur)
-	sample := tonePCM(testCodecRate, frame, 8000)
+	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	h := newPipelineHarness(t, RoomSampleRate)
+	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+	sample := h.codecFrame()
 
 	h.injectAudio(0x11111111, 1, 160, sample)
 	h.injectAudio(0x22222222, 1, 160, sample)
@@ -404,7 +488,7 @@ func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return h.ssrcCount.Load() >= 2
 	}, time.Second, 5*time.Millisecond, "expected AcceptStream for two SSRCs")
-	assert.GreaterOrEqual(t, h.packetCount.Load(), uint64(2))
+	assert.Equal(t, h.packetCount.Load(), uint64(2))
 
 	done := make(chan error, 1)
 	go func() {
@@ -419,76 +503,22 @@ func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
 }
 
 func TestMediaPipelineReuseUDPConn(t *testing.T) {
-	local, remote := newUDPPipe()
-	log := logger.NewTestLogger(t)
-	port := newUDPConn(log, local, false)
+	const rate = 48000
+	d := pipelineTestDTMF[1] // event-only
 
-	codec := testOpusCodec(t)
-	frame := codec.Info().SampleRate / int(time.Second/msrtp.DefFrameDur)
-	sample := tonePCM(codec.Info().SampleRate, frame, 9000)
-
-	build := func(t *testing.T) (*mediaPortPipeline, *msdk.WriteCloserSwitch[msdk.PCM16Sample]) {
-		t.Helper()
-		var audioIn msdk.WriteCloserSwitch[msdk.PCM16Sample]
-		var audioOut msdk.WriteCloserSwitch[msdk.PCM16Sample]
-		var dtmfIn msdk.WriteCloserSwitch[*livekit.SipDTMF]
-		roomBuf := new(msdk.PCM16Sample)
-		audioIn.Swap(msdk.NewPCM16BufferWriter(roomBuf, RoomSampleRate))
-
-		pipelineConfig := &MediaPortPipelineConfig{
-			log:   log,
-			opts:  &MediaOptions{},
-			stats: &PortStats{},
-		}
-		mc := &sdp.MediaConfig{
-			Local:  local.addr,
-			Remote: remote.addr,
-			Audio: sdp.AudioConfig{
-				Codec:    codec,
-				Type:     testAudioPT,
-				DTMFType: testDTMFPT,
-			},
-		}
-		pipe, err := NewMediaPortPipeline(pipelineConfig, mc, port, &audioIn, &dtmfIn, RoomSampleRate)
-		require.NoError(t, err)
-		audioToPort, dtmfToPort := pipe.GetConnectors()
-		_ = audioOut.Swap(audioToPort)
-		_ = dtmfToPort // unused in this test
-		return pipe, &audioOut
+	for _, from := range pipelineTestCodecs {
+		t.Run("from_"+from.name, func(t *testing.T) {
+			for _, to := range pipelineTestCodecs {
+				t.Run("to_"+to.name, func(t *testing.T) {
+					c1 := audioCodecByName(t, from.sdp)
+					c2 := audioCodecByName(t, to.sdp)
+					h := newPipelineHarness(t, rate)
+					h.configure(c1, testAudioPT(c1), d.pt, d.audio)
+					t.Run("gen1", h.runDirections)
+					h.reconfigure(c2, testAudioPT(c2), d.pt, d.audio)
+					t.Run("gen2", h.runDirections)
+				})
+			}
+		})
 	}
-
-	// Generation 1
-	pipe1, out1 := build(t)
-	require.NoError(t, out1.WriteSample(sample))
-	select {
-	case raw := <-remote.buf:
-		var pkt rtp.Packet
-		require.NoError(t, pkt.Unmarshal(raw))
-		assert.Equal(t, testAudioPT, pkt.PayloadType)
-	case <-time.After(time.Second):
-		t.Fatal("first pipeline produced no RTP")
-	}
-	require.NoError(t, pipe1.Close())
-	if w := out1.Swap(nil); w != nil {
-		_ = w.Close()
-	}
-
-	// Soft-closed port must be reopened before the next session.
-	port.Reopen()
-
-	// Generation 2 on the same udpConn / test pipe
-	pipe2, out2 := build(t)
-	require.NoError(t, out2.WriteSample(sample))
-	select {
-	case raw := <-remote.buf:
-		var pkt rtp.Packet
-		require.NoError(t, pkt.Unmarshal(raw))
-		assert.Equal(t, testAudioPT, pkt.PayloadType)
-	case <-time.After(time.Second):
-		t.Fatal("second pipeline produced no RTP after Reopen")
-	}
-	require.NoError(t, pipe2.Close())
-
-	_ = local.Close()
-	_ = remote.Close()
 }

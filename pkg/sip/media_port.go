@@ -518,7 +518,6 @@ type mediaPort struct {
 	pipeline  *mediaPortPipeline
 	localSDP  []byte
 	offer     *sdp.Offer
-	answer    *sdp.Answer
 	audioConf *sdp.AudioConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
@@ -779,13 +778,6 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
-	p.mu.RLock()
-	answer := p.answer
-	p.mu.RUnlock()
-	if answer != nil { // Limit renegotiation for now
-		return answer.SDP.Marshal()
-	}
-
 	offer, err := sdp.ParseOfferWith(p.codecs, offerData) // TODO: Consider limiting to previously negotiated codecs
 	if err != nil {
 		return nil, SDPError{Err: err}
@@ -796,15 +788,10 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
-
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
 		return nil, err
 	}
-
-	p.mu.Lock()
-	p.answer = answer
-	p.mu.Unlock()
 	return answerData, p.configure(mc, answerData)
 }
 
