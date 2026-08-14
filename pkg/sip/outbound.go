@@ -543,9 +543,12 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 
 func (c *outboundCall) connectMedia() {
 	if old := c.lkRoom.WriteOutboundAudioTo(c.audioOut); old != nil {
+		old.Close()
 		c.log.Warnw("room has unexpected outbound audio writer", nil)
 	}
+
 	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
+		old.Close()
 		c.log.Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
@@ -554,9 +557,12 @@ func (c *outboundCall) connectMedia() {
 	}
 
 	if old := c.media.WriteInboundAudioTo(c.lkRoomIn); old != nil {
+		old.Close()
 		c.log.Warnw("media port has unexpected inbound audio writer", nil)
 	}
+
 	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
+		old.Close()
 		c.log.Warnw("media port has unexpected inbound DTMF writer", nil)
 	}
 }

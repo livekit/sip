@@ -717,7 +717,6 @@ type inboundCall struct {
 	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
 	callDur     func() time.Duration
 	joinDur     func() time.Duration
-	forwardDTMF atomic.Bool
 	done        atomic.Bool
 	started     core.Fuse
 	stats       Stats
@@ -1014,6 +1013,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			return err // already sent a response
 		}
 	}
+
 	c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter())
 	p := &disp.Room.Participant
 	p.Attributes = HeadersToAttrs(p.Attributes, disp.HeadersToAttributes, disp.IncludeHeaders, c.cc, nil)
@@ -1133,12 +1133,6 @@ func (w *pinDTMFWriter) WriteSample(msg *livekit.SipDTMF) error {
 	if msg == nil {
 		return nil
 	}
-
-	// if w.c.forwardDTMF.Load() {
-	// 	if err := w.c.lkRoom.GetInboundDTMFWriter().WriteSample(msg); err != nil {
-	// 		w.c.log().Errorw("failed to send dtmf to room", err)
-	// 	}
-	// }
 
 	event := dtmfEventFromSipDTMF(msg)
 	// We should have enough buffer here.
@@ -1597,7 +1591,6 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 		partConf.Attributes[k] = v
 	}
 	partConf.Attributes[livekit.AttrSIPCallStatus] = status.Attribute()
-	c.forwardDTMF.Store(true)
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
