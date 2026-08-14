@@ -17,7 +17,6 @@
 // Tests parked by the mediaPort/mediaPortPipeline split, kept verbatim for review.
 // Each one still references API that the refactor removed:
 //
-//	PrintAudioInWriter        mediaPort.audioInHandler -> mediaPortPipeline
 //	TestMediaPortUpdateRemote MediaPort.UpdateRemote (re-INVITE now goes through GenerateAnswer)
 //	TestMediaPort             NewOffer/SetOffer/SetAnswer/SetConfig/Config, MediaOptions.NoInputResample.
 //	                          The expected pipeline chain strings also predate the always-on
@@ -51,37 +50,42 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
-func PrintAudioInWriter(p *MediaPort) string {
-	return p.audioInHandler.(fmt.Stringer).String()
+func PrintAudioInWriter(p *mediaPort) string {
+	return p.pipeline.audioToRoom.String()
 }
 
 func TestMediaPortUpdateRemote(t *testing.T) {
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 	mon := newTestCallMonitor(t)
 
 	// newUDPPipe wires two in-memory testUDPConn together.
 	c1, _ := newUDPPipe()
-	mp, err := NewMediaPortWith(1, log, mon, c1, &MediaOptions{
+	mp, err := NewMediaPortWith(log, mon, c1, &MediaOptions{
 		IP: netip.MustParseAddr("127.0.0.1"),
 	}, 8000)
 	require.NoError(t, err)
 	defer mp.Close()
 
 	// Initially no destination is set.
-	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any update")
+	require.False(t, getMediaPortRemoteAddr(t, mp).IsValid(), "RemoteAddr should be invalid before any update")
 
 	// Update to a valid address.
 	addr := netip.MustParseAddrPort("9.8.7.6:12345")
 	mp.UpdateRemote(addr)
-	require.Equal(t, addr, mp.RemoteAddr(), "RemoteAddr should reflect the updated address")
+	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "RemoteAddr should reflect the updated address")
 
 	// UpdateRemote with invalid addr should be a no-op.
 	mp.UpdateRemote(netip.AddrPort{})
-	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with invalid addr should not change RemoteAddr")
+	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "UpdateRemote with invalid addr should not change RemoteAddr")
 
 	// UpdateRemote with unspecified address (c=0.0.0.0 hold form) should be a no-op.
 	mp.UpdateRemote(netip.MustParseAddrPort("0.0.0.0:12345"))
-	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with unspecified addr should not change RemoteAddr")
+	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "UpdateRemote with unspecified addr should not change RemoteAddr")
+
+	// Test successful updte to new address
+	addr = netip.MustParseAddrPort("10.10.10.10:54321")
+	mp.UpdateRemote(addr)
+	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "UpdateRemote with new address should change RemoteAddr")
 }
 
 func TestMediaPort(t *testing.T) {
@@ -129,7 +133,7 @@ func TestMediaPort(t *testing.T) {
 				t.Run(fmt.Sprintf("%d%s", tconf.Rate, suff), func(t *testing.T) {
 					c1, c2 := newUDPPipe()
 
-					log := logger.GetLogger()
+					log := logger.NewTestLogger(t)
 
 					const (
 						ip1   = "1.1.1.1"
@@ -408,7 +412,7 @@ func TestMediaPortDTMF(t *testing.T) {
 		packets := generateDTMFPackets(t, digits)
 		for _, lossPackets := range lossCases {
 			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
-				p := &MediaPort{}
+				p := &mediaPort{}
 				p.lastDTMFTimestamp.Store(math.MaxUint32)
 				got := ""
 				p.HandleDTMF(func(ev dtmf.Event) {

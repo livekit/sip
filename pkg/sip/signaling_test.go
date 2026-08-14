@@ -637,6 +637,21 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	return call, oc, ackReq
 }
 
+func getMediaPort(t *testing.T, m MediaPort) *mediaPort {
+	t.Helper()
+	port, ok := m.(*mediaPort)
+	require.True(t, ok, "media port should be a *mediaPort")
+	return port
+}
+
+func getMediaPortRemoteAddr(t *testing.T, m MediaPort) netip.AddrPort {
+	t.Helper()
+	port := getMediaPort(t, m)
+	dst := port.port.dst.Load()
+	require.NotNil(t, dst, "destination should be set")
+	return *dst
+}
+
 func TestReinvite(t *testing.T) {
 	t.Run("inbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
@@ -663,7 +678,7 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// After the re-INVITE with new offer, the media port destination must be updated.
-			require.Equal(t, newOffer.Addr, ic.media.RemoteAddr(), "re-INVITE should redirect RTP to the new remote address")
+			require.Equal(t, newOffer.Addr, getMediaPortRemoteAddr(t, ic.media), "re-INVITE should redirect RTP to the new remote address")
 		})
 
 		t.Run("miss", func(t *testing.T) {
@@ -691,21 +706,21 @@ func TestReinvite(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, ic := st.CreateInboundCall(t)
 			serverLocalSDP := call.remoteSDP
-			initialRemote := ic.media.RemoteAddr()
+			initialRemote := getMediaPortRemoteAddr(t, ic.media)
 
 			// Re-INVITE with no SDP body — destination must not change.
 			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
 			resp := st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
-			require.Equal(t, initialRemote, ic.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, ic.media), "body-less re-INVITE must not change RTP destination")
 		})
 	})
 	t.Run("outbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
+			serverLocalSDP := getMediaPortRemoteAddr(t, oc.media)
 			require.NotEqual(t, call.localSDP, serverLocalSDP, "local and remote SDP should be different")
 
 			// Re-INVITE
@@ -727,27 +742,29 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// After the re-INVITE with new offer, the media port destination must be updated.
-			require.Equal(t, newOffer.Addr, oc.media.RemoteAddr(), "re-INVITE should redirect outbound call RTP to the new remote address")
+			require.Equal(t, newOffer.Addr, getMediaPortRemoteAddr(t, oc.media), "re-INVITE should redirect outbound call RTP to the new remote address")
 		})
 
 		t.Run("no_body", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
-			initialRemote := oc.media.RemoteAddr()
+			serverLocalSDP, err := getMediaPort(t, oc.media).GetLocalSDP()
+			require.NoError(t, err)
+			initialRemote := getMediaPortRemoteAddr(t, oc.media)
 
 			// Re-INVITE with no SDP body — destination must not change.
 			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
 			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
-			require.Equal(t, initialRemote, oc.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, oc.media), "body-less re-INVITE must not change RTP destination")
 		})
 
 		t.Run("miss", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
+			serverLocalSDP, err := getMediaPort(t, oc.media).GetLocalSDP()
+			require.NoError(t, err)
 
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)

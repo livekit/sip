@@ -129,9 +129,6 @@ func (p *mediaPortPipeline) init(
 	if p.conf.opts.IgnoreLocalAddrInSDP && mc.Remote.Addr().IsPrivate() {
 		port.SetSymmetric(true) // Already initialized with opts, turn on for edge case
 	}
-
-	// stopDiscarding() must be done ahead of SRTP session creation, or risk dead read without read deadlines
-	port.stopDiscarding()
 	p.lastDTMFTimestamp.Store(math.MaxUint32)
 
 	var err error
