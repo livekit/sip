@@ -72,7 +72,7 @@ func roomFrame() msdk.PCM16Sample {
 // writeFrames pushes room audio into the port. Write errors are ignored: the in-memory
 // UDP pipe is bounded, and a peer that is mid-renegotiation may not be draining it.
 func writeFrames(m *mediaPort, frames int) {
-	w := m.GetAudioWriter()
+	w := m.GetOutboundAudioWriter()
 	frame := roomFrame()
 	for range frames {
 		_ = w.WriteSample(frame)
@@ -169,7 +169,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 		m1, m2 := newMediaPair(t, nil, nil, "")
 
 		recv2 := &recvBuffer{}
-		m2.WriteAudioTo(recv2)
+		m2.WriteInboundAudioTo(recv2)
 		requireAudioFlows(t, m1, recv2)
 
 		for range 3 {
@@ -203,7 +203,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 		require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answerData))
 
 		recv2 := &recvBuffer{}
-		m2.WriteAudioTo(recv2)
+		m2.WriteInboundAudioTo(recv2)
 		requireAudioFlows(t, m1, recv2)
 
 		// G722 samples at 16k, so the encode leaf changes sample rate under the same
@@ -247,9 +247,9 @@ func TestMediaPortHold(t *testing.T) {
 			m1, m2 := newMediaPair(t, nil, nil, "")
 
 			recv1 := &recvBuffer{}
-			m1.WriteAudioTo(recv1)
+			m1.WriteInboundAudioTo(recv1)
 			recv2 := &recvBuffer{}
-			m2.WriteAudioTo(recv2)
+			m2.WriteInboundAudioTo(recv2)
 
 			// Baseline: m1 sends to m2.
 			require.NotNil(t, m1.audioOut.Get())
@@ -268,7 +268,7 @@ func TestMediaPortHold(t *testing.T) {
 				assert.True(t, dst.Addr().IsUnspecified(), "held port kept a destination: %v", dst)
 			}
 			assert.Nil(t, m1.audioOut.Get(), "held port still accepts room audio")
-			assert.NoError(t, m1.GetAudioWriter().WriteSample(roomFrame()))
+			assert.NoError(t, m1.GetOutboundAudioWriter().WriteSample(roomFrame()))
 
 			sent := recv2.count()
 			writeFrames(m1, 10)
