@@ -658,4 +658,34 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			`To: "User" <sip:333@sip.another.com;transport=tls>`,
 		)
 	})
+	t.Run("to user override", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.Transport = livekit.SIPTransport_SIP_TRANSPORT_TLS
+		req.ToUserOverride = "333"
+		expect(t, req,
+			`sip:222@sip.test.com;transport=tls`,
+			`From: "111" <sip:111@sip.default.test;transport=tls>`,
+			`To: <sip:333@sip.test.com;transport=tls>`,
+		)
+	})
+	t.Run("to user override with request uri override", func(t *testing.T) {
+		req := newReq()
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipRequestUri = uriVals(&livekit.SIPUri{
+			User: "999",
+			Host: "test12.test34.com",
+		})
+		req.Address = "sip.trunk.com"
+		req.ToUserOverride = "333"
+		// The To is still trunk-derived; only its user is replaced.
+		expect(t, req,
+			`sip:999@test12.test34.com`,
+			`From: "111" <sip:111@sip.default.test>`,
+			`To: <sip:333@sip.trunk.com>`,
+		)
+	})
 }

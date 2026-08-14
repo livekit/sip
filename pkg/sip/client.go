@@ -307,13 +307,16 @@ func buildFromHeader(u *livekit.SIPNamedDest, legacyName *string, legacyUser, le
 	return h, nil
 }
 
-func buildToHeader(u *livekit.SIPNamedDest, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
+func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
 	if u != nil && legacyUser != "" {
 		return nil, errors.New("cannot use both CallTo and SipToHeader")
 	}
 	su, err := buildFromToURI(u, legacyUser, legacyAddr, tr)
 	if err != nil {
 		return nil, err
+	}
+	if userOverride != "" {
+		su.User = userOverride
 	}
 	h := &sip.ToHeader{
 		Address: *su,
@@ -329,7 +332,7 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid request URI: %w", err))
 	}
-	to, err := buildToHeader(req.SipToHeader, req.CallTo, req.Address, req.Transport)
+	to, err := buildToHeader(req.SipToHeader, req.ToUserOverride, req.CallTo, req.Address, req.Transport)
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid To header: %w", err))
 	}
