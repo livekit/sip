@@ -1014,6 +1014,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			return err // already sent a response
 		}
 	}
+	c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter())
 	p := &disp.Room.Participant
 	p.Attributes = HeadersToAttrs(p.Attributes, disp.HeadersToAttributes, disp.IncludeHeaders, c.cc, nil)
 	if disp.MaxCallDuration <= 0 || disp.MaxCallDuration > maxCallDuration {
@@ -1112,45 +1113,40 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 	}
 }
 
-type dtmfEventWriter struct {
-	c *inboundCall
+type pinDTMFWriter struct {
+	dtmfEvents chan<- dtmf.Event
 }
 
-func (w *dtmfEventWriter) String() string {
-	return "dtmfEventWriter"
+func (w *pinDTMFWriter) String() string {
+	return "pinDTMFWriter"
 }
 
-func (w *dtmfEventWriter) SampleRate() int {
+func (w *pinDTMFWriter) SampleRate() int {
 	return dtmf.SampleRate
 }
 
-func (w *dtmfEventWriter) Close() error {
+func (w *pinDTMFWriter) Close() error {
 	return nil
 }
 
-func (w *dtmfEventWriter) WriteSample(msg *livekit.SipDTMF) error {
+func (w *pinDTMFWriter) WriteSample(msg *livekit.SipDTMF) error {
 	if msg == nil {
 		return nil
 	}
 
-	if w.c.forwardDTMF.Load() {
-		if err := w.c.lkRoom.GetInboundDTMFWriter().WriteSample(msg); err != nil {
-			w.c.log().Errorw("failed to send dtmf to room", err)
-		}
-	}
+	// if w.c.forwardDTMF.Load() {
+	// 	if err := w.c.lkRoom.GetInboundDTMFWriter().WriteSample(msg); err != nil {
+	// 		w.c.log().Errorw("failed to send dtmf to room", err)
+	// 	}
+	// }
 
-	// TODO(alexfish): Just have the channel accept the message instead?
 	event := dtmfEventFromSipDTMF(msg)
 	// We should have enough buffer here.
 	select {
-	case w.c.dtmf <- event:
+	case w.dtmfEvents <- event:
 	default:
 	}
 	return nil
-}
-
-func (c *inboundCall) getNewInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
-	return &dtmfEventWriter{c}
 }
 
 func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) ([]byte, error) {
@@ -1191,11 +1187,20 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	mp.WriteInboundDTMFTo(c.getNewInboundDTMFWriter())
+	if old := mp.WriteInboundDTMFTo(&pinDTMFWriter{c.dtmf}); old != nil {
+		c.log().Warnw("media port has unexpected inbound DTMF writer", nil)
+	}
 
 	// Must be set earlier to send the pin prompts.
-	c.lkRoom.WriteOutboundAudioTo(c.audioOut)
-	c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter())
+	if old := c.lkRoom.WriteOutboundAudioTo(c.audioOut); old != nil {
+		c.log().Warnw("room has unexpected outbound audio writer", nil)
+		old.Close()
+	}
+
+	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
+		c.log().Warnw("room has unexpected outbound audio DTMF writer", nil)
+		old.Close()
+	}
 
 	audio := mp.NegotiatedAudio()
 	if audio == nil {
@@ -1632,7 +1637,9 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
 		inboundAudio = audioInProcessor(inboundAudio)
 	}
-	c.media.WriteInboundAudioTo(inboundAudio)
+	if old := c.media.WriteInboundAudioTo(inboundAudio); old != nil {
+		c.log().Warnw("media port has unexpected inbound audio writer", nil)
+	}
 	return nil
 }
 
@@ -1684,25 +1691,6 @@ func dtmfEventFromSipDTMF(msg *livekit.SipDTMF) dtmf.Event {
 	return dtmf.Event{
 		Code:  code,
 		Digit: digit,
-	}
-}
-
-func (c *inboundCall) handleDTMF(msg *livekit.SipDTMF) {
-	if msg == nil {
-		return
-	}
-
-	if c.forwardDTMF.Load() {
-		c.lkRoom.GetInboundDTMFWriter().WriteSample(msg)
-		return
-	}
-
-	// TODO(alexfish): Just have the channel accept the message instead?
-	event := dtmfEventFromSipDTMF(msg)
-	// We should have enough buffer here.
-	select {
-	case c.dtmf <- event:
-	default:
 	}
 }
 

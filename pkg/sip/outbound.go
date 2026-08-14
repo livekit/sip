@@ -542,14 +542,23 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 }
 
 func (c *outboundCall) connectMedia() {
-	c.lkRoom.WriteOutboundAudioTo(c.audioOut)
-	c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter())
+	if old := c.lkRoom.WriteOutboundAudioTo(c.audioOut); old != nil {
+		c.log.Warnw("room has unexpected outbound audio writer", nil)
+	}
+	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
+		c.log.Warnw("room has unexpected outbound DTMF writer", nil)
+	}
 
 	if processor := c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
-	c.media.WriteInboundAudioTo(c.lkRoomIn)
-	c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter())
+
+	if old := c.media.WriteInboundAudioTo(c.lkRoomIn); old != nil {
+		c.log.Warnw("media port has unexpected inbound audio writer", nil)
+	}
+	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
+		c.log.Warnw("media port has unexpected inbound DTMF writer", nil)
+	}
 }
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)

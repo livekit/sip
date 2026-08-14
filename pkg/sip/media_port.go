@@ -390,7 +390,12 @@ func (o *MediaOptions) ApplyDefaults() {
 	}
 }
 
-type MediaSegment interface {
+// MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
+// and audio/DTMF endpoints. It does not know about calls, rooms, or SIP dialogs.
+type MediaPort interface {
+	Close()
+	CloseWait()
+
 	// GetOutboundAudioWriter returns the LK room -> SIP writer.
 	GetOutboundAudioWriter() msdk.PCM16Writer
 	// GetOutboundDTMFWriter returns the LK room -> SIP DTMF writer.
@@ -400,15 +405,6 @@ type MediaSegment interface {
 	WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
 	// WriteInboundDTMFTo tells the MediaSegment where to write inbound SIP DTMF.
 	WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
-}
-
-// MediaPort is the insulated media-plane API: UDP/RTP to the wire, SDP negotiation,
-// and audio/DTMF endpoints. It does not know about calls, rooms, or SIP dialogs.
-type MediaPort interface {
-	Close()
-	CloseWait()
-
-	MediaSegment
 
 	// If there is no offer, this generates an offer.
 	// If there is an offer, this simply returns the SDP of that offer.
