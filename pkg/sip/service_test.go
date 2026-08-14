@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -49,11 +48,29 @@ func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
 
 	return nil
 }
+func getResponseOrFailTimeout(t *testing.T, ctx context.Context, tx sip.ClientTransaction) *sip.Response {
+	var ctxDone <-chan struct{} = nil
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	select {
+	case <-t.Context().Done():
+		t.Fatal("Test context cancelled")
+	case <-ctxDone:
+		t.Fatal("Context cancelled")
+	case <-tx.Done():
+		t.Fatal("Transaction failed to complete")
+	case res := <-tx.Responses():
+		return res
+	}
 
-func getFinalResponseOrFail(t *testing.T, tx sip.ClientTransaction, req *sip.Request) *sip.Response {
+	return nil
+}
+
+func getFinalResponseOrFail(t *testing.T, ctx context.Context, tx sip.ClientTransaction) *sip.Response {
 	var res *sip.Response
 	for {
-		res = getResponseOrFail(t, tx)
+		res = getResponseOrFailTimeout(t, ctx, tx)
 		if res.StatusCode >= 200 {
 			break
 		}
@@ -324,7 +341,7 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 		tx, err := client.TransactionRequest(req)
 		require.NoError(t, err)
 		t.Cleanup(tx.Terminate)
-		return getFinalResponseOrFail(t, tx, req)
+		return getFinalResponseOrFail(t, nil, tx)
 	}
 
 	// First INVITE: full handler invocation, 404 from DispatchNoRuleReject.
@@ -898,46 +915,32 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	)
 
 	st := NewServiceTest(t, &serviceTestConfig{GetRoom: newTestRoomConfig(&testRoomConfig{ringForever: true})})
-	loopback := netip.MustParseAddr("127.0.0.1")
-	sipServerAddress := st.Address()
 
-	// Create SIP client using sipgo
-	sipUserAgent, err := sipgo.NewUA(
-		sipgo.WithUserAgent(fromUser),
-	)
+	call := newTestCall(st.TestUA, false)
+	req, localSDP, err := call.Invite(nil)
 	require.NoError(t, err)
+	call.SetLocalSDP(localSDP)
 
-	sipClient, err := sipgo.NewClient(sipUserAgent)
-	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
+	defer cancel()
 
-	// Create SDP offer
-	offer, err := sdp.NewOfferWith(defaultCodecs, loopback, 0xB0B, sdp.EncryptionNone)
+	inviteTx, err := st.TestUA.Client.TransactionRequest(req)
 	require.NoError(t, err)
-	offerData, err := offer.SDP.Marshal()
-	require.NoError(t, err)
-
-	// Create INVITE request
-	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
-	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipient)
-	inviteRequest.SetDestination(sipServerAddress)
-	inviteRequest.SetBody(offerData)
-	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-
-	// Send INVITE
-	tx, err := sipClient.TransactionRequest(inviteRequest)
-	require.NoError(t, err)
-	t.Cleanup(tx.Terminate)
+	defer inviteTx.Terminate()
 
 	// Wait for 100 Trying
-	res100 := getResponseOrFail(t, tx)
+	res100 := getResponseOrFailTimeout(t, ctx, inviteTx)
 	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "Should receive 100 Trying")
 
 	// Wait for 180 Ringing (call is now ringing)
-	res180 := getResponseOrFail(t, tx)
+	res180 := getResponseOrFailTimeout(t, ctx, inviteTx)
 	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "Should receive 180 Ringing")
+	remoteTag, ok := res180.To().Params.Get("tag")
+	require.True(t, ok, "remote tag should be present")
+	call.SetRemoteTag(LocalTag(remoteTag))
 
 	// Now send CANCEL
-	err = tx.Cancel()
+	err = inviteTx.Cancel()
 	require.NoError(t, err, "Should be able to send CANCEL")
 
 	// On-the-wire there should be two responses after CANCEL:
@@ -948,51 +951,11 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	// Sipgo treats both INVITE and CANCEL as the same transaction, and has special handling
 	// to swallow the 200 OK response to CANCEL, so it can't look like the INVITE got the 200.
 
-	// Collect responses until we get the final 487 or transaction completes
-	var responses []*sip.Response
-
-	// Wait for responses with a timeout
-	timeout := time.After(time.Second)
-
-	// Collect responses until we get 487 or timeout
-	for {
-		select {
-		case res := <-tx.Responses():
-			responses = append(responses, res)
-			cseq := res.CSeq()
-
-			// Debug: log all responses to understand what we're receiving
-			cseqMethod := "nil"
-			if cseq != nil {
-				cseqMethod = string(cseq.MethodName)
-			}
-			t.Logf("Received response: StatusCode=%d, CSeq method=%s", res.StatusCode, cseqMethod)
-
-			if res.StatusCode < 200 {
-				continue
-			}
-			require.Equal(t, sip.StatusCode(487), res.StatusCode, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
-			require.NotNil(t, cseq, "487 response should have CSeq header")
-			require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
-			return // Success!
-
-		case <-tx.Done():
-			t.Fatal("Transaction done without receiving expected 487 response")
-
-		case <-timeout:
-			// Log all received responses for debugging
-			t.Logf("Timeout after receiving %d responses", len(responses))
-			for i, res := range responses {
-				cseq := res.CSeq()
-				cseqMethod := "nil"
-				if cseq != nil {
-					cseqMethod = string(cseq.MethodName)
-				}
-				t.Logf("  Response %d: StatusCode=%d, CSeq method=%s", i+1, res.StatusCode, cseqMethod)
-			}
-			t.Fatal("Timeout waiting for 487 Request Terminated response after CANCEL")
-		}
-	}
+	res := getFinalResponseOrFail(t, ctx, inviteTx)
+	require.Equal(t, sip.StatusCode(487), res.StatusCode, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
+	cseq := res.CSeq()
+	require.NotNil(t, cseq, "487 response should have CSeq header")
+	require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
 }
 
 // TestSameCallIDForAuthFlow verifies that the same LiveKit call ID is assigned to both

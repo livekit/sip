@@ -178,7 +178,7 @@ func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
 
 	// Attempt to offer only codec B, expect failure
 	answer, err = m.GenerateAnswer(sdpB)
-	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
+	require.ErrorIs(t, err, ErrRenegotiationDisabled)
 
 	// Offer codec A again, expect success
 	answer, err = m.GenerateAnswer(sdpA)

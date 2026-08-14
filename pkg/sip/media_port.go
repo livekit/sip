@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"math"
@@ -29,7 +30,6 @@ import (
 	psdp "github.com/pion/sdp/v3"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -46,6 +46,8 @@ const (
 	dstChangePrintInterval     = 10 * 1000 * 1000 * 1000 // 10 seconds, in nanoseconds
 	srcChangePrintInterval     = dstChangePrintInterval
 )
+
+var ErrRenegotiationDisabled = errors.New("renegotiation is not supported")
 
 type PortStatsSnapshot struct {
 	Streams        uint64 `json:"streams"`
@@ -516,12 +518,11 @@ type mediaPort struct {
 	codecs           *msdk.CodecSet
 	encryption       sdp.Encryption
 
-	mu               sync.RWMutex
-	negotiatedCodecs *msdk.CodecSet
-	pipeline         *mediaPortPipeline
-	localSDP         []byte
-	offer            *sdp.Offer
-	audioConf        *sdp.AudioConfig
+	mu         sync.RWMutex
+	pipeline   *mediaPortPipeline
+	localSDP   []byte
+	offer      *sdp.Offer
+	negotiated *sdp.MediaConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -781,14 +782,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
-	codecs := p.codecs
-	p.mu.RLock()
-	if p.negotiatedCodecs != nil {
-		codecs = p.negotiatedCodecs
-	}
-	p.mu.RUnlock()
-
-	offer, err := sdp.ParseOfferWith(codecs, offerData)
+	offer, err := sdp.ParseOfferWith(p.codecs, offerData)
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
@@ -847,7 +841,10 @@ func (p *mediaPort) GetLocalSDP() ([]byte, error) {
 func (p *mediaPort) NegotiatedAudio() *sdp.AudioConfig {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.audioConf
+	if p.negotiated == nil {
+		return nil
+	}
+	return &p.negotiated.Audio
 }
 
 // Building pipeline
@@ -868,48 +865,67 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		return errors.New("media is already closed")
 	}
 
-	if p.pipeline != nil {
-		// This block is here to preserve compatibility with pre-refactor code.
-		// We will remove this code shortly, once the existing behavior is verified via new code.
-		if !c.Remote.Addr().IsUnspecified() { // Compat with older code
+	changeSetSummary := NewChangeSetSummary(p.negotiated, c)
+
+	// Explicitly disable renegotiation for now
+	if changeSetSummary.includes(changeSetAudioCodec | changeSetDTMF | changeSetCrypto) {
+		return SDPError{Err: ErrRenegotiationDisabled} // Results in a 400 response
+	}
+
+	if changeSetSummary.includes(changeSetLocalAddr) {
+		return errors.New("unexpected local address change")
+	}
+
+	audioToPort := p.audioOut.Swap(nil) // either nil or no-op closer
+	dtmfToPort := p.dtmfOut.Swap(nil)   // either nil or no-op closer
+	hold := false
+
+	if changeSetSummary.shouldReconfigure() {
+		p.closePipelineLocked()
+		p.port.stopDiscarding() // Needs readDeadline. Must be ahead of Reopen() and NewMediaPortPipeline()
+		p.port.Reopen()         // Allow reads from socket again
+
+		pipelineConfig := &MediaPortPipelineConfig{
+			log:       p.log,
+			opts:      p.opts,
+			mon:       p.mon,
+			stats:     p.stats,
+			onNewSSRC: p.mediaReceived.Break,
+			onPacket:  p.onNewMediaPacket,
+		}
+		newPipeline, err := NewMediaPortPipeline(
+			pipelineConfig,
+			c,
+			p.port,
+			p.audioIn,
+			&p.dtmfIn,
+			p.audioOut.SampleRate(),
+		)
+		if err != nil {
+			return err
+		}
+
+		audioToPort, dtmfToPort = newPipeline.GetConnectors() // These are not propagating Close()
+		p.pipeline = newPipeline
+
+		p.enableTimeoutWithDefaults()
+		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
+	} else if changeSetSummary.includes(changeSetRemoteAddr) {
+
+		if c.Remote.Addr().IsUnspecified() {
+			// Older hold semantics: c=0.0.0.0
+			hold = true
+		} else {
 			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
 		}
-		return nil
 	}
-
-	// TODO: Avoid reconfiguring if mc unchanged; maybe only adjust direction
-
-	p.closePipelineLocked()
-	p.port.stopDiscarding() // Needs readDeadline. Must be ahead of Reopen() and NewMediaPortPipeline()
-	p.port.Reopen()         // Allow reads from socket again
-
-	pipelineConfig := &MediaPortPipelineConfig{
-		log:       p.log,
-		opts:      p.opts,
-		mon:       p.mon,
-		stats:     p.stats,
-		onNewSSRC: p.mediaReceived.Break,
-		onPacket:  p.onNewMediaPacket,
-	}
-	newPipeline, err := NewMediaPortPipeline(
-		pipelineConfig,
-		c,
-		p.port,
-		p.audioIn,
-		&p.dtmfIn,
-		p.audioOut.SampleRate(),
-	)
-	if err != nil {
-		return err
-	}
-
-	audioToPort, dtmfToPort := newPipeline.GetConnectors() // These are not propagating Close()
-	p.pipeline = newPipeline
-
-	if c.PeerDirection == psdp.DirectionSendOnly || c.Remote.Addr().IsUnspecified() {
-		// Older hold semantics: c=0.0.0.0; Newer hold semantics: a=sendonly
+	if changeSetSummary.includes(changeSetPeerDirection) {
+		// Newer hold semantics: a=sendonly
 		// TODO: Support a=recvonly/inactive; requires toggling media timeout;
 		//		maybe gate these on timers being active on the session to prevent dud calls
+		hold = c.PeerDirection == psdp.DirectionSendOnly
+	}
+	if false && hold { // Disabled in current code
 		audioToPort = nil
 		dtmfToPort = nil
 		zero := netip.IPv4Unspecified()
@@ -920,26 +936,72 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
 	}
 
-	if old := p.audioOut.Swap(audioToPort); old != nil {
-		_ = old.Close()
-	}
-	if old := p.dtmfOut.Swap(dtmfToPort); old != nil {
-		_ = old.Close()
-	}
+	p.audioOut.Swap(audioToPort) // guaranteed old nil
+	p.dtmfOut.Swap(dtmfToPort)   // guaranteed old nil
+
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
-	p.localSDP = localSDP
-	p.audioConf = &c.Audio
-	negotiated := msdk.NewCodecSet()
-	negotiated.SetEnabled(c.Audio.Codec.Info().SDPName, true)
-	if c.Audio.DTMFType != 0 {
-		negotiated.SetEnabled(dtmf.SDPNameAndRate, true)
-	}
-	p.negotiatedCodecs = negotiated
-	p.enableTimeoutWithDefaults()
+	p.negotiated = c
 	return nil
 }
 
 func (p *mediaPort) onNewMediaPacket() {
 	p.packetCount.Add(1)
 	p.lastPacketTime.Store(time.Now().UnixNano())
+}
+
+type changeSetSummary uint
+
+const (
+	changeSetNew changeSetSummary = 1 << iota // 1 << 0 = 1
+	changeSetAudioCodec
+	changeSetDTMF
+	changeSetCrypto
+	changeSetLocalAddr
+	changeSetRemoteAddr
+	changeSetPeerDirection
+)
+
+func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
+	if current == nil {
+		return changeSetNew
+	}
+	var changeSetSummary changeSetSummary
+	if current.Audio.Codec.Info().SDPName != new.Audio.Codec.Info().SDPName {
+		changeSetSummary |= changeSetAudioCodec
+	}
+	if current.Audio.DTMFType != new.Audio.DTMFType || current.Audio.Type != new.Audio.Type {
+		changeSetSummary |= changeSetDTMF
+	}
+	a, b := current.Crypto, new.Crypto
+	if a == nil || b == nil {
+		if a != b {
+			changeSetSummary |= changeSetCrypto
+		}
+	} else { // Prodile exists on both
+		if a.Profile != b.Profile ||
+			!bytes.Equal(a.Keys.LocalMasterKey, b.Keys.LocalMasterKey) ||
+			!bytes.Equal(a.Keys.LocalMasterSalt, b.Keys.LocalMasterSalt) ||
+			!bytes.Equal(a.Keys.RemoteMasterKey, b.Keys.RemoteMasterKey) ||
+			!bytes.Equal(a.Keys.RemoteMasterSalt, b.Keys.RemoteMasterSalt) {
+			changeSetSummary |= changeSetCrypto
+		}
+	}
+	if current.Local != new.Local {
+		changeSetSummary |= changeSetLocalAddr
+	}
+	if current.Remote != new.Remote {
+		changeSetSummary |= changeSetRemoteAddr
+	}
+	if current.PeerDirection != new.PeerDirection {
+		changeSetSummary |= changeSetPeerDirection
+	}
+	return changeSetSummary
+}
+
+func (c changeSetSummary) shouldReconfigure() bool {
+	return c&(changeSetNew|changeSetAudioCodec|changeSetDTMF|changeSetCrypto) != 0
+}
+
+func (c changeSetSummary) includes(feature changeSetSummary) bool {
+	return c&feature != 0
 }
