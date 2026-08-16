@@ -872,7 +872,7 @@ func TestMediaPortDTMF(t *testing.T) {
 		for _, lossPackets := range lossCases {
 			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
 				p := &MediaPort{}
-				p.lastDTMFTimestamp.Store(math.MaxUint32)
+				p.lastDTMFEvent.Store(math.MaxUint64)
 				got := ""
 				p.HandleDTMF(func(ev dtmf.Event) {
 					t.Logf("received DTMF event: %+v", ev)
@@ -893,6 +893,44 @@ func TestMediaPortDTMF(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestMediaPortDTMFSameTimestamp verifies that DTMF digits sharing the same
+// RTP timestamp (a non-RFC-compliant but observed behaviour from some SIP
+// devices/carriers) are still reported individually after the (timestamp,
+// event code) deduplication fix.
+func TestMediaPortDTMFSameTimestamp(t *testing.T) {
+	// Generate packets for two individual digits, then force the second
+	// digit's packets to reuse the first digit's timestamp.
+	first := generateDTMFPackets(t, "0")[0]
+	second := generateDTMFPackets(t, "1")[0]
+
+	sharedTS := first[0].Header.Timestamp
+	for i := range second {
+		second[i].Header.Timestamp = sharedTS
+	}
+
+	p := &MediaPort{}
+	p.lastDTMFEvent.Store(math.MaxUint64)
+	got := ""
+	p.HandleDTMF(func(ev dtmf.Event) {
+		t.Logf("received DTMF event: %+v", ev)
+		got = fmt.Sprintf("%s%s", got, strconv.Itoa(int(ev.Code)))
+	})
+
+	for _, pkt := range first {
+		h := pkt.Header
+		t.Logf("sending first digit packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
+		require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
+	}
+	for _, pkt := range second {
+		h := pkt.Header
+		t.Logf("sending second digit packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
+		require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
+	}
+
+	t.Logf("got: %s", got)
+	require.Equal(t, "01", got)
 }
 
 // Test util for incrementing prometheus counter metrics.
