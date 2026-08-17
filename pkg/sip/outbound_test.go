@@ -658,4 +658,56 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			`To: "User" <sip:333@sip.another.com;transport=tls>`,
 		)
 	})
+	t.Run("to user override", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.Transport = livekit.SIPTransport_SIP_TRANSPORT_TLS
+		req.ToUserOverride = "333"
+		expect(t, req,
+			`sip:222@sip.test.com;transport=tls`,
+			`From: "111" <sip:111@sip.default.test;transport=tls>`,
+			`To: <sip:333@sip.test.com;transport=tls>`,
+		)
+	})
+	t.Run("to user override with request uri override", func(t *testing.T) {
+		req := newReq()
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipRequestUri = uriVals(&livekit.SIPUri{
+			User: "999",
+			Host: "test12.test34.com",
+		})
+		req.Address = "sip.trunk.com"
+		req.ToUserOverride = "333"
+		// The To is still trunk-derived; only its user is replaced.
+		expect(t, req,
+			`sip:999@test12.test34.com`,
+			`From: "111" <sip:111@sip.default.test>`,
+			`To: <sip:333@sip.trunk.com>`,
+		)
+	})
+	t.Run("to user override rejects uri and injection", func(t *testing.T) {
+		for _, bad := range []string{
+			"333@sip.other.com",          // full user@host
+			"333;tag=x",                  // param terminator
+			"<333>",                      // angle brackets
+			"333\r\nEvil-Hdr: y",         // header injection
+			"3 33",                       // space
+			"333?Route=sip:evil.example", // '?' opens URI headers
+			"333:secret",                 // ':' makes the rest a password
+			"333&x=1",
+			"333/foo",
+			"333,x",
+			`333"x`,
+		} {
+			req := newReq()
+			req.Address = "sip.test.com"
+			req.Number = "111"
+			req.CallTo = "222"
+			req.ToUserOverride = bad
+			expectErr(t, req, "invalid To header: to user override should be a phone number or SIP user, not a full SIP URI")
+		}
+	})
 }

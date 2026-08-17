@@ -307,13 +307,41 @@ func buildFromHeader(u *livekit.SIPNamedDest, legacyName *string, legacyUser, le
 	return h, nil
 }
 
-func buildToHeader(u *livekit.SIPNamedDest, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
+// isSIPUserToken protects against CreateSIPParticipantRequest being instantiated
+// directly as a composite literal instead of calling its constructor (in that case,
+// validation isn't run). This uses the same character set as
+// livekit.CreateSIPParticipantRequest. It must stay identical to that set to prevent
+// rejecting values accepted by the API.
+// TODO TEL-895: Move this to a shared util instead
+func isSIPUserToken(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case strings.ContainsRune("-.!%*_+`'~", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
 	if u != nil && legacyUser != "" {
 		return nil, errors.New("cannot use both CallTo and SipToHeader")
 	}
 	su, err := buildFromToURI(u, legacyUser, legacyAddr, tr)
 	if err != nil {
 		return nil, err
+	}
+	if userOverride != "" {
+		// Validation is already done in the constructor, but check again here
+		// in case request was built directly without using the constructor
+		if !isSIPUserToken(userOverride) {
+			return nil, errors.New("to user override should be a phone number or SIP user, not a full SIP URI")
+		}
+		su.User = userOverride
 	}
 	h := &sip.ToHeader{
 		Address: *su,
@@ -329,7 +357,7 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid request URI: %w", err))
 	}
-	to, err := buildToHeader(req.SipToHeader, req.CallTo, req.Address, req.Transport)
+	to, err := buildToHeader(req.SipToHeader, req.ToUserOverride, req.CallTo, req.Address, req.Transport)
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid To header: %w", err))
 	}
