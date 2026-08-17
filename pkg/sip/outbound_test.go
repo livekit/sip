@@ -688,4 +688,20 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			`To: <sip:333@sip.trunk.com>`,
 		)
 	})
+	t.Run("to user override rejects uri and injection", func(t *testing.T) {
+		for _, bad := range []string{
+			"333@sip.other.com",  // full user@host
+			"333;tag=x",          // param terminator
+			"<333>",              // angle brackets
+			"333\r\nEvil-Hdr: y", // header injection
+			"3 33",               // space
+		} {
+			req := newReq()
+			req.Address = "sip.test.com"
+			req.Number = "111"
+			req.CallTo = "222"
+			req.ToUserOverride = bad
+			expectErr(t, req, "invalid To header: to user override should be a phone number or SIP user, not a full SIP URI")
+		}
+	})
 }

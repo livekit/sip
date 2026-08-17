@@ -316,6 +316,11 @@ func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr
 		return nil, err
 	}
 	if userOverride != "" {
+		// Validation is already done in the constructor, but check again here
+		// in case request was built directly without using the constructor
+		if strings.ContainsAny(userOverride, "@;<>\r\n \t") {
+			return nil, errors.New("to user override should be a phone number or SIP user, not a full SIP URI")
+		}
 		su.User = userOverride
 	}
 	h := &sip.ToHeader{
