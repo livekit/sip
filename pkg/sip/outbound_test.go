@@ -690,11 +690,17 @@ func TestBuildOutboundHeaders(t *testing.T) {
 	})
 	t.Run("to user override rejects uri and injection", func(t *testing.T) {
 		for _, bad := range []string{
-			"333@sip.other.com",  // full user@host
-			"333;tag=x",          // param terminator
-			"<333>",              // angle brackets
-			"333\r\nEvil-Hdr: y", // header injection
-			"3 33",               // space
+			"333@sip.other.com",          // full user@host
+			"333;tag=x",                  // param terminator
+			"<333>",                      // angle brackets
+			"333\r\nEvil-Hdr: y",         // header injection
+			"3 33",                       // space
+			"333?Route=sip:evil.example", // '?' opens URI headers
+			"333:secret",                 // ':' makes the rest a password
+			"333&x=1",
+			"333/foo",
+			"333,x",
+			`333"x`,
 		} {
 			req := newReq()
 			req.Address = "sip.test.com"

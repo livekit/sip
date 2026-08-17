@@ -307,6 +307,26 @@ func buildFromHeader(u *livekit.SIPNamedDest, legacyName *string, legacyUser, le
 	return h, nil
 }
 
+// isSIPUserToken protects against CreateSIPParticipantRequest being instantiated
+// directly as a composite literal instead of calling its constructor (in that case,
+// validation isn't run). This uses the same character set as
+// livekit.CreateSIPParticipantRequest. It must stay identical to that set to prevent
+// rejecting values accepted by the API.
+// TODO TEL-895: Move this to a shared util instead
+func isSIPUserToken(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case strings.ContainsRune("-.!%*_+`'~", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
 	if u != nil && legacyUser != "" {
 		return nil, errors.New("cannot use both CallTo and SipToHeader")
@@ -318,7 +338,7 @@ func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr
 	if userOverride != "" {
 		// Validation is already done in the constructor, but check again here
 		// in case request was built directly without using the constructor
-		if strings.ContainsAny(userOverride, "@;<>\r\n \t") {
+		if !isSIPUserToken(userOverride) {
 			return nil, errors.New("to user override should be a phone number or SIP user, not a full SIP URI")
 		}
 		su.User = userOverride
