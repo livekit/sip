@@ -73,6 +73,8 @@ type Service struct {
 	pendingTransfers map[LocalTag]*PendingTransfer
 }
 
+var errUnknownCall = psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+
 // GetStateHandler returns the per-call StateHandler that CallState forwards
 // outgoing changes to. cloud builds typically return a handler that forks the
 // stream to both the upstream RPC and local observability; the default
@@ -344,7 +346,7 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	// Check if provider is internal and config is set before allowing transfer
-	if err := s.checkInternalProviderRequest(ctx, req.SipCallId); err != nil {
+	if err := s.validateTransfer(ctx, req); err != nil {
 		return &emptypb.Empty{}, err
 	}
 
@@ -450,18 +452,21 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 		return nil
 	}
 
-	err := psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 	s.mon.TransferFailed(stats.Inbound, "unknown_call", false)
-	return err
+	return errUnknownCall
 }
 
-func (s *Service) checkInternalProviderRequest(ctx context.Context, callID string) error {
+func (s *Service) validateTransfer(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) error {
 	// Look for call both in client (outbound) and server (inbound)
+	callID := req.SipCallId
 	s.cli.cmu.Lock()
 	out := s.cli.activeCalls[LocalTag(callID)]
 	s.cli.cmu.Unlock()
 
 	if out != nil {
+		if err := s.ensureTransferAuthorized(out.state, req); err != nil {
+			return err
+		}
 		return s.validateCallProvider(out.state)
 	}
 
@@ -470,6 +475,9 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID strin
 	s.srv.cmu.Unlock()
 
 	if in != nil {
+		if err := s.ensureTransferAuthorized(in.state, req); err != nil {
+			return err
+		}
 		return s.validateCallProvider(in.state)
 	}
 
@@ -487,6 +495,31 @@ func (s *Service) validateCallProvider(state *CallState) error {
 		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
 	}
 
+	return nil
+}
+
+func (s *Service) ensureTransferAuthorized(state *CallState, req *rpc.InternalTransferSIPParticipantRequest) error {
+	info := state.Info()
+	if info == nil {
+		return errUnknownCall
+	}
+
+	if req.GetRoomName() == "" && req.GetParticipantIdentity() == "" {
+		// Skip performing this authorization check against older clients.
+		// TODO: Remove this branch after clients have been updated to set these fields.
+		return nil
+	}
+
+	if info.RoomName != req.GetRoomName() || info.ParticipantIdentity != req.GetParticipantIdentity() {
+		s.log.Warnw("rejecting unauthorized SIP transfer request", nil,
+			"callID", req.SipCallId,
+			"authorizedRoom", req.GetRoomName(),
+			"actualRoom", state.callInfo.RoomName,
+			"authorizedParticipant", req.GetParticipantIdentity(),
+			"actualParticipant", state.callInfo.ParticipantIdentity,
+		)
+		return errUnknownCall
+	}
 	return nil
 }
 
