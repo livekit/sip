@@ -423,6 +423,7 @@ type serviceTest struct {
 
 type serviceTestConfig struct {
 	GetRoom GetRoomFunc
+	Handler Handler
 }
 
 func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
@@ -433,6 +434,9 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	}
 	if options.GetRoom == nil {
 		options.GetRoom = newTestRoomConfig(nil)
+	}
+	if options.Handler == nil {
+		options.Handler = &TestHandler{}
 	}
 
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
@@ -492,7 +496,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		MediaIP:          loopback,
 	}
 
-	handler := &TestHandler{}
+	handler := options.Handler
 
 	err = srv.Start(nil, sconf, nil, cli.OnRequest)
 	require.NoError(t, err)
