@@ -860,11 +860,6 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 	changeSetSummary := NewChangeSetSummary(p.negotiated, c)
 
-	// Explicitly disable renegotiation for now
-	if changeSetSummary.includes(changeSetAudioCodec | changeSetDTMF | changeSetCrypto) {
-		return SDPError{Err: ErrRenegotiationDisabled} // Results in a 400 response
-	}
-
 	if changeSetSummary.includes(changeSetLocalAddr) {
 		return errors.New("unexpected local address change")
 	}
@@ -874,6 +869,10 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	hold := false
 
 	if changeSetSummary.shouldReconfigure() {
+		if changeSetSummary != changeSetNew { // Explicitly disable renegotiation for now
+			return SDPError{Err: ErrRenegotiationDisabled} // Results in a 400 response
+		}
+
 		p.closePipelineLocked()
 		p.port.stopDiscarding() // Needs readDeadline. Must be ahead of Reopen() and NewMediaPortPipeline()
 		p.port.Reopen()         // Allow reads from socket again
