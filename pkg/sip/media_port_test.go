@@ -15,16 +15,20 @@
 package sip
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
@@ -63,11 +67,17 @@ func newTestMediaPort(t testing.TB, provider string) MediaPort {
 }
 
 type testUDPConn struct {
-	addr     netip.AddrPort
-	closed   chan struct{}
-	buf      chan []byte
-	peer     atomic.Pointer[testUDPConn]
-	deadline chan time.Time
+	addr   netip.AddrPort
+	closed chan struct{}
+	buf    chan []byte
+	peer   atomic.Pointer[testUDPConn]
+
+	// Deadlines follow net.Conn: the latest value wins, zero clears it. The value
+	// lives in the guarded field and kick only wakes a parked reader, so coalescing
+	// a wakeup can never drop a deadline - which would strand Close() forever.
+	dmu      sync.Mutex
+	deadline time.Time
+	kick     chan struct{}
 }
 
 func (c *testUDPConn) Read(b []byte) (int, error) {
@@ -93,11 +103,20 @@ func (c *testUDPConn) SetDeadline(t time.Time) error {
 }
 
 func (c *testUDPConn) SetReadDeadline(t time.Time) error {
+	c.dmu.Lock()
+	c.deadline = t
+	c.dmu.Unlock()
 	select {
-	case c.deadline <- t:
+	case c.kick <- struct{}{}:
 	default:
 	}
 	return nil
+}
+
+func (c *testUDPConn) readDeadline() time.Time {
+	c.dmu.Lock()
+	defer c.dmu.Unlock()
+	return c.deadline
 }
 
 func (c *testUDPConn) SetWriteDeadline(t time.Time) error {
@@ -109,24 +128,28 @@ func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, erro
 	if peer == nil {
 		return 0, netip.AddrPort{}, io.ErrClosedPipe
 	}
-	var curDeadline time.Time
 
 	for {
-		var deadlineCh <-chan time.Time = nil
-		if !curDeadline.IsZero() {
-			deadlineCh = time.After(time.Until(curDeadline))
+		var (
+			deadlineCh <-chan time.Time
+			timer      *time.Timer
+		)
+		if dl := c.readDeadline(); !dl.IsZero() {
+			timer = time.NewTimer(time.Until(dl))
+			deadlineCh = timer.C
 		}
+
 		select {
 		case <-c.closed:
+			stopTimer(timer)
 			return 0, netip.AddrPort{}, io.ErrClosedPipe
 		case <-deadlineCh:
 			return 0, netip.AddrPort{}, os.ErrDeadlineExceeded
-		case newDeadline := <-c.deadline:
-			if !newDeadline.IsZero() && (newDeadline.Before(curDeadline) || curDeadline.IsZero()) {
-				curDeadline = newDeadline
-			}
+		case <-c.kick:
+			stopTimer(timer) // deadline changed, re-arm
 			continue
 		case data := <-c.buf:
+			stopTimer(timer)
 			n := copy(buf, data)
 			var err error
 			if n < len(data) {
@@ -134,6 +157,12 @@ func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, erro
 			}
 			return n, peer.addr, err
 		}
+	}
+}
+
+func stopTimer(t *time.Timer) {
+	if t != nil {
+		t.Stop()
 	}
 }
 
@@ -175,9 +204,9 @@ func newTestConn(i int) *testUDPConn {
 			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
 			uint16(10000*i),
 		),
-		buf:      make(chan []byte, 256),
-		closed:   make(chan struct{}),
-		deadline: make(chan time.Time, 1),
+		buf:    make(chan []byte, 256),
+		closed: make(chan struct{}),
+		kick:   make(chan struct{}, 1),
 	}
 }
 
@@ -373,13 +402,47 @@ func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOp
 	m2 = newTestPort(t, log.WithName("two"), c2, opt2, rate2)
 
 	negotiate(t, m1, m2)
-
-	// TODO(port-refactor): the encode chain gained the always-on 48k resampler, refresh
-	// the expected string once the package builds and this can be run.
-	// w2 := m2.GetOutboundAudioWriter()
-	// require.Equal(t, "Switch(16000) -> LatencyEntry -> G722(encode) -> ByteEncoder(16000) -> StatsWriter(G722/8000) -> LatencyExit -> RTPWriteStream(1.1.1.1:10000)", w2.String())
-
 	return m1, m2
+}
+
+func TestPipelineChains(t *testing.T) {
+	for _, codec := range enabledAudioCodecs() {
+		t.Run(codec.Info().SDPName, func(t *testing.T) {
+			// Create new test media port
+			// Process offer with a specific codec + dtmf
+			codecs := testCodecSet(codec.Info().SDPName)
+			opts := &MediaOptions{
+				IP:     netip.MustParseAddr("1.1.1.1"),
+				Ports:  rtcconfig.PortRange{Start: 10000},
+				Codecs: codecs,
+			}
+			conn := newTestConn(1)
+			mp := newTestPort(t, logger.NewTestLogger(t), conn, opts, RoomSampleRate)
+
+			info := codec.Info()
+			offer, err := sdp.NewOfferWith(codecs, netip.MustParseAddr("2.2.2.2"), 20000, sdp.EncryptionNone)
+			require.NoError(t, err)
+			answerData, err := offer.SDP.Marshal()
+			require.NoError(t, err)
+			_, err = mp.GenerateAnswer(answerData, true)
+			require.NoError(t, err)
+
+			codecName := strings.Split(info.SDPName, "/")[0]
+			sampleRate := info.SampleRate
+			clockRate := info.RTPClockRate
+			payloadType := info.RTPDefType
+			audioOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> LatencyEntry -> Resample(%d->%d) -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> RTPWriteStream(:0)",
+				RoomSampleRate, RoomSampleRate, sampleRate, codecName, sampleRate, codecName, clockRate)
+			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->%d) -> LatencyExit -> WriteCloserSwitch(nil)",
+				codecName, clockRate, payloadType, codecName, sampleRate, RoomSampleRate)
+			dtmfOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> dtmfOutWriter(dtmfAudio: false)", clockRate)
+			dtmfInChain := fmt.Sprintf("StatsHandler(telephone-event/%d) -> HandlerFunc", clockRate)
+			assert.Equal(t, audioOutChain, mp.GetOutboundAudioWriter().String(), "out audio chain mismatch")
+			assert.Equal(t, audioInChain, mp.pipeline.audioToRoom.String(), "in audio chain mismatch")
+			assert.Equal(t, dtmfOutChain, mp.GetOutboundDTMFWriter().String(), "out dtmf chain mismatch")
+			assert.Equal(t, dtmfInChain, mp.pipeline.dtmfToRoom.String(), "in dtmf chain mismatch")
+		})
+	}
 }
 
 func TestMediaTimeout(t *testing.T) {

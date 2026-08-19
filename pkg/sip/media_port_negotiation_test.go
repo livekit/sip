@@ -98,6 +98,28 @@ func testCodecSet(names ...string) *msdk.CodecSet {
 	return set
 }
 
+func enabledAudioCodecs() []msdk.Codec {
+	var audio []msdk.Codec
+	for _, c := range msdk.GlobalCodecs().ListEnabled() {
+		if _, ok := c.(msdk.AudioCodec); !ok {
+			continue // telephone-event and other non-audio codecs
+		}
+		audio = append(audio, c)
+	}
+	return audio
+}
+
+func allAudioCodecs() []msdk.Codec {
+	var audio []msdk.Codec
+	for _, c := range msdk.Codecs() {
+		if _, ok := c.(msdk.AudioCodec); !ok {
+			continue // telephone-event and other non-audio codecs
+		}
+		audio = append(audio, c)
+	}
+	return audio
+}
+
 func answerCodec(t testing.TB, answerData []byte) string {
 	t.Helper()
 	answer, err := sdp.ParseAnswerWith(defaultCodecs, answerData)

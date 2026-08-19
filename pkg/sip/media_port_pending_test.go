@@ -29,7 +29,6 @@
 package sip
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"slices"
@@ -42,7 +41,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -327,44 +325,4 @@ func checkPCM(t testing.TB, name string, exp, got msdk.PCM16Sample) {
 		slices.Min(got), slices.Max(got),
 		exp, got,
 	)
-}
-
-func generateDTMFPackets(t *testing.T, digits string) [][]*rtp.Packet {
-	t.Helper()
-	var buf rtp.Buffer
-	packets := make([][]*rtp.Packet, len(digits))
-	last := len(buf)
-	w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
-	timestamp := uint32(1000)
-	for i := range digits {
-		err := dtmf.Write(context.Background(), nil, w, timestamp, digits[i:i+1])
-		require.NoError(t, err)
-		require.NotEmpty(t, buf)
-		timestamp += uint32(dtmf.SampleRate / 2)
-		packets[i] = slices.Clone(buf[last:])
-		last = len(buf)
-	}
-	return packets
-}
-
-func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Packet {
-	t.Helper()
-	switch dropType {
-	case "none":
-		return packets
-	case "first":
-		require.Greater(t, len(packets), 3)
-		return packets[3:]
-	case "last":
-		require.Greater(t, len(packets), 3)
-		return packets[:len(packets)-3]
-	case "middle":
-		require.Greater(t, len(packets), 6)
-		ret := slices.Clone(packets[:3])
-		ret = append(ret, packets[len(packets)-3:]...)
-		return ret
-	default:
-		t.Fatal("unknown drop type: " + dropType)
-		return nil
-	}
 }

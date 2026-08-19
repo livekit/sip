@@ -30,10 +30,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/amrwb"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
-	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/media-sdk/opus"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
@@ -455,14 +453,9 @@ type testDTMFSpec struct {
 }
 
 var (
-	pipelineTestCodecs = []testCodecSpec{
-		{name: "PCMU", sdp: g711.ULawSDPNameAndRate},
-		{name: "PCMA", sdp: g711.ALawSDPNameAndRate},
-		{name: "G722", sdp: g722.SDPNameAndRate},
-		{name: "AMR-WB", sdp: amrwb.SDPNameAndRate},
-	}
-	pipelineTestRates = []int{8000, 16000, 48000}
-	pipelineTestDTMF  = []testDTMFSpec{
+	pipelineTestCodecs = allAudioCodecs()
+	pipelineTestRates  = []int{8000, 16000, 48000}
+	pipelineTestDTMF   = []testDTMFSpec{
 		{name: "dtmf_disabled", pt: 0, audio: false},
 		{name: "dtmf_event", pt: testDTMFPT, audio: false},
 		{name: "dtmf_event_audio", pt: testDTMFPT, audio: true},
@@ -471,8 +464,8 @@ var (
 
 func TestMediaPipelinePermutations(t *testing.T) {
 	for _, spec := range pipelineTestCodecs {
-		t.Run(spec.name, func(t *testing.T) {
-			codec := audioCodecByName(t, spec.sdp)
+		t.Run(spec.Info().SDPName, func(t *testing.T) {
+			codec := spec.(msdk.AudioCodec)
 			pt := testAudioPT(codec)
 			for _, rate := range pipelineTestRates {
 				for _, d := range pipelineTestDTMF {
@@ -518,11 +511,11 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	d := pipelineTestDTMF[1] // event-only
 
 	for _, from := range pipelineTestCodecs {
-		t.Run("from_"+from.name, func(t *testing.T) {
+		t.Run("from_"+from.Info().SDPName, func(t *testing.T) {
 			for _, to := range pipelineTestCodecs {
-				t.Run("to_"+to.name, func(t *testing.T) {
-					c1 := audioCodecByName(t, from.sdp)
-					c2 := audioCodecByName(t, to.sdp)
+				t.Run("to_"+to.Info().SDPName, func(t *testing.T) {
+					c1 := from.(msdk.AudioCodec)
+					c2 := to.(msdk.AudioCodec)
 					h := newPipelineHarness(t, rate)
 					h.configure(c1, testAudioPT(c1), d.pt, d.audio)
 					t.Run("gen1", h.runDirections)
@@ -575,6 +568,7 @@ func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Pa
 }
 
 func TestMediaPipelineDTMF(t *testing.T) {
+	// Multi-digit test, including correct handling of lost packets
 	digitCases := []string{"1", "12", "123"}
 	lossCases := []string{"none", "first", "last", "middle"}
 
