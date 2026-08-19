@@ -224,23 +224,23 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any offer")
 
 	addr := netip.MustParseAddrPort("9.8.7.6:12345")
-	_, err := mp.GenerateAnswer(offerAt(t, addr))
+	_, err := mp.GenerateAnswer(offerAt(t, addr), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "GenerateAnswer should set RemoteAddr from the offer")
 
 	// Body-less re-INVITE: empty offer returns the local SDP and must not change dest.
-	_, err = mp.GenerateAnswer(nil)
+	_, err = mp.GenerateAnswer(nil, true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
 
 	// Hold form c=0.0.0.0 must not clobber dest once media is established.
-	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
+	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
 
 	// successful re-INVITE update
 	addr = netip.MustParseAddrPort("10.10.10.10:54321")
-	_, err = mp.GenerateAnswer(offerAt(t, addr))
+	_, err = mp.GenerateAnswer(offerAt(t, addr), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
 }
@@ -251,7 +251,7 @@ func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	offerData, err := m1.GenerateOffer()
 	require.NoError(t, err)
 
-	answerData, err := m2.GenerateAnswer(offerData)
+	answerData, err := m2.GenerateAnswer(offerData, true)
 	require.NoError(t, err)
 
 	require.NoError(t, m1.ProcessAnswer(answerData))
@@ -399,7 +399,7 @@ func TestMediaTimeout(t *testing.T) {
 		// the general timeout applies relative to the last received RTP packet.
 		// Last packet arrived at most timeout/2 ago, so the timeout should fire
 		// within ~timeout from now, well before initial would elapse.
-		m1.SetTimeoutForDelayedAck(initial, timeout)
+		m1.SetTimeout(initial, timeout)
 
 		select {
 		case <-time.After(timeout + dt):
@@ -418,7 +418,7 @@ func TestMediaTimeout(t *testing.T) {
 		// port has never seen an RTP packet, the new initial window applies from
 		// the moment of the SetTimeout call.
 		time.Sleep(initial / 2)
-		m1.SetTimeoutForDelayedAck(initial, timeout)
+		m1.SetTimeout(initial, timeout)
 
 		targ := time.Now().Add(initial)
 		select {
@@ -591,7 +591,7 @@ func TestSetOfferReportsCodecsBeforeFailing(t *testing.T) {
 	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 96", "a=rtpmap:96 SPEEX/16000")
-	_, err := mp.GenerateAnswer(offer)
+	_, err := mp.GenerateAnswer(offer, true)
 	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 
 	// Codecs that are not part of the internal set are classified as "other"
@@ -613,7 +613,7 @@ func TestSetOfferReportsCodecsPerProvider(t *testing.T) {
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 9",
 		"a=rtpmap:0 PCMU/8000", "a=rtpmap:9 G722/8000")
-	_, err := mp.GenerateAnswer(offer)
+	_, err := mp.GenerateAnswer(offer, true)
 	require.NoError(t, err)
 
 	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
@@ -630,7 +630,7 @@ func TestSetOfferReportsUnknownProvider(t *testing.T) {
 	before := gatherCounter(t, parsedMetric, parsed)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
-	_, err := mp.GenerateAnswer(offer)
+	_, err := mp.GenerateAnswer(offer, true)
 	require.NoError(t, err)
 
 	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))

@@ -54,8 +54,7 @@ func getResponseOrFailTimeout(t *testing.T, ctx context.Context, tx sip.ClientTr
 		ctxDone = ctx.Done()
 	}
 	select {
-	case <-t.Context().Done():
-		t.Fatal("Test context cancelled")
+	// Avoid using t.Context, this helper is used in test cleanup code as well.
 	case <-ctxDone:
 		t.Fatal("Context cancelled")
 	case <-tx.Done():

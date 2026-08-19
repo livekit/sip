@@ -415,9 +415,12 @@ type MediaPort interface {
 	GenerateOffer() ([]byte, error)
 
 	// GenerateAnswer returns an encoded SDP answer for the given offer.
+	// activateTimeout - If set to true, resets media timeout to defaults,
+	//		starting from time of function call. This is designed to
+	//		be set to false when not immediately sending the answer back.
 	//
 	// SIDE EFFECT: May cause a rebuild of the pipeline.
-	GenerateAnswer(offer []byte) ([]byte, error)
+	GenerateAnswer(offer []byte, activateTimeout bool) ([]byte, error)
 
 	// ProcessAnswer processes an encoded SDP answer from the remote client. Returns an
 	// error if the answer is invalid, the offer has not yet been generated, or
@@ -436,18 +439,8 @@ type MediaPort interface {
 
 	// SetTimeout resets the media timeout with the given values.
 	//
-	// NOTE: This method will be removed at some point in the future and is only
-	// used by one caller. Do not call this method: specify media timeout
-	// settings when constructing a MediaPort.
-	//
-	// We would like to enforce the fact that all invites must be ACKed.
-	// Sometimes, though, for whatever reason, we do not see ACKs for invites
-	// (e.g due to possible issues with load balancing). In such cases where
-	// we require an invite to be ACKed (guarded by the `InboundWaitACK`
-	// setting), if we don't see the ACK within some amount of time, then we
-	// restrict the timeout with this method so that the call might end earlier
-	// than if the timeout were never shortened.
-	SetTimeoutForDelayedAck(initial, general time.Duration)
+	// NOTE: This method is likely to go through additional changes.
+	SetTimeout(initial, general time.Duration)
 
 	Received() <-chan struct{}
 	MediaTimeout() <-chan struct{}
@@ -530,41 +523,29 @@ type mediaPort struct {
 	dtmfOut  msdk.WriteCloserSwitch[*livekit.SipDTMF]  // LK DTMF -> SIP DTMF
 }
 
-func (p *mediaPort) kickTimeoutLoop() {
-	select {
-	case p.timeoutKick <- struct{}{}:
-	default: // already pending
-	}
-}
-
-func (p *mediaPort) enableTimeout(initial, general time.Duration) {
+func (p *mediaPort) SetTimeout(initial, general time.Duration) {
 	if initial <= 0 || general <= 0 {
-		p.log.Warnw("attempting to set zero media timeout", nil, "initial", initial, "timeout", general)
+		p.log.Debugw("attempting to set zero media timeout", "initial", initial, "timeout", general, "fallbackInitial", p.opts.MediaTimeoutInitial, "fallbackTimeout", p.opts.MediaTimeout)
 		if initial <= 0 {
-			initial = defaultMediaTimeoutInitial
+			initial = p.opts.MediaTimeoutInitial
 		}
 		if general <= 0 {
-			general = defaultMediaTimeout
+			general = p.opts.MediaTimeout
 		}
 	}
 	p.timeoutInitial.Store(&initial)
 	p.timeoutGeneral.Store(&general)
 	now := time.Now()
-	p.timeoutStart.Store(&now)
+	p.timeoutStart.CompareAndSwap(nil, &now) // Don't re-arm if already armed
 	p.log.Debugw("media timeout enabled",
 		"packets", p.packetCount.Load(),
 		"initial", initial,
 		"timeout", general,
 	)
-	p.kickTimeoutLoop()
-}
-
-func (p *mediaPort) enableTimeoutWithDefaults() {
-	p.enableTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
-}
-
-func (p *mediaPort) SetTimeoutForDelayedAck(initial, general time.Duration) {
-	p.enableTimeout(initial, general)
+	select {
+	case p.timeoutKick <- struct{}{}:
+	default: // already pending
+	}
 }
 
 func (p *mediaPort) mediaTimeoutLoop() {
@@ -777,7 +758,7 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 	return offer.SDP.Marshal()
 }
 
-func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
+func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]byte, error) {
 	if len(offerData) == 0 {
 		return p.GetLocalSDP()
 	}
@@ -796,7 +777,14 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return answerData, p.configure(mc, answerData)
+	err = p.configure(mc, answerData)
+	if err != nil {
+		return nil, err
+	}
+	if activateTimeout {
+		p.SetTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
+	}
+	return answerData, nil
 }
 
 func (p *mediaPort) ProcessAnswer(answerData []byte) error {
@@ -826,7 +814,12 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 		return err
 	}
 
-	return p.configure(mc, localSDPBytes)
+	err = p.configure(mc, localSDPBytes)
+	if err != nil {
+		return err
+	}
+	p.SetTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
+	return nil
 }
 
 func (p *mediaPort) GetLocalSDP() ([]byte, error) {
@@ -908,7 +901,6 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		audioToPort, dtmfToPort = newPipeline.GetConnectors() // These are not propagating Close()
 		p.pipeline = newPipeline
 
-		p.enableTimeoutWithDefaults()
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
 	} else if changeSetSummary.includes(changeSetRemoteAddr) {
 

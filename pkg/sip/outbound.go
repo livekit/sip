@@ -537,7 +537,7 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 	if mp == nil {
 		return nil
 	}
-	_, err := mp.GenerateAnswer(body)
+	_, err := mp.GenerateAnswer(body, false)
 	return err
 }
 

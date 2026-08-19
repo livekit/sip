@@ -147,7 +147,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 		// Peer offers both, only PCMA is enabled here.
 		offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 8",
 			"a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000")
-		answerData, err := m.GenerateAnswer(offer)
+		answerData, err := m.GenerateAnswer(offer, true)
 		require.NoError(t, err)
 		assert.Equal(t, g711.ALawSDPNameAndRate, answerCodec(t, answerData))
 	})
@@ -156,7 +156,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 		m := newLocked(t, g711.ALawSDPNameAndRate)
 
 		offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
-		_, err := m.GenerateAnswer(offer)
+		_, err := m.GenerateAnswer(offer, true)
 		require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 	})
 }
@@ -172,16 +172,16 @@ func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
 	sdpB := sdpWithMedia("m=audio 5004 RTP/AVP 9", "a=rtpmap:9 G722/8000")
 
 	// Offer codec A
-	answer, err := m.GenerateAnswer(sdpA)
+	answer, err := m.GenerateAnswer(sdpA, true)
 	require.NoError(t, err)
 	require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answer))
 
 	// Attempt to offer only codec B, expect failure
-	answer, err = m.GenerateAnswer(sdpB)
+	answer, err = m.GenerateAnswer(sdpB, true)
 	require.ErrorIs(t, err, ErrRenegotiationDisabled)
 
 	// Offer codec A again, expect success
-	answer, err = m.GenerateAnswer(sdpA)
+	answer, err = m.GenerateAnswer(sdpA, true)
 	require.NoError(t, err)
 	require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answer))
 }
@@ -283,7 +283,7 @@ func TestMediaPortHold(t *testing.T) {
 			// m2 re-INVITEs with the hold form of its offer.
 			base, err := m2.GenerateOffer()
 			require.NoError(t, err)
-			_, err = m1.GenerateAnswer([]byte(tc.hold(t, string(base))))
+			_, err = m1.GenerateAnswer([]byte(tc.hold(t, string(base))), true)
 			require.NoError(t, err)
 
 			// m1 no longer sends: no destination to write to, and the room-facing
@@ -304,7 +304,7 @@ func TestMediaPortHold(t *testing.T) {
 			requireAudioFlows(t, m2, recv1)
 
 			// Resume with the original offer.
-			_, err = m1.GenerateAnswer(base)
+			_, err = m1.GenerateAnswer(base, true)
 			require.NoError(t, err)
 
 			dst = m1.port.dst.Load()

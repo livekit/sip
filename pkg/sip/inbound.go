@@ -967,6 +967,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			})
 			return false, err
 		}
+		c.media.SetTimeout(c.s.conf.MediaTimeoutInitial, mconf.MediaTimeout) // Only enable media timeout once we send back SDP.
 		if !c.s.conf.Experimental.InboundWaitACK {
 			ackReceived = c.cc.InviteACK()
 			// Start this timer right after the Accept.
@@ -1102,8 +1103,17 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 		case <-ackTimeout:
 			// Only warn, the other side still thinks the call is active, media may be flowing.
 			c.log().Warnw("Call accepted, but no ACK received", errNoACK)
-			// We don't need to wait for a full media timeout initially, we already know something is not quite right.
-			c.media.SetTimeoutForDelayedAck(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
+
+			// Today we seek to enforce all calls to be ACKed or dropped.
+			// Sometimes, though, we do not see ACKs for invites (e.g due to possible
+			// issues with load balancing).
+			// To accomodate this issue, instead of ending the call right here, we instead
+			// set an aggressive timeout as a softer fallback.
+			// If the issue really is a dropped ACK, media is expected to flow shortly,
+			// allowing us to accomodate this eventuality. If, however, there is no media
+			// obserrved, the call still ends quickly.
+			// Once ACKs are certain to be reliable, we will end the call here.
+			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
 		}
 	}
 }
@@ -1200,7 +1210,7 @@ func (c *inboundCall) negotiateMedia(offerData []byte) ([]byte, error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
 
-	answerData, err := c.media.GenerateAnswer(offerData)
+	answerData, err := c.media.GenerateAnswer(offerData, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1561,7 +1571,7 @@ func (c *inboundCall) updateRemoteFromSDP(body []byte) error {
 	if mp == nil {
 		return nil
 	}
-	_, err := mp.GenerateAnswer(body)
+	_, err := mp.GenerateAnswer(body, false)
 	return err
 }
 
