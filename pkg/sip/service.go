@@ -245,13 +245,16 @@ func (s *Service) Start() error {
 		if len(tconf.Certs) == 0 {
 			return errors.New("TLS certificate required")
 		}
-		var certs []tls.Certificate
-		for _, c := range tconf.Certs {
-			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		certs, err := loadTLSCertificates(tconf.Certs)
+		if err != nil {
+			return err
+		}
+		clientCerts := certs
+		if len(tconf.ClientCerts) > 0 {
+			clientCerts, err = loadTLSCertificates(tconf.ClientCerts)
 			if err != nil {
 				return err
 			}
-			certs = append(certs, cert)
 		}
 		var keyLog io.Writer
 		if tconf.KeyLog != "" {
@@ -270,9 +273,10 @@ func (s *Service) Start() error {
 			}()
 		}
 		tlsConf = &tls.Config{
-			NextProtos:   tlsALPNProtocols(tconf.ALPNProtocols),
-			Certificates: certs,
-			KeyLogWriter: keyLog,
+			NextProtos:           tlsALPNProtocols(tconf.ALPNProtocols),
+			Certificates:         certs,
+			GetClientCertificate: clientCertificateFunc(clientCerts),
+			KeyLogWriter:         keyLog,
 		}
 
 		if len(tconf.CipherSuites) > 0 {
