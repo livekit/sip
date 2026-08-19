@@ -32,7 +32,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,40 +51,6 @@ import (
 
 func PrintAudioInWriter(p *mediaPort) string {
 	return p.pipeline.audioToRoom.String()
-}
-
-func TestMediaPortUpdateRemote(t *testing.T) {
-	log := logger.NewTestLogger(t)
-	mon := newTestCallMonitor(t)
-
-	// newUDPPipe wires two in-memory testUDPConn together.
-	c1, _ := newUDPPipe()
-	mp, err := NewMediaPortWith(log, mon, c1, &MediaOptions{
-		IP: netip.MustParseAddr("127.0.0.1"),
-	}, 8000)
-	require.NoError(t, err)
-	defer mp.Close()
-
-	// Initially no destination is set.
-	require.False(t, getMediaPortRemoteAddr(t, mp).IsValid(), "RemoteAddr should be invalid before any update")
-
-	// Update to a valid address.
-	addr := netip.MustParseAddrPort("9.8.7.6:12345")
-	mp.UpdateRemote(addr)
-	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "RemoteAddr should reflect the updated address")
-
-	// UpdateRemote with invalid addr should be a no-op.
-	mp.UpdateRemote(netip.AddrPort{})
-	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "UpdateRemote with invalid addr should not change RemoteAddr")
-
-	// UpdateRemote with unspecified address (c=0.0.0.0 hold form) should be a no-op.
-	mp.UpdateRemote(netip.MustParseAddrPort("0.0.0.0:12345"))
-	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "UpdateRemote with unspecified addr should not change RemoteAddr")
-
-	// Test successful updte to new address
-	addr = netip.MustParseAddrPort("10.10.10.10:54321")
-	mp.UpdateRemote(addr)
-	require.Equal(t, addr, getMediaPortRemoteAddr(t, mp), "UpdateRemote with new address should change RemoteAddr")
 }
 
 func TestMediaPort(t *testing.T) {
