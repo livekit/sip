@@ -51,6 +51,52 @@ const (
 	DefaultRTPDrainingDuration    = 10 * time.Minute // hard cap on how long a port stays draining
 )
 
+const (
+	// DefaultSIPRegistrationExpiry is the registration lifetime requested from the registrar.
+	// The registrar may grant less, or demand more with 423 Interval Too Brief.
+	DefaultSIPRegistrationExpiry = 10 * time.Minute
+	// DefaultSIPRegistrationKeepalive is how often an OPTIONS request is sent to the registrar
+	// to keep the NAT binding open. NAT UDP mappings commonly expire after 30s, and providers
+	// often refuse a registration interval short enough to refresh the mapping on its own.
+	DefaultSIPRegistrationKeepalive = 25 * time.Second
+	// MinSIPRegistrationExpiry is the shortest registration lifetime we allow to be configured.
+	MinSIPRegistrationExpiry = 30 * time.Second
+	// MaxSIPRegistrationExpiry is the longest registration lifetime, both as configured and as
+	// a registrar can push us to with 423 Interval Too Brief.
+	MaxSIPRegistrationExpiry = 24 * time.Hour
+	// MinSIPRegistrationKeepalive is the shortest keepalive interval we allow to be configured.
+	MinSIPRegistrationKeepalive = 5 * time.Second
+)
+
+// SIPRegistrationConfig makes this node register with a SIP registrar (RFC 3261, section 10),
+// so that a provider can deliver inbound calls to a node it cannot address by a static IP.
+//
+// Registrations are per-node: each node that has them configured registers its own Contact.
+// Point exactly one node at a given registrar account unless the provider supports (and you
+// want) parallel forking to several contacts.
+type SIPRegistrationConfig struct {
+	// Registrar is the address of the registrar: "sip:host[:port][;transport=tcp]", or just
+	// "host[:port]". It becomes the Request-URI of the REGISTER, and the destination it is
+	// sent to.
+	Registrar string `yaml:"registrar"`
+	// Username is the user part of the address-of-record to register, and the digest username
+	// unless AuthUsername is set.
+	Username string `yaml:"username"`
+	// Password is the digest password. May be empty if the registrar does not challenge.
+	Password string `yaml:"password"`
+	// AuthUsername overrides the digest username, for providers that issue one separately
+	// from the address-of-record.
+	AuthUsername string `yaml:"auth_username"`
+	// Domain is the host part of the address-of-record. Defaults to the registrar host, which
+	// is what most providers expect.
+	Domain string `yaml:"domain"`
+	// Expiry is the registration lifetime to request. Defaults to DefaultSIPRegistrationExpiry.
+	Expiry time.Duration `yaml:"expiry"`
+	// Keepalive is how often to send OPTIONS to the registrar to keep a NAT binding open.
+	// Defaults to DefaultSIPRegistrationKeepalive. Set to a negative value to disable.
+	Keepalive time.Duration `yaml:"keepalive"`
+}
+
 type TLSCert struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
@@ -102,6 +148,9 @@ type Config struct {
 	MaxCpuUtilization    float64             `yaml:"max_cpu_utilization"`
 	MaxActiveCalls       int                 `yaml:"max_active_calls"` // if set, used for affinity-based routing
 	SIPTrunkIds          []string            `yaml:"sip_trunk_ids"`    // if set, only accept calls for these trunk IDs
+
+	// SIPRegistrations makes this node register with the listed SIP registrars on startup.
+	SIPRegistrations []SIPRegistrationConfig `yaml:"sip_registrations"`
 
 	UseExternalIP bool   `yaml:"use_external_ip"`
 	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
@@ -208,6 +257,9 @@ func (c *Config) Init() error {
 	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
 		c.MaxCpuUtilization = 0.9
 	}
+	if err := c.initRegistrations(); err != nil {
+		return err
+	}
 
 	if err := c.InitLogger(); err != nil {
 		return err
@@ -221,6 +273,35 @@ func (c *Config) Init() error {
 		return fmt.Errorf("media_use_external_ip and media_nat_1_to_1_ip can not both be set")
 	}
 
+	return nil
+}
+
+func (c *Config) initRegistrations() error {
+	for i := range c.SIPRegistrations {
+		r := &c.SIPRegistrations[i]
+		if r.Registrar == "" {
+			return fmt.Errorf("sip_registrations[%d]: registrar must be set", i)
+		}
+		if r.Username == "" {
+			return fmt.Errorf("sip_registrations[%d]: username must be set", i)
+		}
+		switch {
+		case r.Expiry == 0:
+			r.Expiry = DefaultSIPRegistrationExpiry
+		case r.Expiry < MinSIPRegistrationExpiry:
+			return fmt.Errorf("sip_registrations[%d]: expiry must be at least %s", i, MinSIPRegistrationExpiry)
+		case r.Expiry > MaxSIPRegistrationExpiry:
+			return fmt.Errorf("sip_registrations[%d]: expiry must be at most %s", i, MaxSIPRegistrationExpiry)
+		}
+		switch {
+		case r.Keepalive == 0:
+			r.Keepalive = DefaultSIPRegistrationKeepalive
+		case r.Keepalive < 0:
+			r.Keepalive = 0 // disabled
+		case r.Keepalive < MinSIPRegistrationKeepalive:
+			return fmt.Errorf("sip_registrations[%d]: keepalive must be at least %s, or negative to disable", i, MinSIPRegistrationKeepalive)
+		}
+	}
 	return nil
 }
 
