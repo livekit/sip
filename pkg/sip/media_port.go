@@ -536,7 +536,7 @@ func (p *mediaPort) SetTimeout(initial, general time.Duration) {
 	p.timeoutInitial.Store(&initial)
 	p.timeoutGeneral.Store(&general)
 	now := time.Now()
-	p.timeoutStart.CompareAndSwap(nil, &now) // Don't re-arm if already armed
+	p.timeoutStart.Store(&now)
 	p.log.Debugw("media timeout enabled",
 		"packets", p.packetCount.Load(),
 		"initial", initial,
@@ -865,7 +865,10 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	}
 
 	audioToPort := p.audioOut.Swap(nil) // either nil or no-op closer
-	dtmfToPort := p.dtmfOut.Swap(nil)   // either nil or no-op closer
+	defer func() { p.audioOut.Swap(audioToPort) }()
+	dtmfToPort := p.dtmfOut.Swap(nil) // either nil or no-op closer
+	defer func() { p.dtmfOut.Swap(dtmfToPort) }()
+
 	hold := false
 
 	if changeSetSummary.shouldReconfigure() {
@@ -926,9 +929,6 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.port.SetDst(netip.AddrPortFrom(zero, c.Remote.Port()))
 		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
 	}
-
-	p.audioOut.Swap(audioToPort) // guaranteed old nil
-	p.dtmfOut.Swap(dtmfToPort)   // guaranteed old nil
 
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
 	p.negotiated = c
