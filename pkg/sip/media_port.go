@@ -761,7 +761,7 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 		return p.offer.SDP.Marshal()
 	}
 
-	offer, err := sdp.NewOfferWithOpts(p.codecs, p.externalIP, p.Port(), p.encryption, &srtp.Options{Profiles: p.localCrypto})
+	offer, err := sdp.NewOfferWith(p.codecs, p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
 	if err != nil {
 		return nil, err
 	}
@@ -782,7 +782,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]by
 	p.offer = offer
 	p.mu.Unlock()
 
-	answer, mc, err := offer.AnswerWith(p.externalIP, p.Port(), p.encryption, &srtp.Options{Profiles: p.localCrypto})
+	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}

@@ -29,6 +29,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 
@@ -285,6 +286,40 @@ func TestMediaPortReinviteSameCrypto(t *testing.T) {
 	gotSDP, err := mp.GetLocalSDP()
 	require.NoError(t, err)
 	require.Equal(t, localSDP, gotSDP, "local SDP (including a=crypto) must not change")
+}
+
+func TestMediaPortReofferSameCrypto(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	newOffer := func(t testing.TB, mp *mediaPort, localCrypto []srtp.Profile) (*sdp.Offer, *sdp.MediaConfig) {
+		t.Helper()
+		addr := netip.MustParseAddrPort("9.8.7.6:12345")
+		offerData, err := mp.GenerateOffer()
+		require.NoError(t, err)
+		offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+		require.NoError(t, err)
+		answer, mc, err := offer.Answer(addr.Addr(), int(addr.Port()), sdp.EncryptionRequire, sdp.WithLocalProfiles(localCrypto))
+		require.NoError(t, err)
+		answerData, err := answer.SDP.Marshal()
+		require.NoError(t, err)
+		err = mp.ProcessAnswer(answerData)
+		require.NoError(t, err)
+		require.Nil(t, mp.offer)
+		return offer, mc
+	}
+	localCrypto, err := srtp.DefaultProfiles()
+	require.NoError(t, err)
+	offer1, mc1 := newOffer(t, mp, localCrypto)
+	offer2, mc2 := newOffer(t, mp, localCrypto)
+
+	// Offers must not regenerate keys
+	require.Equal(t, offer1.CryptoProfiles, offer2.CryptoProfiles, "crypto profiles must not change")
+	require.Equal(t, mc1.Crypto.Keys.RemoteMasterKey, mc2.Crypto.Keys.RemoteMasterKey, "remote master key must not change")
+	require.Equal(t, mc1.Crypto.Keys.RemoteMasterSalt, mc2.Crypto.Keys.RemoteMasterSalt, "remote master salt must not change")
 }
 
 // negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.
