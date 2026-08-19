@@ -885,6 +885,30 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 	hold := false
 
+	if changeSetSummary.includes(changeSetRemoteAddr) {
+		if c.Remote.Addr().IsUnspecified() {
+			// Older hold semantics: c=0.0.0.0
+			hold = true
+		} else {
+			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
+		}
+	}
+	if changeSetSummary.includes(changeSetPeerDirection) {
+		// Newer hold semantics: a=sendonly
+		// TODO: Support a=recvonly/inactive; requires toggling media timeout;
+		//		maybe gate these on timers being active on the session to prevent dud calls
+		hold = c.PeerDirection == psdp.DirectionSendOnly
+	}
+	if false && hold { // Disabled in current code
+		audioToPort = nil
+		dtmfToPort = nil
+		zero := netip.IPv4Unspecified()
+		if !c.Remote.Addr().Is4() {
+			zero = netip.IPv6Unspecified()
+		}
+		p.port.SetDst(netip.AddrPortFrom(zero, c.Remote.Port()))
+		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
+	}
 	if changeSetSummary.shouldReconfigure() {
 		if changeSetSummary != changeSetNew { // Explicitly disable renegotiation for now
 			return SDPError{Err: ErrRenegotiationDisabled} // Results in a 400 response
@@ -919,31 +943,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
 		p.reportPeerCodecs(p.offer.MediaDesc)
-	} else if changeSetSummary.includes(changeSetRemoteAddr) {
-		if c.Remote.Addr().IsUnspecified() {
-			// Older hold semantics: c=0.0.0.0
-			hold = true
-		} else {
-			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
-		}
 	}
-	if changeSetSummary.includes(changeSetPeerDirection) {
-		// Newer hold semantics: a=sendonly
-		// TODO: Support a=recvonly/inactive; requires toggling media timeout;
-		//		maybe gate these on timers being active on the session to prevent dud calls
-		hold = c.PeerDirection == psdp.DirectionSendOnly
-	}
-	if false && hold { // Disabled in current code
-		audioToPort = nil
-		dtmfToPort = nil
-		zero := netip.IPv4Unspecified()
-		if !c.Remote.Addr().Is4() {
-			zero = netip.IPv6Unspecified()
-		}
-		p.port.SetDst(netip.AddrPortFrom(zero, c.Remote.Port()))
-		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
-	}
-
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
 	p.negotiated = c
 	return nil
@@ -971,10 +971,10 @@ func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
 		return changeSetNew
 	}
 	var changeSetSummary changeSetSummary
-	if current.Audio.Codec.Info().SDPName != new.Audio.Codec.Info().SDPName {
+	if current.Audio.Codec.Info().SDPName != new.Audio.Codec.Info().SDPName || current.Audio.Type != new.Audio.Type {
 		changeSetSummary |= changeSetAudioCodec
 	}
-	if current.Audio.DTMFType != new.Audio.DTMFType || current.Audio.Type != new.Audio.Type {
+	if current.Audio.DTMFType != new.Audio.DTMFType {
 		changeSetSummary |= changeSetDTMF
 	}
 	a, b := current.Crypto, new.Crypto

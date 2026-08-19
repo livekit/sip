@@ -49,6 +49,7 @@ func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
 	return nil
 }
 func getResponseOrFailTimeout(t *testing.T, ctx context.Context, tx sip.ClientTransaction) *sip.Response {
+	t.Helper()
 	var ctxDone <-chan struct{} = nil
 	if ctx != nil {
 		ctxDone = ctx.Done()
