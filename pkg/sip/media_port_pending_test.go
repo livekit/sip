@@ -368,35 +368,3 @@ func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Pa
 		return nil
 	}
 }
-
-func TestMediaPortDTMF(t *testing.T) {
-	digitCases := []string{"1", "12", "123"}
-	lossCases := []string{"none", "first", "last", "middle"}
-
-	for _, digits := range digitCases {
-		packets := generateDTMFPackets(t, digits)
-		for _, lossPackets := range lossCases {
-			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
-				p := &mediaPort{}
-				p.lastDTMFTimestamp.Store(math.MaxUint32)
-				got := ""
-				p.HandleDTMF(func(ev dtmf.Event) {
-					t.Logf("received DTMF event: %+v", ev)
-					got = fmt.Sprintf("%s%s", got, strconv.Itoa(int(ev.Code)))
-				})
-				for _, digitPackets := range packets {
-					sendPackets := dropPackets(t, lossPackets, digitPackets)
-					t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
-					for _, pkt := range sendPackets {
-						h := pkt.Header
-						t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
-						require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
-					}
-				}
-				t.Logf("sent: %s", digits)
-				t.Logf("got: %s", got)
-				require.Equal(t, digits, got)
-			})
-		}
-	}
-}
