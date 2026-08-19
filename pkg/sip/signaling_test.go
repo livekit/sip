@@ -285,7 +285,7 @@ func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request, isFromUAC
 	require.NoError(t, err)
 	defer tx.Terminate()
 
-	resp := getFinalResponseOrFail(t, tx, req)
+	resp := getFinalResponseOrFail(t, nil, tx)
 	if req.Method == sip.INVITE && resp.StatusCode < 300 {
 		// Need to send ACK for 2xx INVITE, sipgo already sends ACK for 3xx+
 		ack := sip.NewAckRequest(req, resp, nil)
