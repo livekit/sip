@@ -356,6 +356,7 @@ type MediaConf struct {
 
 type MediaOptions struct {
 	IP                   netip.Addr
+	BindIP               netip.Addr // local interface for RTP sockets; zero binds 0.0.0.0
 	Ports                rtcconfig.PortRange
 	MediaTimeoutInitial  time.Duration
 	MediaTimeout         time.Duration
@@ -389,7 +390,11 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 	}
 	if conn == nil {
 		// use an even RTP port (RFC 3550); some gateways misroute media when offered an odd one
-		c, err := rtp.ListenUDPEvenPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
+		bindIP := opts.BindIP
+		if !bindIP.IsValid() {
+			bindIP = netip.AddrFrom4([4]byte{0, 0, 0, 0})
+		}
+		c, err := rtp.ListenUDPEvenPortRange(opts.Ports.Start, opts.Ports.End, bindIP)
 		if err != nil {
 			return nil, err
 		}
