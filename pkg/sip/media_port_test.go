@@ -29,6 +29,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 
@@ -208,7 +209,12 @@ func newTestPort(t testing.TB, log logger.Logger, conn UDPConn, opts *MediaOptio
 
 func offerAt(t testing.TB, addr netip.AddrPort) []byte {
 	t.Helper()
-	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
+	return offerAtEnc(t, addr, sdp.EncryptionNone)
+}
+
+func offerAtEnc(t testing.TB, addr netip.AddrPort, enc sdp.Encryption) []byte {
+	t.Helper()
+	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), enc)
 	require.NoError(t, err)
 	data, err := offer.SDP.Marshal()
 	require.NoError(t, err)
@@ -224,25 +230,96 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any offer")
 
 	addr := netip.MustParseAddrPort("9.8.7.6:12345")
-	_, err := mp.GenerateAnswer(offerAt(t, addr))
+	_, err := mp.GenerateAnswer(offerAt(t, addr), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "GenerateAnswer should set RemoteAddr from the offer")
 
 	// Body-less re-INVITE: empty offer returns the local SDP and must not change dest.
-	_, err = mp.GenerateAnswer(nil)
+	_, err = mp.GenerateAnswer(nil, true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
 
 	// Hold form c=0.0.0.0 must not clobber dest once media is established.
-	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
+	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
 
 	// successful re-INVITE update
 	addr = netip.MustParseAddrPort("10.10.10.10:54321")
-	_, err = mp.GenerateAnswer(offerAt(t, addr))
+	_, err = mp.GenerateAnswer(offerAt(t, addr), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
+}
+
+// Re-INVITE with the original offer SDP and crypto material must result in
+// re-use of already-negotiated keys.
+func TestMediaPortReinviteSameCrypto(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	offer := offerAtEnc(t, addr, sdp.EncryptionRequire)
+
+	_, err := mp.GenerateAnswer(offer, true)
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr())
+
+	require.NotNil(t, mp.negotiated)
+	require.NotNil(t, mp.negotiated.Crypto)
+	localKey := slices.Clone(mp.negotiated.Crypto.Keys.LocalMasterKey)
+	localSalt := slices.Clone(mp.negotiated.Crypto.Keys.LocalMasterSalt)
+	require.NotEmpty(t, localKey)
+	require.NotEmpty(t, localSalt)
+	localSDP, err := mp.GetLocalSDP()
+	require.NoError(t, err)
+	require.NotEmpty(t, localSDP)
+
+	// Same offer bytes: NewOfferWith would generate a new peer key.
+	_, err = mp.GenerateAnswer(offer, true)
+	require.NoError(t, err, "re-INVITE with the same offer must be accepted")
+	require.Equal(t, addr, mp.RemoteAddr(), "same offer must not change dest")
+	require.Equal(t, localKey, mp.negotiated.Crypto.Keys.LocalMasterKey, "local master key must not change")
+	require.Equal(t, localSalt, mp.negotiated.Crypto.Keys.LocalMasterSalt, "local master salt must not change")
+	gotSDP, err := mp.GetLocalSDP()
+	require.NoError(t, err)
+	require.Equal(t, localSDP, gotSDP, "local SDP (including a=crypto) must not change")
+}
+
+func TestMediaPortReofferSameCrypto(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	newOffer := func(t testing.TB, mp *mediaPort, localCrypto []srtp.Profile) (*sdp.Offer, *sdp.MediaConfig) {
+		t.Helper()
+		addr := netip.MustParseAddrPort("9.8.7.6:12345")
+		offerData, err := mp.GenerateOffer()
+		require.NoError(t, err)
+		offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+		require.NoError(t, err)
+		answer, mc, err := offer.Answer(addr.Addr(), int(addr.Port()), sdp.EncryptionRequire, sdp.WithLocalProfiles(localCrypto))
+		require.NoError(t, err)
+		answerData, err := answer.SDP.Marshal()
+		require.NoError(t, err)
+		err = mp.ProcessAnswer(answerData)
+		require.NoError(t, err)
+		require.Nil(t, mp.offer)
+		return offer, mc
+	}
+	localCrypto, err := srtp.DefaultProfiles()
+	require.NoError(t, err)
+	offer1, mc1 := newOffer(t, mp, localCrypto)
+	offer2, mc2 := newOffer(t, mp, localCrypto)
+
+	// Offers must not regenerate keys
+	require.Equal(t, offer1.CryptoProfiles, offer2.CryptoProfiles, "crypto profiles must not change")
+	require.Equal(t, mc1.Crypto.Keys.RemoteMasterKey, mc2.Crypto.Keys.RemoteMasterKey, "remote master key must not change")
+	require.Equal(t, mc1.Crypto.Keys.RemoteMasterSalt, mc2.Crypto.Keys.RemoteMasterSalt, "remote master salt must not change")
 }
 
 // negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.
@@ -251,7 +328,7 @@ func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	offerData, err := m1.GenerateOffer()
 	require.NoError(t, err)
 
-	answerData, err := m2.GenerateAnswer(offerData)
+	answerData, err := m2.GenerateAnswer(offerData, true)
 	require.NoError(t, err)
 
 	require.NoError(t, m1.ProcessAnswer(answerData))
@@ -399,7 +476,7 @@ func TestMediaTimeout(t *testing.T) {
 		// the general timeout applies relative to the last received RTP packet.
 		// Last packet arrived at most timeout/2 ago, so the timeout should fire
 		// within ~timeout from now, well before initial would elapse.
-		m1.SetTimeoutForDelayedAck(initial, timeout)
+		m1.SetTimeout(initial, timeout)
 
 		select {
 		case <-time.After(timeout + dt):
@@ -418,7 +495,7 @@ func TestMediaTimeout(t *testing.T) {
 		// port has never seen an RTP packet, the new initial window applies from
 		// the moment of the SetTimeout call.
 		time.Sleep(initial / 2)
-		m1.SetTimeoutForDelayedAck(initial, timeout)
+		m1.SetTimeout(initial, timeout)
 
 		targ := time.Now().Add(initial)
 		select {
@@ -591,7 +668,7 @@ func TestSetOfferReportsCodecsBeforeFailing(t *testing.T) {
 	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 96", "a=rtpmap:96 SPEEX/16000")
-	_, err := mp.GenerateAnswer(offer)
+	_, err := mp.GenerateAnswer(offer, true)
 	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 
 	// Codecs that are not part of the internal set are classified as "other"
@@ -613,7 +690,7 @@ func TestSetOfferReportsCodecsPerProvider(t *testing.T) {
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 9",
 		"a=rtpmap:0 PCMU/8000", "a=rtpmap:9 G722/8000")
-	_, err := mp.GenerateAnswer(offer)
+	_, err := mp.GenerateAnswer(offer, true)
 	require.NoError(t, err)
 
 	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
@@ -630,7 +707,7 @@ func TestSetOfferReportsUnknownProvider(t *testing.T) {
 	before := gatherCounter(t, parsedMetric, parsed)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
-	_, err := mp.GenerateAnswer(offer)
+	_, err := mp.GenerateAnswer(offer, true)
 	require.NoError(t, err)
 
 	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))
