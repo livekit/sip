@@ -32,6 +32,7 @@ import (
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -463,6 +464,14 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		}
 		conn = c
 	}
+	var localCrypto []srtp.Profile
+	if opts.Encryption != sdp.EncryptionNone {
+		var err error
+		localCrypto, err = srtp.DefaultProfiles()
+		if err != nil {
+			return nil, err
+		}
+	}
 	p := &mediaPort{
 		log:         log,
 		opts:        opts,
@@ -475,6 +484,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		stats:       opts.Stats,
 		codecs:      opts.Codecs,
 		encryption:  opts.Encryption,
+		localCrypto: localCrypto,
 	}
 	// Explicitly set sample rate. We manually create resamplers to include in latency
 	p.audioOut = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](targetSampleRate)
@@ -510,6 +520,7 @@ type mediaPort struct {
 	targetSampleRate int
 	codecs           *msdk.CodecSet
 	encryption       sdp.Encryption
+	localCrypto      []srtp.Profile // our SRTP material, generated once per port
 
 	mu         sync.RWMutex
 	pipeline   *mediaPortPipeline
@@ -750,7 +761,7 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 		return p.offer.SDP.Marshal()
 	}
 
-	offer, err := sdp.NewOfferWith(p.codecs, p.externalIP, p.Port(), p.encryption)
+	offer, err := sdp.NewOfferWithOpts(p.codecs, p.externalIP, p.Port(), p.encryption, &srtp.Options{Profiles: p.localCrypto})
 	if err != nil {
 		return nil, err
 	}
@@ -767,12 +778,15 @@ func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]by
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
-	p.reportPeerCodecs(offer.MediaDesc)
+	p.mu.Lock()
+	p.offer = offer
+	p.mu.Unlock()
 
-	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption)
+	answer, mc, err := offer.AnswerWith(p.externalIP, p.Port(), p.encryption, &srtp.Options{Profiles: p.localCrypto})
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
+
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
 		return nil, err
@@ -904,8 +918,8 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.pipeline = newPipeline
 
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
+		p.reportPeerCodecs(p.offer.MediaDesc)
 	} else if changeSetSummary.includes(changeSetRemoteAddr) {
-
 		if c.Remote.Addr().IsUnspecified() {
 			// Older hold semantics: c=0.0.0.0
 			hold = true

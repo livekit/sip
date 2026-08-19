@@ -208,7 +208,12 @@ func newTestPort(t testing.TB, log logger.Logger, conn UDPConn, opts *MediaOptio
 
 func offerAt(t testing.TB, addr netip.AddrPort) []byte {
 	t.Helper()
-	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
+	return offerAtEnc(t, addr, sdp.EncryptionNone)
+}
+
+func offerAtEnc(t testing.TB, addr netip.AddrPort, enc sdp.Encryption) []byte {
+	t.Helper()
+	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), enc)
 	require.NoError(t, err)
 	data, err := offer.SDP.Marshal()
 	require.NoError(t, err)
@@ -243,6 +248,43 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	_, err = mp.GenerateAnswer(offerAt(t, addr), true)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
+}
+
+// Re-INVITE with the original offer SDP and crypto material must result in
+// re-use of already-negotiated keys.
+func TestMediaPortReinviteSameCrypto(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	offer := offerAtEnc(t, addr, sdp.EncryptionRequire)
+
+	_, err := mp.GenerateAnswer(offer, true)
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr())
+
+	require.NotNil(t, mp.negotiated)
+	require.NotNil(t, mp.negotiated.Crypto)
+	localKey := slices.Clone(mp.negotiated.Crypto.Keys.LocalMasterKey)
+	localSalt := slices.Clone(mp.negotiated.Crypto.Keys.LocalMasterSalt)
+	require.NotEmpty(t, localKey)
+	require.NotEmpty(t, localSalt)
+	localSDP, err := mp.GetLocalSDP()
+	require.NoError(t, err)
+	require.NotEmpty(t, localSDP)
+
+	// Same offer bytes: NewOfferWith would generate a new peer key.
+	_, err = mp.GenerateAnswer(offer, true)
+	require.NoError(t, err, "re-INVITE with the same offer must be accepted")
+	require.Equal(t, addr, mp.RemoteAddr(), "same offer must not change dest")
+	require.Equal(t, localKey, mp.negotiated.Crypto.Keys.LocalMasterKey, "local master key must not change")
+	require.Equal(t, localSalt, mp.negotiated.Crypto.Keys.LocalMasterSalt, "local master salt must not change")
+	gotSDP, err := mp.GetLocalSDP()
+	require.NoError(t, err)
+	require.Equal(t, localSDP, gotSDP, "local SDP (including a=crypto) must not change")
 }
 
 // negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.
