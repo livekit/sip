@@ -34,6 +34,7 @@ import (
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 
 	"github.com/livekit/sip/pkg/config"
