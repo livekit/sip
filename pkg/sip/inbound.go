@@ -1107,11 +1107,11 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			// Today we seek to enforce all calls to be ACKed or dropped.
 			// Sometimes, though, we do not see ACKs for invites (e.g due to possible
 			// issues with load balancing).
-			// To accomodate this issue, instead of ending the call right here, we instead
+			// To accommodate this issue, instead of ending the call right here, we instead
 			// set an aggressive timeout as a softer fallback.
 			// If the issue really is a dropped ACK, media is expected to flow shortly,
-			// allowing us to accomodate this eventuality. If, however, there is no media
-			// obserrved, the call still ends quickly.
+			// allowing us to accommodate this eventuality. If, however, there is no media
+			// observed, the call still ends quickly.
 			// Once ACKs are certain to be reliable, we will end the call here.
 			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
 		}
@@ -1657,8 +1657,7 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 		old.Close()
 	}
 	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
-		c.log().Warnw("media port has unexpected inbound dtmf writer", nil)
-		old.Close()
+		old.Close() // Can be pinDTMFWriter
 	}
 	return nil
 }

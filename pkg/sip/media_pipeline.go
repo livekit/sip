@@ -152,7 +152,7 @@ func (p *mediaPortPipeline) init(
 	return nil
 }
 
-// Construct the Audio and optionally DTM pipleine from SIP RTP to LK PCM, in reverse order.
+// Construct the Audio and optionally DTMF pipline from SIP RTP to LK PCM, in reverse order.
 func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[*livekit.SipDTMF]) error {
 	var err error
 	var inboundLatencyEntry atomic.Int64
@@ -231,8 +231,8 @@ func (p *mediaPortPipeline) handleEventRTP(h *rtp.Header, payload []byte) error 
 	})
 }
 
-// Construct the Audio and optionally DTM pipleine from LK PCM to SIP RTP
-// Retuirns the insulated (nopCloser) connectors, and an error.
+// Construct the Audio and optionally DTMF pipline from LK PCM to SIP RTP
+// Returns the insulated (nopCloser) connectors, and an error.
 func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate int) error {
 	p.rtpLoopWG.Go(p.rtpLoop)
 	w, err := p.sess.OpenWriteStream()

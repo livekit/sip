@@ -203,7 +203,7 @@ type RoomInterface interface {
 	// GetInboundAudioWriter returns a writer that, when written to, writes
 	// audio to the room.
 	GetInboundAudioWriter() (msdk.PCM16Writer, error)
-	// GetInboundDTMFWriter returns a writer that, when weritten to, writes DTMF
+	// GetInboundDTMFWriter returns a writer that, when written to, writes DTMF
 	// to the room.
 	GetInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
 }
