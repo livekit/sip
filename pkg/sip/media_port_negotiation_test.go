@@ -358,7 +358,6 @@ func TestMediaPortEncryptionPolicy(t *testing.T) {
 	}
 
 	forEach := func(t *testing.T, negotiate func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error)) {
-		t.Helper()
 		for _, portEncryptionPolicy := range encryptionPolicies {
 			name := "port=" + policyToString[portEncryptionPolicy]
 			t.Run(name, func(t *testing.T) {
@@ -395,7 +394,6 @@ func TestMediaPortEncryptionPolicy(t *testing.T) {
 
 	t.Run("inbound", func(t *testing.T) { // Receive offer
 		negotiate := func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error) {
-			t.Helper()
 			offer, err := sdp.NewOfferWith(defaultCodecs, newIP("127.0.0.1"), 5004, policy)
 			require.NoError(t, err)
 			offerData, err := offer.SDP.Marshal()
@@ -414,7 +412,6 @@ func TestMediaPortEncryptionPolicy(t *testing.T) {
 
 	t.Run("outbound", func(t *testing.T) { // Send offer, receive answer
 		negotiate := func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error) {
-			t.Helper()
 			offerData, err := mp.GenerateOffer()
 			require.NoError(t, err)
 			offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)

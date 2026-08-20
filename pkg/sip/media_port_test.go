@@ -466,7 +466,7 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 
 							// Ramp-up time for the codec.
 							// Some codecs have "inertia" and cannot immediately represent the sound exactly.
-							// This is shy we write signal multiple times to give it some time to adapt.
+							// This is why we write signal multiple times to give it some time to adapt.
 							// We will also cut the ramp-up part from the destination buffer before comparing.
 							// This variable is in full frames, so that we clearly see where frames start to calculate the offset below.
 							rampUpFrames := codecConfig.rampUpFrames
