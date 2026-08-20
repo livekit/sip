@@ -737,6 +737,7 @@ func (r *Room) Participant() ParticipantInfo {
 	return ParticipantInfo{}
 }
 
+// NewParticipantTrack publishes a local Opus audio track into the LiveKit room.
 // TODO(alexfish): Remove this from the public interface.
 func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
 	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus}, "audio", "pion")

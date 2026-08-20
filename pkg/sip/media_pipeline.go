@@ -156,7 +156,7 @@ func (p *mediaPortPipeline) init(
 func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[*livekit.SipDTMF]) error {
 	var err error
 	var inboundLatencyEntry atomic.Int64
-	var sink msdk.PCM16Writer = msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
+	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
 	sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
 
 	codecInfo := mc.Audio.Codec.Info()
