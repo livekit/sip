@@ -33,7 +33,7 @@ import (
 	"github.com/livekit/protocol/utils/traceid"
 )
 
-func (p *mediaPort) SetConfig(c *MediaConf) error {
+func (p *MediaPort) SetConfig(c *MediaConf) error {
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
 	}
@@ -82,7 +82,7 @@ func (p *mediaPort) SetConfig(c *MediaConf) error {
 	return nil
 }
 
-func (p *mediaPort) setupInput() {
+func (p *MediaPort) setupInput() {
 	// Decoding pipeline (SIP RTP -> LK PCM)
 	codec := p.conf.Audio.Codec
 	codecInfo := codec.Info()
@@ -139,7 +139,7 @@ func (p *mediaPort) setupInput() {
 	p.hnd.Store(&hnd)
 }
 
-func (p *mediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
+func (p *MediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
 	ptr := p.dtmfIn.Load()
 	if ptr == nil {
 		return nil
@@ -163,7 +163,7 @@ func (p *mediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
 }
 
 // Must be called holding the lock
-func (p *mediaPort) setupOutput(tid traceid.ID) error {
+func (p *MediaPort) setupOutput(tid traceid.ID) error {
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
 	}
@@ -218,7 +218,7 @@ func (p *mediaPort) setupOutput(tid traceid.ID) error {
 	return nil
 }
 
-func (p *mediaPort) rtpLoop(tid traceid.ID, sess rtp.Session) {
+func (p *MediaPort) rtpLoop(tid traceid.ID, sess rtp.Session) {
 	defer p.rtpLoopWG.Done()
 	// Need a loop to process all incoming packets.
 	for {
@@ -237,7 +237,7 @@ func (p *mediaPort) rtpLoop(tid traceid.ID, sess rtp.Session) {
 	}
 }
 
-func (p *mediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStream) {
+func (p *MediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStream) {
 	const maxErrors = 50 // 1 sec, given 20 ms frames
 	buf := make([]byte, rtp.MTUSize+1)
 	overflow := false
@@ -303,7 +303,7 @@ func (p *mediaPort) rtpReadLoop(tid traceid.ID, log logger.Logger, r rtp.ReadStr
 	}
 }
 
-func (p *mediaPort) WriteDTMF(ctx context.Context, digits string) error {
+func (p *MediaPort) WriteDTMF(ctx context.Context, digits string) error {
 	if len(digits) == 0 {
 		return nil
 	}
