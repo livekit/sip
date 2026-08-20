@@ -777,6 +777,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]by
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
+	p.reportPeerCodecs(offer.MediaDesc)
 	p.mu.Lock()
 	p.offer = offer
 	p.mu.Unlock()
@@ -890,6 +891,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 			hold = true
 		} else {
 			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
+			p.negotiated.Remote = c.Remote
 		}
 	}
 	if changeSetSummary.includes(changeSetPeerDirection) {
@@ -909,8 +911,11 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
 	}
 	if changeSetSummary.shouldReconfigure() {
-		if changeSetSummary != changeSetNew { // Explicitly disable renegotiation for now
-			return SDPError{Err: ErrRenegotiationDisabled} // Results in a 400 response
+		if changeSetSummary != changeSetNew {
+			// Explicitly disable renegotiation for now
+			// Compatibility to todays behavior: return 200 OK, but don't reconfigure the pipeline
+			p.offer = nil
+			return nil
 		}
 
 		p.closePipelineLocked()
@@ -941,7 +946,6 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.pipeline = newPipeline
 
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
-		p.reportPeerCodecs(p.offer.MediaDesc)
 	}
 	p.offer = nil // Pipeline build done, can now proceed to offer anew
 	p.negotiated = c

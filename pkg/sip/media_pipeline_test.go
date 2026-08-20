@@ -15,7 +15,10 @@
 package sip
 
 import (
+	"context"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,10 +30,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/amrwb"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
-	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/media-sdk/opus"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
@@ -93,7 +94,15 @@ type dtmfCollector struct {
 	events []*livekit.SipDTMF
 }
 
-func (c *dtmfCollector) String() string { return "dtmfCollector" }
+func (c *dtmfCollector) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	res := ""
+	for _, event := range c.events {
+		res += event.Digit
+	}
+	return res
+}
 
 func (c *dtmfCollector) SampleRate() int { return dtmf.SampleRate }
 
@@ -444,14 +453,9 @@ type testDTMFSpec struct {
 }
 
 var (
-	pipelineTestCodecs = []testCodecSpec{
-		{name: "PCMU", sdp: g711.ULawSDPNameAndRate},
-		{name: "PCMA", sdp: g711.ALawSDPNameAndRate},
-		{name: "G722", sdp: g722.SDPNameAndRate},
-		{name: "AMR-WB", sdp: amrwb.SDPNameAndRate},
-	}
-	pipelineTestRates = []int{8000, 16000, 48000}
-	pipelineTestDTMF  = []testDTMFSpec{
+	pipelineTestCodecs = allAudioCodecs()
+	pipelineTestRates  = []int{8000, 16000, 48000}
+	pipelineTestDTMF   = []testDTMFSpec{
 		{name: "dtmf_disabled", pt: 0, audio: false},
 		{name: "dtmf_event", pt: testDTMFPT, audio: false},
 		{name: "dtmf_event_audio", pt: testDTMFPT, audio: true},
@@ -460,8 +464,8 @@ var (
 
 func TestMediaPipelinePermutations(t *testing.T) {
 	for _, spec := range pipelineTestCodecs {
-		t.Run(spec.name, func(t *testing.T) {
-			codec := audioCodecByName(t, spec.sdp)
+		t.Run(spec.Info().SDPName, func(t *testing.T) {
+			codec := spec.(msdk.AudioCodec)
 			pt := testAudioPT(codec)
 			for _, rate := range pipelineTestRates {
 				for _, d := range pipelineTestDTMF {
@@ -507,11 +511,11 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	d := pipelineTestDTMF[1] // event-only
 
 	for _, from := range pipelineTestCodecs {
-		t.Run("from_"+from.name, func(t *testing.T) {
+		t.Run("from_"+from.Info().SDPName, func(t *testing.T) {
 			for _, to := range pipelineTestCodecs {
-				t.Run("to_"+to.name, func(t *testing.T) {
-					c1 := audioCodecByName(t, from.sdp)
-					c2 := audioCodecByName(t, to.sdp)
+				t.Run("to_"+to.Info().SDPName, func(t *testing.T) {
+					c1 := from.(msdk.AudioCodec)
+					c2 := to.(msdk.AudioCodec)
 					h := newPipelineHarness(t, rate)
 					h.configure(c1, testAudioPT(c1), d.pt, d.audio)
 					t.Run("gen1", h.runDirections)
@@ -520,5 +524,74 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func generateDTMFPackets(t *testing.T, digits string) [][]*rtp.Packet {
+	t.Helper()
+	var buf msrtp.Buffer
+	packets := make([][]*rtp.Packet, len(digits))
+	last := len(buf)
+	w := msrtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+	timestamp := uint32(1000)
+	for i := range digits {
+		err := dtmf.Write(context.Background(), nil, w, timestamp, digits[i:i+1])
+		require.NoError(t, err)
+		require.NotEmpty(t, buf)
+		timestamp += uint32(dtmf.SampleRate / 2)
+		packets[i] = slices.Clone(buf[last:])
+		last = len(buf)
+	}
+	return packets
+}
+
+func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Packet {
+	t.Helper()
+	switch dropType {
+	case "none":
+		return packets
+	case "first":
+		require.Greater(t, len(packets), 3)
+		return packets[3:]
+	case "last":
+		require.Greater(t, len(packets), 3)
+		return packets[:len(packets)-3]
+	case "middle":
+		require.Greater(t, len(packets), 6)
+		ret := slices.Clone(packets[:3])
+		ret = append(ret, packets[len(packets)-3:]...)
+		return ret
+	default:
+		t.Fatal("unknown drop type: " + dropType)
+		return nil
+	}
+}
+
+func TestMediaPipelineDTMF(t *testing.T) {
+	// Multi-digit test, including correct handling of lost packets
+	digitCases := []string{"1", "12", "123"}
+	lossCases := []string{"none", "first", "last", "middle"}
+
+	for _, digits := range digitCases {
+		packets := generateDTMFPackets(t, digits)
+		for _, lossPackets := range lossCases {
+			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
+				got := &dtmfCollector{}
+				p := &mediaPortPipeline{dtmfHandler: got}
+				p.lastDTMFTimestamp.Store(math.MaxUint32)
+				for _, digitPackets := range packets {
+					sendPackets := dropPackets(t, lossPackets, digitPackets)
+					t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
+					for _, pkt := range sendPackets {
+						h := pkt.Header
+						t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
+						require.NoError(t, p.handleEventRTP(&h, pkt.Payload))
+					}
+				}
+				t.Logf("sent: %s", digits)
+				t.Logf("got: %s", got.String())
+				require.Equal(t, digits, got.String())
+			})
+		}
 	}
 }
