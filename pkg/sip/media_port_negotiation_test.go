@@ -15,6 +15,8 @@
 package sip
 
 import (
+	"errors"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -213,7 +215,7 @@ func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
 func TestMediaPortRenegotiation(t *testing.T) {
 	t.Skip("renegotiation is disabled: GenerateAnswer returns the prior answer when one already exists")
 	t.Run("repeated", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, nil, nil, "")
+		m1, m2 := newMediaPair(t, nil, nil, "", RoomSampleRate)
 
 		recv2 := &recvBuffer{}
 		m2.WriteInboundAudioTo(recv2)
@@ -291,7 +293,7 @@ func TestMediaPortHold(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m1, m2 := newMediaPair(t, nil, nil, "")
+			m1, m2 := newMediaPair(t, nil, nil, "", RoomSampleRate)
 
 			recv1 := &recvBuffer{}
 			m1.WriteInboundAudioTo(recv1)
@@ -339,4 +341,92 @@ func TestMediaPortHold(t *testing.T) {
 			requireAudioFlows(t, m1, recv2)
 		})
 	}
+}
+
+var policyToString = map[sdp.Encryption]string{
+	sdp.EncryptionNone:    "none",
+	sdp.EncryptionAllow:   "allow",
+	sdp.EncryptionRequire: "require",
+}
+
+func TestMediaPortEncryptionPolicy(t *testing.T) {
+	encryptionPolicies := []sdp.Encryption{
+		sdp.EncryptionNone,
+		sdp.EncryptionAllow,
+		sdp.EncryptionRequire,
+	}
+
+	forEach := func(t *testing.T, negotiate func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error)) {
+		t.Helper()
+		for _, portEncryptionPolicy := range encryptionPolicies {
+			name := "port=" + policyToString[portEncryptionPolicy]
+			t.Run(name, func(t *testing.T) {
+				for _, remoteEncryptionPolicy := range encryptionPolicies {
+					name := "remote=" + policyToString[remoteEncryptionPolicy]
+					t.Run(name, func(t *testing.T) {
+						opts := &MediaOptions{
+							IP:         netip.MustParseAddr("1.1.1.1"),
+							Ports:      rtcconfig.PortRange{Start: 10000},
+							Encryption: portEncryptionPolicy,
+						}
+						conn := newTestConn(1)
+						mp := newTestPort(t, logger.NewTestLogger(t), conn, opts, RoomSampleRate)
+
+						mc, err := negotiate(t, mp, remoteEncryptionPolicy)
+						if portEncryptionPolicy != sdp.EncryptionAllow && remoteEncryptionPolicy != sdp.EncryptionAllow && portEncryptionPolicy != remoteEncryptionPolicy {
+							// Expect failue
+							assert.Error(t, err)
+							assert.ErrorIs(t, err, sdp.ErrNoCommonCrypto)
+							return
+						}
+						// Expect success
+						assert.NoError(t, err)
+						if portEncryptionPolicy == sdp.EncryptionNone || remoteEncryptionPolicy == sdp.EncryptionNone {
+							assert.Nil(t, mc.Crypto)
+						} else {
+							assert.NotNil(t, mc.Crypto)
+						}
+					})
+				}
+			})
+		}
+	}
+
+	t.Run("inbound", func(t *testing.T) { // Receive offer
+		negotiate := func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error) {
+			t.Helper()
+			offer, err := sdp.NewOfferWith(defaultCodecs, newIP("127.0.0.1"), 5004, policy)
+			require.NoError(t, err)
+			offerData, err := offer.SDP.Marshal()
+			require.NoError(t, err)
+			answerData, err := mp.GenerateAnswer(offerData, true)
+			if err != nil {
+				return nil, err
+			}
+			answer, err := sdp.ParseAnswerWith(defaultCodecs, answerData)
+			require.NoError(t, err)
+			mc, _, err := answer.ApplyWithLocal(offer, policy)
+			return mc, err
+		}
+		forEach(t, negotiate)
+	})
+
+	t.Run("outbound", func(t *testing.T) { // Send offer, receive answer
+		negotiate := func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error) {
+			t.Helper()
+			offerData, err := mp.GenerateOffer()
+			require.NoError(t, err)
+			offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+			require.NoError(t, err)
+			answer, mc, err := offer.Answer(newIP("127.0.0.1"), 5004, policy)
+			if errors.Is(err, sdp.ErrNoCommonCrypto) {
+				return mc, err
+			}
+			require.NoError(t, err)
+			answerData, err := answer.SDP.Marshal()
+			require.NoError(t, err)
+			return mc, mp.ProcessAnswer(answerData)
+		}
+		forEach(t, negotiate)
+	})
 }
