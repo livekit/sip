@@ -19,6 +19,13 @@ import (
 	"github.com/livekit/sip/test/lktest"
 )
 
+const (
+	dockerPrefix        = "siptest-"
+	dockerNetworkPrefix = dockerPrefix + "net"
+	dockerRedisPrefix   = dockerPrefix + "redis"
+	dockerLivekitPrefix = dockerPrefix + "livekit"
+)
+
 var debugLKServer = os.Getenv("DEBUG_LK_SERVER") != ""
 
 var redisLast uint32
@@ -48,7 +55,7 @@ func createTestNetwork(t testing.TB, name string) *dockertest.Network {
 }
 
 func runRedis(t testing.TB, network *dockertest.Network) (*redis.RedisConfig, string) {
-	name := fmt.Sprintf("siptest-redis-%d", atomic.AddUint32(&redisLast, 1))
+	name := fmt.Sprintf("%s-%d", dockerRedisPrefix, atomic.AddUint32(&redisLast, 1))
 	if _, ok := Docker.ContainerByName(name); ok {
 		t.Fatal("Redis container already exists:", name)
 	}
@@ -86,11 +93,11 @@ func runLiveKit(t testing.TB) *LiveKit {
 
 	// Shared network so LiveKit reaches Redis by name, avoiding a
 	// container->host round-trip that some CI runners block.
-	network := createTestNetwork(t, fmt.Sprintf("siptest-net-%d", id))
+	network := createTestNetwork(t, fmt.Sprintf("%s-%d", dockerNetworkPrefix, id))
 
 	redis, redisName := runRedis(t, network)
 
-	name := fmt.Sprintf("siptest-livekit-%d", id)
+	name := fmt.Sprintf("%s-%d", dockerLivekitPrefix, id)
 	if _, ok := Docker.ContainerByName(name); ok {
 		t.Fatal("Livekit-server container already exists:", name)
 	}
