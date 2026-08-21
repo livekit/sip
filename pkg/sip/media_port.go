@@ -49,8 +49,6 @@ const (
 	holdEnabled                = false // Disabled in current code
 )
 
-var ErrRenegotiationDisabled = errors.New("renegotiation is not supported")
-
 type PortStatsSnapshot struct {
 	Streams        uint64 `json:"streams"`
 	Packets        uint64 `json:"packets"`
@@ -778,7 +776,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return nil, SDPError{Err: err}
 	}
 	p.mu.RLock()
-	isReinvite := p.offer != nil
+	isReinvite := p.negotiated != nil
 	p.mu.RUnlock()
 	p.reportPeerCodecs(offer.MediaDesc, isReinvite)
 	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
