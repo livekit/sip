@@ -789,14 +789,14 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (transferID string, retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.transferCall")
 	defer span.End()
 	var err error
 
-	tID := c.state.StartTransfer(transferTo)
+	transferID = c.state.StartTransfer(transferTo)
 	defer func() {
-		c.state.EndTransfer(tID, retErr)
+		c.state.EndTransfer(transferID, retErr)
 	}()
 
 	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
@@ -828,7 +828,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	err = c.cc.transferCall(ctx, transferTo, headers, c.closing.Watch())
 	if err != nil {
 		c.log.Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
-		return err
+		return transferID, err
 	}
 
 	c.log.Infow("outbound call transferred", "transferTo", transferTo)
@@ -842,7 +842,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		})
 	})
 
-	return nil
+	return transferID, nil
 }
 
 func (c *Client) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
@@ -1318,40 +1318,33 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		return err
 	}
 
-	select {
-	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
-	case <-callDone:
-		// REFER was accepted (2xx) but the call ended before it completed —
-		// remote BYE, room deletion, or local hangup.
-		c.log.Infow("refer canceled: call ended before transfer completed")
-		return nil
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return waitReferResult(ctx, c.log, callDone, c.referDone)
 }
 
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
-	method, cseq, status, reason, err := handleNotify(req)
+	info, err := handleNotify(req)
 	if err != nil {
 		c.log.Infow("error parsing NOTIFY request", "error", err)
 
 		return err
 	}
 
-	c.log.Infow("handling NOTIFY", "method", method, "status", status, "reason", reason, "cseq", cseq)
+	c.log.Infow("handling NOTIFY", "method", info.Method, "status", info.Status,
+		"reason", info.Reason, "cseq", info.CSeq, "subscription", info.Sub.String())
 
-	switch method {
+	switch info.Method {
 	default:
 		return nil
 	case sip.REFER:
+		// Read referCseq under the lock, then release it before handing the
+		// result over. That handoff can park on the unbuffered channel for
+		// notifyAckTimeout, and while we hold the read lock every caller of
+		// c.mu.Lock() waits: AcceptBye and Close among them, so an arriving BYE
+		// would be what we blocked.
 		c.mu.RLock()
-		defer c.mu.RUnlock()
-		handleReferNotify(cseq, status, reason, c.referCseq, c.referDone)
+		referCseq := c.referCseq
+		c.mu.RUnlock()
+		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}
 }

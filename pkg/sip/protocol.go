@@ -36,6 +36,13 @@ import (
 const (
 	notifyAckTimeout = 5 * time.Second
 	referByeTimeout  = time.Second
+	// referResultGrace is how long a REFER result is still accepted after the
+	// original call ended. Once the transfer target answers, our peer reports it
+	// in the final NOTIFY and then BYEs the original leg, which is no longer
+	// needed. We handle that NOTIFY and that BYE on separate goroutines, so the
+	// BYE often wins the race. Without this window a transfer that actually
+	// completed would be reported as aborted.
+	referResultGrace = time.Second
 )
 
 var (
@@ -142,6 +149,14 @@ var (
 	ErrAuthMaxRetry      = errors.New("max auth retry attempts reached for SIP invite")
 	ErrAuthMissingCreds  = errors.New("sip server required auth, but no username or password was provided")
 	ErrAuthNoHeader      = errors.New("no auth header in sip invite response")
+)
+
+// Sentinel errors for cold transfer outcomes the bridge decides on its own,
+// without a SIP status from the peer. Wrapped in psrpc errors at the point they
+// are produced; errors.Is still matches through the wrapper.
+var (
+	errTransferCallEnded           = errors.New("call ended before transfer completed")
+	errReferSubscriptionTerminated = errors.New("REFER subscription terminated without a final status")
 )
 
 type setHeadersFunc func(headers map[string]string) map[string]string
@@ -360,60 +375,93 @@ func parseNotifyBody(body string) (int, string, error) {
 	return c, reason, nil
 }
 
-func handleNotify(req *sip.Request) (method sip.RequestMethod, cseq uint32, status int, reason string, err error) {
+// notifyInfo is the parsed content of a NOTIFY, for the event packages we
+// implement (currently only "refer").
+type notifyInfo struct {
+	Method sip.RequestMethod // event package; sip.REFER for "refer[;id=N]"
+	CSeq   uint32            // REFER CSeq from the event id param, 0 if absent
+	Status int               // sipfrag status code, 0 if the NOTIFY carried no body
+	Reason string            // sipfrag reason phrase
+	Sub    SubscriptionState // Subscription-State header, zero value if absent
+}
+
+func handleNotify(req *sip.Request) (notifyInfo, error) {
 	event := req.GetHeader("Event")
 	if event == nil {
 		event = req.GetHeader("o")
 	}
 	if event == nil {
-		return "", 0, 0, "", psrpc.NewErrorf(psrpc.MalformedRequest, "no event in NOTIFY request")
+		return notifyInfo{}, psrpc.NewErrorf(psrpc.MalformedRequest, "no event in NOTIFY request")
 	}
 
-	var cseq64 uint64
+	m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value()))
+	if len(m) == 0 {
+		return notifyInfo{}, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
+	}
 
-	if m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value())); len(m) > 0 {
-		// REFER Notify
-		method = sip.REFER
-
-		if len(m) >= 3 {
-			cseq64, _ = strconv.ParseUint(m[2], 10, 32)
-		}
-
-		status, reason, err = parseNotifyBody(string(req.Body()))
+	// REFER Notify
+	info := notifyInfo{Method: sip.REFER}
+	if len(m) >= 3 {
+		cseq64, _ := strconv.ParseUint(m[2], 10, 32)
+		info.CSeq = uint32(cseq64)
+	}
+	if h := req.GetHeader("Subscription-State"); h != nil {
+		info.Sub = ParseSubscriptionState(h.Value())
+	}
+	// RFC 3515 requires a sipfrag body, but RFC 6665 lets a notifier omit the
+	// state from the NOTIFY that terminates the subscription, and providers do.
+	// Status 0 then means "no status reported" and Subscription-State decides.
+	if body := strings.TrimSpace(string(req.Body())); body != "" {
+		status, reason, err := parseNotifyBody(body)
 		if err != nil {
-			return "", 0, 0, "", err
+			return notifyInfo{}, err
 		}
-
-		return method, uint32(cseq64), status, reason, nil
+		info.Status, info.Reason = status, reason
 	}
-	return "", 0, 0, reason, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
+	return info, nil
 }
 
-func handleReferNotify(cseq uint32, status int, reason string, referCseq uint32, referDone chan<- error) {
-	if cseq != 0 && cseq != referCseq {
+func handleReferNotify(info notifyInfo, referCseq uint32, referDone chan<- error) {
+	if info.CSeq != 0 && info.CSeq != referCseq {
 		// NOTIFY for a different REFER, skip
 		return
 	}
 	var result error
 	switch {
-	case status >= 100 && status < 200:
-		// still trying
-		return
-	case status == 200:
-		// Success
+	case info.Status == 200:
+		// Success. Checked before the terminated subscription below: the final
+		// NOTIFY of a successful transfer also terminates the subscription.
 		result = nil
+	case info.Status == 0 || (info.Status >= 100 && info.Status < 200):
+		// No final status yet, but if this NOTIFY ended the subscription, no
+		// further NOTIFY can arrive and the provisional status we have is all
+		// we will ever get, so fail now rather than waiting out the transfer
+		// deadline. RFC 3515 lets an agent that does not want to hold subscription
+		// state terminate with its very first NOTIFY, and for a call still in
+		// progress, that NOTIFY carries a 100. A subscription that expires, or
+		// whose notifier gives up, ends the same way.
+		if !info.Sub.Terminated() {
+			// still trying
+			return
+		}
+		reason := info.Sub.Reason
+		if reason == "" {
+			reason = "unspecified"
+		}
+		result = psrpc.NewErrorf(psrpc.UpstreamServerError, "call transfer failed: %w (reason %q, last status %d)",
+			errReferSubscriptionTerminated, reason, info.Status)
 	default:
 		// Failure
 		st := &livekit.SIPStatus{
-			Code:   livekit.SIPStatusCode(status),
-			Status: reason,
+			Code:   livekit.SIPStatusCode(info.Status),
+			Status: info.Reason,
 		}
 		// Converts SIP status to GRPC via SIPStatus.GRPCStatus(), then converts to psrpc via ErrorCodeFromGRPC()
 		errorCode, _ := psrpc.GetErrorCode(st)
 		if errorCode == psrpc.Internal || errorCode == psrpc.Unavailable {
 			// Temporarily overwrite the code until we support a direct SIPStatus -> psrpc.ErrorCode conversion
 			errorCode = psrpc.UpstreamServerError
-			if status < 500 || status >= 600 { // Common 6xx codes: 603 Declined, 608 Rejected
+			if info.Status < 500 || info.Status >= 600 { // Common 6xx codes: 603 Declined, 608 Rejected
 				errorCode = psrpc.UpstreamClientError
 			}
 		}
@@ -422,6 +470,34 @@ func handleReferNotify(cseq uint32, status int, reason string, referCseq uint32,
 	select {
 	case referDone <- result:
 	case <-time.After(notifyAckTimeout):
+	}
+}
+
+// waitReferResult waits for the outcome of an accepted REFER: a NOTIFY carrying
+// a final status, or the subscription ending before one arrives.
+//
+// callDone fires when the call itself ends (remote BYE, room deletion, local
+// hangup). That leaves the transfer outcome unknown, which is a failure and not
+// a success. A result that is already on its way wins over it, because a
+// successful transfer ends this call too: our peer BYEs the original leg right
+// after reporting the outcome. referDone is unbuffered, so its NOTIFY handler
+// can still be parked on the handoff while the BYE is processed elsewhere.
+func waitReferResult(ctx context.Context, log logger.Logger, callDone <-chan struct{}, referDone <-chan error) error {
+	select {
+	case <-ctx.Done():
+		// Wrap ctx.Err() so callers can still tell a blown deadline from a cancel.
+		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled: %w", ctx.Err())
+	case err := <-referDone:
+		return err
+	case <-callDone:
+		select {
+		case err := <-referDone:
+			log.Infow("refer result raced call end", "error", err)
+			return err
+		case <-time.After(referResultGrace):
+		}
+		log.Infow("refer failed: call ended before transfer completed")
+		return psrpc.NewError(psrpc.Aborted, errTransferCallEnded)
 	}
 }
 
@@ -501,6 +577,57 @@ func ToSIPUri(ip string, u sip.Uri) *livekit.SIPUri {
 		Transport: SIPTransportFrom(Transport(tr)),
 	}
 	return url
+}
+
+// SubscriptionState is a parsed Subscription-State header. Every NOTIFY must
+// carry one, including the NOTIFYs of the subscription a REFER creates
+// implicitly, but not every provider sends it.
+type SubscriptionState struct {
+	State   string // substate: "active", "pending", "terminated", or an extension
+	Reason  string // reason param: noresource, giveup, timeout, rejected, ...
+	Expires int    // expires param in seconds, 0 if absent
+}
+
+// Terminated reports whether the notifier ended the subscription, meaning no
+// further NOTIFY will arrive for it.
+func (s SubscriptionState) Terminated() bool {
+	return s.State == "terminated"
+}
+
+func (s SubscriptionState) String() string {
+	if s.State == "" {
+		return "<none>"
+	}
+	if s.Reason == "" {
+		return s.State
+	}
+	return s.State + ";reason=" + s.Reason
+}
+
+// ParseSubscriptionState parses a Subscription-State header value. It has no
+// error return on purpose: a handleNotify error becomes a non-2xx answer to the
+// NOTIFY, and an odd value in this header is no reason to reject one. An
+// unrecognized state yields the zero value, which is not Terminated, so the
+// transfer keeps waiting.
+func ParseSubscriptionState(header string) SubscriptionState {
+	list := strings.Split(header, ";")
+	st := SubscriptionState{State: strings.ToLower(strings.TrimSpace(list[0]))}
+	for _, line := range list[1:] {
+		line = strings.TrimSpace(line)
+		i := strings.Index(line, "=")
+		if i < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(line[:i]))
+		val := strings.TrimSpace(line[i+1:])
+		switch key {
+		case "reason":
+			st.Reason = strings.ToLower(val)
+		case "expires":
+			st.Expires, _ = strconv.Atoi(val)
+		}
+	}
+	return st
 }
 
 type ReasonHeader struct {
