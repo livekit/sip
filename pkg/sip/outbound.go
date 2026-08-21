@@ -561,6 +561,10 @@ func (c *outboundCall) connectMedia() {
 		c.log.Warnw("media port has unexpected inbound audio writer", nil)
 	}
 
+	// WriteInboundAudioTo takes ownership of c.lkRoomIn, so nil it out to avoid
+	// double-closing later.
+	c.lkRoomIn = nil
+
 	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
 		old.Close()
 		c.log.Warnw("media port has unexpected inbound DTMF writer", nil)
