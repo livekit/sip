@@ -804,23 +804,50 @@ func TestTransfer(t *testing.T) {
 		}
 	}
 
+	type notifyOption func(*sip.Request)
+
+	withSipfrag := func(status int) notifyOption {
+		return func(req *sip.Request) {
+			req.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
+			req.SetBody([]byte(sip.NewResponse(status, sipStatus(status)).String()))
+		}
+	}
+
+	withSubState := func(state string) notifyOption {
+		return func(req *sip.Request) {
+			req.AppendHeader(sip.NewHeader("Subscription-State", state))
+		}
+	}
+
+	// sendNotifyRaw sends a single NOTIFY built from opts and asserts we answer
+	// it 2xx. Without withSipfrag it carries no body, which a provider is
+	// allowed to do for the NOTIFY that terminates the subscription.
+	sendNotifyRaw := func(t *testing.T, ctx context.Context, call *sipUADialogTest, opts ...notifyOption) error {
+		t.Helper()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("test aborted before sending NOTIFY: %v", ctx.Err())
+		case <-time.After(5 * time.Millisecond):
+		}
+		notifyReq := call.NewRequest(sip.NOTIFY)
+		notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
+		for _, opt := range opts {
+			opt(notifyReq)
+		}
+		notifyResp := call.TransactionRequest(t, notifyReq)
+		t.Logf("Received NOTIFY-%d %s response", notifyResp.StatusCode, notifyResp.Reason)
+		require.Equal(t, 200, notifyResp.StatusCode, "Expecting 200 OK response to NOTIFY")
+		return nil
+	}
+
 	sendNotify := func(t *testing.T, ctx context.Context, call *sipUADialogTest, notifyStatuses []int) error {
 		t.Helper()
 		require.NotEmpty(t, notifyStatuses)
 		for i, status := range notifyStatuses {
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("test aborted without ending remaining %d NOTIFY requests: %v", len(notifyStatuses)-i, ctx.Err())
-			case <-time.After(5 * time.Millisecond):
-			}
 			t.Logf("Sending NOTIFY request carrying INVITE-%d response", status)
-			notifyReq := call.NewRequest(sip.NOTIFY)
-			notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
-			notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
-			notifyReq.SetBody([]byte(sip.NewResponse(status, sipStatus(status)).String()))
-			notifyResp := call.TransactionRequest(t, notifyReq)
-			t.Logf("Received NOTIFY-%d %s response", notifyResp.StatusCode, notifyResp.Reason)
-			require.Equal(t, 200, notifyResp.StatusCode, "Expecting 200 OK response to NOTIFY")
+			if err := sendNotifyRaw(t, ctx, call, withSipfrag(status)); err != nil {
+				return fmt.Errorf("failed to send remaining %d NOTIFY requests: %w", len(notifyStatuses)-i, err)
+			}
 		}
 		t.Log("All NOTIFY requests sent")
 		return nil
@@ -851,9 +878,14 @@ func TestTransfer(t *testing.T) {
 		return nil
 	}
 
-	startTransfer := func(t *testing.T, ctx context.Context, st *serviceTest, call *sipUADialogTest, to string, headers map[string]string, dialtone bool) <-chan error {
+	type transferAPIResult struct {
+		resp *rpc.InternalTransferSIPParticipantResponse
+		err  error
+	}
+
+	startTransferFull := func(t *testing.T, ctx context.Context, st *serviceTest, call *sipUADialogTest, to string, headers map[string]string, dialtone bool) <-chan transferAPIResult {
 		t.Helper()
-		done := make(chan error, 1)
+		done := make(chan transferAPIResult, 1)
 		go func() {
 			defer close(done)
 			transferReq := &rpc.InternalTransferSIPParticipantRequest{
@@ -865,9 +897,21 @@ func TestTransfer(t *testing.T) {
 			if deadline, ok := ctx.Deadline(); ok {
 				transferReq.RingingTimeout = durationpb.New(time.Until(deadline) + (5 * time.Millisecond))
 			}
-			_, err := st.Service.TransferSIPParticipant(ctx, transferReq)
-			if err != nil {
-				done <- err
+			resp, err := st.Service.TransferSIPParticipant(ctx, transferReq)
+			done <- transferAPIResult{resp: resp, err: err}
+		}()
+		return done
+	}
+
+	// startTransfer reports only the error, which is all most subtests care about.
+	startTransfer := func(t *testing.T, ctx context.Context, st *serviceTest, call *sipUADialogTest, to string, headers map[string]string, dialtone bool) <-chan error {
+		t.Helper()
+		full := startTransferFull(t, ctx, st, call, to, headers, dialtone)
+		done := make(chan error, 1)
+		go func() {
+			defer close(done)
+			if res := <-full; res.err != nil {
+				done <- res.err
 			}
 		}()
 		return done
@@ -909,6 +953,40 @@ func TestTransfer(t *testing.T) {
 					require.NoError(t, err, "error transferring call, unexpected transfer API response")
 				case <-ctx.Done():
 					require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
+				}
+			})
+
+			t.Run("response", func(t *testing.T) {
+				// The API reports the outcome in the response, not just through
+				// the error return.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransferFull(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180, 200})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = handleBye(t, ctx, reqChan, call)
+				require.NoError(t, err, "Failed to process BYE request")
+
+				select {
+				case res := <-transferRes:
+					require.NoError(t, res.err)
+					require.NotNil(t, res.resp)
+					require.NotEmpty(t, res.resp.TransferId, "the response must identify the transfer")
+					require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL, res.resp.Status)
+					require.Equal(t, livekit.SIPTransferReason_STR_COMPLETED, res.resp.Reason)
+					require.Nil(t, res.resp.SipStatus)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer result")
 				}
 			})
 
@@ -1064,8 +1142,11 @@ func TestTransfer(t *testing.T) {
 				}
 			})
 
-			t.Run("bye", func(t *testing.T) {
-				// After REFER gets 202 we wait on NOTIFY; remote hangs up with BYE instead.
+			t.Run("refer_rejected", func(t *testing.T) {
+				// The peer refuses the REFER outright, so no subscription is
+				// created and the SIP status is reported as-is.
+				const referStatus = 403
+
 				st := NewServiceTest(t, nil)
 				call := setupCall(t, st)
 
@@ -1075,16 +1156,234 @@ func TestTransfer(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
 				defer cancel()
 
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, referStatus, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+
+				select {
+				case err := <-transferRes:
+					t.Logf("Received error: %v", err)
+					require.Error(t, err)
+					var sipErr *livekit.SIPStatus
+					require.ErrorAs(t, err, &sipErr)
+					require.Equal(t, livekit.SIPStatusCode(referStatus), sipErr.Code)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer to fail")
+				}
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+			})
+
+			t.Run("no_notify", func(t *testing.T) {
+				// REFER accepted, but the peer never reports an outcome, so the
+				// transfer runs out of time.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+
+				select {
+				case err := <-transferRes:
+					t.Logf("Received error: %v", err)
+					require.Error(t, err)
+					var psErr psrpc.Error
+					require.ErrorAs(t, err, &psErr)
+					require.Equal(t, psrpc.Canceled, psErr.Code())
+				case <-time.After(3 * time.Second):
+					require.Fail(t, "timeout waiting for the transfer to fail")
+				}
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+			})
+
+			t.Run("bye", func(t *testing.T) {
+				// After REFER gets 202 we wait on NOTIFY; remote hangs up with BYE
+				// instead, so the transfer outcome is never reported.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
+				defer cancel()
+
 				headers := map[string]string{
 					"X-Custom-Header": "custom-value",
 				}
-				transferRes := startTransfer(t, ctx, st, call, referTo, headers, false)
+				transferRes := startTransferFull(t, ctx, st, call, referTo, headers, false)
 
 				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendBye(t, call)
 				require.NoError(t, err, "Failed to send BYE request")
 
+				select {
+				case res := <-transferRes:
+					// No error: callers branch on that today and this case has
+					// always reached them as a success. The response is where the
+					// transfer says it did not complete.
+					require.NoError(t, res.err)
+					require.NotNil(t, res.resp)
+					require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, res.resp.Status)
+					require.Equal(t, livekit.SIPTransferReason_STR_CALL_ENDED, res.resp.Reason)
+					require.Nil(t, res.resp.SipStatus, "no SIP status was reported for this transfer")
+					require.NotEmpty(t, res.resp.TransferId)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer result")
+				}
+			})
+
+			t.Run("bye_after_success", func(t *testing.T) {
+				// Our peer reports the transfer succeeded, then BYEs the original
+				// leg because it is no longer needed. The NOTIFY and the BYE are
+				// handled on separate goroutines, so the result must still win
+				// over the call ending.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+
+				// Both requests are built before either is sent: the NOTIFY is
+				// still in flight when the BYE goes out.
+				notifyReq := call.NewRequest(sip.NOTIFY)
+				notifyReq.AppendHeader(sip.NewHeader("Event", "refer"))
+				notifyReq.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
+				notifyReq.SetBody([]byte(sip.NewResponse(200, sipStatus(200)).String()))
+				byeReq := call.NewRequest(sip.BYE)
+
+				// Send the NOTIFY without waiting for its response: it is only
+				// answered once the result is handed over, and the call is being
+				// torn down at the same time, so whether it gets answered at all
+				// is not what this test is about.
+				notifyTx, err := st.TestUA.Client.TransactionRequest(notifyReq)
+				require.NoError(t, err)
+				defer notifyTx.Terminate()
+
+				resp := call.TransactionRequest(t, byeReq)
+				require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting BYE-200 OK")
+
+				select {
+				case err := <-transferRes:
+					require.NoError(t, err, "a completed transfer must not be reported as aborted")
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer result")
+				}
+			})
+
+			t.Run("terminated_subscription", func(t *testing.T) {
+				// The peer ends the refer subscription while still reporting a
+				// provisional status, so no final status will ever arrive.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+
+				start := time.Now()
+				err = sendNotifyRaw(t, ctx, call, withSipfrag(100), withSubState("terminated;reason=noresource"))
+				require.NoError(t, err, "Failed to send terminating NOTIFY request")
+
+				select {
+				case err := <-transferRes:
+					t.Logf("Received error: %v", err)
+					require.ErrorIs(t, err, errReferSubscriptionTerminated)
+					var psErr psrpc.Error
+					require.ErrorAs(t, err, &psErr)
+					require.Equal(t, psrpc.UpstreamServerError, psErr.Code())
+					// The point of the fix: fail now, not after the transfer deadline.
+					require.Less(t, time.Since(start), 500*time.Millisecond)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer to fail")
+				}
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+			})
+
+			t.Run("terminated_subscription_no_body", func(t *testing.T) {
+				// The peer ends the refer subscription with a NOTIFY that carries
+				// no sipfrag at all, so there is no status to read and the
+				// subscription state alone decides the outcome.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = sendNotifyRaw(t, ctx, call, withSubState("terminated;reason=giveup"))
+				require.NoError(t, err, "Failed to send terminating NOTIFY request")
+
+				select {
+				case err := <-transferRes:
+					t.Logf("Received error: %v", err)
+					require.ErrorIs(t, err, errReferSubscriptionTerminated)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer to fail")
+				}
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+			})
+
+			t.Run("terminated_subscription_success", func(t *testing.T) {
+				// The final NOTIFY of a successful transfer also terminates the
+				// subscription, so success has to be decided first.
+				st := NewServiceTest(t, nil)
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100, 180})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = sendNotifyRaw(t, ctx, call, withSipfrag(200), withSubState("terminated;reason=noresource"))
+				require.NoError(t, err, "Failed to send final NOTIFY request")
+				err = handleBye(t, ctx, reqChan, call) // Expecting BYE after successful transfer
+				require.NoError(t, err, "Failed to process BYE request")
 				select {
 				case err := <-transferRes:
 					require.NoError(t, err, "error transferring call, unexpected transfer API response")
@@ -1184,10 +1483,8 @@ func TestRouteSet(t *testing.T) {
 			transferRes := make(chan error, 1)
 			go func() {
 				defer close(transferRes)
-				err := ic.transferCall(ctx, "tel:+15551234567", nil, false)
-				if err != nil {
-					transferRes <- err
-				}
+				_, err := ic.transferCall(ctx, "tel:+15551234567", nil, false)
+				transferRes <- err
 			}()
 
 			select {
@@ -1206,8 +1503,9 @@ func TestRouteSet(t *testing.T) {
 			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 
+			// The call ended before any NOTIFY reported the transfer outcome.
 			err := <-transferRes
-			require.NoError(t, err)
+			require.ErrorIs(t, err, errTransferCallEnded)
 		})
 	})
 
@@ -1269,7 +1567,8 @@ func TestRouteSet(t *testing.T) {
 			transferRes := make(chan error, 1)
 			go func() {
 				defer close(transferRes)
-				transferRes <- oc.transferCall(ctx, "tel:+15551234567", nil, false)
+				_, err := oc.transferCall(ctx, "tel:+15551234567", nil, false)
+				transferRes <- err
 			}()
 
 			select {
@@ -1288,8 +1587,9 @@ func TestRouteSet(t *testing.T) {
 			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
 
+			// The call ended before any NOTIFY reported the transfer outcome.
 			err := <-transferRes
-			require.NoError(t, err)
+			require.ErrorIs(t, err, errTransferCallEnded)
 		})
 	})
 }
