@@ -22,6 +22,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -1337,4 +1338,145 @@ func TestCreateSIPParticipantAffinity_TrunkWhitelist_WithMaxCalls(t *testing.T) 
 	req = &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "trunk-x"}
 	got = s.CreateSIPParticipantAffinity(context.Background(), req)
 	require.Equal(t, float32(0), got)
+}
+
+func TestTransferResponse(t *testing.T) {
+	const transferID = "STR_test"
+
+	cases := []struct {
+		Name      string
+		Outcome   transferOutcome
+		Status    livekit.SIPTransferStatus
+		Reason    livekit.SIPTransferReason
+		SIPStatus livekit.SIPStatusCode
+	}{
+		{
+			Name:    "success",
+			Outcome: transferOutcome{TransferID: transferID},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL,
+			Reason:  livekit.SIPTransferReason_STR_COMPLETED,
+		},
+		{
+			Name:    "call ended",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewError(psrpc.Aborted, errTransferCallEnded)},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:  livekit.SIPTransferReason_STR_CALL_ENDED,
+		},
+		{
+			Name: "subscription terminated",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewErrorf(psrpc.UpstreamServerError,
+				"call transfer failed: %w (reason %q, last status %d)", errReferSubscriptionTerminated, "giveup", 100)},
+			Status: livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason: livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED,
+		},
+		{
+			Name: "rejected by the transferee",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w",
+				&livekit.SIPStatus{Code: livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, Status: "Temporarily Unavailable"})},
+			Status:    livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:    livekit.SIPTransferReason_STR_REJECTED,
+			SIPStatus: livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE,
+		},
+		{
+			Name:    "ran out of time",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewError(psrpc.Canceled, context.DeadlineExceeded)},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:  livekit.SIPTransferReason_STR_RINGING_TIMEOUT,
+		},
+		{
+			Name:    "no transfer started",
+			Outcome: transferOutcome{Err: psrpc.NewErrorf(psrpc.NotFound, "unknown call")},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:  livekit.SIPTransferReason_STR_UNSPECIFIED,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			resp := transferResponse(c.Outcome)
+			require.Equal(t, c.Outcome.TransferID, resp.TransferId)
+			require.Equal(t, c.Status, resp.Status)
+			require.Equal(t, c.Reason, resp.Reason)
+			if c.SIPStatus == 0 {
+				require.Nil(t, resp.SipStatus)
+				return
+			}
+			require.NotNil(t, resp.SipStatus)
+			require.Equal(t, c.SIPStatus, resp.SipStatus.Code)
+		})
+	}
+}
+
+// TestTransferCallEndedIsNotAnError pins temporary behaviour. When the call ends
+// before the transfer completes, the transfer has failed, but the RPC reports
+// that only in the response and returns no error: callers branch on the error,
+// and this case has always reached them as a success, so erroring now would
+// break them. Once that reclassification has been announced to customers, this
+// case becomes an error like any other failure, and this test should be
+// deleted along with the special case it covers.
+func TestTransferCallEndedIsNotAnError(t *testing.T) {
+	const (
+		callID     = "test-call"
+		transferTo = "tel:+15551234567"
+		transferID = "STR_test"
+	)
+
+	// newService returns a service holding one call, with the transfer to that
+	// call already finished and reporting out.
+	newService := func(out transferOutcome) *Service {
+		s := newServiceForAffinity(&config.Config{})
+		s.log = logger.GetLogger()
+		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+		s.srv.byLocalTag[LocalTag(callID)] = &inboundCall{}
+
+		pending := &PendingTransfer{
+			CallID:     callID,
+			TransferTo: transferTo,
+			Done:       make(chan transferOutcome, 1),
+		}
+		pending.Done <- out
+		pending.Outcome.Store(&out)
+		s.pendingTransfers[LocalTag(callID)] = pending
+		return s
+	}
+
+	req := &rpc.InternalTransferSIPParticipantRequest{
+		SipCallId:  callID,
+		TransferTo: transferTo,
+	}
+
+	t.Run("call ended", func(t *testing.T) {
+		s := newService(transferOutcome{
+			TransferID: transferID,
+			Err:        psrpc.NewError(psrpc.Aborted, errTransferCallEnded),
+		})
+
+		resp, err := s.TransferSIPParticipant(t.Context(), req)
+		require.NoError(t, err, "a call that ended mid-transfer must not surface as an error")
+		require.NotNil(t, resp)
+		require.Equal(t, transferID, resp.TransferId)
+		require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, resp.Status)
+		require.Equal(t, livekit.SIPTransferReason_STR_CALL_ENDED, resp.Reason)
+		require.Nil(t, resp.SipStatus)
+	})
+
+	t.Run("other failures still error", func(t *testing.T) {
+		// Only the call-ended case is swallowed. Everything else keeps erroring,
+		// which is what callers already handle.
+		sipStatus := &livekit.SIPStatus{
+			Code:   livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE,
+			Status: "Temporarily Unavailable",
+		}
+		s := newService(transferOutcome{
+			TransferID: transferID,
+			Err:        psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w", sipStatus),
+		})
+
+		resp, err := s.TransferSIPParticipant(t.Context(), req)
+		require.Error(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, resp.Status)
+		require.Equal(t, livekit.SIPTransferReason_STR_REJECTED, resp.Reason)
+		require.NotNil(t, resp.SipStatus)
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, resp.SipStatus.Code)
+	})
 }
