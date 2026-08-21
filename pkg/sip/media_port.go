@@ -909,7 +909,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	if changeSetSummary.shouldReconfigure() {
 		if changeSetSummary != changeSetNew {
 			// Explicitly disable renegotiation for now
-			// Compatibility to todays behavior: return 200 OK, but don't reconfigure the pipeline
+			// Compatibility to today's behavior: return 200 OK, but don't reconfigure the pipeline
 			return nil
 		}
 
