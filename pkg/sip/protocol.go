@@ -361,10 +361,17 @@ func parseNotifyBody(body string) (int, string, error) {
 		return 0, "", psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: wrong prefix or SIP version")
 	}
 
-	c, err := strconv.Atoi(v[1])
+	// The status line is remote input and ends up narrowed to a SIPStatusCode,
+	// which is 32-bit, so parse it at that width and reject anything that is not
+	// a SIP response code rather than carrying a bogus value forward.
+	code, err := strconv.ParseInt(v[1], 10, 32)
 	if err != nil {
 		return 0, "", psrpc.NewError(psrpc.InvalidArgument, err)
 	}
+	if code < 100 || code > 699 {
+		return 0, "", psrpc.NewErrorf(psrpc.InvalidArgument, "invalid notify body: status %d out of range", code)
+	}
+	c := int(code)
 	if len(v) < 3 {
 		return c, "", nil
 	}

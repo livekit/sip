@@ -87,6 +87,18 @@ func TestHandleNotify(t *testing.T) {
 				Sub: SubscriptionState{State: "???"}},
 		},
 		{
+			Name:  "status out of range",
+			Event: "refer",
+			Body:  "SIP/2.0 99999999999 Boom" + headers,
+			Error: true,
+		},
+		{
+			Name:  "status below the SIP range",
+			Event: "refer",
+			Body:  "SIP/2.0 42 Nope" + headers,
+			Error: true,
+		},
+		{
 			Name:  "bad SIP version",
 			Event: "refer;id=1234",
 			Body:  "SIP/3.0 200 OK" + headers,
