@@ -78,7 +78,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		JaegerURL:          os.Getenv("JAEGER_URL"),
 	}
 	_ = conf.InitLogger()
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 	if conf.JaegerURL != "" {
 		jaeger.Configure(t.Context(), conf.JaegerURL, conf.ServiceName)
 	}
@@ -95,7 +95,9 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcCli) })
+	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+		return sip.NewRPCStateHandler(psrpcCli)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -74,7 +74,7 @@ type reconnectFixture struct {
 func newReconnectFixture(t *testing.T) *reconnectFixture {
 	t.Helper()
 
-	r := NewRoom(logger.GetLogger(), &RoomStats{})
+	r := NewRoom(logger.NewTestLogger(t), &RoomStats{})
 	t.Cleanup(func() { _ = r.Close() })
 
 	cb := r.newRoomCallback(&config.Config{}, RoomConfig{})
