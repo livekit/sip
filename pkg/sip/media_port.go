@@ -920,6 +920,8 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		}
 
 		p.closePipelineLocked()
+		audioToPort = nil
+		dtmfToPort = nil
 		p.port.stopDiscarding() // Needs readDeadline. Must be ahead of Reopen() and NewMediaPortPipeline()
 		p.port.Reopen()         // Allow reads from socket again
 

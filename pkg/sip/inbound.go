@@ -1035,12 +1035,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if pinPrompt {
 		status = CallActive
 	}
-	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
-		return fmt.Errorf("failed joining room: %w", err)
-	}
 	answerData, err = c.negotiateMedia(rawSDP)
 	if err != nil {
 		return rejectMedia(err)
+	}
+	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
+		return fmt.Errorf("failed joining room: %w", err)
 	}
 	// Publish our own track.
 	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {
