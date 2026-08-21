@@ -1222,7 +1222,7 @@ func (c *inboundCall) negotiateMedia(offerData []byte) ([]byte, error) {
 	c.mon.SDPSize(len(offerData), true)
 	c.log().Debugw("SDP offer", "sdp", string(offerData))
 
-	answerData, err := c.media.GenerateAnswer(offerData, false)
+	answerData, err := c.media.GenerateAnswer(offerData)
 	if err != nil {
 		return nil, err
 	}
@@ -1583,7 +1583,7 @@ func (c *inboundCall) updateRemoteFromSDP(body []byte) error {
 	if mp == nil {
 		return nil
 	}
-	_, err := mp.GenerateAnswer(body, false)
+	_, err := mp.GenerateAnswer(body)
 	return err
 }
 

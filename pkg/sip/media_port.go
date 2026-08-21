@@ -46,6 +46,7 @@ const (
 	defaultMediaTimeoutInitial = 30 * time.Second
 	dstChangePrintInterval     = 10 * 1000 * 1000 * 1000 // 10 seconds, in nanoseconds
 	srcChangePrintInterval     = dstChangePrintInterval
+	holdEnabled                = false // Disabled in current code
 )
 
 var ErrRenegotiationDisabled = errors.New("renegotiation is not supported")
@@ -416,12 +417,10 @@ type MediaPort interface {
 	GenerateOffer() ([]byte, error)
 
 	// GenerateAnswer returns an encoded SDP answer for the given offer.
-	// activateTimeout - If set to true, resets media timeout to defaults,
-	//		starting from time of function call. This is designed to
-	//		be set to false when not immediately sending the answer back.
+	// This does not arm the media timeout, use SetTimeout to do so.
 	//
 	// SIDE EFFECT: May cause a rebuild of the pipeline.
-	GenerateAnswer(offer []byte, activateTimeout bool) ([]byte, error)
+	GenerateAnswer(offer []byte) ([]byte, error)
 
 	// ProcessAnswer processes an encoded SDP answer from the remote client. Returns an
 	// error if the answer is invalid, the offer has not yet been generated, or
@@ -718,11 +717,11 @@ func (p *mediaPort) RemoteAddr() netip.AddrPort {
 
 // Reported for inbound (SetOffer) only since outbound (SetAnswer) only contains the
 // codec picked by the end user, and not what they actually support
-func (p *mediaPort) reportPeerCodecs(d sdp.MediaDesc) {
+func (p *mediaPort) reportPeerCodecs(d sdp.MediaDesc, reinvite bool) {
 	if p.mon == nil {
 		return
 	}
-	p.mon.PeerSDP(peerCodecNames(d))
+	p.mon.PeerSDP(peerCodecNames(d), reinvite)
 }
 
 // Plumbing
@@ -769,7 +768,7 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 	return offer.SDP.Marshal()
 }
 
-func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]byte, error) {
+func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	if len(offerData) == 0 {
 		return p.GetLocalSDP()
 	}
@@ -778,11 +777,10 @@ func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]by
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
-	p.reportPeerCodecs(offer.MediaDesc)
-	p.mu.Lock()
-	p.offer = offer
-	p.mu.Unlock()
-
+	p.mu.RLock()
+	isReinvite := p.offer != nil
+	p.mu.RUnlock()
+	p.reportPeerCodecs(offer.MediaDesc, isReinvite)
 	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
 	if err != nil {
 		return nil, SDPError{Err: err}
@@ -795,9 +793,6 @@ func (p *mediaPort) GenerateAnswer(offerData []byte, activateTimeout bool) ([]by
 	err = p.configure(mc, answerData)
 	if err != nil {
 		return nil, err
-	}
-	if activateTimeout {
-		p.SetTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
 	}
 	return answerData, nil
 }
@@ -869,6 +864,8 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	p.mu.Lock() // No concurrent rebuilding of the pipeline
 	defer p.mu.Unlock()
 
+	p.offer = nil
+
 	if p.closed.IsBroken() {
 		return errors.New("media is already closed")
 	}
@@ -901,7 +898,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		//		maybe gate these on timers being active on the session to prevent dud calls
 		hold = c.PeerDirection == psdp.DirectionSendOnly
 	}
-	if false && hold { // Disabled in current code
+	if holdEnabled && hold {
 		audioToPort = nil
 		dtmfToPort = nil
 		zero := netip.IPv4Unspecified()
@@ -915,7 +912,6 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		if changeSetSummary != changeSetNew {
 			// Explicitly disable renegotiation for now
 			// Compatibility to todays behavior: return 200 OK, but don't reconfigure the pipeline
-			p.offer = nil
 			return nil
 		}
 
@@ -950,7 +946,6 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
 	}
-	p.offer = nil // Pipeline build done, can now proceed to offer anew
 	p.negotiated = c
 	return nil
 }

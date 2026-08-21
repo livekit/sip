@@ -445,7 +445,7 @@ func (w *dtmfOutWriter) WriteSample(sample *livekit.SipDTMF) error {
 		digits = string([]byte{digit})
 	} else if sample.Code > 0 {
 		// We can't distinguish between a code0 and no code, but better have something here
-		w.log.Warnw("code payload detected, ignored due to explicit digits", nil, "code", sample.Code, "digits", sample.Digit)
+		w.log.Debugw("code payload detected, ignored due to explicit digits", "code", sample.Code, "digits", sample.Digit)
 	}
 
 	w.mu.Lock()

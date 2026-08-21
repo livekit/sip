@@ -261,23 +261,23 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any offer")
 
 	addr := netip.MustParseAddrPort("9.8.7.6:12345")
-	_, err := mp.GenerateAnswer(offerAt(t, addr), true)
+	_, err := mp.GenerateAnswer(offerAt(t, addr))
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "GenerateAnswer should set RemoteAddr from the offer")
 
 	// Body-less re-INVITE: empty offer returns the local SDP and must not change dest.
-	_, err = mp.GenerateAnswer(nil, true)
+	_, err = mp.GenerateAnswer(nil)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
 
 	// Hold form c=0.0.0.0 must not clobber dest once media is established.
-	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")), true)
+	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
 
 	// successful re-INVITE update
 	addr = netip.MustParseAddrPort("10.10.10.10:54321")
-	_, err = mp.GenerateAnswer(offerAt(t, addr), true)
+	_, err = mp.GenerateAnswer(offerAt(t, addr))
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
 }
@@ -294,7 +294,7 @@ func TestMediaPortReinviteSameCrypto(t *testing.T) {
 	addr := netip.MustParseAddrPort("9.8.7.6:12345")
 	offer := offerAtEnc(t, addr, sdp.EncryptionRequire)
 
-	_, err := mp.GenerateAnswer(offer, true)
+	_, err := mp.GenerateAnswer(offer)
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr())
 
@@ -309,7 +309,7 @@ func TestMediaPortReinviteSameCrypto(t *testing.T) {
 	require.NotEmpty(t, localSDP)
 
 	// Same offer bytes: NewOfferWith would generate a new peer key.
-	_, err = mp.GenerateAnswer(offer, true)
+	_, err = mp.GenerateAnswer(offer)
 	require.NoError(t, err, "re-INVITE with the same offer must be accepted")
 	require.Equal(t, addr, mp.RemoteAddr(), "same offer must not change dest")
 	require.Equal(t, localKey, mp.negotiated.Crypto.Keys.LocalMasterKey, "local master key must not change")
@@ -359,10 +359,12 @@ func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	offerData, err := m1.GenerateOffer()
 	require.NoError(t, err)
 
-	answerData, err := m2.GenerateAnswer(offerData, true)
+	answerData, err := m2.GenerateAnswer(offerData)
 	require.NoError(t, err)
 
 	require.NoError(t, m1.ProcessAnswer(answerData))
+
+	m2.SetTimeout(m2.opts.MediaTimeoutInitial, m2.opts.MediaTimeout)
 	return answerData
 }
 
@@ -571,7 +573,7 @@ func TestPipelineChains(t *testing.T) {
 			require.NoError(t, err)
 			answerData, err := offer.SDP.Marshal()
 			require.NoError(t, err)
-			_, err = mp.GenerateAnswer(answerData, true)
+			_, err = mp.GenerateAnswer(answerData)
 			require.NoError(t, err)
 
 			codecName := strings.Split(info.SDPName, "/")[0]
@@ -881,7 +883,7 @@ func TestSetOfferReportsCodecsBeforeFailing(t *testing.T) {
 	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 96", "a=rtpmap:96 SPEEX/16000")
-	_, err := mp.GenerateAnswer(offer, true)
+	_, err := mp.GenerateAnswer(offer)
 	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 
 	// Codecs that are not part of the internal set are classified as "other"
@@ -903,7 +905,7 @@ func TestSetOfferReportsCodecsPerProvider(t *testing.T) {
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 9",
 		"a=rtpmap:0 PCMU/8000", "a=rtpmap:9 G722/8000")
-	_, err := mp.GenerateAnswer(offer, true)
+	_, err := mp.GenerateAnswer(offer)
 	require.NoError(t, err)
 
 	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
@@ -920,7 +922,7 @@ func TestSetOfferReportsUnknownProvider(t *testing.T) {
 	before := gatherCounter(t, parsedMetric, parsed)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
-	_, err := mp.GenerateAnswer(offer, true)
+	_, err := mp.GenerateAnswer(offer)
 	require.NoError(t, err)
 
 	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))
