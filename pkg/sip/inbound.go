@@ -1350,7 +1350,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	if !c.done.CompareAndSwap(false, true) {
 		return
 	}
-	defer c.mon.StageDurTimer("close")
+	defer c.mon.StageDurTimer("close")()
 	c.stats.Closed.Store(true)
 	result := Result{
 		Code:   sip.StatusBusyHere,
