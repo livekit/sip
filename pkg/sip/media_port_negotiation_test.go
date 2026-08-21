@@ -171,7 +171,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 		// Peer offers both, only PCMA is enabled here.
 		offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 8",
 			"a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000")
-		answerData, err := m.GenerateAnswer(offer, true)
+		answerData, err := m.GenerateAnswer(offer)
 		require.NoError(t, err)
 		assert.Equal(t, g711.ALawSDPNameAndRate, answerCodec(t, answerData))
 	})
@@ -180,7 +180,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 		m := newLocked(t, g711.ALawSDPNameAndRate)
 
 		offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
-		_, err := m.GenerateAnswer(offer, true)
+		_, err := m.GenerateAnswer(offer)
 		require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 	})
 }
@@ -197,16 +197,16 @@ func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
 	sdpB := sdpWithMedia("m=audio 5004 RTP/AVP 9", "a=rtpmap:9 G722/8000")
 
 	// Offer codec A
-	answer, err := m.GenerateAnswer(sdpA, true)
+	answer, err := m.GenerateAnswer(sdpA)
 	require.NoError(t, err)
 	require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answer))
 
 	// Attempt to offer only codec B, expect failure
-	answer, err = m.GenerateAnswer(sdpB, true)
-	require.ErrorIs(t, err, ErrRenegotiationDisabled)
+	answer, err = m.GenerateAnswer(sdpB)
+	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 
 	// Offer codec A again, expect success
-	answer, err = m.GenerateAnswer(sdpA, true)
+	answer, err = m.GenerateAnswer(sdpA)
 	require.NoError(t, err)
 	require.Equal(t, g711.ULawSDPNameAndRate, answerCodec(t, answer))
 }
@@ -308,7 +308,7 @@ func TestMediaPortHold(t *testing.T) {
 			// m2 re-INVITEs with the hold form of its offer.
 			base, err := m2.GenerateOffer()
 			require.NoError(t, err)
-			_, err = m1.GenerateAnswer([]byte(tc.hold(t, string(base))), true)
+			_, err = m1.GenerateAnswer([]byte(tc.hold(t, string(base))))
 			require.NoError(t, err)
 
 			// m1 no longer sends: no destination to write to, and the room-facing
@@ -329,7 +329,7 @@ func TestMediaPortHold(t *testing.T) {
 			requireAudioFlows(t, m2, recv1)
 
 			// Resume with the original offer.
-			_, err = m1.GenerateAnswer(base, true)
+			_, err = m1.GenerateAnswer(base)
 			require.NoError(t, err)
 
 			dst = m1.port.dst.Load()
@@ -398,7 +398,7 @@ func TestMediaPortEncryptionPolicy(t *testing.T) {
 			require.NoError(t, err)
 			offerData, err := offer.SDP.Marshal()
 			require.NoError(t, err)
-			answerData, err := mp.GenerateAnswer(offerData, true)
+			answerData, err := mp.GenerateAnswer(offerData)
 			if err != nil {
 				return nil, err
 			}

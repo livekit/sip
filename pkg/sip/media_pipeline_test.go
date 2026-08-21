@@ -123,6 +123,44 @@ func (c *dtmfCollector) snapshot() []*livekit.SipDTMF {
 	return out
 }
 
+// pcmCollector accumulates decoded room audio. The pipeline writes from the RTP
+// read goroutine while the test reads, so every access is guarded.
+type pcmCollector struct {
+	sampleRate int
+
+	mu  sync.Mutex
+	buf msdk.PCM16Sample
+}
+
+func (c *pcmCollector) String() string { return fmt.Sprintf("pcmCollector(%d)", c.sampleRate) }
+
+func (c *pcmCollector) SampleRate() int { return c.sampleRate }
+
+func (c *pcmCollector) Close() error { return nil }
+
+func (c *pcmCollector) WriteSample(sample msdk.PCM16Sample) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.buf = append(c.buf, sample...)
+	return nil
+}
+
+func (c *pcmCollector) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.buf)
+}
+
+// since returns a copy of everything written after the first n samples.
+func (c *pcmCollector) since(n int) msdk.PCM16Sample {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n >= len(c.buf) {
+		return nil
+	}
+	return slices.Clone(c.buf[n:])
+}
+
 // pipelineHarness is the durable side of a mediaPort: UDP pipe, pipeline config,
 // buffer anchors, and a synthesized MediaConfig. The pipeline itself is swapped
 // on configure / reconfigure.
@@ -136,7 +174,7 @@ type pipelineHarness struct {
 	audioOut    *msdk.WriteCloserSwitch[msdk.PCM16Sample]
 	dtmfIn      *msdk.WriteCloserSwitch[*livekit.SipDTMF]
 	dtmfOut     *msdk.WriteCloserSwitch[*livekit.SipDTMF]
-	roomAudio   *msdk.PCM16Sample
+	roomAudio   *pcmCollector
 	roomDTMF    *dtmfCollector
 	pipeline    *mediaPortPipeline
 	ssrcCount   atomic.Uint64
@@ -159,10 +197,10 @@ func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
 		audioOut:  msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
 		dtmfIn:    msdk.NewWriteCloserSwitch[*livekit.SipDTMF](dtmf.SampleRate),
 		dtmfOut:   msdk.NewWriteCloserSwitch[*livekit.SipDTMF](dtmf.SampleRate),
-		roomAudio: new(msdk.PCM16Sample),
+		roomAudio: &pcmCollector{sampleRate: sampleRate},
 		roomDTMF:  &dtmfCollector{},
 	}
-	h.audioIn.Swap(msdk.NewPCM16BufferWriter(h.roomAudio, sampleRate))
+	h.audioIn.Swap(h.roomAudio)
 	h.dtmfIn.Swap(h.roomDTMF)
 	h.conf = &MediaPortPipelineConfig{
 		log:   log,
@@ -348,7 +386,7 @@ func (h *pipelineHarness) testAudioFromRoom(t *testing.T) {
 }
 
 func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
-	before := len(*h.roomAudio)
+	before := h.roomAudio.len()
 	packetsBefore := h.packetCount.Load()
 	clock := h.codec.Info().RTPClockRate
 	if clock == 0 {
@@ -363,15 +401,15 @@ func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
 		return h.packetCount.Load() >= packetsBefore+5
 	}, time.Second, 5*time.Millisecond, "RTP should be accepted")
 	require.Eventually(t, func() bool {
-		return len(*h.roomAudio) > before
+		return h.roomAudio.len() > before
 	}, time.Second, 5*time.Millisecond, "decoded PCM should reach room (packets=%d input=%d failed=%d ignored=%d room=%d)",
 		h.packetCount.Load(),
 		h.pipeline.conf.stats.InputPackets.Load(),
 		h.pipeline.conf.stats.FailedPackets.Load(),
 		h.pipeline.conf.stats.IgnoredPackets.Load(),
-		len(*h.roomAudio),
+		h.roomAudio.len(),
 	)
-	require.Greater(t, pcmEnergy((*h.roomAudio)[before:]), int64(0), "decoded room audio should carry energy")
+	require.Greater(t, pcmEnergy(h.roomAudio.since(before)), int64(0), "decoded room audio should carry energy")
 }
 
 func (h *pipelineHarness) testDTMFFromRoom(t *testing.T) {

@@ -152,19 +152,15 @@ func (p *mediaPortPipeline) init(
 	return nil
 }
 
-// Construct the Audio and optionally DTM pipleine from SIP RTP to LK PCM, in reverse order.
+// Construct the Audio and optionally DTMF pipeline from SIP RTP to LK PCM, in reverse order.
 func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[*livekit.SipDTMF]) error {
 	var err error
 	var inboundLatencyEntry atomic.Int64
 	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
 	sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
-
 	codecInfo := mc.Audio.Codec.Info()
 	sink = msdk.ResampleWriter(sink, codecInfo.SampleRate)
-
-	if p.conf.stats != nil {
-		sink = newMediaWriterCount(sink, &p.conf.stats.AudioInFrames, &p.conf.stats.AudioInSamples)
-	}
+	sink = newMediaWriterCount(sink, &p.conf.stats.AudioInFrames, &p.conf.stats.AudioInSamples)
 
 	if p.conf.opts.LogSignalChanges {
 		sink, err = NewSignalLogger(p.conf.log, "input", sink)
@@ -231,8 +227,8 @@ func (p *mediaPortPipeline) handleEventRTP(h *rtp.Header, payload []byte) error 
 	})
 }
 
-// Construct the Audio and optionally DTM pipleine from LK PCM to SIP RTP
-// Retuirns the insulated (nopCloser) connectors, and an error.
+// Construct the Audio and optionally DTMF pipeline from LK PCM to SIP RTP
+// Returns the insulated (nopCloser) connectors, and an error.
 func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate int) error {
 	p.rtpLoopWG.Go(p.rtpLoop)
 	w, err := p.sess.OpenWriteStream()
@@ -440,12 +436,12 @@ func (w *dtmfOutWriter) WriteSample(sample *livekit.SipDTMF) error {
 	if len(digits) == 0 {
 		digit := dtmf.CodeToChar(byte(sample.Code))
 		if digit == 0 {
-			return fmt.Errorf("code %d not supoported", sample.Code)
+			return fmt.Errorf("code %d not supported", sample.Code)
 		}
 		digits = string([]byte{digit})
 	} else if sample.Code > 0 {
 		// We can't distinguish between a code0 and no code, but better have something here
-		w.log.Warnw("code payload detected, ignored due to explicit digits", nil, "code", sample.Code, "digits", sample.Digit)
+		w.log.Debugw("code payload detected, ignored due to explicit digits", "code", sample.Code, "digits", sample.Digit)
 	}
 
 	w.mu.Lock()
