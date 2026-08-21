@@ -406,9 +406,9 @@ type MediaPort interface {
 	// GetOutboundDTMFWriter returns the LK room -> SIP DTMF writer.
 	GetOutboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
 
-	// WriteInboundAudioTo tells the MediaSegment where to write inbound SIP audio.
+	// WriteInboundAudioTo tells port where to write inbound SIP audio.
 	WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
-	// WriteInboundDTMFTo tells the MediaSegment where to write inbound SIP DTMF.
+	// WriteInboundDTMFTo tells port where to write inbound SIP DTMF.
 	WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 
 	// If there is no offer, this generates an offer.
@@ -692,8 +692,8 @@ func (p *mediaPort) Close() {
 		}
 		p.audioIn.Close()  // Propagate Close() to onwards to room
 		p.dtmfIn.Close()   // Propagate Close() to onwards to room
-		p.audioOut.Close() // Pipeline insulated, but close switch
-		p.dtmfOut.Close()  // Pipeline insulated, but close switch
+		p.audioOut.Close() // No-op, but do anyway
+		p.dtmfOut.Close()  // No-op, but do anyway
 	})
 }
 
@@ -983,7 +983,7 @@ func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
 		if a != b {
 			changeSetSummary |= changeSetCrypto
 		}
-	} else { // Prodile exists on both
+	} else { // Profile exists on both
 		if a.Profile != b.Profile ||
 			!bytes.Equal(a.Keys.LocalMasterKey, b.Keys.LocalMasterKey) ||
 			!bytes.Equal(a.Keys.LocalMasterSalt, b.Keys.LocalMasterSalt) ||
