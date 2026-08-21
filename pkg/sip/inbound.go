@@ -72,7 +72,9 @@ const (
 var allowHeader = sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE")
 
 var errNoACK = errors.New("no ACK received for 200 OK")
-var errInternal = errors.New("internal error")
+
+// RFC 3261 §21.4.27 / §14.2 — glare: INVITE received while an INVITE we sent is in progress.
+const statusRequestPending sip.StatusCode = 491
 
 // hashPassword creates a SHA256 hash of the password for logging purposes
 func hashPassword(password string) string {
@@ -408,7 +410,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		if err := existing.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
 			log.Errorw("failed to update inbound call SDP", err)
-			cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
+			if ok := errors.As(err, &SDPError{}); ok {
+				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
+			} else {
+				cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
+			}
 			return nil
 		}
 		// TODO(alexfish): Reply with the new SDP.
@@ -421,17 +427,23 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			if oc.media == nil {
 				oc.log.Errorw("outbound call media has not been negotiated", nil)
-				return errInternal
+				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
+				return nil
 			}
 			localSDP, err := oc.media.GetLocalSDP()
 			if err != nil || len(localSDP) == 0 {
 				oc.log.Errorw("outbound call does not have an SDP", nil)
-				return errInternal
+				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
+				return nil
 			}
 			oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 			if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
 				log.Errorw("failed to update outbound call SDP", err)
-				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
+				if ok := errors.As(err, &SDPError{}); ok {
+					cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
+				} else {
+					cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
+				}
 				return nil
 			}
 			oc.cc.RecordInvite(newCSeq)
