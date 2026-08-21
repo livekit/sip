@@ -405,8 +405,14 @@ type MediaPort interface {
 	GetOutboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
 
 	// WriteInboundAudioTo tells port where to write inbound SIP audio.
+	//
+	// MediaPort.Close() will propagate to the argument writer. The caller is
+	// responsible for closing the returned media writer.
 	WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer
+
 	// WriteInboundDTMFTo tells port where to write inbound SIP DTMF.
+	//
+	// Has similar close semantics to WriteInboundAudioTo (see comment above).
 	WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
 
 	// If there is no offer, this generates an offer.
@@ -735,7 +741,6 @@ func (p *mediaPort) GetOutboundAudioWriter() msdk.PCM16Writer {
 	return p.audioOut
 }
 
-// WriteInboundAudioTo sets audio writer that will receive decoded PCM from incoming RTP packets.
 func (p *mediaPort) WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
 	return p.audioIn.Swap(w)
 }
