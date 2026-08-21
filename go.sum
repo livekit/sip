@@ -136,8 +136,8 @@ github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e h1:DHSagaJXDSr
 github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e/go.mod h1:h4wP4IBPkT5aew7SZSGViHSmanKAiKWsHij/5YfL4BE=
 github.com/livekit/psrpc v0.7.3 h1:bekuZt/ZQzg8+/M8G6G5jq7bvV9fAKdPHSOZeTwrIIc=
 github.com/livekit/psrpc v0.7.3/go.mod h1:rAI+m2+/cb4x9RXhLRtUx5ZwdfjjXOl4zi46IjEetaw=
-github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260625120102-b6d1838861e7 h1:7I1SzZrgyE2PTPzPuWfR+6HO6C7sO0VJb61fUT5KJRw=
-github.com/livekit/server-sdk-go/v2 v2.16.7-0.20260625120102-b6d1838861e7/go.mod h1:B3qlhVBZ4olBWRN/KxokLZE2d4LujNk4n2yYDL3+u2s=
+github.com/livekit/server-sdk-go/v2 v2.18.1 h1:/u0JVII+ErGCivHnAGr6di0wl0NYsfcRvDzEtTAFovo=
+github.com/livekit/server-sdk-go/v2 v2.18.1/go.mod h1:su0IvJNWTFCHVwmqpsFvxHfXWs9pn26ms+cKBR1jILU=
 github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb h1:HmgaJMGs0Nco/Z+XMc9f+xFgrbood9yJsIBtl1OY76M=
 github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb/go.mod h1:aDa6mbFktNzA1D917RhFlIB5IOfNBTmrwt+/lX960j0=
 github.com/mackerelio/go-osstat v0.2.8 h1:I2duicTaCGWoM53XwAwA9OIe1inu0xnVs8/pqOWWVr4=
