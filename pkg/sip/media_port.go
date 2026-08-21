@@ -678,20 +678,27 @@ func (p *mediaPort) Close() {
 	p.closed.Once(func() {
 		defer p.stats.Closed.Store(true)
 
+		logError := func(comp string, err error) {
+			if err != nil {
+				p.log.Errorw("error closing media port", err, "component", comp)
+			}
+		}
+
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.closePipelineLocked()
-		p.port.Close()
+		logError("port", p.port.Close())
 		conn := p.port.unwrap()
 		if uc, ok := conn.(*net.UDPConn); ok {
 			go DrainPort(p.log, uc, p.opts.DrainingIdleTimeout, p.opts.DrainingDuration, nil)
 		} else {
-			_ = conn.Close()
+			logError("conn", conn.Close())
 		}
-		p.audioIn.Close()  // Propagate Close() to onwards to room
-		p.dtmfIn.Close()   // Propagate Close() to onwards to room
-		p.audioOut.Close() // No-op, but do anyway
-		p.dtmfOut.Close()  // No-op, but do anyway
+
+		logError("audioIn", p.audioIn.Close())   // Propagate Close() to onwards to room
+		logError("dtmfIn", p.dtmfIn.Close())     // Propagate Close() to onwards to room
+		logError("audioOut", p.audioOut.Close()) // No-op, but do anyway
+		logError("dtmfOut", p.dtmfOut.Close())   // No-op, but do anyway
 	})
 }
 
