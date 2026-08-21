@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
@@ -284,7 +285,7 @@ func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request, isFromUAC
 	require.NoError(t, err)
 	defer tx.Terminate()
 
-	resp := getFinalResponseOrFail(t, tx, req)
+	resp := getFinalResponseOrFail(t, nil, tx)
 	if req.Method == sip.INVITE && resp.StatusCode < 300 {
 		// Need to send ACK for 2xx INVITE, sipgo already sends ACK for 3xx+
 		ack := sip.NewAckRequest(req, resp, nil)
@@ -556,6 +557,10 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 	call.SetRemoteTag(LocalTag(remoteTag))
 	call.SetRemoteSDP(resp.Body())
 	call.SetRouteSet(resp, true)
+	t.Cleanup(func() {
+		bye := call.NewRequest(sip.BYE)
+		st.TestUA.TransactionRequest(t, bye, true)
+	})
 
 	st.Server.cmu.Lock()
 	defer st.Server.cmu.Unlock()
@@ -627,6 +632,10 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	case <-ctx.Done():
 		require.Fail(t, "timeout waiting for ACK")
 	}
+	t.Cleanup(func() {
+		bye := call.NewRequest(sip.BYE)
+		st.TestUA.TransactionRequest(t, bye, false)
+	})
 
 	st.Client.cmu.Lock()
 	defer st.Client.cmu.Unlock()
@@ -635,6 +644,38 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 
 	t.Logf("outbound call: %+v", call)
 	return call, oc, ackReq
+}
+
+func getMediaPort(t *testing.T, m MediaPort) *mediaPort {
+	t.Helper()
+	port, ok := m.(*mediaPort)
+	require.True(t, ok, "media port should be a *mediaPort")
+	return port
+}
+
+func getMediaPortRemoteAddr(t *testing.T, m MediaPort) netip.AddrPort {
+	t.Helper()
+	port := getMediaPort(t, m)
+	dst := port.port.dst.Load()
+	require.NotNil(t, dst, "destination should be set")
+	return *dst
+}
+
+// incompatibleCodecOffer builds an SDP offer whose only audio codec is not the
+// one already negotiated on m.
+func incompatibleCodecOffer(t *testing.T, addr netip.AddrPort, m MediaPort) []byte {
+	t.Helper()
+	codecSet := testCodecSet(g711.ULawSDPNameAndRate)
+	ngotiated := m.NegotiatedAudio()
+	require.NotNil(t, ngotiated, "media must already be negotiated")
+	if ngotiated.Codec.Info().SDPName == g711.ULawSDPNameAndRate {
+		codecSet = testCodecSet(g711.ALawSDPNameAndRate)
+	}
+	sdpOffer, err := sdp.NewOfferWith(codecSet, addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
+	require.NoError(t, err)
+	offer, err := sdpOffer.SDP.Marshal()
+	require.NoError(t, err)
+	return offer
 }
 
 func TestReinvite(t *testing.T) {
@@ -663,7 +704,7 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// After the re-INVITE with new offer, the media port destination must be updated.
-			require.Equal(t, newOffer.Addr, ic.media.RemoteAddr(), "re-INVITE should redirect RTP to the new remote address")
+			require.Equal(t, newOffer.Addr, getMediaPortRemoteAddr(t, ic.media), "re-INVITE should redirect RTP to the new remote address")
 		})
 
 		t.Run("miss", func(t *testing.T) {
@@ -679,7 +720,13 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// re-INVITE with different tag
+			oldTag := call.remoteTag
 			call.remoteTag = "something-else"
+			t.Cleanup(func() {
+				req := call.NewRequest(sip.BYE)
+				st.TestUA.TransactionRequest(t, req, true)
+				call.remoteTag = oldTag
+			})
 			req, _, err = call.Invite(call.localSDP)
 			require.NoError(t, err)
 			resp = st.TestUA.TransactionRequest(t, req, true)
@@ -691,21 +738,50 @@ func TestReinvite(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, ic := st.CreateInboundCall(t)
 			serverLocalSDP := call.remoteSDP
-			initialRemote := ic.media.RemoteAddr()
+			initialRemote := getMediaPortRemoteAddr(t, ic.media)
 
 			// Re-INVITE with no SDP body — destination must not change.
 			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
 			resp := st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
-			require.Equal(t, initialRemote, ic.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, ic.media), "body-less re-INVITE must not change RTP destination")
+		})
+
+		t.Run("incompatible_codec", func(t *testing.T) {
+			// TODO: change this test to confirm renegotiation when it's enabled
+			st := NewServiceTest(t, nil)
+			call, ic := st.CreateInboundCall(t)
+			serverLocalSDP := call.remoteSDP
+			initialRemote := getMediaPortRemoteAddr(t, ic.media)
+			initialCodec := ic.media.NegotiatedAudio().Codec.Info().SDPName
+
+			// TODO: Change to reflect full negotiation once enabled
+			updatedRemote := netip.MustParseAddrPort("9.8.7.6:12345")
+			req, _, err := call.Invite(incompatibleCodecOffer(t, updatedRemote, ic.media))
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "incompatible re-INVITE should get 200 OK")
+			require.Equal(t, updatedRemote, getMediaPortRemoteAddr(t, ic.media), "incompatible re-INVITE must still change RTP destination")
+			require.Equal(t, initialCodec, ic.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+
+			// Re-INVITE with original codec
+			req, _, err = call.Invite(call.localSDP)
+			require.NoError(t, err)
+			resp = st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "original offer should still be accepted")
+			require.Equal(t, serverLocalSDP, resp.Body(), "successful re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, ic.media), "original re-INVITE must restore RTP destination")
+			require.Equal(t, initialCodec, ic.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+
 		})
 	})
 	t.Run("outbound", func(t *testing.T) {
 		t.Run("normal", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
+			serverLocalSDP, err := oc.media.GetLocalSDP()
+			require.NoError(t, err)
 			require.NotEqual(t, call.localSDP, serverLocalSDP, "local and remote SDP should be different")
 
 			// Re-INVITE
@@ -727,27 +803,29 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// After the re-INVITE with new offer, the media port destination must be updated.
-			require.Equal(t, newOffer.Addr, oc.media.RemoteAddr(), "re-INVITE should redirect outbound call RTP to the new remote address")
+			require.Equal(t, newOffer.Addr, getMediaPortRemoteAddr(t, oc.media), "re-INVITE should redirect outbound call RTP to the new remote address")
 		})
 
 		t.Run("no_body", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
-			initialRemote := oc.media.RemoteAddr()
+			serverLocalSDP, err := getMediaPort(t, oc.media).GetLocalSDP()
+			require.NoError(t, err)
+			initialRemote := getMediaPortRemoteAddr(t, oc.media)
 
 			// Re-INVITE with no SDP body — destination must not change.
 			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
 			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
-			require.Equal(t, initialRemote, oc.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, oc.media), "body-less re-INVITE must not change RTP destination")
 		})
 
 		t.Run("miss", func(t *testing.T) {
 			st := NewServiceTest(t, nil)
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
+			serverLocalSDP, err := getMediaPort(t, oc.media).GetLocalSDP()
+			require.NoError(t, err)
 
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)
@@ -763,6 +841,34 @@ func TestReinvite(t *testing.T) {
 			resp = st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
+		})
+
+		t.Run("incompatible_codec", func(t *testing.T) {
+			// TODO: change this test to confirm renegotiation when it's enabled
+			st := NewServiceTest(t, nil)
+			call, oc, _ := st.CreateOutboundCall(t)
+			serverLocalSDP, err := oc.media.GetLocalSDP()
+			require.NoError(t, err)
+			initialCodec := oc.media.NegotiatedAudio().Codec.Info().SDPName
+			initialRemote := getMediaPortRemoteAddr(t, oc.media)
+
+			// TODO: Change to reflect full negotiation once enabled
+			updatedRemote := netip.MustParseAddrPort("9.8.7.6:12345")
+			req, _, err := call.Invite(incompatibleCodecOffer(t, updatedRemote, oc.media))
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "incompatible re-INVITE should get 200 OK")
+			require.Equal(t, updatedRemote, getMediaPortRemoteAddr(t, oc.media), "incompatible re-INVITE must still change RTP destination")
+			require.Equal(t, initialCodec, oc.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+
+			// Re-INVITE with original codec
+			req, _, err = call.Invite(call.localSDP)
+			require.NoError(t, err)
+			resp = st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "original offer should still be accepted")
+			require.Equal(t, serverLocalSDP, resp.Body(), "successful re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, oc.media), "original re-INVITE must restore RTP destination")
+			require.Equal(t, initialCodec, oc.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
 		})
 	})
 }
