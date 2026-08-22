@@ -410,7 +410,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
 	}
-	p.lastDTMFTimestamp.Store(math.MaxUint32)
+	p.lastDTMFEvent.Store(math.MaxUint64)
 	if p.opts.IgnorePreanswerData {
 		p.port.startDiscarding()
 	}
@@ -458,7 +458,7 @@ type MediaPort struct {
 	audioIn           *msdk.SwitchWriter // SIP RTP -> LK PCM
 	audioInHandler    rtp.Handler        // for debug only
 	dtmfIn            atomic.Pointer[func(ev dtmf.Event)]
-	lastDTMFTimestamp atomic.Uint32 // rtp timestamp of last DTMF packet seen
+	lastDTMFEvent atomic.Uint64 // (rtp timestamp, event code) of last DTMF packet seen
 }
 
 func (p *MediaPort) DisableOut() {
@@ -767,4 +767,54 @@ func (p *MediaPort) HandleDTMF(h func(ev dtmf.Event)) {
 	} else {
 		p.dtmfIn.Store(&h)
 	}
+}
+
+func (p *MediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
+	ptr := p.dtmfIn.Load()
+	if ptr == nil {
+		return nil
+	}
+	fnc := *ptr
+	if fnc == nil {
+		return nil
+	}
+	ev, err := dtmf.Decode(payload)
+	if err != nil {
+		return nil
+	}
+	// RFC 4733 requires all packets of a given digit to share identical timestamps.
+	// Some SIP devices or carriers may reuse the timestamp of the previous digit
+	// for the next one, so we combine timestamp and event code for deduplication.
+	// The marker bit could be used instead, but it is prone to occasional loss.
+	eventID := uint64(h.Timestamp)<<8 | uint64(ev.Code)
+	if eventID == p.lastDTMFEvent.Load() {
+		return nil
+	}
+	p.lastDTMFEvent.Store(eventID)
+	fnc(ev)
+	return nil
+}
+
+func (p *MediaPort) WriteDTMF(ctx context.Context, digits string) error {
+	if len(digits) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	dtmfOut := p.dtmfOutRTP
+	audioOut := p.dtmfOutAudio
+	audioOutRTP := p.audioOutRTP
+	p.mu.Unlock()
+	if !p.dtmfAudioEnabled {
+		audioOut = nil
+	}
+	if dtmfOut == nil && audioOut == nil {
+		return nil
+	}
+
+	var rtpTs uint32
+	if audioOutRTP != nil {
+		rtpTs = audioOutRTP.GetCurrentTimestamp()
+	}
+
+	return dtmf.Write(ctx, audioOut, dtmfOut, rtpTs, digits)
 }
