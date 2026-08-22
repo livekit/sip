@@ -1736,11 +1736,8 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 
 	if dialtone && c.started.IsBroken() && !c.done.Load() {
 		const ringVolume = math.MaxInt16 / 2
-		rctx, rcancel := context.WithCancel(ctx)
-		defer rcancel()
 
 		// Mute the room audio to the SIP participant.
-		// Skip closing the existing writer, which is c.audioOut.
 		oldRoomAudioOut := c.lkRoom.WriteOutboundAudioTo(nil)
 
 		defer func() {
@@ -1752,6 +1749,9 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 				}
 			}
 		}()
+
+		rctx, rcancel := context.WithCancel(ctx)
+		defer rcancel()
 
 		go func() {
 			err := tones.Play(rctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
