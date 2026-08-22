@@ -349,6 +349,98 @@ func updateRemoteFromSDP(media *MediaPort, log logger.Logger, codecs *msdk.Codec
 	media.UpdateRemote(desc.Addr)
 }
 
+// ── RFC 3264 §6.1: ANSWER THE OFFER'S DIRECTION, DON'T ECHO OUR CACHED SDP ──────────
+//
+// Reproduced on v1.8.0 and v1.9.0. When a carrier puts a bridged call on hold it sends a
+// re-INVITE offering `a=sendonly`. Both the inbound and outbound re-INVITE paths answer by
+// replaying the CACHED local SDP verbatim, which carries `a=sendrecv`. RFC 3264 §6.1
+// requires a `sendonly` offer to be answered `recvonly` (and `inactive` -> `inactive`), so
+// the answer is invalid and the carrier tears the dialog down ~60ms after our 200 OK:
+//
+//	06:19:05.464  IN   INVITE  a=sendonly    <- carrier: hold
+//	06:19:05.465  OUT  200 OK  a=sendrecv    <- WRONG, must be a=recvonly
+//	06:19:05.521  IN   ACK
+//	06:19:05.527  IN   BYE                   <- carrier gives up
+//
+// The whole call then collapses: dropping the held leg drops the other party too, so a
+// supervisor pressing HOLD ends the customer's call. No application-layer workaround is
+// possible — the dialog is dead before the agent sees anything.
+//
+// answerDirectionFor maps the offer's direction to the RFC-correct answer, and
+// withSDPDirection rewrites the single a= line in our cached SDP. Deliberately a
+// text-level rewrite rather than a parse/re-serialize: the cached SDP is already a
+// negotiated, working body and reserializing it risks perturbing codecs/ptime/ICE lines
+// that the carrier has accepted. Only the direction attribute changes.
+//
+// If the offer states no direction, sendrecv is implied (RFC 4566 §6) and the cached SDP is
+// returned untouched — preserving today's behaviour for every non-hold re-INVITE (codec
+// renegotiation, port change, session-timer refresh).
+func answerDirectionFor(offer []byte) string {
+	// Scan media-level then session-level attributes; last one wins, matching how the
+	// direction applies to the (single) audio stream we negotiate.
+	dir := ""
+	for _, line := range strings.Split(string(offer), "\n") {
+		switch strings.TrimSpace(line) {
+		case "a=sendonly":
+			dir = "sendonly"
+		case "a=recvonly":
+			dir = "recvonly"
+		case "a=inactive":
+			dir = "inactive"
+		case "a=sendrecv":
+			dir = "sendrecv"
+		}
+	}
+	switch dir {
+	case "sendonly":
+		return "recvonly" // remote holds us: it sends, we only receive
+	case "recvonly":
+		return "sendonly"
+	case "inactive":
+		return "inactive"
+	default:
+		return "" // absent or sendrecv -> no rewrite needed
+	}
+}
+
+// withSDPDirection returns local with its direction attribute replaced by dir. If local has
+// no direction line, dir is appended to the audio media section (falling back to the end of
+// the body when no m= line is present).
+func withSDPDirection(local []byte, dir string) []byte {
+	if dir == "" || len(local) == 0 {
+		return local
+	}
+	// Preserve CRLF vs LF: SDP is CRLF per RFC 4566 and some SBCs are strict.
+	eol := "\n"
+	if strings.Contains(string(local), "\r\n") {
+		eol = "\r\n"
+	}
+	lines := strings.Split(strings.ReplaceAll(string(local), "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines)+1)
+	replaced := false
+	for _, line := range lines {
+		switch strings.TrimSpace(line) {
+		case "a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive":
+			if !replaced {
+				out = append(out, "a="+dir)
+				replaced = true
+			}
+			// drop any further duplicate direction lines
+		default:
+			out = append(out, line)
+		}
+	}
+	if !replaced {
+		// No direction line: insert after the audio m= section's attributes, i.e. at the
+		// end of the body. sendrecv was implied before, so stating it explicitly is safe.
+		for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+			out = out[:len(out)-1]
+		}
+		out = append(out, "a="+dir, "")
+	}
+	return []byte(strings.Join(out, eol))
+}
+
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
 	_ = s.processInvite(req, tx)
@@ -417,9 +509,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		existing.updateRemoteFromSDP(sdpBodyFromRequest(req))
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
+		offer := sdpBodyFromRequest(req)
+		// RFC 3264 §6.1: answer the OFFER's direction. Replaying our cached sendrecv SDP at a
+		// sendonly (hold) offer makes the carrier BYE the dialog — see answerDirectionFor.
+		answerDir := answerDirectionFor(offer)
+		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq(),
+			"answerDirection", answerDir)
+		existing.updateRemoteFromSDP(offer)
+		cc.AcceptAsKeepAlive(withSDPDirection(existing.cc.OwnSDP(), answerDir))
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
@@ -428,10 +525,15 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			localSDP := oc.cc.LocalSDP()
 			if len(localSDP) != 0 {
-				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-				oc.updateRemoteFromSDP(sdpBodyFromRequest(req))
+				offer := sdpBodyFromRequest(req)
+				// RFC 3264 §6.1 — see answerDirectionFor. This is the path a supervisor HOLD on a
+				// bridged (transferred) call takes.
+				answerDir := answerDirectionFor(offer)
+				oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq(),
+					"answerDirection", answerDir)
+				oc.updateRemoteFromSDP(offer)
 				oc.cc.RecordInvite(newCSeq)
-				cc.AcceptAsKeepAlive(localSDP)
+				cc.AcceptAsKeepAlive(withSDPDirection(localSDP, answerDir))
 				return nil
 			}
 		}
