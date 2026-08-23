@@ -902,30 +902,31 @@ func TestMediaPortDTMFSameTimestamp(t *testing.T) {
 	p.lastDTMFEvent.Store(math.MaxUint64)
 	var codes []byte
 	p.HandleDTMF(func(ev dtmf.Event) {
-		codes = append(codes, byte(ev.Code))
+		codes = append(codes, ev.Code)
 	})
 
 	// Three different digits, all with the same timestamp (non-standard but seen in production).
 	sameTS := uint32(100000)
-	digits := []byte{1, 2, 3} // "1", "2", "3"
+	// Use digit characters so we go through dtmf.Write which produces proper DTMF packets.
+	digits := "123"
 
-	for _, code := range digits {
-		ev := dtmf.Event{
-			Code:     dtmf.Code(code),
-			Volume:   10,
-			Duration: 160,
-			End:      false,
-		}
-		payload, err := dtmf.Encode(ev)
+	for i := range digits {
+		var buf rtp.Buffer
+		w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+		err := dtmf.Write(context.Background(), nil, w, sameTS, digits[i:i+1])
 		require.NoError(t, err)
-		h := &rtp.Header{
-			Timestamp: sameTS,
-			Marker:    true,
-		}
-		require.NoError(t, p.dtmfHandler(h, payload))
+		require.NotEmpty(t, buf)
+		// Take the first packet of each digit and send to handler.
+		// All packets share the same timestamp, simulating the bug scenario.
+		pkt := buf[0]
+		h := pkt.Header
+		require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
 	}
 
-	require.Equal(t, []byte{1, 2, 3}, codes)
+	require.Equal(t, 3, len(codes))
+	require.NotEqual(t, codes[0], codes[1])
+	require.NotEqual(t, codes[1], codes[2])
+	require.NotEqual(t, codes[0], codes[2])
 }
 
 // Test util for incrementing prometheus counter metrics.
