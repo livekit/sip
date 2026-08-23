@@ -148,16 +148,19 @@ func (p *MediaPort) dtmfHandler(h *rtp.Header, payload []byte) error {
 	if fnc == nil {
 		return nil
 	}
-	// RFC 4733 requires all packets of a given digit to share identical timestamps.
-	// The marker bit could be used instead, but it is prone to occasional loss.
-	if h.Timestamp == p.lastDTMFTimestamp.Load() {
-		return nil
-	}
 	ev, err := dtmf.Decode(payload)
 	if err != nil {
 		return nil
 	}
-	p.lastDTMFTimestamp.Store(h.Timestamp)
+	// RFC 4733 requires all packets of a given digit to share identical timestamps.
+	// Some SIP devices or carriers may reuse the timestamp of the previous digit
+	// for the next one, so we combine timestamp and event code for deduplication.
+	// The marker bit could be used instead, but it is prone to occasional loss.
+	eventID := uint64(h.Timestamp)<<8 | uint64(ev.Code)
+	if eventID == p.lastDTMFEvent.Load() {
+		return nil
+	}
+	p.lastDTMFEvent.Store(eventID)
 	fnc(ev)
 	return nil
 }
