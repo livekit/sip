@@ -84,7 +84,7 @@ type mediaPortPipeline struct {
 	audioToPort   msdk.PCM16Writer                   // post-mixer chain towards port
 	mixerToPort   msdk.PCM16Writer                   // Reference, not closed
 	dtmfToPort    msdk.WriteCloser[*livekit.SipDTMF]
-	lastDTMFEvent atomic.Uint64 // rtp timestamp of last DTMF packet seen
+	lastDTMFEvent atomic.Uint64 // composite (timestamp, event code) of last DTMF packet seen
 }
 
 // Returns insulated (nopCloser) connectors, preventing anchor close from closing pipeline.
