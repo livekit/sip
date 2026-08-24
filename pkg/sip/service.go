@@ -48,8 +48,13 @@ import (
 type PendingTransfer struct {
 	CallID     string
 	TransferTo string
-	Outcome    atomic.Pointer[transferOutcome]
-	Done       chan transferOutcome
+
+	// TODO: record the transfer id here as soon as the transfer starts. It is
+	// only known inside the worker goroutine today, so a waiter that gives up
+	// before the outcome arrives reports a failure with no transfer id, and the
+	// caller cannot match it against the transfer in their logs.
+	Outcome atomic.Pointer[transferOutcome]
+	Done    chan transferOutcome
 }
 
 // transferOutcome is what a finished transfer reports back: the id it was
