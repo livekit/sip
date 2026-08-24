@@ -22,6 +22,7 @@ Currently, the following features are supported:
 - Dialing Out (Sending INVITEs)
 - Dialing In (Accepting INVITEs)
 - Digest Authentication
+- Registering with a provider (Sending REGISTERs)
 - Touch Tone (Sending and Reading DTMF)
 
 ## Documentation
@@ -65,6 +66,40 @@ rtp_port: port to listen and send RTP traffic (default 10000-20000)
 ```
 
 The config file can be added to a mounted volume with its location passed in the SIP_CONFIG_FILE env var, or its body can be passed in the SIP_CONFIG_BODY env var.
+
+### Registering with a provider
+
+Providers usually deliver inbound calls to an address you give them, which requires the SIP
+service to be reachable at a stable IP. Where that is not possible, most of them offer a
+registration-based trunk instead: the service registers, and calls are delivered to the
+resulting binding. Configure one entry per account:
+
+```yaml
+sip_registrations:
+  - registrar: sip:sip.provider.example      # registrar address, or host[:port]
+    username: 1000                           # address-of-record user
+    password: secret
+    # auth_username: 1000                    # digest username, if issued separately
+    # domain: provider.example               # AOR host, defaults to the registrar host
+    # expiry: 10m                            # requested lifetime; the registrar may grant less
+    # keepalive: 25s                         # OPTIONS interval to hold the NAT binding open
+```
+
+Each node registers its own Contact, so point one node at a given account. Registration only
+tells the provider where to send calls: inbound INVITEs still arrive on the normal inbound path
+and are authenticated and dispatched by trunk as usual.
+
+The Contact is this node's signaling address, which behind NAT is a private one. That works
+with providers that route to the source address they observe, which is what the REGISTER asks
+them to do. If yours routes to the Contact instead, set `nat_1_to_1_ip` to the address it
+should use.
+
+`keepalive` matters because providers commonly refuse a registration interval short enough to
+refresh a NAT mapping on its own, and a mapping that expires stops inbound calls while the
+registration still looks healthy. Set it to a negative value to disable.
+
+Because losing a registration silently stops inbound calls, each one is also exported as
+`livekit_sip_registrations_active`, labeled by registrar.
 
 ### Using the SIP service
 

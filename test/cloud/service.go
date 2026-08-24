@@ -18,11 +18,14 @@ func NewService(conf *IntegrationConfig, bus psrpc.MessageBus) (*service.Service
 		return nil, err
 	}
 
-	sipsrv, err := sip.NewService("", conf.Config, mon, logger.GetLogger(), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcClient) })
+	sipsrv, err := sip.NewService("", conf.Config, mon, logger.GetLogger(), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+		return sip.NewRPCStateHandler(psrpcClient)
+	})
 	if err != nil {
 		return nil, err
 	}
 	svc := service.NewService(conf.Config, logger.GetLogger(), sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
+	svc.SetSIPServiceDrain(sipsrv.StopRegistrations)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
