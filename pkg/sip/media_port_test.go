@@ -872,7 +872,7 @@ func TestMediaPortDTMF(t *testing.T) {
 		for _, lossPackets := range lossCases {
 			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
 				p := &MediaPort{}
-				p.lastDTMFTimestamp.Store(math.MaxUint32)
+				p.lastDTMFEvent.Store(math.MaxUint64)
 				got := ""
 				p.HandleDTMF(func(ev dtmf.Event) {
 					t.Logf("received DTMF event: %+v", ev)
@@ -893,6 +893,40 @@ func TestMediaPortDTMF(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestMediaPortDTMFSameTimestamp(t *testing.T) {
+	// Some SIP carriers reuse the RTP timestamp across different DTMF digits.
+	// Verify that each distinct event code is still reported even when timestamps are shared.
+	p := &MediaPort{}
+	p.lastDTMFEvent.Store(math.MaxUint64)
+	var codes []byte
+	p.HandleDTMF(func(ev dtmf.Event) {
+		codes = append(codes, ev.Code)
+	})
+
+	// Three different digits, all with the same timestamp (non-standard but seen in production).
+	sameTS := uint32(100000)
+	// Use digit characters so we go through dtmf.Write which produces proper DTMF packets.
+	digits := "123"
+
+	for i := range digits {
+		var buf rtp.Buffer
+		w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+		err := dtmf.Write(context.Background(), nil, w, sameTS, digits[i:i+1])
+		require.NoError(t, err)
+		require.NotEmpty(t, buf)
+		// Take the first packet of each digit and send to handler.
+		// All packets share the same timestamp, simulating the bug scenario.
+		pkt := buf[0]
+		h := pkt.Header
+		require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
+	}
+
+	require.Equal(t, 3, len(codes))
+	require.NotEqual(t, codes[0], codes[1])
+	require.NotEqual(t, codes[1], codes[2])
+	require.NotEqual(t, codes[0], codes[2])
 }
 
 // Test util for incrementing prometheus counter metrics.

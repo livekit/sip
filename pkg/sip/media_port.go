@@ -410,7 +410,7 @@ func NewMediaPortWith(tid traceid.ID, log logger.Logger, mon *stats.CallMonitor,
 		audioIn:          msdk.NewSwitchWriter(inSampleRate),
 		stats:            opts.Stats,
 	}
-	p.lastDTMFTimestamp.Store(math.MaxUint32)
+	p.lastDTMFEvent.Store(math.MaxUint64)
 	if p.opts.IgnorePreanswerData {
 		p.port.startDiscarding()
 	}
@@ -458,7 +458,7 @@ type MediaPort struct {
 	audioIn           *msdk.SwitchWriter // SIP RTP -> LK PCM
 	audioInHandler    rtp.Handler        // for debug only
 	dtmfIn            atomic.Pointer[func(ev dtmf.Event)]
-	lastDTMFTimestamp atomic.Uint32 // rtp timestamp of last DTMF packet seen
+	lastDTMFEvent atomic.Uint64 // composite (timestamp, event code) of last DTMF packet seen
 }
 
 func (p *MediaPort) DisableOut() {
