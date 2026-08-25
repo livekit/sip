@@ -379,7 +379,8 @@ func TestOutboundHangupDrainsMediaBeforeBYE(t *testing.T) {
 		ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
 		HangupDrainTime:   drain,
 	}
-	client := NewOutboundTestClient(t, TestClientConfig{Config: conf})
+	h := NewTestSIP(t, TestSIPConfig{Config: conf})
+	client := h.Client
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -392,36 +393,15 @@ func TestOutboundHangupDrainsMediaBeforeBYE(t *testing.T) {
 		}
 	}()
 
-	var sipClient *testSIPClient
-	select {
-	case sipClient = <-createdClients:
-		t.Cleanup(func() { _ = sipClient.Close() })
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected test SIP client to be created")
-		return
-	}
-
-	var tr *transactionRequest
-	select {
-	case tr = <-sipClient.transactions:
-		t.Cleanup(func() { tr.transaction.Terminate() })
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected INVITE transaction")
-		return
-	}
+	tr := h.WaitTransaction(t, 500*time.Millisecond, req.SipCallId, "")
+	t.Cleanup(func() { tr.transaction.Terminate() })
 	require.Equal(t, sip.INVITE, tr.req.Method)
 
 	// Fake 200 OK + ACK so the call is established.
 	resp := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
 	require.NoError(t, tr.transaction.SendResponse(resp))
 
-	var ackReq *sipRequest
-	select {
-	case ackReq = <-sipClient.requests:
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected ACK request")
-		return
-	}
+	ackReq := h.WaitRequest(t, 500*time.Millisecond, req.SipCallId, "")
 	require.Equal(t, sip.ACK, ackReq.req.Method)
 
 	// Local hangup path: the BYE must arrive only after the drain window.
@@ -434,15 +414,12 @@ func TestOutboundHangupDrainsMediaBeforeBYE(t *testing.T) {
 		endCallDone <- call.EndCall(ctx, nil)
 	}()
 
-	select {
-	case byeTx := <-sipClient.transactions:
-		require.Equal(t, sip.BYE, byeTx.req.Method)
-		require.GreaterOrEqual(t, time.Since(start), drain, "BYE sent before the media drain window elapsed")
-		resp := sip.NewResponseFromRequest(byeTx.req, 200, "OK", nil)
-		require.NoError(t, byeTx.transaction.SendResponse(resp))
-	case <-time.After(drain + 3*time.Second):
-		require.Fail(t, "expected BYE after the drain window")
-	}
+	byeTx, byeErr := h.client.WaitTransactionTimeout(drain+3*time.Second, req.SipCallId, "")
+	require.NoError(t, byeErr, "expected BYE after the drain window")
+	require.Equal(t, sip.BYE, byeTx.req.Method)
+	require.GreaterOrEqual(t, time.Since(start), drain, "BYE sent before the media drain window elapsed")
+	resp200 := sip.NewResponseFromRequest(byeTx.req, 200, "OK", nil)
+	require.NoError(t, byeTx.transaction.SendResponse(resp200))
 
 	select {
 	case err := <-endCallDone:
