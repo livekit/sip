@@ -343,6 +343,26 @@ func (c *outboundCall) printStats() {
 	c.stats.Log(c.log, c.callStart)
 }
 
+// drainOnHangup returns how long the call should keep feeding media to the SIP
+// peer before sending BYE, for a locally-initiated hangup. It is zero for
+// remote BYE ("bye"), errors, timeouts, and pre-connect failures — those must
+// not be delayed. The voicemail-clipping case is exactly the clean local
+// hangup (agent end-call, participant removed) where the peer has no trailing
+// silence to absorb the in-flight tail (issue #4737).
+func (c *outboundCall) drainOnHangup(end EndCall) time.Duration {
+	if end.Term.Result != stats.ResultSuccess {
+		return 0
+	}
+	switch end.Term.Reason {
+	case "hangup", "rpc", "removed":
+		// agent end-call, EndCall RPC, participant removed from room
+		return c.c.conf.HangupDrainTime
+	default:
+		// remote BYE and anything else
+		return 0
+	}
+}
+
 func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 	c.closing.Break()
 	ctx = context.WithoutCancel(ctx)
@@ -375,6 +395,14 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		// This ensures participant attributes are still available for
 		// attributes_to_headers mapping in the setHeaders callback.
 		// See: https://github.com/livekit/sip/issues/404
+		if drain := c.drainOnHangup(end); drain > 0 {
+			// Keep feeding media to the peer for a short window so audio
+			// buffered in the mixer, encoder, and in-flight RTP clears the
+			// wire before the BYE tears the call down. Without this, the last
+			// word of a voicemail is clipped on abrupt hangups (issue #4737).
+			c.log.Debugw("draining media before hangup", "drain", drain)
+			time.Sleep(drain)
+		}
 		c.stopSIP(ctx, end.Term, end.Headers)
 		if c.media != nil {
 			c.media.Close()

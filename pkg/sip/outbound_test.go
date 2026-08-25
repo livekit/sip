@@ -23,11 +23,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
+
+	"github.com/livekit/sip/pkg/config"
 )
 
 // recordingSIPClient is a SIPClient that records the requests written to it.
@@ -416,6 +419,98 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 		})
 	}
 
+}
+
+func TestOutboundHangupDrainsMediaBeforeBYE(t *testing.T) {
+	// A locally-initiated hangup (agent end-call, EndCall RPC, participant
+	// removed) must keep feeding media to the SIP peer for the configured
+	// drain window before sending BYE, so the in-flight tail of the last
+	// utterance reaches the callee (issue #4737). Remote BYE and error paths
+	// must not be delayed.
+	const drain = 500 * time.Millisecond
+
+	conf := &config.Config{
+		NodeID:            "test-node",
+		SIPPort:           5060,
+		SIPPortListen:     5060,
+		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
+		MaxCpuUtilization: 0.99,
+		WsUrl:             "ws://localhost:7880",
+		ApiKey:            "test-api-key",
+		ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
+		HangupDrainTime:   drain,
+	}
+	client := NewOutboundTestClient(t, TestClientConfig{Config: conf})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	req := MinimalCreateSIPParticipantRequest()
+	go func() {
+		_, err := client.CreateSIPParticipant(ctx, req)
+		if err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant error: %v", err)
+			t.Fail()
+		}
+	}()
+
+	var sipClient *testSIPClient
+	select {
+	case sipClient = <-createdClients:
+		t.Cleanup(func() { _ = sipClient.Close() })
+	case <-time.After(500 * time.Millisecond):
+		require.Fail(t, "expected test SIP client to be created")
+		return
+	}
+
+	var tr *transactionRequest
+	select {
+	case tr = <-sipClient.transactions:
+		t.Cleanup(func() { tr.transaction.Terminate() })
+	case <-time.After(500 * time.Millisecond):
+		require.Fail(t, "expected INVITE transaction")
+		return
+	}
+	require.Equal(t, sip.INVITE, tr.req.Method)
+
+	// Fake 200 OK + ACK so the call is established.
+	resp := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
+	require.NoError(t, tr.transaction.SendResponse(resp))
+
+	var ackReq *sipRequest
+	select {
+	case ackReq = <-sipClient.requests:
+	case <-time.After(500 * time.Millisecond):
+		require.Fail(t, "expected ACK request")
+		return
+	}
+	require.Equal(t, sip.ACK, ackReq.req.Method)
+
+	// Local hangup path: the BYE must arrive only after the drain window.
+	call := client.getActiveCall(LocalTag(req.SipCallId))
+	require.NotNil(t, call)
+
+	start := time.Now()
+	endCallDone := make(chan error, 1)
+	go func() {
+		endCallDone <- call.EndCall(ctx, nil)
+	}()
+
+	select {
+	case byeTx := <-sipClient.transactions:
+		require.Equal(t, sip.BYE, byeTx.req.Method)
+		require.GreaterOrEqual(t, time.Since(start), drain, "BYE sent before the media drain window elapsed")
+		resp := sip.NewResponseFromRequest(byeTx.req, 200, "OK", nil)
+		require.NoError(t, byeTx.transaction.SendResponse(resp))
+	case <-time.After(drain + 3*time.Second):
+		require.Fail(t, "expected BYE after the drain window")
+	}
+
+	select {
+	case err := <-endCallDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		require.Fail(t, "EndCall did not return after BYE was answered")
+	}
 }
 
 func TestBuildOutboundHeaders(t *testing.T) {
