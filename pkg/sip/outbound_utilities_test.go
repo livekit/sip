@@ -480,6 +480,28 @@ type TestClientConfig struct {
 	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
 	GetRoom      GetRoomFunc      // newTestRoom if nil
 	Handler      Handler          // empty TestHandler if nil
+	DNS          DNSResolver      // resolves nothing if nil, so tests stay off the network
+}
+
+// minimalTestConfig returns the config NewOutboundTestClient uses by default.
+func minimalTestConfig(t testing.TB) *config.Config {
+	t.Helper()
+	localIP, err := config.GetLocalIP()
+	if err != nil {
+		t.Fatalf("failed to get local IP: %v", err)
+	}
+	return &config.Config{
+		NodeID:            "test-node",
+		SIPPort:           5060,
+		SIPPortListen:     5060,
+		ListenIP:          localIP.String(),
+		LocalNet:          localIP.String() + "/24",
+		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
+		MaxCpuUtilization: 0.99, // Higher threshold for tests to avoid false positives
+		WsUrl:             "ws://localhost:7880",
+		ApiKey:            "test-api-key",
+		ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
+	}
 }
 
 func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
@@ -489,22 +511,7 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	}
 	log := logger.NewTestLogger(t)
 	if cfg.Config == nil {
-		localIP, err := config.GetLocalIP()
-		if err != nil {
-			t.Fatalf("failed to get local IP: %v", err)
-		}
-		cfg.Config = &config.Config{
-			NodeID:            "test-node",
-			SIPPort:           5060,
-			SIPPortListen:     5060,
-			ListenIP:          localIP.String(),
-			LocalNet:          localIP.String() + "/24",
-			RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
-			MaxCpuUtilization: 0.99, // Higher threshold for tests to avoid false positives
-			WsUrl:             "ws://localhost:7880",
-			ApiKey:            "test-api-key",
-			ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
-		}
+		cfg.Config = minimalTestConfig(t)
 	}
 	if cfg.Monitor == nil {
 		var err error
@@ -543,7 +550,10 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	if cfg.Handler == nil {
 		cfg.Handler = &TestHandler{}
 	}
-	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
+	if cfg.DNS == nil {
+		cfg.DNS = fakeDNS{}
+	}
+	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom), WithDNSResolver(cfg.DNS))
 	client.SetHandler(cfg.Handler)
 
 	// Set up service config with minimal values

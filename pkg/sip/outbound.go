@@ -878,6 +878,7 @@ type sipOutbound struct {
 	mu         sync.RWMutex
 	tag        RemoteTag
 	callID     string
+	dest       string // resolved next hop, see resolveDest
 	invite     *sip.Request
 	inviteOk   *sip.Response
 	localSDP   []byte // SDP Offer, constrained by the answer
@@ -1173,6 +1174,10 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
+	if dest := c.resolveDest(ctx, req); dest != "" {
+		req.SetDestination(dest)
+	}
+
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
@@ -1209,6 +1214,40 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
 	}
 	return req, resp, err
+}
+
+// resolveDest returns the address the request should be sent to, resolving the
+// next hop (the first Route header if there is one, the request URI otherwise)
+// with SRV support. Pinning it on the request keeps the transport layer from
+// resolving the name itself, and makes the ACK, CANCEL and BYE built from this
+// request reach the same host the INVITE did.
+//
+// The result is cached because Invite retries the INVITE after an auth
+// challenge: a second lookup could land on a different SRV target, where the
+// nonce from the 401/407 is not valid.
+//
+// Failures are not fatal. The destination is left unset and the transport layer
+// falls back to its own lookup, so an unresolvable host still fails the way it
+// used to.
+func (c *sipOutbound) resolveDest(ctx context.Context, req *sip.Request) string {
+	if c.c.conf.DisableDNSSRV {
+		return ""
+	}
+	if c.dest != "" {
+		return c.dest
+	}
+	uri := &req.Recipient
+	if h := req.Route(); h != nil {
+		uri = &h.Address
+	}
+	dest, err := resolveNextHop(ctx, c.c.dns, uri.Host, uri.Port, req.Transport())
+	if err != nil {
+		c.log.Debugw("cannot resolve outbound destination, deferring to transport layer",
+			"host", uri.Host, "port", uri.Port, "transport", req.Transport(), "error", err)
+		return ""
+	}
+	c.dest = dest
+	return dest
 }
 
 func (c *sipOutbound) WriteRequest(req *sip.Request) error {
