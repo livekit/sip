@@ -1503,12 +1503,18 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 
 // drainOnHangup returns how long the call should keep feeding media to the SIP
 // peer before sending BYE, for a locally-initiated hangup. It is zero for
-// remote BYE, errors, timeouts, and pre-connect failures — those must not be
-// delayed. The voicemail-clipping case is exactly the clean local hangup
-// (agent end-call, participant removed) where the peer has no trailing silence
-// to absorb the in-flight tail (issue #4737).
+// remote BYE, remote CANCEL (nothing bridged yet), errors, timeouts, and
+// pre-connect failures — those must not be delayed. The voicemail-clipping
+// case is exactly the clean local hangup (agent end-call, participant removed)
+// where the peer has no trailing silence to absorb the in-flight tail (issue
+// #4737).
 func (c *inboundCall) drainOnHangup(end EndCall) time.Duration {
 	if end.Term.Result != stats.ResultSuccess {
+		return 0
+	}
+	if !c.started.IsBroken() {
+		// Media was never bridged (remote CANCEL before 200 OK, pre-connect
+		// failures) — there is nothing in flight to drain.
 		return 0
 	}
 	if c.closeReason.Load() != nil {
@@ -1516,9 +1522,9 @@ func (c *inboundCall) drainOnHangup(end EndCall) time.Duration {
 		return 0
 	}
 	switch end.Term.Reason {
-	case "hangup", "rpc", "cancelled", "removed":
-		// local hangup: ctx cancel (agent end-call), EndCall RPC, cancelled
-		// invite, participant removed from room
+	case "hangup", "rpc", "removed":
+		// local hangup: ctx cancel (agent end-call), EndCall RPC, participant
+		// removed from room
 		return c.s.conf.HangupDrainTime
 	default:
 		return 0
