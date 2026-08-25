@@ -1743,7 +1743,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer func() {
 			if retErr != nil && !c.done.Load() {
 				c.lkRoom.WriteOutboundAudioTo(oldRoomAudioOut)
-			} else {
+			} else if oldRoomAudioOut != nil {
 				if err := oldRoomAudioOut.Close(); err != nil {
 					c.log().Warnw("failed to close old audio output", err)
 				}
