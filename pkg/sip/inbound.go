@@ -953,8 +953,6 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		ackTimeout  <-chan time.Time
 	)
 
-	roomAudioOut := msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate)
-
 	acceptCall := func(answerData []byte) (bool, error) {
 		defer c.mon.StageDurTimer("call-accept")()
 		headers := disp.Headers
@@ -985,8 +983,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			// Start this timer right after the Accept.
 			ackTimeout = time.After(inviteOkAckLateTimeout)
 		}
-		if old := roomAudioOut.Swap(c.media.GetOutboundAudioWriter()); old != nil {
-			c.log().Warnw("unexpected audio out writer", nil)
+		// Attach room outputs
+		if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
+			c.log().Warnw("room has unexpected outbound audio writer", nil)
+			old.Close()
+		}
+		if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
+			c.log().Warnw("room has unexpected outbound audio DTMF writer", nil)
 			old.Close()
 		}
 		if ok, err := c.waitMedia(ctx); !ok {
@@ -996,7 +999,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return true, nil
 	}
 
-	if err := c.createMediaPort(mconf, conf, roomAudioOut, disp.FeatureFlags); err != nil {
+	if err := c.createMediaPort(mconf, conf, disp.FeatureFlags); err != nil {
 		return rejectMedia(err)
 	}
 
@@ -1160,7 +1163,7 @@ func (w *pinDTMFWriter) WriteSample(msg *livekit.SipDTMF) error {
 	return nil
 }
 
-func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config, roomAudioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample], featureFlags map[string]string) error {
+func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) error {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	if c.media != nil {
@@ -1190,15 +1193,8 @@ func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config
 	c.media = mp
 	c.mediaCodecs = mconf.Codecs
 
-	// Mixer is created with the room; attach it now so pin prompts can play.
-	if old := c.lkRoom.WriteOutboundAudioTo(roomAudioOut); old != nil {
-		c.log().Warnw("room has unexpected outbound audio writer", nil)
-		old.Close()
-	}
-	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
-		c.log().Warnw("room has unexpected outbound audio DTMF writer", nil)
-		old.Close()
-	}
+	// Do not attach room outputs yet, we dont necessarily want it plumbed yet
+
 	return nil
 }
 
@@ -1737,22 +1733,23 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	if dialtone && c.started.IsBroken() && !c.done.Load() {
 		const ringVolume = math.MaxInt16 / 2
 
-		// Mute the room audio to the SIP participant.
-		oldRoomAudioOut := c.lkRoom.WriteOutboundAudioTo(nil)
+		c.lkRoom.WriteOutboundAudioTo(nil) // Mute room
 
+		c.mmu.Lock()
+		mp := c.media
+		c.mmu.Unlock()
+		if mp == nil {
+			return transferID, fmt.Errorf("media port not found")
+		}
+		oldRoomAudioOut := mp.GetOutboundAudioWriter()
 		defer func() {
 			if retErr != nil && !c.done.Load() {
 				c.lkRoom.WriteOutboundAudioTo(oldRoomAudioOut)
-			} else if oldRoomAudioOut != nil {
-				if err := oldRoomAudioOut.Close(); err != nil {
-					c.log().Warnw("failed to close old audio output", err)
-				}
 			}
 		}()
 
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
-
 		go func() {
 			err := tones.Play(rctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
