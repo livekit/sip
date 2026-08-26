@@ -1743,22 +1743,21 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer func() {
 			if retErr != nil && !c.done.Load() {
 				c.lkRoom.WriteOutboundAudioTo(oldRoomAudioOut)
-			} else if oldRoomAudioOut != nil {
-				if err := oldRoomAudioOut.Close(); err != nil {
-					c.log().Warnw("failed to close old audio output", err)
-				}
 			}
+			// No cleanup of oldRoomAudioOut, might race tones.Play()
 		}()
 
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 
-		go func() {
-			err := tones.Play(rctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
-			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				c.log().Infow("cannot play dial tone", "error", err)
-			}
-		}()
+		if oldRoomAudioOut != nil {
+			go func() {
+				err := tones.Play(rctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
+				if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					c.log().Infow("cannot play dial tone", "error", err)
+				}
+			}()
+		}
 	}
 
 	err = c.cc.TransferCall(ctx, transferTo, headers, c.ctx.Done())
