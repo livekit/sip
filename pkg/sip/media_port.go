@@ -785,7 +785,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
-	offer, err := parseOfferWith(p.mon, p.codecs, offerData)
+	offer, err := parseOfferWith(p.log, p.mon, p.codecs, offerData)
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
@@ -822,7 +822,7 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 		return errors.New("no offer generated")
 	}
 
-	answer, err := parseAnswerWith(p.mon, p.codecs, answerData)
+	answer, err := parseAnswerWith(p.log, p.mon, p.codecs, answerData)
 	if err != nil {
 		return SDPError{Err: err}
 	}
@@ -862,29 +862,33 @@ func (p *mediaPort) NegotiatedAudio() *sdp.AudioConfig {
 	return &p.negotiated.Audio
 }
 
-func parseSDPWithRecovery[T any](mon *stats.CallMonitor, fn func(*msdk.CodecSet, []byte) (*T, error), codecs *msdk.CodecSet, data []byte) (res *T, err error) {
+func parseSDPWithRecovery[T any](log logger.Logger, mon *stats.CallMonitor, fn func(*msdk.CodecSet, []byte) (*T, error), codecs *msdk.CodecSet, data []byte) (res *T, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicErr, ok := r.(error)
 			if !ok {
 				panicErr = fmt.Errorf("%v", r)
 			}
-			logger.GetLogger().Errorw("panic while parsing SDP", panicErr, "stacktrace", string(debug.Stack()))
+			log.Errorw("panic while parsing SDP", panicErr, "stacktrace", string(debug.Stack()))
 			if mon != nil {
-				mon.SDPPanic()
+				mon.SDPParsePanic()
 			}
 			res, err = nil, errors.New("invalid SDP")
 		}
 	}()
-	return fn(codecs, data)
+	res, err = fn(codecs, data)
+	if err != nil && mon != nil {
+		mon.SDPParseError()
+	}
+	return res, err
 }
 
-func parseOfferWith(mon *stats.CallMonitor, codecs *msdk.CodecSet, data []byte) (*sdp.Offer, error) {
-	return parseSDPWithRecovery(mon, sdp.ParseOfferWith, codecs, data)
+func parseOfferWith(log logger.Logger, mon *stats.CallMonitor, codecs *msdk.CodecSet, data []byte) (*sdp.Offer, error) {
+	return parseSDPWithRecovery(log, mon, sdp.ParseOfferWith, codecs, data)
 }
 
-func parseAnswerWith(mon *stats.CallMonitor, codecs *msdk.CodecSet, data []byte) (*sdp.Answer, error) {
-	return parseSDPWithRecovery(mon, sdp.ParseAnswerWith, codecs, data)
+func parseAnswerWith(log logger.Logger, mon *stats.CallMonitor, codecs *msdk.CodecSet, data []byte) (*sdp.Answer, error) {
+	return parseSDPWithRecovery(log, mon, sdp.ParseAnswerWith, codecs, data)
 }
 
 // Building pipeline
