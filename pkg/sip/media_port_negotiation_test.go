@@ -124,7 +124,7 @@ func allAudioCodecs() []msdk.Codec {
 
 func answerCodec(t testing.TB, answerData []byte) string {
 	t.Helper()
-	answer, err := sdp.ParseAnswerWith(defaultCodecs, answerData)
+	answer, err := parseAnswerWith(nil, defaultCodecs, answerData)
 	require.NoError(t, err)
 	for _, c := range answer.Codecs {
 		if c.Codec == nil || (answer.DTMFType != 0 && c.Type == answer.DTMFType) {
@@ -151,7 +151,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 		offerData, err := m.GenerateOffer()
 		require.NoError(t, err)
 
-		offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+		offer, err := parseOfferWith(nil, defaultCodecs, offerData)
 		require.NoError(t, err)
 
 		var names []string
@@ -402,7 +402,7 @@ func TestMediaPortEncryptionPolicy(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			answer, err := sdp.ParseAnswerWith(defaultCodecs, answerData)
+			answer, err := parseAnswerWith(nil, defaultCodecs, answerData)
 			require.NoError(t, err)
 			mc, _, err := answer.ApplyWithLocal(offer, policy)
 			return mc, err
@@ -414,7 +414,7 @@ func TestMediaPortEncryptionPolicy(t *testing.T) {
 		negotiate := func(t *testing.T, mp *mediaPort, policy sdp.Encryption) (*sdp.MediaConfig, error) {
 			offerData, err := mp.GenerateOffer()
 			require.NoError(t, err)
-			offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+			offer, err := parseOfferWith(nil, defaultCodecs, offerData)
 			require.NoError(t, err)
 			answer, mc, err := offer.Answer(newIP("127.0.0.1"), 5004, policy)
 			if errors.Is(err, sdp.ErrNoCommonCrypto) {
