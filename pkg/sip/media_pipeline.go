@@ -176,6 +176,8 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	// And these are only available before decoding, hence it wraps both audioHandler & sink
 	audioHandler = newSilenceFiller(audioHandler, sink, codecInfo.RTPClockRate, codecInfo.SampleRate, p.conf.log)
 
+	audioHandler = NewSerializedRTPHandler(audioHandler) // SilenceFiller/Codecs are not thread-safe
+
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.conf.mon, "", nil))
 
@@ -403,6 +405,31 @@ func (p *mediaPortPipeline) Close() error {
 		errs = append(errs, p.dtmfToPort.Close())
 	}
 	return errors.Join(errs...)
+}
+
+func NewSerializedRTPHandler(w rtp.HandlerCloser) rtp.HandlerCloser {
+	return &serializedRTPHandler{w: w}
+}
+
+type serializedRTPHandler struct {
+	mu sync.Mutex
+	w  rtp.HandlerCloser
+}
+
+func (s *serializedRTPHandler) String() string {
+	return s.w.String()
+}
+
+func (s *serializedRTPHandler) HandleRTP(h *rtp.Header, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.HandleRTP(h, payload)
+}
+
+func (s *serializedRTPHandler) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.w.Close()
 }
 
 // dtmfOutWriter sends SipDTMF as RFC 4733 telephone-events (optional in-band audio).
