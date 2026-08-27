@@ -36,7 +36,7 @@ const (
 	testPortSIPMax = 30050
 
 	testPortRTPMin = 30100
-	testPortRTPMax = 30150
+	testPortRTPMax = 32000
 )
 
 func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
