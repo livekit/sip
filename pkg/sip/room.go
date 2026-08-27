@@ -388,10 +388,12 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	}
 	room := lksdk.NewRoom(roomCallback)
 	room.SetLogger(newRoomOverrideLogger(r.log))
-	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
+	joinOpts := []lksdk.ConnectOption{
 		lksdk.WithAutoSubscribe(false),
 		lksdk.WithExtraAttributes(partConf.Attributes),
-	)
+	}
+	joinOpts = append(joinOpts, conf.ICEConnectOptions()...)
+	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token, joinOpts...)
 	if err != nil {
 		return err
 	}

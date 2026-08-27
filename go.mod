@@ -142,3 +142,7 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/grpc v1.83.0
 )
+
+// Local fork of server-sdk-go with WithICENetworkTypes (ICE-TCP). Drop when upstream has it.
+replace github.com/livekit/server-sdk-go/v2 => ./third_party/server-sdk-go
+
