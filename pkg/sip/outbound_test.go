@@ -16,7 +16,11 @@ package sip
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
+	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +32,7 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
+	"github.com/livekit/sipgo/transport"
 )
 
 // recordingSIPClient is a SIPClient that records the requests written to it.
@@ -43,6 +48,8 @@ func (c *recordingSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientReq
 	c.reqs = append(c.reqs, req)
 	return nil
 }
+
+func (c *recordingSIPClient) TransportLayer() *transport.Layer { return nil }
 
 func (c *recordingSIPClient) Close() error { return nil }
 
@@ -710,4 +717,295 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			expectErr(t, req, "invalid To header: to user override should be a phone number or SIP user, not a full SIP URI")
 		}
 	})
+}
+
+// fakeDNS is a minimal UDP DNS server answering A and SRV queries from a table,
+// so outbound resolution runs through sipgo for real in tests.
+type fakeDNS struct {
+	conn *net.UDPConn
+	a    map[string][]string
+	srv  map[string][]fakeSRV
+
+	mu   sync.Mutex
+	seen map[string]int
+
+	done sync.WaitGroup
+}
+
+type fakeSRV struct {
+	target string
+	port   uint16
+}
+
+const (
+	dnsTypeA   = 1
+	dnsTypeSRV = 33
+)
+
+func newFakeDNS(t *testing.T, a map[string][]string, srv map[string][]fakeSRV) *fakeDNS {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	d := &fakeDNS{conn: conn, a: a, srv: srv, seen: map[string]int{}}
+	d.done.Add(1)
+	go d.serve()
+	// Closing the socket makes the read in serve fail, which ends the goroutine.
+	// Wait for it so it cannot outlive the test.
+	t.Cleanup(func() {
+		_ = conn.Close()
+		d.done.Wait()
+	})
+	return d
+}
+
+func (d *fakeDNS) resolver() *net.Resolver {
+	addr := d.conn.LocalAddr().String()
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "udp", addr)
+		},
+	}
+}
+
+func (d *fakeDNS) queries(name string, qtype uint16) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !strings.HasSuffix(name, ".") {
+		name += "."
+	}
+	return d.seen[strings.ToLower(name)+"/"+string(rune(qtype))]
+}
+
+func (d *fakeDNS) serve() {
+	defer d.done.Done()
+	buf := make([]byte, 512)
+	for {
+		n, from, err := d.conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		if resp := d.respond(buf[:n]); resp != nil {
+			_, _ = d.conn.WriteToUDP(resp, from)
+		}
+	}
+}
+
+func (d *fakeDNS) respond(q []byte) []byte {
+	if len(q) < 12 {
+		return nil
+	}
+	name, off, ok := dnsReadName(q, 12)
+	if !ok || off+4 > len(q) {
+		return nil
+	}
+	qtype := binary.BigEndian.Uint16(q[off : off+2])
+	d.mu.Lock()
+	d.seen[strings.ToLower(name)+"/"+string(rune(qtype))]++
+	d.mu.Unlock()
+
+	var answers []byte
+	var count int
+	switch qtype {
+	case dnsTypeA:
+		for _, ip := range d.a[strings.TrimSuffix(name, ".")] {
+			answers = append(answers, dnsEncodeName(name)...)
+			answers = append(answers, dnsRRHeader(dnsTypeA, 4)...)
+			answers = append(answers, net.ParseIP(ip).To4()...)
+			count++
+		}
+	case dnsTypeSRV:
+		for _, rec := range d.srv[strings.TrimSuffix(name, ".")] {
+			target := dnsEncodeName(rec.target)
+			rdata := make([]byte, 6, 6+len(target))
+			binary.BigEndian.PutUint16(rdata[0:], 5)
+			binary.BigEndian.PutUint16(rdata[2:], 50)
+			binary.BigEndian.PutUint16(rdata[4:], rec.port)
+			rdata = append(rdata, target...)
+			answers = append(answers, dnsEncodeName(name)...)
+			answers = append(answers, dnsRRHeader(dnsTypeSRV, uint16(len(rdata)))...)
+			answers = append(answers, rdata...)
+			count++
+		}
+	}
+
+	resp := make([]byte, 12)
+	copy(resp, q[:2])
+	binary.BigEndian.PutUint16(resp[2:], 0x8180)
+	binary.BigEndian.PutUint16(resp[4:], 1)
+	binary.BigEndian.PutUint16(resp[6:], uint16(count))
+	if count == 0 {
+		binary.BigEndian.PutUint16(resp[2:], 0x8183)
+	}
+	resp = append(resp, q[12:off+4]...)
+	return append(resp, answers...)
+}
+
+func dnsRRHeader(qtype, rdlen uint16) []byte {
+	b := make([]byte, 10)
+	binary.BigEndian.PutUint16(b[0:], qtype)
+	binary.BigEndian.PutUint16(b[2:], 1)
+	binary.BigEndian.PutUint32(b[4:], 60)
+	binary.BigEndian.PutUint16(b[8:], rdlen)
+	return b
+}
+
+func dnsEncodeName(name string) []byte {
+	var b []byte
+	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		b = append(b, byte(len(label)))
+		b = append(b, label...)
+	}
+	return append(b, 0)
+}
+
+func dnsReadName(msg []byte, off int) (string, int, bool) {
+	var sb strings.Builder
+	for off < len(msg) {
+		n := int(msg[off])
+		off++
+		if n == 0 {
+			return sb.String(), off, true
+		}
+		if n > 63 || off+n > len(msg) {
+			return "", 0, false
+		}
+		sb.Write(msg[off : off+n])
+		sb.WriteByte('.')
+		off += n
+	}
+	return "", 0, false
+}
+
+const (
+	testSBC1IP = "198.51.100.11"
+	testSBC2IP = "198.51.100.12"
+	testSBC1   = "sbc1.example.net"
+	testSBC2   = "sbc2.example.net"
+)
+
+// twoSBCDNS reproduces a carrier layout where two servers sit on different ports
+// behind one hostname whose A record lists both of their addresses.
+func twoSBCDNS(t *testing.T) *fakeDNS {
+	return newFakeDNS(t,
+		map[string][]string{
+			testSBC1:             {testSBC1IP},
+			testSBC2:             {testSBC2IP},
+			testInviteTargetHost: {testSBC1IP, testSBC2IP},
+		},
+		map[string][]fakeSRV{
+			"_sip._udp." + testInviteTargetHost: {
+				{target: testSBC1, port: 5006},
+				{target: testSBC2, port: 5008},
+			},
+		},
+	)
+}
+
+func startOutboundCall(t *testing.T, cfg TestClientConfig, req *rpc.InternalCreateSIPParticipantRequest) *testSIPClient {
+	t.Helper()
+	client := NewOutboundTestClient(t, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_, _ = client.CreateSIPParticipant(ctx, req)
+	}()
+
+	select {
+	case sipClient := <-createdClients:
+		t.Cleanup(func() { _ = sipClient.Close() })
+		return sipClient
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "expected test SIP client to be created")
+		return nil
+	}
+}
+
+func nextTransaction(t *testing.T, sipClient *testSIPClient) *transactionRequest {
+	t.Helper()
+	select {
+	case tr := <-sipClient.transactions:
+		t.Cleanup(func() { tr.transaction.Terminate() })
+		return tr
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "expected INVITE transaction")
+		return nil
+	}
+}
+
+// End to end: sipgo pairs each SRV target with its own port, and a 500 from one
+// server moves the call to the next instead of failing it.
+func TestOutboundSRVDestinationsAndFailover(t *testing.T) {
+	d := twoSBCDNS(t)
+	sipClient := startOutboundCall(t, TestClientConfig{DNSResolver: d.resolver()}, MinimalCreateSIPParticipantRequest())
+
+	valid := map[string]string{
+		testSBC1IP + ":5006": testSBC2IP + ":5008",
+		testSBC2IP + ":5008": testSBC1IP + ":5006",
+	}
+
+	first := nextTransaction(t, sipClient)
+	require.Equal(t, sip.INVITE, first.req.Method)
+	// The request URI stays the configured hostname; only the transport target is pinned.
+	require.Equal(t, testInviteTargetHost, first.req.Recipient.Host)
+	expectSecond, ok := valid[first.req.Destination()]
+	require.True(t, ok, "first INVITE went to %s, which pairs a host with another record's port", first.req.Destination())
+
+	require.NoError(t, first.transaction.SendResponse(
+		sip.NewResponseFromRequest(first.req, sip.StatusInternalServerError, "Server Internal Error", nil)))
+
+	second := nextTransaction(t, sipClient)
+	require.Equal(t, sip.INVITE, second.req.Method)
+	require.Equal(t, expectSecond, second.req.Destination())
+
+	require.NoError(t, second.transaction.SendResponse(
+		sip.NewSDPResponseFromRequest(second.req, []byte(testMinimalSDP))))
+
+	select {
+	case ack := <-sipClient.requests:
+		require.Equal(t, sip.ACK, ack.req.Method)
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "expected ACK after the second INVITE succeeded")
+	}
+}
+
+// A status that answers the request must not burn through the other addresses.
+func TestOutboundNoFailoverOnTerminalStatus(t *testing.T) {
+	d := twoSBCDNS(t)
+	sipClient := startOutboundCall(t, TestClientConfig{DNSResolver: d.resolver()}, MinimalCreateSIPParticipantRequest())
+
+	first := nextTransaction(t, sipClient)
+	require.NoError(t, first.transaction.SendResponse(
+		sip.NewResponseFromRequest(first.req, sip.StatusBusyHere, "Busy Here", nil)))
+
+	select {
+	case tr := <-sipClient.transactions:
+		require.Fail(t, "unexpected retry after a terminal status", "method=%v", tr.req.Method)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// With an explicit port SRV is skipped, so every candidate keeps that port.
+func TestOutboundExplicitPortSkipsSRV(t *testing.T) {
+	d := twoSBCDNS(t)
+	req := MinimalCreateSIPParticipantRequest()
+	req.Address = testInviteTargetHost + ":5006"
+	sipClient := startOutboundCall(t, TestClientConfig{DNSResolver: d.resolver()}, req)
+
+	first := nextTransaction(t, sipClient)
+	require.Contains(t, []string{testSBC1IP + ":5006", testSBC2IP + ":5006"}, first.req.Destination())
+	require.Zero(t, d.queries("_sip._udp."+testInviteTargetHost, dnsTypeSRV),
+		"SRV must not be consulted when the trunk address carries a port")
+	// The pinned destination is an IP literal, so sipgo does not resolve again.
+	require.Equal(t, 1, d.queries(testInviteTargetHost, dnsTypeA),
+		"the host should be resolved exactly once, by ResolveTargets")
+
+	require.NoError(t, first.transaction.SendResponse(
+		sip.NewResponseFromRequest(first.req, sip.StatusInternalServerError, "Server Internal Error", nil)))
+
+	second := nextTransaction(t, sipClient)
+	require.NotEqual(t, first.req.Destination(), second.req.Destination())
+	require.Contains(t, []string{testSBC1IP + ":5006", testSBC2IP + ":5006"}, second.req.Destination())
 }
