@@ -1741,10 +1741,10 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		if mp == nil {
 			return transferID, fmt.Errorf("media port not found")
 		}
-		oldRoomAudioOut := mp.GetOutboundAudioWriter()
+		roomAudioOutput := mp.GetOutboundAudioWriter()
 		defer func() {
 			if retErr != nil && !c.done.Load() {
-				c.lkRoom.WriteOutboundAudioTo(oldRoomAudioOut)
+				c.lkRoom.WriteOutboundAudioTo(roomAudioOutput)
 			}
 		}()
 
@@ -1752,7 +1752,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer rcancel()
 		go func() {
 			ctx := rctx
-			err := tones.Play(ctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
+			err := tones.Play(ctx, roomAudioOutput, ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log().Infow("cannot play dial tone", "error", err)
 			}
