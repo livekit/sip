@@ -839,7 +839,8 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		}()
 
 		go func() {
-			err := tones.Play(rctx, c.audioOut, ringVolume, tones.ETSIRinging)
+			ctx := rctx
+			err := tones.Play(ctx, c.audioOut, ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}

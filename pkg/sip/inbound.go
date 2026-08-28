@@ -1751,7 +1751,8 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 		go func() {
-			err := tones.Play(rctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
+			ctx := rctx
+			err := tones.Play(ctx, oldRoomAudioOut, ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log().Infow("cannot play dial tone", "error", err)
 			}
