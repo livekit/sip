@@ -987,12 +987,10 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 	defer c.mu.Unlock()
 
 	var (
-		sipHeaders         Headers
-		authHeader         = ""
-		authHeaderRespName string
-		req                *sip.Request
-		resp               *sip.Response
-		err                error
+		sipHeaders Headers
+		req        *sip.Request
+		resp       *sip.Response
+		err        error
 	)
 	if keys := maps.Keys(headers); len(keys) != 0 {
 		sort.Strings(keys)
@@ -1000,83 +998,27 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 			sipHeaders = append(sipHeaders, sip.NewHeader(key, headers[key]))
 		}
 	}
-authLoop:
-	for try := 0; ; try++ {
-		if try >= 5 {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
-		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
-		if err != nil {
-			return nil, err
-		}
-		var authHeaderName string
-		switch resp.StatusCode {
-		case sip.StatusOK:
-			break authLoop
-		default:
-			st := &livekit.SIPStatus{
-				Code:   livekit.SIPStatusCode(resp.StatusCode),
-				Status: resp.Reason,
-			}
-			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
-				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
-			}
-			return nil, fmt.Errorf("unexpected status from INVITE response: %w", st)
-		case sip.StatusBadRequest,
-			sip.StatusNotFound,
-			sip.StatusTemporarilyUnavailable,
-			sip.StatusNotAcceptableHere,
-			sip.StatusBusyHere:
-			st := &livekit.SIPStatus{
-				Code:   livekit.SIPStatusCode(resp.StatusCode),
-				Status: resp.Reason,
-			}
-			if body := resp.Body(); len(body) != 0 {
-				st.Status = string(body)
-			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
-				st.Status = s.Value()
-			}
-			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
-				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
-			}
-			return nil, fmt.Errorf("INVITE failed: %w", st)
-		case sip.StatusUnauthorized:
-			authHeaderName = "WWW-Authenticate"
-			authHeaderRespName = "Authorization"
-		case sip.StatusProxyAuthRequired:
-			authHeaderName = "Proxy-Authenticate"
-			authHeaderRespName = "Proxy-Authorization"
-		}
-		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
-		// auth required
-		if user == "" || pass == "" {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds)
-		}
-		headerVal := resp.GetHeader(authHeaderName)
-		if headerVal == nil {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthNoHeader)
-		}
-		challengeStr := headerVal.Value()
-		challenge, err := digest.ParseChallenge(challengeStr)
-		if err != nil {
-			return nil, psrpc.NewErrorf(psrpc.Internal, "invalid challenge %q: %v", challengeStr, err)
-		}
-		toHeader := resp.To()
-		if toHeader == nil {
-			return nil, psrpc.NewErrorf(psrpc.Internal, "no 'To' header on Response")
-		}
 
-		cred, err := digest.Digest(challenge, digest.Options{
-			Method:   req.Method.String(),
-			URI:      toHeader.Address.String(),
-			Username: user,
-			Password: pass,
-		})
-		if err != nil {
+	dests := c.inviteDestinations(ctx, headers)
+	for di, dest := range dests {
+		req, resp, err = c.inviteDest(ctx, dest, user, pass, sdpOffer, sipHeaders, setState)
+		if err == nil {
+			break
+		}
+		var next errTryNextDest
+		if !errors.As(err, &next) {
 			return nil, err
 		}
-		authHeader = cred.String()
-		// Try again with a computed digest
+		// Out of addresses, or the call is going away anyway. Report the
+		// underlying failure, not the fact that we considered a retry.
+		if di == len(dests)-1 || ctx.Err() != nil {
+			return nil, next.err
+		}
+		c.log.Infow("INVITE failed, trying next destination",
+			"failed", dest, "next", dests[di+1], "error", next.err)
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	c.invite, c.inviteOk = req, resp
@@ -1092,6 +1034,177 @@ authLoop:
 
 	applyInviteResponse(req, resp)
 	return c.inviteOk.Body(), nil
+}
+
+// errTryNextDest marks a failure as specific to the destination we tried, so the
+// caller can move on to the next resolved address. Statuses that answer the
+// request itself (busy, not found, carrier blocks) are not wrapped: another
+// server would give the same answer.
+type errTryNextDest struct{ err error }
+
+func (e errTryNextDest) Error() string { return e.err.Error() }
+func (e errTryNextDest) Unwrap() error { return e.err }
+
+// maxInviteDests bounds how many addresses we try before giving up, so call
+// setup stays bounded when a carrier publishes a long list.
+const maxInviteDests = 3
+
+// inviteDestinations resolves the request URI to the addresses to try, in order.
+// A single empty destination means "let the transport layer resolve it", which
+// is the behaviour when we can't resolve or when a Route header is in play.
+//
+// Resolution lives in sipgo, which owns the RFC 3263 rules. All this does is
+// decide how many of the results are worth trying.
+func (c *sipOutbound) inviteDestinations(ctx context.Context, headers map[string]string) []string {
+	unresolved := []string{""}
+
+	// With a Route header the request goes to the proxy, not to the request URI,
+	// so resolving the request URI here would send it to the wrong host.
+	if len(c.routeHeaders) != 0 {
+		return unresolved
+	}
+	for k := range headers {
+		if strings.EqualFold(k, "Route") {
+			return unresolved
+		}
+	}
+
+	targets, err := c.c.sipCli.ResolveTargets(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
+	if err != nil {
+		c.log.Warnw("could not resolve destination, falling back to transport resolution", err,
+			"host", c.uri.Host, "port", c.uri.Port)
+		return unresolved
+	}
+	if len(targets) > maxInviteDests {
+		c.log.Infow("more destinations than we will try",
+			"host", c.uri.Host, "resolved", len(targets), "trying", maxInviteDests)
+		targets = targets[:maxInviteDests]
+	}
+	dests := make([]string, 0, len(targets))
+	for _, t := range targets {
+		dests = append(dests, t.String())
+	}
+	if len(dests) == 0 {
+		return unresolved
+	}
+	return dests
+}
+
+// inviteDest runs the INVITE and its authentication retries against a single
+// destination. Pinning the destination for the whole exchange keeps the
+// challenge and the authenticated INVITE on the same server.
+func (c *sipOutbound) inviteDest(ctx context.Context, dest, user, pass string, sdpOffer []byte, sipHeaders Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+	var (
+		authHeader         = ""
+		authHeaderRespName string
+		req                *sip.Request
+		resp               *sip.Response
+		err                error
+	)
+authLoop:
+	for try := 0; ; try++ {
+		if try >= 5 {
+			return nil, nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
+		}
+		req, resp, err = c.attemptInvite(ctx, dest, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		if err != nil {
+			// We never reached this server, or it never answered.
+			return nil, nil, errTryNextDest{err}
+		}
+		var authHeaderName string
+		switch resp.StatusCode {
+		case sip.StatusOK:
+			break authLoop
+		default:
+			st := &livekit.SIPStatus{
+				Code:   livekit.SIPStatusCode(resp.StatusCode),
+				Status: resp.Reason,
+			}
+			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
+				return nil, nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
+			}
+			err = fmt.Errorf("unexpected status from INVITE response: %w", st)
+			if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+				// The server failed rather than answered. Another one may not.
+				return nil, nil, errTryNextDest{err}
+			}
+			return nil, nil, err
+		case sip.StatusRequestTimeout:
+			return nil, nil, errTryNextDest{fmt.Errorf("INVITE timed out: %w", &livekit.SIPStatus{
+				Code:   livekit.SIPStatusCode(resp.StatusCode),
+				Status: resp.Reason,
+			})}
+		case sip.StatusBadRequest,
+			sip.StatusNotFound,
+			sip.StatusTemporarilyUnavailable,
+			sip.StatusNotAcceptableHere,
+			sip.StatusBusyHere:
+			st := &livekit.SIPStatus{
+				Code:   livekit.SIPStatusCode(resp.StatusCode),
+				Status: resp.Reason,
+			}
+			if body := resp.Body(); len(body) != 0 {
+				st.Status = string(body)
+			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
+				st.Status = s.Value()
+			}
+			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
+				return nil, nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
+			}
+			return nil, nil, fmt.Errorf("INVITE failed: %w", st)
+		case sip.StatusUnauthorized:
+			authHeaderName = "WWW-Authenticate"
+			authHeaderRespName = "Authorization"
+		case sip.StatusProxyAuthRequired:
+			authHeaderName = "Proxy-Authenticate"
+			authHeaderRespName = "Proxy-Authorization"
+		}
+		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
+		// auth required
+		if user == "" || pass == "" {
+			return nil, nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds)
+		}
+		headerVal := resp.GetHeader(authHeaderName)
+		if headerVal == nil {
+			return nil, nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthNoHeader)
+		}
+		challengeStr := headerVal.Value()
+		challenge, err := digest.ParseChallenge(challengeStr)
+		if err != nil {
+			return nil, nil, psrpc.NewErrorf(psrpc.Internal, "invalid challenge %q: %v", challengeStr, err)
+		}
+		toHeader := resp.To()
+		if toHeader == nil {
+			return nil, nil, psrpc.NewErrorf(psrpc.Internal, "no 'To' header on Response")
+		}
+
+		cred, err := digest.Digest(challenge, digest.Options{
+			Method:   req.Method.String(),
+			URI:      toHeader.Address.String(),
+			Username: user,
+			Password: pass,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		authHeader = cred.String()
+		// Try again with a computed digest
+	}
+	return req, resp, nil
+}
+
+// uriTransport returns the transport a request to uri will use, matching how
+// sipgo derives it from the request.
+func uriTransport(uri *sip.Uri) string {
+	if uri.UriParams != nil {
+		if v, ok := uri.UriParams.Get("transport"); ok && v != "" {
+			return strings.ToLower(v)
+		}
+	}
+	if strings.EqualFold(uri.Scheme, "sips") {
+		return "tls"
+	}
+	return "udp"
 }
 
 // applyInviteResponse rewrites the INVITE request in place so ACK/BYE built from
@@ -1146,10 +1259,15 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, *c.uri)
+	if dest != "" {
+		// Send to the address we resolved, keeping the request URI as configured.
+		// The port belongs to this address; it must not come from anywhere else.
+		req.SetDestination(dest)
+	}
 	c.setCSeq(req)
 	req.RemoveHeader("Call-ID")
 	req.AppendHeader(&callID)

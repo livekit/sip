@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -356,6 +358,13 @@ type testSIPClient struct {
 	sequence     uint64
 }
 
+func (w *testSIPClient) ResolveTargets(ctx context.Context, network, host string, port int, sipScheme string) ([]netip.AddrPort, error) {
+	if w.client == nil {
+		return nil, errors.New("no sip client")
+	}
+	return w.client.ResolveTargets(ctx, network, host, port, sipScheme)
+}
+
 func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
 	sipgo.ClientRequestAddVia(w.client, req)
 	if req.From() == nil {
@@ -480,6 +489,7 @@ type TestClientConfig struct {
 	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
 	GetRoom      GetRoomFunc      // newTestRoom if nil
 	Handler      Handler          // empty TestHandler if nil
+	DNSResolver  *net.Resolver    // system resolver if nil
 }
 
 func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
@@ -557,7 +567,17 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 		MediaIP:          localIP,
 	}
 
-	err = client.Start(nil, sconf) // needed to set sconf
+	var agent *sipgo.UserAgent
+	if cfg.DNSResolver != nil {
+		agent, err = sipgo.NewUA(
+			sipgo.WithUserAgent(UserAgent),
+			sipgo.WithUserAgentDNSResolver(cfg.DNSResolver),
+		)
+		if err != nil {
+			t.Fatalf("failed to create user agent: %v", err)
+		}
+	}
+	err = client.Start(agent, sconf) // needed to set sconf
 	if err != nil {
 		t.Fatalf("failed to start client: %v", err)
 	}

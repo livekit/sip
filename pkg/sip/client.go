@@ -50,6 +50,9 @@ import (
 type SIPClient interface {
 	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)
 	WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error
+	// ResolveTargets returns the addresses to try for a request URI, in order.
+	// port is the port from the URI, or 0 when it carries none.
+	ResolveTargets(ctx context.Context, network, host string, port int, sipScheme string) ([]netip.AddrPort, error)
 	Close() error
 }
 
