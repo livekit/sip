@@ -422,14 +422,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
+		// TODO(alexfish): Move this logic into outbound.go after the refactor
+		// has landed.
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
-		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
-			if oc.media == nil {
-				oc.log.Errorw("outbound call media has not been negotiated", nil)
-				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
-				return nil
-			}
+
+		// TODO(alexfish): Reply with an error if the new sequence number is
+		// strictly less than the existing one.
+		if oc != nil && oc.cc.InviteCSeq() < newCSeq {
 			localSDP, err := oc.media.GetLocalSDP()
 			if err != nil || len(localSDP) == 0 {
 				oc.log.Errorw("outbound call does not have an SDP", err)
