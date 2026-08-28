@@ -76,6 +76,8 @@ var errNoACK = errors.New("no ACK received for 200 OK")
 // RFC 3261 §21.4.27 / §14.2 — glare: INVITE received while an INVITE we sent is in progress.
 const statusRequestPending sip.StatusCode = 491
 
+const contentTypeSDP string = "application/sdp"
+
 // hashPassword creates a SHA256 hash of the password for logging purposes
 func hashPassword(password string) string {
 	if password == "" {
@@ -316,7 +318,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
 	ct := req.ContentType()
-	if ct != nil && ct.Value() != "application/sdp" {
+	if ct != nil && ct.Value() != contentTypeSDP {
 		return nil
 	}
 	return req.Body()
@@ -912,7 +914,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		switch h.Value() {
 		default:
 			log.Infow("unsupported offer type")
-		case "application/sdp":
+		case contentTypeSDP:
 		}
 	} else {
 		log.Infow("no offer type specified")
@@ -956,17 +958,28 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return rejectMedia(err)
 	}
 
-	ok := false
-	var answerData []byte
-	if pinPrompt {
-		// Negotiate before Accept so pin prompts and DTMF have a live pipeline.
-		// Encryption is picked here, before the room is selected.
-		answerData, err = c.negotiateMedia(rawSDP)
+	var sdpResponseBody []byte
+	expectingLateAnswer := len(rawSDP) == 0
+	if expectingLateAnswer {
+		sdpResponseBody, err = c.media.GenerateOffer()
 		if err != nil {
 			return rejectMedia(err)
 		}
+	}
+
+	ok := false
+	if pinPrompt {
+		// We can't negotiate media until we receive an answer.
+		if !expectingLateAnswer {
+			// Negotiate before Accept so pin prompts and DTMF have a live pipeline.
+			// Encryption is picked here, before the room is selected.
+			sdpResponseBody, err = c.negotiateMedia(rawSDP)
+			if err != nil {
+				return rejectMedia(err)
+			}
+		}
 		c.connectPinDTMF()
-		if ok, ackTimeout, err = c.acceptAndStartCall(ctx, disp, answerData, mconf.MediaTimeout); !ok {
+		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpResponseBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
 			return err // could be success if the caller hung up
 		}
 		disp, ok, err = c.pinPrompt(ctx, trunkID)
@@ -991,10 +1004,15 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if pinPrompt {
 		status = CallActive
 	}
-	answerData, err = c.negotiateMedia(rawSDP)
-	if err != nil {
-		return rejectMedia(err)
+
+	// We can't negotiate media until we've received an answer.
+	if !expectingLateAnswer && !pinPrompt {
+		sdpResponseBody, err = c.negotiateMedia(rawSDP)
+		if err != nil {
+			return rejectMedia(err)
+		}
 	}
+
 	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
 		return fmt.Errorf("failed joining room: %w", err)
 	}
@@ -1014,7 +1032,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
-		if ok, ackTimeout, err = c.acceptAndStartCall(ctx, disp, answerData, mconf.MediaTimeout); !ok {
+		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpResponseBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
 	}
@@ -1031,14 +1049,14 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 
 	c.started.Break()
 
-	if !conf.Experimental.InboundWaitACK {
+	if !expectingLateAnswer && !conf.Experimental.InboundWaitACK {
 		ackReceived = c.cc.InviteACK()
 	}
 
 	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, mconf.MediaTimeout)
 }
 
-func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData []byte) error {
+func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData []byte, expectingLateOffer bool) error {
 	headers := disp.Headers
 	c.attrsToHdr = disp.AttributesToHeaders
 	if r := c.lkRoom.Room(); r != nil {
@@ -1046,7 +1064,7 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 	}
 	c.log().Infow("Accepting the call", "headers", headers)
 	taccept := c.mon.StageDurTimer("sip-accept")
-	err := c.cc.Accept(ctx, sdpData, headers)
+	err := c.cc.Accept(ctx, sdpData, headers, expectingLateOffer)
 	taccept()
 	c.sigTs.AcceptTime = time.Now()
 	if errors.Is(err, errNoACK) {
@@ -1064,19 +1082,8 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 	return nil
 }
 
-func (c *inboundCall) acceptAndStartCall(ctx context.Context, disp CallDispatch, answerData []byte, mediaTimeout time.Duration) (bool, <-chan time.Time, error) {
-	defer c.mon.StageDurTimer("call-accept")()
-	if err := c.acceptCall(ctx, disp, answerData); err != nil {
-		return false, nil, err
-	}
-
-	var ackTimeout <-chan time.Time
-
+func (c *inboundCall) waitForMedia(ctx context.Context, mediaTimeout time.Duration) (bool, error) {
 	c.media.SetTimeout(c.s.conf.MediaTimeoutInitial, mediaTimeout) // Only enable media timeout once we send back SDP.
-	if !c.s.conf.Experimental.InboundWaitACK {
-		// Start this timer right after the Accept.
-		ackTimeout = time.After(inviteOkAckLateTimeout)
-	}
 	// Attach room outputs
 	if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
 		c.log().Warnw("room has unexpected outbound audio writer", nil)
@@ -1087,10 +1094,45 @@ func (c *inboundCall) acceptAndStartCall(ctx context.Context, disp CallDispatch,
 		old.Close()
 	}
 	if ok, err := c.waitMedia(ctx); !ok {
-		return false, nil, err
+		return false, err
 	}
 	c.setStatus(CallActive)
-	return true, ackTimeout, nil
+	return true, nil
+}
+
+func (c *inboundCall) acceptCallAndWaitForMedia(ctx context.Context, disp CallDispatch, sdpResponseBody []byte, mediaTimeout time.Duration, expectingLateAnswer bool) (bool, <-chan time.Time, error) {
+	defer c.mon.StageDurTimer("call-accept")()
+	waitForAck := expectingLateAnswer || c.s.conf.Experimental.InboundWaitACK
+	if err := c.acceptCall(ctx, disp, sdpResponseBody, waitForAck); err != nil {
+		return false, nil, err
+	}
+	var ackTimeout <-chan time.Time
+	if !waitForAck {
+		// Start this timer right after the Accept.
+		ackTimeout = time.After(inviteOkAckLateTimeout)
+	}
+
+	if expectingLateAnswer {
+		ack := c.cc.Ack()
+		if ack == nil {
+			c.log().Errorw("ack not found", nil)
+			return false, nil, fmt.Errorf("ack not found")
+		}
+
+		// The offer should now be here.
+		sdp := ack.Body()
+		if h := ack.ContentType(); h != nil {
+			if h.Value() != contentTypeSDP {
+				c.log().Infow("unsupported content type", "contentType", h.Value())
+			}
+		}
+		if err := c.negotiateMediaForLateAnswer(sdp); err != nil {
+			return false, nil, err
+		}
+	}
+
+	ok, err := c.waitForMedia(ctx, mediaTimeout)
+	return ok, ackTimeout, err
 }
 
 func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time, mediaTimeout time.Duration) error {
@@ -1224,7 +1266,19 @@ func (c *inboundCall) connectPinDTMF() {
 	}
 }
 
-func (c *inboundCall) negotiateMedia(offerData []byte) ([]byte, error) {
+// REQUIRES: c.mmu is held.
+func (c *inboundCall) updateCallStateAudioLocked() error {
+	audio := c.media.NegotiatedAudio()
+	if audio == nil {
+		return fmt.Errorf("media does not have negotiated audio")
+	}
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.AudioCodec = audio.Codec.Info().SDPName
+	})
+	return nil
+}
+
+func (c *inboundCall) negotiateMedia(sdpData []byte) ([]byte, error) {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	if c.media == nil {
@@ -1233,27 +1287,46 @@ func (c *inboundCall) negotiateMedia(offerData []byte) ([]byte, error) {
 	if c.media.NegotiatedAudio() != nil {
 		return c.media.GetLocalSDP()
 	}
-
 	defer c.mon.StageDurTimer("start-media")()
-	c.mon.SDPSize(len(offerData), true)
-	c.log().Debugw("SDP offer", "sdp", string(offerData))
 
-	answerData, err := c.media.GenerateAnswer(offerData)
-	if err != nil {
+	var answerData []byte
+	var err error
+
+	c.mon.SDPSize(len(sdpData) /*isOffer=*/, true)
+	c.log().Debugw("SDP offer", "sdp", string(sdpData))
+
+	if answerData, err = c.media.GenerateAnswer(sdpData); err != nil {
 		return nil, err
 	}
-
-	c.mon.SDPSize(len(answerData), false)
+	c.mon.SDPSize(len(answerData) /*isOffer=*/, false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
-	audio := c.media.NegotiatedAudio()
-	if audio == nil {
-		return nil, fmt.Errorf("media does not have negotiated audio")
+	if err = c.updateCallStateAudioLocked(); err != nil {
+		return nil, err
 	}
-	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = audio.Codec.Info().SDPName
-	})
 	return answerData, nil
+}
+
+func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
+	c.mmu.Lock()
+	defer c.mmu.Unlock()
+	if c.media == nil {
+		return errors.New("media port not created")
+	}
+	if c.media.NegotiatedAudio() != nil {
+		return nil
+	}
+	defer c.mon.StageDurTimer("process-late-answer")()
+
+	// TODO(alexfish): Should we create a new stats histogram for late
+	// answers?
+	c.mon.SDPSize(len(answerData) /*isOffer=*/, false)
+	c.log().Debugw("Late SDP answer", "sdp", string(answerData))
+	if err := c.media.ProcessAnswer(answerData); err != nil {
+		return err
+	}
+
+	return c.updateCallStateAudioLocked()
 }
 
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
@@ -1899,6 +1972,7 @@ type sipInbound struct {
 	referCseq       uint32
 	ringing         chan struct{}
 	acked           core.Fuse
+	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
 	call            *inboundCall
 }
 
@@ -2115,7 +2189,7 @@ func (c *sipInbound) OwnSDP() []byte {
 	return c.lastSDP
 }
 
-func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string) error {
+func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string, waitForAck bool) error {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.Accept")
 	defer span.End()
 	c.mu.Lock()
@@ -2138,7 +2212,7 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	c.stopRinging()
 	retryAfter := inviteOkRetryInterval
 	maxRetries := inviteOKRetryAttempts
-	if !c.s.conf.Experimental.InboundWaitACK {
+	if !waitForAck {
 		// Still retry, but limit it to ~750ms.
 		maxRetries = inviteOKRetryAttemptsNoACK
 	}
@@ -2153,7 +2227,7 @@ retries:
 		if err := c.inviteTx.Respond(r); err != nil {
 			return err
 		}
-		if c.legTr != TransportUDP && !c.s.conf.Experimental.InboundWaitACK {
+		if !waitForAck && c.legTr != TransportUDP {
 			// Reliable transport and we are not waiting for ACK - return immediately.
 			break retries
 		}
@@ -2170,7 +2244,7 @@ retries:
 		if try > maxRetries {
 			// Only set error if an option is enabled.
 			// Otherwise, ignore missing ACK for now.
-			if c.s.conf.Experimental.InboundWaitACK {
+			if waitForAck {
 				acceptErr = errNoACK
 			}
 			break retries
@@ -2184,7 +2258,13 @@ retries:
 }
 
 func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
+	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
+}
+
+// Ack returns the first ACK seen for this call.
+func (c *sipInbound) Ack() *sip.Request {
+	return c.ack.Load()
 }
 
 func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
