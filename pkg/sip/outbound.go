@@ -39,8 +39,8 @@ import (
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
-	"github.com/livekit/sipgo/transport"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -1069,11 +1069,7 @@ func (c *sipOutbound) inviteDestinations(ctx context.Context, headers map[string
 		}
 	}
 
-	tpl := c.transportLayer()
-	if tpl == nil {
-		return unresolved
-	}
-	targets, err := tpl.ResolveTargets(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
+	targets, err := c.c.sipCli.ResolveTargets(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
 	if err != nil {
 		c.log.Warnw("could not resolve destination, falling back to transport resolution", err,
 			"host", c.uri.Host, "port", c.uri.Port)
@@ -1197,15 +1193,6 @@ authLoop:
 	return req, resp, nil
 }
 
-// transportLayer returns sipgo's transport layer, or nil when the SIP client is
-// not the real one, as in tests that substitute their own.
-func (c *sipOutbound) transportLayer() *transport.Layer {
-	if c.c.sipCli == nil {
-		return nil
-	}
-	return c.c.sipCli.TransportLayer()
-}
-
 // uriTransport returns the transport a request to uri will use, matching how
 // sipgo derives it from the request.
 func uriTransport(uri *sip.Uri) string {
@@ -1317,12 +1304,16 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, dest string, callID sip
 
 	// Log the actual local port used for TCP connections from the DialPort range
 	if req.Transport() == "TCP" {
-		if tpl := c.transportLayer(); tpl != nil {
-			// The connection should be available after TransactionRequest creates it
-			if dest := req.Destination(); dest != "" {
-				if conn, err := tpl.GetConnection("tcp", dest); err == nil && conn != nil {
-					if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok && tcpAddr != nil {
-						c.log.Debugw("TCP connection using port on cloud-sip side", "port", tcpAddr.Port)
+		// Type-assert to *sipgo.Client to access the embedded UserAgent
+		if sipClient, ok := c.c.sipCli.(*sipgo.Client); ok {
+			if tpl := sipClient.TransportLayer(); tpl != nil {
+				// Try to get the connection using the destination address
+				// The connection should be available after TransactionRequest creates it
+				if dest := req.Destination(); dest != "" {
+					if conn, err := tpl.GetConnection("tcp", dest); err == nil && conn != nil {
+						if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok && tcpAddr != nil {
+							c.log.Debugw("TCP connection using port on cloud-sip side", "port", tcpAddr.Port)
+						}
 					}
 				}
 			}

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +33,6 @@ import (
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
-	"github.com/livekit/sipgo/transport"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
@@ -358,11 +358,11 @@ type testSIPClient struct {
 	sequence     uint64
 }
 
-func (w *testSIPClient) TransportLayer() *transport.Layer {
+func (w *testSIPClient) ResolveTargets(ctx context.Context, network, host string, port int, sipScheme string) ([]netip.AddrPort, error) {
 	if w.client == nil {
-		return nil
+		return nil, errors.New("no sip client")
 	}
-	return w.client.TransportLayer()
+	return w.client.ResolveTargets(ctx, network, host, port, sipScheme)
 }
 
 func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {

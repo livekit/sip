@@ -17,8 +17,10 @@ package sip
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -32,7 +34,6 @@ import (
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
-	"github.com/livekit/sipgo/transport"
 )
 
 // recordingSIPClient is a SIPClient that records the requests written to it.
@@ -49,7 +50,9 @@ func (c *recordingSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientReq
 	return nil
 }
 
-func (c *recordingSIPClient) TransportLayer() *transport.Layer { return nil }
+func (c *recordingSIPClient) ResolveTargets(_ context.Context, _, _ string, _ int, _ string) ([]netip.AddrPort, error) {
+	return nil, errors.New("not resolved in this test")
+}
 
 func (c *recordingSIPClient) Close() error { return nil }
 
