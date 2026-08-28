@@ -1733,7 +1733,10 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	if dialtone && c.started.IsBroken() && !c.done.Load() {
 		const ringVolume = math.MaxInt16 / 2
 
-		c.lkRoom.WriteOutboundAudioTo(nil) // Mute room
+		// Mute the room audio to the SIP participant.
+		if old := c.lkRoom.WriteOutboundAudioTo(nil); old != nil {
+			old.Close()
+		}
 
 		c.mmu.Lock()
 		mp := c.media
@@ -1741,10 +1744,9 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		if mp == nil {
 			return transferID, fmt.Errorf("media port not found")
 		}
-		roomAudioOutput := mp.GetOutboundAudioWriter()
 		defer func() {
 			if retErr != nil && !c.done.Load() {
-				c.lkRoom.WriteOutboundAudioTo(roomAudioOutput)
+				c.lkRoom.WriteOutboundAudioTo(mp.GetOutboundAudioWriter())
 			}
 		}()
 
@@ -1752,7 +1754,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		defer rcancel()
 		go func() {
 			ctx := rctx
-			err := tones.Play(ctx, roomAudioOutput, ringVolume, tones.ETSIRinging)
+			err := tones.Play(ctx, mp.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log().Infow("cannot play dial tone", "error", err)
 			}

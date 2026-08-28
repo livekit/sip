@@ -85,7 +85,6 @@ type outboundCall struct {
 	lkRoom   RoomInterface
 	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
 	sipConf  sipOutboundConfig
-	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // inner writer owned by MediaPort
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
@@ -114,7 +113,6 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		sigTs:     SignalingTimestamps{APITime: now},
 		jitterBuf: jitterBuf,
 		projectID: projectID,
-		audioOut:  msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate), // inner writer owned by MediaPort
 	}
 	call.stats.Update()
 	call.cc = c.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
@@ -542,7 +540,7 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 }
 
 func (c *outboundCall) connectMedia() {
-	if old := c.lkRoom.WriteOutboundAudioTo(c.audioOut); old != nil {
+	if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
 		old.Close()
 		c.log.Warnw("room has unexpected outbound audio writer", nil)
 	}
@@ -777,11 +775,6 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 
 	c.mon.InviteAccept()
-	if old := c.audioOut.Swap(c.media.GetOutboundAudioWriter()); old != nil {
-		c.log.Warnw("unexpected audio out writer", nil)
-		old.Close()
-	}
-
 	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
 		c.log.Infow("SIP accept failed", "error", err)
@@ -829,18 +822,19 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		defer rcancel()
 
 		// Mute the room audio to the SIP participant.
-		// Skip closing the existing writer, which is c.audioOut.
-		_ = c.lkRoom.WriteOutboundAudioTo(nil)
+		if old := c.lkRoom.WriteOutboundAudioTo(nil); old != nil {
+			old.Close()
+		}
 
 		defer func() {
 			if retErr != nil && !c.stopped.IsBroken() {
-				c.lkRoom.WriteOutboundAudioTo(c.audioOut)
+				c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter())
 			}
 		}()
 
 		go func() {
 			ctx := rctx
-			err := tones.Play(ctx, c.audioOut, ringVolume, tones.ETSIRinging)
+			err := tones.Play(ctx, c.media.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
