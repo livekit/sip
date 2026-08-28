@@ -952,52 +952,6 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		ackTimeout  <-chan time.Time
 	)
 
-	acceptCall := func(answerData []byte) (bool, error) {
-		defer c.mon.StageDurTimer("call-accept")()
-		headers := disp.Headers
-		c.attrsToHdr = disp.AttributesToHeaders
-		if r := c.lkRoom.Room(); r != nil {
-			headers = AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
-		}
-		c.log().Infow("Accepting the call", "headers", headers)
-		taccept := c.mon.StageDurTimer("sip-accept")
-		err := c.cc.Accept(ctx, answerData, headers)
-		taccept()
-		c.sigTs.AcceptTime = time.Now()
-		if errors.Is(err, errNoACK) {
-			c.log().Errorw("Call accepted, but no ACK received", err)
-			c.closeWithNoACK(ctx)
-			return false, err
-		} else if err != nil {
-			c.log().Errorw("Cannot accept the call", err)
-			c.close(ctx, EndCall{
-				Status: callAcceptFailed,
-				Term:   stats.ServerError("accept-failed"),
-			})
-			return false, err
-		}
-		c.media.SetTimeout(c.s.conf.MediaTimeoutInitial, mconf.MediaTimeout) // Only enable media timeout once we send back SDP.
-		if !c.s.conf.Experimental.InboundWaitACK {
-			ackReceived = c.cc.InviteACK()
-			// Start this timer right after the Accept.
-			ackTimeout = time.After(inviteOkAckLateTimeout)
-		}
-		// Attach room outputs
-		if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
-			c.log().Warnw("room has unexpected outbound audio writer", nil)
-			old.Close()
-		}
-		if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
-			c.log().Warnw("room has unexpected outbound audio DTMF writer", nil)
-			old.Close()
-		}
-		if ok, err := c.waitMedia(ctx); !ok {
-			return false, err
-		}
-		c.setStatus(CallActive)
-		return true, nil
-	}
-
 	if err := c.createMediaPort(mconf, conf, disp.FeatureFlags); err != nil {
 		return rejectMedia(err)
 	}
@@ -1012,7 +966,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			return rejectMedia(err)
 		}
 		c.connectPinDTMF()
-		if ok, err = acceptCall(answerData); !ok {
+		if ok, ackTimeout, err = c.acceptAndStartCall(ctx, disp, answerData, mconf.MediaTimeout); !ok {
 			return err // could be success if the caller hung up
 		}
 		disp, ok, err = c.pinPrompt(ctx, trunkID)
@@ -1060,7 +1014,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
-		if ok, err := acceptCall(answerData); !ok {
+		if ok, ackTimeout, err = c.acceptAndStartCall(ctx, disp, answerData, mconf.MediaTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
 	}
@@ -1076,7 +1030,67 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	})
 
 	c.started.Break()
+
+	if !conf.Experimental.InboundWaitACK {
+		ackReceived = c.cc.InviteACK()
+	}
+
 	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, mconf.MediaTimeout)
+}
+
+func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData []byte) error {
+	headers := disp.Headers
+	c.attrsToHdr = disp.AttributesToHeaders
+	if r := c.lkRoom.Room(); r != nil {
+		headers = AttrsToHeaders(r.LocalParticipant.Attributes(), c.attrsToHdr, headers)
+	}
+	c.log().Infow("Accepting the call", "headers", headers)
+	taccept := c.mon.StageDurTimer("sip-accept")
+	err := c.cc.Accept(ctx, sdpData, headers)
+	taccept()
+	c.sigTs.AcceptTime = time.Now()
+	if errors.Is(err, errNoACK) {
+		c.log().Errorw("Call accepted, but no ACK received", err)
+		c.closeWithNoACK(ctx)
+		return err
+	} else if err != nil {
+		c.log().Errorw("Cannot accept the call", err)
+		c.close(ctx, EndCall{
+			Status: callAcceptFailed,
+			Term:   stats.ServerError("accept-failed"),
+		})
+		return err
+	}
+	return nil
+}
+
+func (c *inboundCall) acceptAndStartCall(ctx context.Context, disp CallDispatch, answerData []byte, mediaTimeout time.Duration) (bool, <-chan time.Time, error) {
+	defer c.mon.StageDurTimer("call-accept")()
+	if err := c.acceptCall(ctx, disp, answerData); err != nil {
+		return false, nil, err
+	}
+
+	var ackTimeout <-chan time.Time
+
+	c.media.SetTimeout(c.s.conf.MediaTimeoutInitial, mediaTimeout) // Only enable media timeout once we send back SDP.
+	if !c.s.conf.Experimental.InboundWaitACK {
+		// Start this timer right after the Accept.
+		ackTimeout = time.After(inviteOkAckLateTimeout)
+	}
+	// Attach room outputs
+	if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
+		c.log().Warnw("room has unexpected outbound audio writer", nil)
+		old.Close()
+	}
+	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
+		c.log().Warnw("room has unexpected outbound audio DTMF writer", nil)
+		old.Close()
+	}
+	if ok, err := c.waitMedia(ctx); !ok {
+		return false, nil, err
+	}
+	c.setStatus(CallActive)
+	return true, ackTimeout, nil
 }
 
 func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan struct{}, ackTimeout <-chan time.Time, mediaTimeout time.Duration) error {
