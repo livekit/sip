@@ -1416,8 +1416,8 @@ func TestRouteSet(t *testing.T) {
 		rr2 := &sip.RecordRouteHeader{Address: uri2}
 		// Record-Route order as seen on the wire: rr1 (topmost), rr2
 		rrHeaders = []sip.Header{rr1, rr2}
-		// UAS route set: in order (RFC 3261 §12.1.1)
-		expectUAS = []string{rr1.Value(), rr2.Value()}
+		// UAS route set: reversed (RFC 3261 §12.1.1 / §16.12.1.2)
+		expectUAS = []string{rr2.Value(), rr1.Value()}
 		// UAC route set: reversed (RFC 3261 §12.1.2)
 		expectUAC = []string{rr2.Value(), rr1.Value()}
 		return

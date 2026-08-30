@@ -2107,9 +2107,15 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	}
 	req.PrependHeader(c.generateViaHeader(req))
 
+	// Convert the Record-Route set to a Route set, preserving order. The set was
+	// already reversed for this (UAS) direction when the request was built, so
+	// appending here keeps it intact; prepending would reverse it a second time
+	// and leave our own Record-Route as the target of the proxy hop, which
+	// multi-hop proxies (e.g. Avaya Session Manager) then bounce back to us
+	// instead of routing the dialog request to the peer.
 	rrHdrs := req.GetHeaders("Record-Route")
 	for _, hdr := range rrHdrs {
-		req.PrependHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
+		req.AppendHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
 	}
 	// Remove all Record-Route headers
 	for req.RemoveHeader("Record-Route") {
