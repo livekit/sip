@@ -822,9 +822,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		defer rcancel()
 
 		// Mute the room audio to the SIP participant.
-		if old := c.lkRoom.WriteOutboundAudioTo(nil); old != nil {
-			old.Close()
-		}
+		_ = c.lkRoom.WriteOutboundAudioTo(nil) // Not closing mp anchor
 
 		defer func() {
 			if retErr != nil && !c.stopped.IsBroken() {
@@ -833,8 +831,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		}()
 
 		go func() {
-			ctx := rctx
-			err := tones.Play(ctx, c.media.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, c.media.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}

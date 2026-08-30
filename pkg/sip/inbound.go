@@ -422,8 +422,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
-		// TODO(alexfish): Move this logic into outbound.go after the refactor
-		// has landed.
+		// TODO(alexfish): Consider moving this to outbound
 		oc := s.cli.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 
@@ -1733,17 +1732,14 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	if dialtone && c.started.IsBroken() && !c.done.Load() {
 		const ringVolume = math.MaxInt16 / 2
 
-		// Mute the room audio to the SIP participant.
-		if old := c.lkRoom.WriteOutboundAudioTo(nil); old != nil {
-			old.Close()
-		}
-
 		c.mmu.Lock()
 		mp := c.media
 		c.mmu.Unlock()
 		if mp == nil {
 			return transferID, fmt.Errorf("media port not found")
 		}
+		// Mute the room audio to the SIP participant.
+		_ = c.lkRoom.WriteOutboundAudioTo(nil) // Not closing mp anchor
 		defer func() {
 			if retErr != nil && !c.done.Load() {
 				c.lkRoom.WriteOutboundAudioTo(mp.GetOutboundAudioWriter())
@@ -1753,8 +1749,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 		go func() {
-			ctx := rctx
-			err := tones.Play(ctx, mp.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, mp.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log().Infow("cannot play dial tone", "error", err)
 			}
