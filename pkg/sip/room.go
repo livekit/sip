@@ -544,7 +544,9 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 				switch data := data.(type) {
 				case *livekit.SipDTMF:
 					r.stats.dataPackets.Add(1)
-					err := r.outboundDTMF.WriteSample(data.Digit) // Note: This ignores code
+					// TODO: This ignores code. Once it lands and we're okay with functional changes,
+					//       consider updating this to use code as fallback.
+					err := r.outboundDTMF.WriteSample(data.Digit)
 					if err != nil {
 						r.log.Errorw("cannot forward dtmf to sip", err)
 					}

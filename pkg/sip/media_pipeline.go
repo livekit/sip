@@ -460,6 +460,9 @@ func (w *dtmfOutWriter) WriteSample(sample string) error {
 	}
 	var errs []error
 	for i, digit := range sample {
+		if digit == 'w' { // Supported pause
+			continue
+		}
 		if _, tones := dtmf.Tone(byte(digit)); len(tones) == 0 {
 			errs = append(errs, fmt.Errorf("invalid DTMF sample %v at position %d", digit, i))
 		}
