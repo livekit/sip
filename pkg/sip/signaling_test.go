@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
@@ -284,7 +285,7 @@ func (s *sipUATest) TransactionRequest(t *testing.T, req *sip.Request, isFromUAC
 	require.NoError(t, err)
 	defer tx.Terminate()
 
-	resp := getFinalResponseOrFail(t, tx, req)
+	resp := getFinalResponseOrFail(t, nil, tx)
 	if req.Method == sip.INVITE && resp.StatusCode < 300 {
 		// Need to send ACK for 2xx INVITE, sipgo already sends ACK for 3xx+
 		ack := sip.NewAckRequest(req, resp, nil)
@@ -419,6 +420,9 @@ type serviceTest struct {
 	Client  *Client // Processing outbound calls
 	Handler Handler
 	Service *Service
+
+	mu      sync.RWMutex
+	Pending map[string]chan<- *sipUARequest
 }
 
 type serviceTestConfig struct {
@@ -514,12 +518,65 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		srv:              srv,
 		pendingTransfers: make(map[LocalTag]*PendingTransfer),
 	}
-	return &serviceTest{
-		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(3)),
+	s := &serviceTest{
+		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(64)),
 		Server:  srv,
 		Client:  cli,
 		Handler: handler,
 		Service: service,
+		Pending: make(map[string]chan<- *sipUARequest),
+	}
+	sink := s.TestUA.RegisterSink("", "INVITE")
+	t.Cleanup(func() {
+		s.TestUA.UnregisterSink("", "INVITE")
+	})
+	wg := sync.WaitGroup{}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(wg.Wait)
+	t.Cleanup(cancel)
+	wg.Go(func() {
+		s.handleInvites(ctx, sink)
+	})
+	return s
+}
+
+func (st *serviceTest) handleInvites(ctx context.Context, pending <-chan *sipUARequest) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-pending:
+			if !ok {
+				st.TestUA.log.Infow("pending channel closed")
+				return
+			}
+			if msg == nil || msg.req == nil {
+				st.TestUA.log.Infow("nil message", "request", msg)
+				continue
+			}
+			fromHeader := msg.req.From()
+			if fromHeader == nil {
+				st.TestUA.log.Infow("from header is nil", "request", msg.req)
+				continue
+			}
+			remoteTag := fromHeader.Params.GetOr("tag", "")
+			if remoteTag == "" {
+				st.TestUA.log.Infow("remote tag is empty", "request", msg.req)
+				continue
+			}
+			st.mu.RLock()
+			ch, ok := st.Pending[remoteTag]
+			st.mu.RUnlock()
+			if !ok {
+				st.TestUA.log.Infow("pending channel not found", "remoteTag", remoteTag)
+				continue
+			}
+			select {
+			case ch <- msg:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}
 }
 
@@ -556,6 +613,10 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 	call.SetRemoteTag(LocalTag(remoteTag))
 	call.SetRemoteSDP(resp.Body())
 	call.SetRouteSet(resp, true)
+	t.Cleanup(func() {
+		bye := call.NewRequest(sip.BYE)
+		st.TestUA.TransactionRequest(t, bye, true)
+	})
 
 	st.Server.cmu.Lock()
 	defer st.Server.cmu.Unlock()
@@ -571,22 +632,28 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOption) (*sipUADialogTest, *outboundCall, *sip.Request) {
 	t.Helper()
 
-	newInviteSink := st.TestUA.RegisterSink("", "INVITE")
-	var reqSink <-chan *sipUARequest
-	defer st.TestUA.UnregisterSink("", "INVITE")
-
 	call := newTestCall(st.TestUA, true)
 	req := call.CreateSipParticipantRequest()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
+	inviteCh := make(chan *sipUARequest, 1)
+	st.mu.Lock()
+	st.Pending[string(call.remoteTag)] = inviteCh
+	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		delete(st.Pending, string(call.remoteTag))
+		st.mu.Unlock()
+	}()
+
 	_, err := st.Client.CreateSIPParticipant(ctx, req)
 	require.NoError(t, err)
 
+	var reqSink <-chan *sipUARequest
 	select {
-	case msg := <-newInviteSink:
+	case msg := <-inviteCh:
 		require.NotNil(t, msg, "unexpected nil message")
-		st.TestUA.UnregisterSink("", "INVITE")
 
 		require.Equal(t, string(call.remoteTag), msg.req.From().Params.GetOr("tag", ""), "remote tag should be the same")
 		require.Equal(t, call.remoteUser, msg.req.From().Address.User, "remote user should be the same")
@@ -627,6 +694,10 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	case <-ctx.Done():
 		require.Fail(t, "timeout waiting for ACK")
 	}
+	t.Cleanup(func() {
+		bye := call.NewRequest(sip.BYE)
+		st.TestUA.TransactionRequest(t, bye, false)
+	})
 
 	st.Client.cmu.Lock()
 	defer st.Client.cmu.Unlock()
@@ -637,10 +708,44 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	return call, oc, ackReq
 }
 
+func getMediaPort(t *testing.T, m MediaPort) *mediaPort {
+	t.Helper()
+	port, ok := m.(*mediaPort)
+	require.True(t, ok, "media port should be a *mediaPort")
+	return port
+}
+
+func getMediaPortRemoteAddr(t *testing.T, m MediaPort) netip.AddrPort {
+	t.Helper()
+	port := getMediaPort(t, m)
+	dst := port.port.dst.Load()
+	require.NotNil(t, dst, "destination should be set")
+	return *dst
+}
+
+// incompatibleCodecOffer builds an SDP offer whose only audio codec is not the
+// one already negotiated on m.
+func incompatibleCodecOffer(t *testing.T, addr netip.AddrPort, m MediaPort) []byte {
+	t.Helper()
+	codecSet := testCodecSet(g711.ULawSDPNameAndRate)
+	ngotiated := m.NegotiatedAudio()
+	require.NotNil(t, ngotiated, "media must already be negotiated")
+	if ngotiated.Codec.Info().SDPName == g711.ULawSDPNameAndRate {
+		codecSet = testCodecSet(g711.ALawSDPNameAndRate)
+	}
+	sdpOffer, err := sdp.NewOfferWith(codecSet, addr.Addr(), int(addr.Port()), sdp.EncryptionNone)
+	require.NoError(t, err)
+	offer, err := sdpOffer.SDP.Marshal()
+	require.NoError(t, err)
+	return offer
+}
+
 func TestReinvite(t *testing.T) {
+	st := NewServiceTest(t, nil)
 	t.Run("inbound", func(t *testing.T) {
+		t.Parallel()
 		t.Run("normal", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			call, ic := st.CreateInboundCall(t)
 			serverLocalSDP := call.remoteSDP
 
@@ -663,11 +768,11 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// After the re-INVITE with new offer, the media port destination must be updated.
-			require.Equal(t, newOffer.Addr, ic.media.RemoteAddr(), "re-INVITE should redirect RTP to the new remote address")
+			require.Equal(t, newOffer.Addr, getMediaPortRemoteAddr(t, ic.media), "re-INVITE should redirect RTP to the new remote address")
 		})
 
 		t.Run("miss", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			call, _ := st.CreateInboundCall(t)
 			serverLocalSDP := call.remoteSDP
 
@@ -679,7 +784,13 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// re-INVITE with different tag
-			call.remoteTag = "something-else"
+			oldTag := call.remoteTag
+			call.remoteTag = "miss-" + call.remoteTag
+			t.Cleanup(func() {
+				req := call.NewRequest(sip.BYE)
+				st.TestUA.TransactionRequest(t, req, true)
+				call.remoteTag = oldTag
+			})
 			req, _, err = call.Invite(call.localSDP)
 			require.NoError(t, err)
 			resp = st.TestUA.TransactionRequest(t, req, true)
@@ -688,24 +799,54 @@ func TestReinvite(t *testing.T) {
 		})
 
 		t.Run("no_body", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			call, ic := st.CreateInboundCall(t)
 			serverLocalSDP := call.remoteSDP
-			initialRemote := ic.media.RemoteAddr()
+			initialRemote := getMediaPortRemoteAddr(t, ic.media)
 
 			// Re-INVITE with no SDP body — destination must not change.
 			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
 			resp := st.TestUA.TransactionRequest(t, req, true)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
-			require.Equal(t, initialRemote, ic.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, ic.media), "body-less re-INVITE must not change RTP destination")
+		})
+
+		t.Run("incompatible_codec", func(t *testing.T) {
+			// TODO: change this test to confirm renegotiation when it's enabled
+			t.Parallel()
+			call, ic := st.CreateInboundCall(t)
+			serverLocalSDP := call.remoteSDP
+			initialRemote := getMediaPortRemoteAddr(t, ic.media)
+			initialCodec := ic.media.NegotiatedAudio().Codec.Info().SDPName
+
+			// TODO: Change to reflect full negotiation once enabled
+			updatedRemote := netip.MustParseAddrPort("9.8.7.6:12345")
+			req, _, err := call.Invite(incompatibleCodecOffer(t, updatedRemote, ic.media))
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "incompatible re-INVITE should get 200 OK")
+			require.Equal(t, updatedRemote, getMediaPortRemoteAddr(t, ic.media), "incompatible re-INVITE must still change RTP destination")
+			require.Equal(t, initialCodec, ic.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+
+			// Re-INVITE with original codec
+			req, _, err = call.Invite(call.localSDP)
+			require.NoError(t, err)
+			resp = st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "original offer should still be accepted")
+			require.Equal(t, serverLocalSDP, resp.Body(), "successful re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, ic.media), "original re-INVITE must restore RTP destination")
+			require.Equal(t, initialCodec, ic.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+
 		})
 	})
 	t.Run("outbound", func(t *testing.T) {
+		t.Parallel()
 		t.Run("normal", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
+			serverLocalSDP, err := oc.media.GetLocalSDP()
+			require.NoError(t, err)
 			require.NotEqual(t, call.localSDP, serverLocalSDP, "local and remote SDP should be different")
 
 			// Re-INVITE
@@ -727,27 +868,29 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// After the re-INVITE with new offer, the media port destination must be updated.
-			require.Equal(t, newOffer.Addr, oc.media.RemoteAddr(), "re-INVITE should redirect outbound call RTP to the new remote address")
+			require.Equal(t, newOffer.Addr, getMediaPortRemoteAddr(t, oc.media), "re-INVITE should redirect outbound call RTP to the new remote address")
 		})
 
 		t.Run("no_body", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
-			initialRemote := oc.media.RemoteAddr()
+			serverLocalSDP, err := getMediaPort(t, oc.media).GetLocalSDP()
+			require.NoError(t, err)
+			initialRemote := getMediaPortRemoteAddr(t, oc.media)
 
 			// Re-INVITE with no SDP body — destination must not change.
 			req := call.NewRequest(sip.INVITE) // no body, no Content-Type
 			resp := st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "body-less re-INVITE should still get 200 OK")
 			require.Equal(t, serverLocalSDP, resp.Body(), "body-less re-INVITE should return server local SDP")
-			require.Equal(t, initialRemote, oc.media.RemoteAddr(), "body-less re-INVITE must not change RTP destination")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, oc.media), "body-less re-INVITE must not change RTP destination")
 		})
 
 		t.Run("miss", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			call, oc, _ := st.CreateOutboundCall(t)
-			serverLocalSDP := oc.cc.LocalSDP()
+			serverLocalSDP, err := getMediaPort(t, oc.media).GetLocalSDP()
+			require.NoError(t, err)
 
 			// Re-INVITE
 			req, _, err := call.Invite(call.localSDP)
@@ -757,18 +900,47 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, serverLocalSDP, resp.Body(), "reinvite 200 OK should return server local SDP")
 
 			// re-INVITE with different tag
-			call.remoteTag = "something-else"
+			call.remoteTag = "miss-" + call.remoteTag
 			req, _, err = call.Invite(call.localSDP)
 			require.NoError(t, err)
 			resp = st.TestUA.TransactionRequest(t, req, false)
 			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "reinvite for outbound call should get 200 OK")
 			require.NotEqual(t, serverLocalSDP, resp.Body(), "reinvite for new call should return new server local SDP")
 		})
+
+		t.Run("incompatible_codec", func(t *testing.T) {
+			// TODO: change this test to confirm renegotiation when it's enabled
+			t.Parallel()
+			call, oc, _ := st.CreateOutboundCall(t)
+			serverLocalSDP, err := oc.media.GetLocalSDP()
+			require.NoError(t, err)
+			initialCodec := oc.media.NegotiatedAudio().Codec.Info().SDPName
+			initialRemote := getMediaPortRemoteAddr(t, oc.media)
+
+			// TODO: Change to reflect full negotiation once enabled
+			updatedRemote := netip.MustParseAddrPort("9.8.7.6:12345")
+			req, _, err := call.Invite(incompatibleCodecOffer(t, updatedRemote, oc.media))
+			require.NoError(t, err)
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "incompatible re-INVITE should get 200 OK")
+			require.Equal(t, updatedRemote, getMediaPortRemoteAddr(t, oc.media), "incompatible re-INVITE must still change RTP destination")
+			require.Equal(t, initialCodec, oc.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+
+			// Re-INVITE with original codec
+			req, _, err = call.Invite(call.localSDP)
+			require.NoError(t, err)
+			resp = st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "original offer should still be accepted")
+			require.Equal(t, serverLocalSDP, resp.Body(), "successful re-INVITE should return server local SDP")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, oc.media), "original re-INVITE must restore RTP destination")
+			require.Equal(t, initialCodec, oc.media.NegotiatedAudio().Codec.Info().SDPName, "Codec must not be updated")
+		})
 	})
 }
 
 func TestTransfer(t *testing.T) {
 	const referTo = "tel:+15551234567"
+	st := NewServiceTest(t, nil)
 
 	expectHeaders := func(referTo string, headers map[string]string) []sip.Header {
 		expected := []sip.Header{sip.NewHeader("Refer-To", fmt.Sprintf("<%s>", referTo))}
@@ -930,8 +1102,9 @@ func TestTransfer(t *testing.T) {
 
 	for direction, setupCall := range directions {
 		t.Run(direction, func(t *testing.T) {
+			t.Parallel()
 			t.Run("normal", func(t *testing.T) {
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -959,7 +1132,7 @@ func TestTransfer(t *testing.T) {
 			t.Run("response", func(t *testing.T) {
 				// The API reports the outcome in the response, not just through
 				// the error return.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -992,7 +1165,7 @@ func TestTransfer(t *testing.T) {
 
 			t.Run("noraml_concurrent", func(t *testing.T) {
 				// Same as normal, but with multiple concurrent transfers API requests.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1024,7 +1197,7 @@ func TestTransfer(t *testing.T) {
 			})
 
 			t.Run("with headers", func(t *testing.T) {
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1056,7 +1229,7 @@ func TestTransfer(t *testing.T) {
 				// Transfer fails, we don't receive a BYE
 				const finalNotifyStatus = 480
 
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1098,7 +1271,7 @@ func TestTransfer(t *testing.T) {
 				// Transfer fails, we don't receive a BYE
 				const finalNotifyStatus = 480
 
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1147,7 +1320,7 @@ func TestTransfer(t *testing.T) {
 				// created and the SIP status is reported as-is.
 				const referStatus = 403
 
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1178,7 +1351,7 @@ func TestTransfer(t *testing.T) {
 			t.Run("no_notify", func(t *testing.T) {
 				// REFER accepted, but the peer never reports an outcome, so the
 				// transfer runs out of time.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1209,7 +1382,7 @@ func TestTransfer(t *testing.T) {
 			t.Run("bye", func(t *testing.T) {
 				// After REFER gets 202 we wait on NOTIFY; remote hangs up with BYE
 				// instead, so the transfer outcome is never reported.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1249,7 +1422,7 @@ func TestTransfer(t *testing.T) {
 				// leg because it is no longer needed. The NOTIFY and the BYE are
 				// handled on separate goroutines, so the result must still win
 				// over the call ending.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1293,7 +1466,7 @@ func TestTransfer(t *testing.T) {
 			t.Run("terminated_subscription", func(t *testing.T) {
 				// The peer ends the refer subscription while still reporting a
 				// provisional status, so no final status will ever arrive.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1333,7 +1506,7 @@ func TestTransfer(t *testing.T) {
 				// The peer ends the refer subscription with a NOTIFY that carries
 				// no sipfrag at all, so there is no status to read and the
 				// subscription state alone decides the outcome.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1365,7 +1538,7 @@ func TestTransfer(t *testing.T) {
 			t.Run("terminated_subscription_success", func(t *testing.T) {
 				// The final NOTIFY of a successful transfer also terminates the
 				// subscription, so success has to be decided first.
-				st := NewServiceTest(t, nil)
+				t.Parallel()
 				call := setupCall(t, st)
 
 				reqChan := call.RegisterRequestChannel("")
@@ -1396,6 +1569,7 @@ func TestTransfer(t *testing.T) {
 }
 
 func TestRouteSet(t *testing.T) {
+	st := NewServiceTest(t, nil)
 	// makeRouteSetHeaders creates two Record-Route headers simulating two proxies
 	// in the signaling path. Returns the headers and the expected Route order for
 	// both UAC and UAS sides.
@@ -1434,10 +1608,11 @@ func TestRouteSet(t *testing.T) {
 	}
 
 	t.Run("inbound", func(t *testing.T) {
+		t.Parallel()
 		// Server is UAS for inbound calls. Route set should be in order.
 
 		t.Run("BYE", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			rrHeaders, expectUAS, _ := makeRouteSetHeaders(t, st)
 			call, ic := st.CreateInboundCall(t, withTestHeaders(rrHeaders...))
 
@@ -1469,7 +1644,7 @@ func TestRouteSet(t *testing.T) {
 		})
 
 		t.Run("REFER", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			rrHeaders, expectUAS, _ := makeRouteSetHeaders(t, st)
 			call, ic := st.CreateInboundCall(t, withTestHeaders(rrHeaders...))
 			t.Cleanup(func() { ic.Close() })
@@ -1510,10 +1685,11 @@ func TestRouteSet(t *testing.T) {
 	})
 
 	t.Run("outbound", func(t *testing.T) {
+		t.Parallel()
 		// Server is UAC for outbound calls. Route set should be reversed.
 
 		t.Run("ACK", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			rrHeaders, _, expectUAC := makeRouteSetHeaders(t, st)
 			call, _, ackReq := st.CreateOutboundCall(t, withTestHeaders(rrHeaders...))
 			assertRouteHeaders(t, ackReq, expectUAC)
@@ -1524,7 +1700,7 @@ func TestRouteSet(t *testing.T) {
 		})
 
 		t.Run("BYE", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			rrHeaders, _, expectUAC := makeRouteSetHeaders(t, st)
 			call, oc, _ := st.CreateOutboundCall(t, withTestHeaders(rrHeaders...))
 
@@ -1554,7 +1730,7 @@ func TestRouteSet(t *testing.T) {
 		})
 
 		t.Run("REFER", func(t *testing.T) {
-			st := NewServiceTest(t, nil)
+			t.Parallel()
 			rrHeaders, _, expectUAC := makeRouteSetHeaders(t, st)
 			call, oc, _ := st.CreateOutboundCall(t, withTestHeaders(rrHeaders...))
 

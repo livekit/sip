@@ -15,7 +15,6 @@
 package sip
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"math"
@@ -23,7 +22,6 @@ import (
 	"net/netip"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,12 +29,13 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 
@@ -57,11 +56,11 @@ func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
 	return mon.NewCall(stats.Inbound, "test", "test")
 }
 
-func newTestMediaPort(t testing.TB, provider string) *MediaPort {
+func newTestMediaPort(t testing.TB, provider string) MediaPort {
 	t.Helper()
 	mon := newTestCallMonitor(t)
 	mon.SetProvider(provider)
-	mp, err := NewMediaPortWith(1, logger.GetLogger(), mon, nil, &MediaOptions{
+	mp, err := NewMediaPortWith(logger.NewTestLogger(t), mon, nil, &MediaOptions{
 		IP: netip.MustParseAddr("127.0.0.1"),
 	}, 8000)
 	require.NoError(t, err)
@@ -70,11 +69,17 @@ func newTestMediaPort(t testing.TB, provider string) *MediaPort {
 }
 
 type testUDPConn struct {
-	addr     netip.AddrPort
-	closed   chan struct{}
-	buf      chan []byte
-	peer     atomic.Pointer[testUDPConn]
-	deadline chan time.Time
+	addr   netip.AddrPort
+	closed chan struct{}
+	buf    chan []byte
+	peer   atomic.Pointer[testUDPConn]
+
+	// Deadlines follow net.Conn: the latest value wins, zero clears it. The value
+	// lives in the guarded field and kick only wakes a parked reader, so coalescing
+	// a wakeup can never drop a deadline - which would strand Close() forever.
+	dmu      sync.Mutex
+	deadline time.Time
+	kick     chan struct{}
 }
 
 func (c *testUDPConn) Read(b []byte) (int, error) {
@@ -100,11 +105,20 @@ func (c *testUDPConn) SetDeadline(t time.Time) error {
 }
 
 func (c *testUDPConn) SetReadDeadline(t time.Time) error {
+	c.dmu.Lock()
+	c.deadline = t
+	c.dmu.Unlock()
 	select {
-	case c.deadline <- t:
+	case c.kick <- struct{}{}:
 	default:
 	}
 	return nil
+}
+
+func (c *testUDPConn) readDeadline() time.Time {
+	c.dmu.Lock()
+	defer c.dmu.Unlock()
+	return c.deadline
 }
 
 func (c *testUDPConn) SetWriteDeadline(t time.Time) error {
@@ -116,24 +130,28 @@ func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, erro
 	if peer == nil {
 		return 0, netip.AddrPort{}, io.ErrClosedPipe
 	}
-	var curDeadline time.Time
 
 	for {
-		var deadlineCh <-chan time.Time = nil
-		if !curDeadline.IsZero() {
-			deadlineCh = time.After(time.Until(curDeadline))
+		var (
+			deadlineCh <-chan time.Time
+			timer      *time.Timer
+		)
+		if dl := c.readDeadline(); !dl.IsZero() {
+			timer = time.NewTimer(time.Until(dl))
+			deadlineCh = timer.C
 		}
+
 		select {
 		case <-c.closed:
+			stopTimer(timer)
 			return 0, netip.AddrPort{}, io.ErrClosedPipe
 		case <-deadlineCh:
 			return 0, netip.AddrPort{}, os.ErrDeadlineExceeded
-		case newDeadline := <-c.deadline:
-			if !newDeadline.IsZero() && (newDeadline.Before(curDeadline) || curDeadline.IsZero()) {
-				curDeadline = newDeadline
-			}
+		case <-c.kick:
+			stopTimer(timer) // deadline changed, re-arm
 			continue
 		case data := <-c.buf:
+			stopTimer(timer)
 			n := copy(buf, data)
 			var err error
 			if n < len(data) {
@@ -141,6 +159,12 @@ func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, erro
 			}
 			return n, peer.addr, err
 		}
+	}
+}
+
+func stopTimer(t *time.Timer) {
+	if t != nil {
+		t.Stop()
 	}
 }
 
@@ -182,9 +206,9 @@ func newTestConn(i int) *testUDPConn {
 			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
 			uint16(10000*i),
 		),
-		buf:      make(chan []byte, 10),
-		closed:   make(chan struct{}),
-		deadline: make(chan time.Time, 1),
+		buf:    make(chan []byte, 256),
+		closed: make(chan struct{}),
+		kick:   make(chan struct{}, 1),
 	}
 }
 
@@ -196,10 +220,6 @@ func newUDPPipe() (c1, c2 *testUDPConn) {
 	return
 }
 
-func PrintAudioInWriter(p *MediaPort) string {
-	return p.audioInHandler.(fmt.Stringer).String()
-}
-
 func newIP(v string) netip.Addr {
 	ip, err := netip.ParseAddr(v)
 	if err != nil {
@@ -208,39 +228,196 @@ func newIP(v string) netip.Addr {
 	return ip
 }
 
-func TestMediaPortUpdateRemote(t *testing.T) {
-	log := logger.GetLogger()
-	mon := newTestCallMonitor(t)
-
-	// newUDPPipe wires two in-memory testUDPConn together.
-	c1, _ := newUDPPipe()
-	mp, err := NewMediaPortWith(1, log, mon, c1, &MediaOptions{
-		IP: netip.MustParseAddr("127.0.0.1"),
-	}, 8000)
+// newTestPort is NewMediaPortWith for tests: it keeps the concrete type, so tests can reach
+// the udpConn and the timeout controls that are not part of the MediaPort interface.
+func newTestPort(t testing.TB, log logger.Logger, conn UDPConn, opts *MediaOptions, rate int) *mediaPort {
+	t.Helper()
+	mp, err := NewMediaPortWith(log, newTestCallMonitor(t), conn, opts, rate)
 	require.NoError(t, err)
-	defer mp.Close()
-
-	// Initially no destination is set.
-	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any update")
-
-	// Update to a valid address.
-	addr := netip.MustParseAddrPort("9.8.7.6:12345")
-	mp.UpdateRemote(addr)
-	require.Equal(t, addr, mp.RemoteAddr(), "RemoteAddr should reflect the updated address")
-
-	// UpdateRemote with invalid addr should be a no-op.
-	mp.UpdateRemote(netip.AddrPort{})
-	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with invalid addr should not change RemoteAddr")
-
-	// UpdateRemote with unspecified address (c=0.0.0.0 hold form) should be a no-op.
-	mp.UpdateRemote(netip.MustParseAddrPort("0.0.0.0:12345"))
-	require.Equal(t, addr, mp.RemoteAddr(), "UpdateRemote with unspecified addr should not change RemoteAddr")
+	t.Cleanup(mp.Close)
+	return mp.(*mediaPort)
 }
 
-func TestMediaPort(t *testing.T) {
-	// Main resampler has unpredictable (although tiny) output delay
-	// and other randomness in the generated samples.
-	// Enable a predictable resampler to avoid flaky tests.
+func offerAt(t testing.TB, addr netip.AddrPort) []byte {
+	t.Helper()
+	return offerAtEnc(t, addr, sdp.EncryptionNone)
+}
+
+func offerAtEnc(t testing.TB, addr netip.AddrPort, enc sdp.Encryption) []byte {
+	t.Helper()
+	offer, err := sdp.NewOfferWith(defaultCodecs, addr.Addr(), int(addr.Port()), enc)
+	require.NoError(t, err)
+	data, err := offer.SDP.Marshal()
+	require.NoError(t, err)
+	return data
+}
+
+func TestMediaPortUpdateRemote(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, RoomSampleRate)
+
+	require.False(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be invalid before any offer")
+
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	_, err := mp.GenerateAnswer(offerAt(t, addr))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "GenerateAnswer should set RemoteAddr from the offer")
+
+	// Body-less re-INVITE: empty offer returns the local SDP and must not change dest.
+	_, err = mp.GenerateAnswer(nil)
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
+
+	// Hold form c=0.0.0.0 must not clobber dest once media is established.
+	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
+
+	// successful re-INVITE update
+	addr = netip.MustParseAddrPort("10.10.10.10:54321")
+	_, err = mp.GenerateAnswer(offerAt(t, addr))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
+}
+
+// Re-INVITE with the original offer SDP and crypto material must result in
+// re-use of already-negotiated keys.
+func TestMediaPortReinviteSameCrypto(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	offer := offerAtEnc(t, addr, sdp.EncryptionRequire)
+
+	_, err := mp.GenerateAnswer(offer)
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr())
+
+	require.NotNil(t, mp.negotiated)
+	require.NotNil(t, mp.negotiated.Crypto)
+	localKey := slices.Clone(mp.negotiated.Crypto.Keys.LocalMasterKey)
+	localSalt := slices.Clone(mp.negotiated.Crypto.Keys.LocalMasterSalt)
+	require.NotEmpty(t, localKey)
+	require.NotEmpty(t, localSalt)
+	localSDP, err := mp.GetLocalSDP()
+	require.NoError(t, err)
+	require.NotEmpty(t, localSDP)
+
+	// Same offer bytes: NewOfferWith would generate a new peer key.
+	_, err = mp.GenerateAnswer(offer)
+	require.NoError(t, err, "re-INVITE with the same offer must be accepted")
+	require.Equal(t, addr, mp.RemoteAddr(), "same offer must not change dest")
+	require.Equal(t, localKey, mp.negotiated.Crypto.Keys.LocalMasterKey, "local master key must not change")
+	require.Equal(t, localSalt, mp.negotiated.Crypto.Keys.LocalMasterSalt, "local master salt must not change")
+	gotSDP, err := mp.GetLocalSDP()
+	require.NoError(t, err)
+	require.Equal(t, localSDP, gotSDP, "local SDP (including a=crypto) must not change")
+}
+
+func TestMediaPortReofferSameCrypto(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	newOffer := func(t testing.TB, mp *mediaPort, localCrypto []srtp.Profile) (*sdp.Offer, *sdp.MediaConfig) {
+		t.Helper()
+		addr := netip.MustParseAddrPort("9.8.7.6:12345")
+		offerData, err := mp.GenerateOffer()
+		require.NoError(t, err)
+		offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+		require.NoError(t, err)
+		answer, mc, err := offer.Answer(addr.Addr(), int(addr.Port()), sdp.EncryptionRequire, sdp.WithLocalProfiles(localCrypto))
+		require.NoError(t, err)
+		answerData, err := answer.SDP.Marshal()
+		require.NoError(t, err)
+		err = mp.ProcessAnswer(answerData)
+		require.NoError(t, err)
+		require.Nil(t, mp.offer)
+		return offer, mc
+	}
+	localCrypto, err := srtp.DefaultProfiles()
+	require.NoError(t, err)
+	offer1, mc1 := newOffer(t, mp, localCrypto)
+	offer2, mc2 := newOffer(t, mp, localCrypto)
+
+	// Offers must not regenerate keys
+	require.Equal(t, offer1.CryptoProfiles, offer2.CryptoProfiles, "crypto profiles must not change")
+	require.Equal(t, mc1.Crypto.Keys.RemoteMasterKey, mc2.Crypto.Keys.RemoteMasterKey, "remote master key must not change")
+	require.Equal(t, mc1.Crypto.Keys.RemoteMasterSalt, mc2.Crypto.Keys.RemoteMasterSalt, "remote master salt must not change")
+}
+
+// negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.
+func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
+	t.Helper()
+	offerData, err := m1.GenerateOffer()
+	require.NoError(t, err)
+
+	answerData, err := m2.GenerateAnswer(offerData)
+	require.NoError(t, err)
+
+	require.NoError(t, m1.ProcessAnswer(answerData))
+
+	m2.SetTimeout(m2.opts.MediaTimeoutInitial, m2.opts.MediaTimeout)
+	return answerData
+}
+
+func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions, codec string, targetRate int) (m1, m2 *mediaPort) {
+	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2, codec, targetRate)
+}
+
+func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions, codec string, targetRate int) (m1, m2 *mediaPort) {
+	if opt1 == nil {
+		opt1 = &MediaOptions{}
+	}
+	if opt2 == nil {
+		opt2 = &MediaOptions{}
+	}
+	c1, c2 := newUDPPipe()
+
+	if targetRate <= 0 {
+		targetRate = RoomSampleRate
+	}
+
+	opt1.IP = ip1
+	opt1.Ports = rtcconfig.PortRange{Start: 10000}
+	if codec != "" {
+		opt1.Codecs = testCodecSet(codec)
+	}
+
+	opt2.IP = ip2
+	opt2.Ports = rtcconfig.PortRange{Start: 20000}
+	if codec != "" {
+		opt2.Codecs = testCodecSet(codec)
+	}
+
+	log := logger.NewTestLogger(t)
+
+	m1 = newTestPort(t, log.WithName("one"), c1, opt1, targetRate)
+	m2 = newTestPort(t, log.WithName("two"), c2, opt2, targetRate)
+
+	negotiate(t, m1, m2)
+	return m1, m2
+}
+
+type codecConfig struct {
+	rampUpFrames  int
+	offsetSamples int
+}
+
+var codecConfigMap = map[string]codecConfig{
+	"G722/8000":    {rampUpFrames: 1, offsetSamples: 22},
+	"AMR-WB/16000": {rampUpFrames: 1, offsetSamples: 14 + 16},
+}
+
+func TestMediaPortAudioRoundTrip(t *testing.T) {
+	// Production resampler delay is tiny but not deterministic; checkPCM needs a stable delay.
 	prevOpts := msdk.DefaultResampleOptions
 	msdk.DefaultResampleOptions = []msdk.ResampleOption{
 		msdk.WithPredictableResample(true),
@@ -248,231 +425,95 @@ func TestMediaPort(t *testing.T) {
 	defer func() {
 		msdk.DefaultResampleOptions = prevOpts
 	}()
-	codecList := msdk.Codecs()
-	for _, codec := range codecList {
+
+	for _, codec := range allAudioCodecs() {
 		info := codec.Info()
-		tname := strings.ReplaceAll(info.SDPName, "/", "-")
-		t.Run(tname, func(t *testing.T) {
-			codecs := msdk.NewCodecSet()
-			codecs.SetEnabled(info.SDPName, true)
+		t.Run(strings.ReplaceAll(info.SDPName, "/", "-"), func(t *testing.T) {
+			for _, resample := range []bool{true, false} {
+				t.Run(fmt.Sprintf("resample=%t", resample), func(t *testing.T) {
+					for _, enc := range []sdp.Encryption{sdp.EncryptionNone, sdp.EncryptionRequire} {
+						t.Run("enc="+policyToString[enc], func(t *testing.T) {
 
-			sub := strings.SplitN(info.SDPName, "/", 2)
-			codecName := sub[0]
-			nativeRateSDP, err := strconv.Atoi(sub[1])
-			nativeRate := nativeRateSDP
-			require.NoError(t, err)
-			switch codecName {
-			case "telephone-event":
-				t.SkipNow()
-			case "G722":
-				nativeRate *= 2 // error in RFC
-			}
+							opts1 := &MediaOptions{Encryption: enc}
+							opts2 := &MediaOptions{Encryption: enc}
+							targetRate := RoomSampleRate
+							if !resample {
+								targetRate = info.SampleRate
+							}
+							m1, m2 := newMediaPair(t, opts1, opts2, info.SDPName, targetRate)
 
-			for _, tconf := range []struct {
-				Rate      int
-				Encrypted sdp.Encryption
-			}{
-				{nativeRate, sdp.EncryptionNone},
-				{48000, sdp.EncryptionRequire},
-			} {
-				suff := ""
-				if tconf.Encrypted != sdp.EncryptionNone {
-					suff = " srtp"
-				}
-				t.Run(fmt.Sprintf("%d%s", tconf.Rate, suff), func(t *testing.T) {
-					c1, c2 := newUDPPipe()
+							var recv1, recv2 msdk.PCM16Sample
+							h1 := msdk.NewPCM16BufferWriter(&recv1, targetRate)
+							h2 := msdk.NewPCM16BufferWriter(&recv2, targetRate)
+							m1.WriteInboundAudioTo(h1)
+							m2.WriteInboundAudioTo(h2)
 
-					log := logger.GetLogger()
+							w1 := m1.GetOutboundAudioWriter()
+							w2 := m2.GetOutboundAudioWriter()
 
-					const (
-						ip1   = "1.1.1.1"
-						ip2   = "2.2.2.2"
-						port1 = 10000
-						port2 = 20000
-					)
-					testRate := tconf.Rate
-					bobToAliceNoResample := testRate == 8000
+							packetSize := targetRate / int(time.Second/rtp.DefFrameDur)
+							to2 := make(msdk.PCM16Sample, packetSize)
+							to1 := make(msdk.PCM16Sample, packetSize)
+							const (
+								amp1 = 10000
+								amp2 = 5000
+								freq = 10
+							)
+							for i := range packetSize {
+								to2[i] = int16(amp1 * math.Sin(freq*2*math.Pi*float64(i)/float64(packetSize)))
+								to1[i] = int16(amp2 * math.Sin(freq*2*math.Pi*float64(i)/float64(packetSize)))
+							}
 
-					alicePort, err := NewMediaPortWith(1, log.WithName("Alice"), newTestCallMonitor(t), c1, &MediaOptions{
-						IP:              newIP(ip1),
-						Ports:           rtcconfig.PortRange{Start: port1},
-						NoInputResample: bobToAliceNoResample,
-					}, testRate)
-					require.NoError(t, err)
-					defer alicePort.Close()
+							codecConfig := codecConfigMap[info.SDPName] // defaults to 0,0
 
-					bobPort, err := NewMediaPortWith(2, log.WithName("Bob"), newTestCallMonitor(t), c2, &MediaOptions{
-						IP:    newIP(ip2),
-						Ports: rtcconfig.PortRange{Start: port2},
-					}, testRate)
-					require.NoError(t, err)
-					defer bobPort.Close()
+							// Ramp-up time for the codec.
+							// Some codecs have "inertia" and cannot immediately represent the sound exactly.
+							// This is why we write signal multiple times to give it some time to adapt.
+							// We will also cut the ramp-up part from the destination buffer before comparing.
+							// This variable is in full frames, so that we clearly see where frames start to calculate the offset below.
+							rampUpFrames := codecConfig.rampUpFrames
+							// Some codecs have an extra buffering internally, and we have to offset the compared sample
+							// by this number of sampled values.
+							offsetSamples := codecConfig.offsetSamples
 
-					// Alice sends an offer to Bob
+							writes := 1 + rampUpFrames
+							discard := rampUpFrames * packetSize
+							resampleMult := targetRate / info.SampleRate
+							offsetSamples *= resampleMult
 
-					offer, err := alicePort.NewOffer(codecs, tconf.Encrypted)
-					require.NoError(t, err)
-					offerData, err := offer.SDP.Marshal()
-					require.NoError(t, err)
+							var wg sync.WaitGroup
+							wg.Add(2)
+							go func() {
+								defer wg.Done()
+								for range writes {
+									require.NoError(t, w1.WriteSample(to2))
+								}
+							}()
+							go func() {
+								defer wg.Done()
+								for range writes {
+									require.NoError(t, w2.WriteSample(to1))
+								}
+							}()
+							wg.Wait()
 
-					t.Logf("SDP offer:\n%s", string(offerData))
+							time.Sleep(time.Second / 4)
 
-					answer, bobConf, err := bobPort.SetOffer(offerData, codecs, tconf.Encrypted)
-					require.NoError(t, err)
-					answerData, err := answer.SDP.Marshal()
-					require.NoError(t, err)
+							h1.Close()
+							h2.Close()
+							m1.Close()
+							m2.Close()
 
-					t.Logf("SDP answer:\n%s", string(answerData))
-
-					aliceConf, _, err := alicePort.SetAnswer(offer, answerData, codecs, tconf.Encrypted)
-					require.NoError(t, err)
-
-					err = alicePort.SetConfig(aliceConf)
-					require.NoError(t, err)
-
-					err = bobPort.SetConfig(bobConf)
-					require.NoError(t, err)
-
-					aliceAudio := alicePort.Config().Audio
-					bobAudio := bobPort.Config().Audio
-
-					aliceCodec := aliceAudio.Codec
-					bobCodec := bobAudio.Codec
-
-					require.Equal(t, info.SDPName, aliceCodec.Info().SDPName)
-					require.Equal(t, info.SDPName, bobCodec.Info().SDPName)
-
-					// Buffers should match the rate of the samples we write.
-
-					var aliceRecvBuf msdk.PCM16Sample
-					aliceHandler := msdk.NewPCM16BufferWriter(&aliceRecvBuf, testRate)
-					alicePort.WriteAudioTo(aliceHandler)
-
-					var bobRecvBuf msdk.PCM16Sample
-					bobHandler := msdk.NewPCM16BufferWriter(&bobRecvBuf, testRate)
-					bobPort.WriteAudioTo(bobHandler)
-
-					aliceToBob := alicePort.GetAudioWriter()
-					bobToAlice := bobPort.GetAudioWriter()
-
-					aliceToBobWriteChain := aliceToBob.String()
-					bobToAliceWriteChain := bobToAlice.String()
-
-					bobToAliceHandleChain := PrintAudioInWriter(alicePort)
-					aliceToBobHandleChain := PrintAudioInWriter(bobPort)
-
-					t.Log("A -> B (write)", aliceToBobWriteChain)
-					t.Log("B -> A (write)", bobToAliceWriteChain)
-
-					t.Log("B -> A (handle)", bobToAliceHandleChain)
-					t.Log("A -> B (handle)", aliceToBobHandleChain)
-
-					t.Log("resample", !bobToAliceNoResample)
-
-					packetSize := testRate / int(time.Second/rtp.DefFrameDur)
-					aliceToBobSamples := make(msdk.PCM16Sample, packetSize)
-					bobToAliceSamples := make(msdk.PCM16Sample, packetSize)
-					const (
-						amp1 = 10000
-						amp2 = 5000
-						freq = 10
-					)
-					for i := range packetSize {
-						aliceToBobSamples[i] = int16(amp1 * math.Sin(freq*2*math.Pi*float64(i)/float64(packetSize)))
-						bobToAliceSamples[i] = int16(amp2 * math.Sin(freq*2*math.Pi*float64(i)/float64(packetSize)))
+							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:])
+							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:])
+						})
 					}
 
-					aliceToBobWrites := 1
-					bobToAliceWrites := 1
-					if tconf.Rate == nativeRate {
-						expChainBase := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit",
-							nativeRate, codecName, nativeRate, codecName, nativeRateSDP)
-						require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip2, port2), aliceToBobWriteChain)
-						require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip1, port1), bobToAliceWriteChain)
-
-						expChainBase = fmt.Sprintf("SilenceFiller(25) -> RTP(%%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", codecName, nativeRate, nativeRate)
-						require.Equal(t, fmt.Sprintf(expChainBase, aliceAudio.Type), bobToAliceHandleChain)
-						require.Equal(t, fmt.Sprintf(expChainBase, bobAudio.Type), aliceToBobHandleChain)
-					} else {
-						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> SRTPWriteStream",
-							nativeRate, codecName, nativeRate, codecName, nativeRateSDP)
-						require.Equal(t, expChain, aliceToBobWriteChain)
-						require.Equal(t, expChain, bobToAliceWriteChain)
-
-						// This side does not resample the received audio, it uses sample rate of the RTP source.
-						var expChainAlice string
-						if bobToAliceNoResample {
-							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", aliceAudio.Type, codecName, nativeRate, nativeRate)
-						} else {
-							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", aliceAudio.Type, codecName, nativeRate)
-						}
-
-						// This side resamples the received audio to the expected sample rate.
-						expChainBob := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", bobAudio.Type, codecName, nativeRate)
-
-						require.Equal(t, expChainAlice, bobToAliceHandleChain)
-						require.Equal(t, expChainBob, aliceToBobHandleChain)
-					}
-					// Ramp-up time for the codec.
-					// Some codecs have "inertia" and cannot immediately represent the sound exactly.
-					// This is shy we write signal multiple times to give it some time to adapt.
-					// We will also cut the ramp-up part from the destination buffer before comparing.
-					// This variable is in full frames, so that we clearly see where frames start to calculate the offset below.
-					rampUpFrames := 0
-					// Some codecs have an extra buffering internally, and we have to offset the compared sample
-					// by this number of sampled values.
-					offsetSamples := 0
-
-					switch codecName {
-					case "G722":
-						rampUpFrames += 1
-						offsetSamples += 22
-					case "AMR-WB":
-						rampUpFrames += 1
-						offsetSamples += 14 + 16
-					}
-					aliceToBobWrites += rampUpFrames
-					bobToAliceWrites += rampUpFrames
-					discard := rampUpFrames * packetSize
-
-					resampleMult := testRate / nativeRate
-					offsetSamples *= resampleMult
-
-					var wg sync.WaitGroup
-					wg.Add(2)
-					go func() {
-						defer wg.Done()
-						for range aliceToBobWrites {
-							err := aliceToBob.WriteSample(aliceToBobSamples)
-							require.NoError(t, err)
-						}
-					}()
-					go func() {
-						defer wg.Done()
-						for range bobToAliceWrites {
-							err := bobToAlice.WriteSample(bobToAliceSamples)
-							require.NoError(t, err)
-						}
-					}()
-					wg.Wait()
-
-					time.Sleep(time.Second / 4)
-
-					// Cut buffers earlier, otherwise we might get extra samples
-					// that we added to push resampler forward.
-					aliceHandler.Close()
-					bobHandler.Close()
-
-					alicePort.Close()
-					bobPort.Close()
-
-					checkPCM(t, "A -> B", aliceToBobSamples[:packetSize-offsetSamples], bobRecvBuf[discard+offsetSamples:])
-					checkPCM(t, "B -> A", bobToAliceSamples[:packetSize-offsetSamples], aliceRecvBuf[discard+offsetSamples:])
 				})
 			}
+
 		})
 	}
-
 }
 
 func checkPCM(t testing.TB, name string, exp, got msdk.PCM16Sample) {
@@ -513,69 +554,59 @@ func checkPCM(t testing.TB, name string, exp, got msdk.PCM16Sample) {
 	)
 }
 
-func newMediaPair(t testing.TB, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
-	return newMediaPairWithAddr(t, newIP("1.1.1.1"), newIP("2.2.2.2"), opt1, opt2)
+func TestPipelineChains(t *testing.T) {
+	for _, codec := range enabledAudioCodecs() {
+		t.Run(codec.Info().SDPName, func(t *testing.T) {
+			// Create new test media port
+			// Process offer with a specific codec + dtmf
+			codecs := testCodecSet(codec.Info().SDPName)
+			opts := &MediaOptions{
+				IP:     netip.MustParseAddr("1.1.1.1"),
+				Ports:  rtcconfig.PortRange{Start: 10000},
+				Codecs: codecs,
+			}
+			conn := newTestConn(1)
+			mp := newTestPort(t, logger.NewTestLogger(t), conn, opts, RoomSampleRate)
+
+			info := codec.Info()
+			offer, err := sdp.NewOfferWith(codecs, netip.MustParseAddr("2.2.2.2"), 20000, sdp.EncryptionNone)
+			require.NoError(t, err)
+			answerData, err := offer.SDP.Marshal()
+			require.NoError(t, err)
+			_, err = mp.GenerateAnswer(answerData)
+			require.NoError(t, err)
+
+			codecName := strings.Split(info.SDPName, "/")[0]
+			sampleRate := info.SampleRate
+			clockRate := info.RTPClockRate
+			payloadType := info.RTPDefType
+			audioOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> LatencyEntry -> Resample(%d->%d) -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> RTPWriteStream(:0)",
+				RoomSampleRate, RoomSampleRate, sampleRate, codecName, sampleRate, codecName, clockRate)
+			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->%d) -> LatencyExit -> WriteCloserSwitch(nil)",
+				codecName, clockRate, payloadType, codecName, sampleRate, RoomSampleRate)
+			dtmfOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> dtmfOutWriter(dtmfAudio: false)", clockRate)
+			dtmfInChain := fmt.Sprintf("StatsHandler(telephone-event/%d) -> HandlerFunc", clockRate)
+			assert.Equal(t, audioOutChain, mp.GetOutboundAudioWriter().String(), "out audio chain mismatch")
+			assert.Equal(t, audioInChain, mp.pipeline.audioToRoom.String(), "in audio chain mismatch")
+			assert.Equal(t, dtmfOutChain, mp.GetOutboundDTMFWriter().String(), "out dtmf chain mismatch")
+			assert.Equal(t, dtmfInChain, mp.pipeline.dtmfToRoom.String(), "in dtmf chain mismatch")
+		})
+	}
 }
 
-func newMediaPairWithAddr(t testing.TB, ip1, ip2 netip.Addr, opt1, opt2 *MediaOptions) (m1, m2 *MediaPort) {
-	if opt1 == nil {
-		opt1 = &MediaOptions{}
-	}
-	if opt2 == nil {
-		opt2 = &MediaOptions{}
-	}
-	c1, c2 := newUDPPipe()
-
-	codecs := defaultCodecs
-
-	opt1.IP = ip1
-	opt1.Ports = rtcconfig.PortRange{Start: 10000}
-	opt1.NoInputResample = true
-
-	opt2.IP = ip2
-	opt2.Ports = rtcconfig.PortRange{Start: 20000}
-
-	const rate = 16000
-
-	log := logger.GetLogger()
-
-	var err error
-
-	m1, err = NewMediaPortWith(1, log.WithName("one"), newTestCallMonitor(t), c1, opt1, rate)
-	require.NoError(t, err)
-	t.Cleanup(m1.Close)
-
-	m2, err = NewMediaPortWith(2, log.WithName("two"), newTestCallMonitor(t), c2, opt2, rate)
-	require.NoError(t, err)
-	t.Cleanup(m2.Close)
-
-	offer, err := m1.NewOffer(codecs, sdp.EncryptionNone)
-	require.NoError(t, err)
-	offerData, err := offer.SDP.Marshal()
-	require.NoError(t, err)
-
-	answer, mc2, err := m2.SetOffer(offerData, codecs, sdp.EncryptionNone)
-	require.NoError(t, err)
-	answerData, err := answer.SDP.Marshal()
-	require.NoError(t, err)
-
-	mc1, _, err := m1.SetAnswer(offer, answerData, codecs, sdp.EncryptionNone)
-	require.NoError(t, err)
-
-	err = m1.SetConfig(mc1)
-	require.NoError(t, err)
-
-	err = m2.SetConfig(mc2)
-	require.NoError(t, err)
-
-	w2 := m2.GetAudioWriter()
-	require.Equal(t, "Switch(16000) -> LatencyEntry -> G722(encode) -> ByteEncoder(16000) -> StatsWriter(G722/8000) -> LatencyExit -> RTPWriteStream(1.1.1.1:10000)", w2.String())
-
-	return m1, m2
+// pushAudio writes two room-rate frames. The outbound resampler keeps a one-frame
+// delay (soxr returns a short buffer on the first call), so a single WriteSample
+// never produces RTP when the port runs at RoomSampleRate.
+func pushAudio(t testing.TB, w msdk.PCM16Writer) {
+	t.Helper()
+	frame := roomFrame()
+	require.NoError(t, w.WriteSample(frame))
+	require.NoError(t, w.WriteSample(frame))
 }
 
 func TestMediaTimeout(t *testing.T) {
 	const (
+		codec   = "G722/8000"
 		timeout = time.Second / 4
 		initial = timeout * 2
 		dt      = timeout / 4
@@ -585,13 +616,11 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-
-		m1.EnableTimeout(true)
+		}, nil, codec, RoomSampleRate)
 
 		targ := time.Now().Add(initial)
 		select {
-		case <-m1.Timeout():
+		case <-m1.MediaTimeout():
 			t.Fatal("initial timeout ignored")
 		case <-time.After(initial / 2):
 		}
@@ -599,7 +628,7 @@ func TestMediaTimeout(t *testing.T) {
 		select {
 		case <-time.After(time.Until(targ) + dt):
 			t.Fatal("timeout didn't trigger")
-		case <-m1.Timeout():
+		case <-m1.MediaTimeout():
 		}
 	})
 
@@ -607,12 +636,10 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec, RoomSampleRate)
 
-		w2 := m2.GetAudioWriter()
-		err := w2.WriteSample(msdk.PCM16Sample{0, 0})
-		require.NoError(t, err)
+		w2 := m2.GetOutboundAudioWriter()
+		pushAudio(t, w2)
 
 		select {
 		case <-time.After(dt):
@@ -623,7 +650,7 @@ func TestMediaTimeout(t *testing.T) {
 		select {
 		case <-time.After(2*timeout + dt):
 			t.Fatal("timeout didn't trigger")
-		case <-m1.Timeout():
+		case <-m1.MediaTimeout():
 		}
 	})
 
@@ -631,18 +658,16 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec, RoomSampleRate)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 
 		for i := 0; i < 10; i++ {
-			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
-			require.NoError(t, err)
+			pushAudio(t, w2)
 
 			select {
 			case <-time.After(timeout / 2):
-			case <-m1.Timeout():
+			case <-m1.MediaTimeout():
 				t.Fatal("timeout")
 			}
 		}
@@ -652,18 +677,16 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec, RoomSampleRate)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 
 		for i := 0; i < 5; i++ {
-			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
-			require.NoError(t, err)
+			pushAudio(t, w2)
 
 			select {
 			case <-time.After(timeout / 2):
-			case <-m1.Timeout():
+			case <-m1.MediaTimeout():
 				t.Fatal("timeout")
 			}
 		}
@@ -677,7 +700,7 @@ func TestMediaTimeout(t *testing.T) {
 		select {
 		case <-time.After(timeout + dt):
 			t.Fatal("timeout didn't trigger")
-		case <-m1.Timeout():
+		case <-m1.MediaTimeout():
 		}
 	})
 
@@ -685,8 +708,7 @@ func TestMediaTimeout(t *testing.T) {
 		m1, _ := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec, RoomSampleRate)
 
 		// No media has ever arrived. SetTimeout re-arms startTime, and since the
 		// port has never seen an RTP packet, the new initial window applies from
@@ -696,7 +718,7 @@ func TestMediaTimeout(t *testing.T) {
 
 		targ := time.Now().Add(initial)
 		select {
-		case <-m1.Timeout():
+		case <-m1.MediaTimeout():
 			t.Fatal("initial timeout fired too early")
 		case <-time.After(initial / 2):
 		}
@@ -704,7 +726,7 @@ func TestMediaTimeout(t *testing.T) {
 		select {
 		case <-time.After(time.Until(targ) + dt):
 			t.Fatal("timeout didn't trigger")
-		case <-m1.Timeout():
+		case <-m1.MediaTimeout():
 		}
 	})
 
@@ -712,31 +734,26 @@ func TestMediaTimeout(t *testing.T) {
 		m1, m2 := newMediaPair(t, &MediaOptions{
 			MediaTimeoutInitial: initial,
 			MediaTimeout:        timeout,
-		}, nil)
-		m1.EnableTimeout(true)
+		}, nil, codec, RoomSampleRate)
 
-		w2 := m2.GetAudioWriter()
+		w2 := m2.GetOutboundAudioWriter()
 
 		for i := 0; i < 5; i++ {
-			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
-			require.NoError(t, err)
+			pushAudio(t, w2)
 
 			select {
 			case <-time.After(timeout / 2):
-			case <-m1.Timeout():
+			case <-m1.MediaTimeout():
 				t.Fatal("timeout")
 			}
 		}
 
-		m1.SetTimeout(initial, timeout)
-
 		for i := 0; i < 5; i++ {
-			err := w2.WriteSample(msdk.PCM16Sample{0, 0})
-			require.NoError(t, err)
+			pushAudio(t, w2)
 
 			select {
 			case <-time.After(timeout / 2):
-			case <-m1.Timeout():
+			case <-m1.MediaTimeout():
 				t.Fatal("timeout")
 			}
 		}
@@ -744,8 +761,10 @@ func TestMediaTimeout(t *testing.T) {
 }
 
 func TestSymmetricRTP(t *testing.T) {
+	const codec = "G722/8000"
+
 	t.Run("disabled", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil)
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: false}, nil, codec, RoomSampleRate)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
 		dst := *dstPtr
@@ -755,8 +774,7 @@ func TestSymmetricRTP(t *testing.T) {
 		newAddr := netip.AddrPortFrom(newIP("9.9.9.9"), 9999)
 		c2.addr = newAddr
 
-		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
-		require.NoError(t, err)
+		pushAudio(t, m2.GetOutboundAudioWriter())
 
 		select {
 		case <-m1.Received():
@@ -770,7 +788,7 @@ func TestSymmetricRTP(t *testing.T) {
 	})
 
 	t.Run("enabled", func(t *testing.T) {
-		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil)
+		m1, m2 := newMediaPair(t, &MediaOptions{SymmetricRTP: true}, nil, codec, RoomSampleRate)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
 		require.True(t, dstPtr.IsValid())
@@ -779,8 +797,7 @@ func TestSymmetricRTP(t *testing.T) {
 		newAddr := netip.AddrPortFrom(newIP("9.9.9.9"), 9999)
 		c2.addr = newAddr
 
-		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
-		require.NoError(t, err)
+		pushAudio(t, m2.GetOutboundAudioWriter())
 
 		select {
 		case <-m1.Received():
@@ -797,6 +814,8 @@ func TestSymmetricRTP(t *testing.T) {
 		m1, m2 := newMediaPairWithAddr(t,
 			newIP("1.1.1.1"), newIP("10.10.10.10"),
 			&MediaOptions{IgnoreLocalAddrInSDP: true}, nil,
+			codec,
+			RoomSampleRate,
 		)
 		dstPtr := m1.port.dst.Load()
 		require.NotNil(t, dstPtr)
@@ -808,8 +827,7 @@ func TestSymmetricRTP(t *testing.T) {
 		newAddr := netip.AddrPortFrom(newIP("3.3.3.3"), 9999)
 		c2.addr = newAddr
 
-		err := m2.GetAudioWriter().WriteSample(msdk.PCM16Sample{0, 0})
-		require.NoError(t, err)
+		pushAudio(t, m2.GetOutboundAudioWriter())
 
 		select {
 		case <-m1.Received():
@@ -821,112 +839,6 @@ func TestSymmetricRTP(t *testing.T) {
 		require.NotNil(t, curDstPtr)
 		require.Equal(t, newAddr.String(), curDstPtr.String())
 	})
-}
-
-func generateDTMFPackets(t *testing.T, digits string) [][]*rtp.Packet {
-	t.Helper()
-	var buf rtp.Buffer
-	packets := make([][]*rtp.Packet, len(digits))
-	last := len(buf)
-	w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
-	timestamp := uint32(1000)
-	for i := range digits {
-		err := dtmf.Write(context.Background(), nil, w, timestamp, digits[i:i+1])
-		require.NoError(t, err)
-		require.NotEmpty(t, buf)
-		timestamp += uint32(dtmf.SampleRate / 2)
-		packets[i] = slices.Clone(buf[last:])
-		last = len(buf)
-	}
-	return packets
-}
-
-func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Packet {
-	t.Helper()
-	switch dropType {
-	case "none":
-		return packets
-	case "first":
-		require.Greater(t, len(packets), 3)
-		return packets[3:]
-	case "last":
-		require.Greater(t, len(packets), 3)
-		return packets[:len(packets)-3]
-	case "middle":
-		require.Greater(t, len(packets), 6)
-		ret := slices.Clone(packets[:3])
-		ret = append(ret, packets[len(packets)-3:]...)
-		return ret
-	default:
-		t.Fatal("unknown drop type: " + dropType)
-		return nil
-	}
-}
-
-func TestMediaPortDTMF(t *testing.T) {
-	digitCases := []string{"1", "12", "123"}
-	lossCases := []string{"none", "first", "last", "middle"}
-
-	for _, digits := range digitCases {
-		packets := generateDTMFPackets(t, digits)
-		for _, lossPackets := range lossCases {
-			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
-				p := &MediaPort{}
-				p.lastDTMFEvent.Store(math.MaxUint64)
-				got := ""
-				p.HandleDTMF(func(ev dtmf.Event) {
-					t.Logf("received DTMF event: %+v", ev)
-					got = fmt.Sprintf("%s%s", got, strconv.Itoa(int(ev.Code)))
-				})
-				for _, digitPackets := range packets {
-					sendPackets := dropPackets(t, lossPackets, digitPackets)
-					t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
-					for _, pkt := range sendPackets {
-						h := pkt.Header
-						t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
-						require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
-					}
-				}
-				t.Logf("sent: %s", digits)
-				t.Logf("got: %s", got)
-				require.Equal(t, digits, got)
-			})
-		}
-	}
-}
-
-func TestMediaPortDTMFSameTimestamp(t *testing.T) {
-	// Some SIP carriers reuse the RTP timestamp across different DTMF digits.
-	// Verify that each distinct event code is still reported even when timestamps are shared.
-	p := &MediaPort{}
-	p.lastDTMFEvent.Store(math.MaxUint64)
-	var codes []byte
-	p.HandleDTMF(func(ev dtmf.Event) {
-		codes = append(codes, ev.Code)
-	})
-
-	// Three different digits, all with the same timestamp (non-standard but seen in production).
-	sameTS := uint32(100000)
-	// Use digit characters so we go through dtmf.Write which produces proper DTMF packets.
-	digits := "123"
-
-	for i := range digits {
-		var buf rtp.Buffer
-		w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
-		err := dtmf.Write(context.Background(), nil, w, sameTS, digits[i:i+1])
-		require.NoError(t, err)
-		require.NotEmpty(t, buf)
-		// Take the first packet of each digit and send to handler.
-		// All packets share the same timestamp, simulating the bug scenario.
-		pkt := buf[0]
-		h := pkt.Header
-		require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
-	}
-
-	require.Equal(t, 3, len(codes))
-	require.NotEqual(t, codes[0], codes[1])
-	require.NotEqual(t, codes[1], codes[2])
-	require.NotEqual(t, codes[0], codes[2])
 }
 
 // Test util for incrementing prometheus counter metrics.
@@ -971,7 +883,7 @@ func TestSetOfferReportsCodecsBeforeFailing(t *testing.T) {
 	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 96", "a=rtpmap:96 SPEEX/16000")
-	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	_, err := mp.GenerateAnswer(offer)
 	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
 
 	// Codecs that are not part of the internal set are classified as "other"
@@ -993,7 +905,7 @@ func TestSetOfferReportsCodecsPerProvider(t *testing.T) {
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 9",
 		"a=rtpmap:0 PCMU/8000", "a=rtpmap:9 G722/8000")
-	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	_, err := mp.GenerateAnswer(offer)
 	require.NoError(t, err)
 
 	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
@@ -1010,7 +922,7 @@ func TestSetOfferReportsUnknownProvider(t *testing.T) {
 	before := gatherCounter(t, parsedMetric, parsed)
 
 	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
-	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	_, err := mp.GenerateAnswer(offer)
 	require.NoError(t, err)
 
 	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))
