@@ -226,6 +226,15 @@ func (s *Service) Start() error {
 		}
 	}
 	DefaultCodecs().SetEnabledMap(s.conf.Codecs)
+	SetOpusEnabled(s.conf.EnableOpus)
+	if s.conf.EnableOpus {
+		SetOpusOptions(OpusEncodeOptions{
+			Bitrate:           s.conf.Opus.Bitrate,
+			Complexity:        s.conf.Opus.Complexity,
+			FEC:               s.conf.Opus.FEC,
+			PacketLossPercent: s.conf.Opus.PacketLossPercent,
+		})
+	}
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
