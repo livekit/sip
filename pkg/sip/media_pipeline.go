@@ -32,7 +32,6 @@ import (
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/srtp"
-	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/stats"
 )
@@ -51,7 +50,7 @@ func NewMediaPortPipeline(
 	mc *sdp.MediaConfig,
 	port *udpConn,
 	audioToRoom msdk.PCM16Writer,
-	dtmfToRoom msdk.WriteCloser[*livekit.SipDTMF],
+	dtmfToRoom msdk.WriteCloser[string],
 	incomingSampleRate int,
 ) (*mediaPortPipeline, error) {
 	p := &mediaPortPipeline{
@@ -80,15 +79,15 @@ type mediaPortPipeline struct {
 	dtmfMixer     *mixer.Mixer
 	audioToRoom   rtp.HandlerCloser
 	dtmfToRoom    rtp.HandlerCloser
-	dtmfHandler   msdk.WriteCloser[*livekit.SipDTMF] // Reference, not closed
-	audioToPort   msdk.PCM16Writer                   // post-mixer chain towards port
-	mixerToPort   msdk.PCM16Writer                   // Reference, not closed
-	dtmfToPort    msdk.WriteCloser[*livekit.SipDTMF]
+	dtmfHandler   msdk.WriteCloser[string] // Reference, not closed
+	audioToPort   msdk.PCM16Writer         // post-mixer chain towards port
+	mixerToPort   msdk.PCM16Writer         // Reference, not closed
+	dtmfToPort    msdk.WriteCloser[string]
 	lastDTMFEvent atomic.Uint64 // composite (timestamp, event code) of last DTMF packet seen
 }
 
 // Returns insulated (nopCloser) connectors, preventing anchor close from closing pipeline.
-func (p *mediaPortPipeline) GetConnectors() (msdk.PCM16Writer, msdk.WriteCloser[*livekit.SipDTMF]) {
+func (p *mediaPortPipeline) GetConnectors() (msdk.PCM16Writer, msdk.WriteCloser[string]) {
 	if p.audioToPort == nil {
 		return nil, nil
 	}
@@ -110,7 +109,7 @@ func (p *mediaPortPipeline) init(
 	mc *sdp.MediaConfig,
 	port *udpConn,
 	audioToRoom msdk.PCM16Writer,
-	dtmfToRoom msdk.WriteCloser[*livekit.SipDTMF],
+	dtmfToRoom msdk.WriteCloser[string],
 	incomingSampleRate int,
 ) error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
@@ -153,7 +152,7 @@ func (p *mediaPortPipeline) init(
 }
 
 // Construct the Audio and optionally DTMF pipeline from SIP RTP to LK PCM, in reverse order.
-func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[*livekit.SipDTMF]) error {
+func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[string]) error {
 	var err error
 	var inboundLatencyEntry atomic.Int64
 	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
@@ -226,10 +225,7 @@ func (p *mediaPortPipeline) handleEventRTP(h *rtp.Header, payload []byte) error 
 		return nil
 	}
 	p.lastDTMFEvent.Store(eventID)
-	return p.dtmfHandler.WriteSample(&livekit.SipDTMF{
-		Code:  uint32(ev.Code),
-		Digit: string([]byte{ev.Digit}),
-	})
+	return p.dtmfHandler.WriteSample(string(ev.Digit))
 }
 
 // Construct the Audio and optionally DTMF pipeline from LK PCM to SIP RTP
@@ -458,29 +454,26 @@ func (w *dtmfOutWriter) Close() error {
 	return w.dtmfAudio.Close()
 }
 
-func (w *dtmfOutWriter) WriteSample(sample *livekit.SipDTMF) error {
-	if sample == nil || sample.Code >= 0x10 || (len(sample.Digit) == 0 && sample.Code == 0) {
-		return fmt.Errorf("invalid DTMF sample: %v", sample)
+func (w *dtmfOutWriter) WriteSample(sample string) error {
+	if len(sample) == 0 {
+		return fmt.Errorf("empty DTMF sample")
 	}
-	digits := sample.Digit
-	if len(digits) == 0 {
-		digit := dtmf.CodeToChar(byte(sample.Code))
-		if digit == 0 {
-			return fmt.Errorf("code %d not supported", sample.Code)
+	var errs []error
+	for i, digit := range sample {
+		if _, tones := dtmf.Tone(byte(digit)); len(tones) == 0 {
+			errs = append(errs, fmt.Errorf("invalid DTMF sample %v at position %d", digit, i))
 		}
-		digits = string([]byte{digit})
-	} else if sample.Code > 0 {
-		// We can't distinguish between a code0 and no code, but better have something here
-		w.log.Debugw("code payload detected, ignored due to explicit digits", "code", sample.Code, "digits", sample.Digit)
 	}
-
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var rtpTs uint32
 	if w.dtmfEvents != nil {
 		rtpTs = w.getTimestamp() // TODO: Maybe time to introduce the auto timestamp feature?
 	}
-	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, rtpTs, digits)
+	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, rtpTs, sample)
 	if err != nil {
 		return err
 	}
