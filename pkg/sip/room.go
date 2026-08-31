@@ -547,7 +547,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					// TODO: This ignores code. Once it lands and we're okay with functional changes,
 					//       consider updating this to use code as fallback.
 					err := r.outboundDTMF.WriteSample(data.Digit)
-					if err != nil {
+					if err != nil && !errors.Is(err, context.Canceled) {
 						r.log.Errorw("cannot forward dtmf to sip", err)
 					}
 				}
