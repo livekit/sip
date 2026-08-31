@@ -61,7 +61,8 @@ func opusDecode(w msdk.PCM16Writer) msdk.WriteCloser[opus.Sample] {
 }
 
 func opusEncode(w msdk.WriteCloser[opus.Sample]) msdk.PCM16Writer {
-	// TODO: apply opusEncodeOpts once livekit/media-sdk#69 (EncodeWith) merges.
+	// TODO: opusEncodeOpts (bitrate, complexity, FEC, packet loss) is unused:
+	// opus.Encode takes no encoder options, so configured tuning has no effect.
 	enc, err := opus.Encode(w, 1, logger.GetLogger())
 	if err != nil {
 		logger.GetLogger().Errorw("opus encode init failed", err)
