@@ -1148,15 +1148,21 @@ func (w *pinDTMFWriter) Close() error {
 	return nil
 }
 
-func (w *pinDTMFWriter) WriteSample(msg *livekit.SipDTMF) error {
-	if msg == nil {
-		return nil
+func (w *pinDTMFWriter) WriteSample(sample string) error {
+	if len(sample) != 1 {
+		return fmt.Errorf("invalid DTMF sample length %d: %v", len(sample), sample)
 	}
-
-	event := dtmfEventFromSipDTMF(msg)
+	code, tones := dtmf.Tone(byte(sample[0]))
+	if len(tones) == 0 {
+		return fmt.Errorf("invalid DTMF sample %v", sample)
+	}
+	ev := dtmf.Event{
+		Code:  byte(code),
+		Digit: sample[0],
+	}
 	// We should have enough buffer here.
 	select {
-	case w.dtmfEvents <- event:
+	case w.dtmfEvents <- ev:
 	default:
 	}
 	return nil

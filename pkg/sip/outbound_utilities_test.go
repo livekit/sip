@@ -127,7 +127,7 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 		log:           log,
 		stats:         st,
 		outboundAudio: msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
-		outboundDTMF:  msdk.NewWriteCloserSwitch[*livekit.SipDTMF](0),
+		outboundDTMF:  msdk.NewWriteCloserSwitch[string](0),
 		subscribe:     atomic.Bool{},
 	}
 	room.inboundDTMF = inboundDTMFWriter{room}
@@ -210,7 +210,7 @@ func (r *testRoom) WriteOutboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
 	return r.room.WriteOutboundAudioTo(w)
 }
 
-func (r *testRoom) WriteOutboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
+func (r *testRoom) WriteOutboundDTMFTo(w msdk.WriteCloser[string]) msdk.WriteCloser[string] {
 	return r.room.WriteOutboundDTMFTo(w)
 }
 
@@ -218,7 +218,7 @@ func (r *testRoom) GetInboundAudioWriter() (msdk.PCM16Writer, error) {
 	return r.NewParticipantTrack(RoomSampleRate)
 }
 
-func (r *testRoom) GetInboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
+func (r *testRoom) GetInboundDTMFWriter() msdk.WriteCloser[string] {
 	return r.room.GetInboundDTMFWriter()
 }
 

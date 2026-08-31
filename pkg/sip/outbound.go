@@ -515,9 +515,7 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 		c.setStatus(CallAutomation)
 		// Write initial DTMF to SIP
 		dtmfWriter := c.media.GetOutboundDTMFWriter()
-		if err := dtmfWriter.WriteSample(&livekit.SipDTMF{
-			Digit: digits,
-		}); err != nil {
+		if err := dtmfWriter.WriteSample(digits); err != nil {
 			return fmt.Errorf("error writing digits (%s): %w", digits, err)
 		}
 	}

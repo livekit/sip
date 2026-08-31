@@ -35,7 +35,6 @@ import (
 	"github.com/livekit/media-sdk/opus"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
-	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 )
 
@@ -91,7 +90,7 @@ func testAudioPT(c msdk.AudioCodec) byte {
 
 type dtmfCollector struct {
 	mu     sync.Mutex
-	events []*livekit.SipDTMF
+	events []string
 }
 
 func (c *dtmfCollector) String() string {
@@ -99,7 +98,7 @@ func (c *dtmfCollector) String() string {
 	defer c.mu.Unlock()
 	res := ""
 	for _, event := range c.events {
-		res += event.Digit
+		res += event
 	}
 	return res
 }
@@ -108,17 +107,17 @@ func (c *dtmfCollector) SampleRate() int { return dtmf.SampleRate }
 
 func (c *dtmfCollector) Close() error { return nil }
 
-func (c *dtmfCollector) WriteSample(sample *livekit.SipDTMF) error {
+func (c *dtmfCollector) WriteSample(sample string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = append(c.events, sample)
 	return nil
 }
 
-func (c *dtmfCollector) snapshot() []*livekit.SipDTMF {
+func (c *dtmfCollector) snapshot() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]*livekit.SipDTMF, len(c.events))
+	out := make([]string, len(c.events))
 	copy(out, c.events)
 	return out
 }
@@ -172,8 +171,8 @@ type pipelineHarness struct {
 	conf        *MediaPortPipelineConfig
 	audioIn     *msdk.WriteCloserSwitch[msdk.PCM16Sample]
 	audioOut    *msdk.WriteCloserSwitch[msdk.PCM16Sample]
-	dtmfIn      *msdk.WriteCloserSwitch[*livekit.SipDTMF]
-	dtmfOut     *msdk.WriteCloserSwitch[*livekit.SipDTMF]
+	dtmfIn      *msdk.WriteCloserSwitch[string]
+	dtmfOut     *msdk.WriteCloserSwitch[string]
 	roomAudio   *pcmCollector
 	roomDTMF    *dtmfCollector
 	pipeline    *mediaPortPipeline
@@ -195,8 +194,8 @@ func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
 		port:      newUDPConn(log, local, false),
 		audioIn:   msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
 		audioOut:  msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
-		dtmfIn:    msdk.NewWriteCloserSwitch[*livekit.SipDTMF](dtmf.SampleRate),
-		dtmfOut:   msdk.NewWriteCloserSwitch[*livekit.SipDTMF](dtmf.SampleRate),
+		dtmfIn:    msdk.NewWriteCloserSwitch[string](dtmf.SampleRate),
+		dtmfOut:   msdk.NewWriteCloserSwitch[string](dtmf.SampleRate),
 		roomAudio: &pcmCollector{sampleRate: sampleRate},
 		roomDTMF:  &dtmfCollector{},
 	}
@@ -415,7 +414,7 @@ func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
 func (h *pipelineHarness) testDTMFFromRoom(t *testing.T) {
 	h.drainRemote()
 	if h.dtmfPT == 0 {
-		require.NoError(t, h.dtmfOut.WriteSample(&livekit.SipDTMF{Digit: "5", Code: 5}))
+		require.NoError(t, h.dtmfOut.WriteSample("5"))
 		h.drainRemote()
 		return
 	}
@@ -423,7 +422,7 @@ func (h *pipelineHarness) testDTMFFromRoom(t *testing.T) {
 	// dtmf.Write paces a 250ms tone on a real ticker. Assert the first
 	// telephone-event and let pipeline Close cancel the rest.
 	go func() {
-		_ = h.dtmfOut.WriteSample(&livekit.SipDTMF{Digit: "5", Code: 5})
+		_ = h.dtmfOut.WriteSample("5")
 	}()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -451,7 +450,7 @@ func (h *pipelineHarness) testDTMFFromPort(t *testing.T) {
 	}, time.Second, 5*time.Millisecond)
 	got := h.roomDTMF.snapshot()[before:]
 	if assert.NotEmpty(t, got) {
-		assert.Equal(t, "7", got[0].Digit)
+		assert.Equal(t, "7", got[0])
 	}
 }
 
@@ -583,7 +582,7 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 	assert.Eventually(t, func() bool { return h.packetCount.Load() == packets }, time.Second, time.Millisecond, "expected %d packets", packets)
 	assert.Equal(t, uint64(ssrcCount), h.ssrcCount.Load())
 	assert.Equal(t, uint64(packets), h.packetCount.Load())
-	
+
 	done := make(chan error, 1)
 	go func() {
 		done <- h.pipeline.Close()

@@ -34,7 +34,6 @@ import (
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/media-sdk/srtp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
-	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 
 	"github.com/livekit/sip/pkg/config"
@@ -402,7 +401,7 @@ type MediaPort interface {
 	// GetOutboundAudioWriter returns the LK room -> SIP writer.
 	GetOutboundAudioWriter() msdk.PCM16Writer
 	// GetOutboundDTMFWriter returns the LK room -> SIP DTMF writer.
-	GetOutboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF]
+	GetOutboundDTMFWriter() msdk.WriteCloser[string]
 
 	// WriteInboundAudioTo tells port where to write inbound SIP audio.
 	//
@@ -414,7 +413,7 @@ type MediaPort interface {
 	//
 	// MediaPort.Close() will propagate to the argument writer. The caller is
 	// responsible for closing the returned media writer.
-	WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF]
+	WriteInboundDTMFTo(w msdk.WriteCloser[string]) msdk.WriteCloser[string]
 
 	// If there is no offer, this generates an offer.
 	// If there is an offer, this simply returns the SDP of that offer.
@@ -491,8 +490,8 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	// Explicitly set sample rate. We manually create resamplers to include in latency
 	p.audioOut = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](targetSampleRate)
 	p.audioIn = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](targetSampleRate)
-	p.dtmfIn = msdk.NewWriteCloserSwitch[*livekit.SipDTMF](0)
-	p.dtmfOut = msdk.NewWriteCloserSwitch[*livekit.SipDTMF](0)
+	p.dtmfIn = msdk.NewWriteCloserSwitch[string](0)
+	p.dtmfOut = msdk.NewWriteCloserSwitch[string](0)
 
 	p.port.startDiscarding()
 	p.timeoutInitial.Store(&opts.MediaTimeoutInitial)
@@ -534,8 +533,8 @@ type mediaPort struct {
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
-	dtmfIn   *msdk.WriteCloserSwitch[*livekit.SipDTMF] // SIP DTMF -> LK DTMF
-	dtmfOut  *msdk.WriteCloserSwitch[*livekit.SipDTMF] // LK DTMF -> SIP DTMF
+	dtmfIn   *msdk.WriteCloserSwitch[string]           // SIP DTMF -> LK DTMF
+	dtmfOut  *msdk.WriteCloserSwitch[string]           // LK DTMF -> SIP DTMF
 }
 
 func (p *mediaPort) SetTimeout(initial, general time.Duration) {
@@ -746,11 +745,11 @@ func (p *mediaPort) WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
 	return p.audioIn.Swap(w)
 }
 
-func (p *mediaPort) GetOutboundDTMFWriter() msdk.WriteCloser[*livekit.SipDTMF] {
+func (p *mediaPort) GetOutboundDTMFWriter() msdk.WriteCloser[string] {
 	return p.dtmfOut
 }
 
-func (p *mediaPort) WriteInboundDTMFTo(w msdk.WriteCloser[*livekit.SipDTMF]) msdk.WriteCloser[*livekit.SipDTMF] {
+func (p *mediaPort) WriteInboundDTMFTo(w msdk.WriteCloser[string]) msdk.WriteCloser[string] {
 	return p.dtmfIn.Swap(w)
 }
 
