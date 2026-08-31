@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -22,7 +21,7 @@ var debugLKServer = os.Getenv("DEBUG_LK_SERVER") != ""
 
 var redisLast uint32
 
-func runRedis(t testing.TB) *redis.RedisConfig {
+func runRedis(t testing.TB, network *dockertest.Network) (*redis.RedisConfig, string) {
 	name := fmt.Sprintf("siptest-redis-%d", atomic.AddUint32(&redisLast, 1))
 	c, ok := Docker.ContainerByName(name)
 	if ok {
@@ -33,6 +32,7 @@ func runRedis(t testing.TB) *redis.RedisConfig {
 		&dockertest.RunOptions{
 			Name:       name,
 			Repository: "redis", Tag: "latest",
+			Networks: []*dockertest.Network{network},
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,8 @@ func runRedis(t testing.TB) *redis.RedisConfig {
 	waitTCPPort(t, addr)
 
 	t.Log("Redis running on", addr)
-	return &redis.RedisConfig{Address: addr}
+	// addr: host-published (SIP service); name:6379: in-network (LiveKit container).
+	return &redis.RedisConfig{Address: addr}, name
 }
 
 type LiveKit struct {
@@ -55,14 +56,21 @@ type LiveKit struct {
 var livekitLast uint32
 
 func runLiveKit(t testing.TB) *LiveKit {
-	redis := runRedis(t)
+	id := atomic.AddUint32(&livekitLast, 1)
 
-	_, port, err := net.SplitHostPort(redis.Address)
+	// Shared network so LiveKit reaches Redis by name, avoiding a
+	// container->host round-trip that some CI runners block.
+	network, err := Docker.CreateNetwork(fmt.Sprintf("siptest-net-%d", id))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_ = network.Close()
+	})
 
-	name := fmt.Sprintf("siptest-livekit-%d", atomic.AddUint32(&livekitLast, 1))
+	redis, redisName := runRedis(t, network)
+
+	name := fmt.Sprintf("siptest-livekit-%d", id)
 	c, ok := Docker.ContainerByName(name)
 	if ok {
 		t.Log("Livekit-server container already exists - stopping and removing", name)
@@ -74,12 +82,11 @@ func runLiveKit(t testing.TB) *LiveKit {
 			Repository: "livekit/livekit-server", Tag: "master",
 			Cmd: []string{
 				"--dev",
-				// TODO: We use Docker bridge IP here instead of the host IP.
-				//       Maybe run on the host network instead? We might need it for RTP anyway.
-				"--redis-host", dockerBridgeIP + ":" + port,
+				"--redis-host", redisName + ":6379",
 				"--bind", "0.0.0.0",
 			},
 			ExposedPorts: []string{"7880/tcp"},
+			Networks:     []*dockertest.Network{network},
 		})
 	if err != nil {
 		t.Fatal(err)

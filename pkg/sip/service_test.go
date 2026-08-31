@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 
@@ -127,7 +129,7 @@ func (h TestHandler) OnSessionEnd(ctx context.Context, callIdentifier *CallIdent
 	}
 }
 
-func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction)) {
+func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func(tx sip.ClientTransaction), serverOpts ...ServerOption) {
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)
@@ -144,7 +146,9 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	}, serverOpts...)
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -286,7 +290,9 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	s.SetHandler(h)
@@ -384,7 +390,9 @@ func TestService_OnSessionEnd(t *testing.T) {
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -425,6 +433,101 @@ func TestService_OnSessionEnd(t *testing.T) {
 	require.Equal(t, expectedCallID, receivedCallInfo.CallId, "CallInfo.CallId should match")
 	require.Equal(t, expectedSipCallID, receivedCallInfo.ParticipantAttributes[AttrSIPCallIDFull], "CallInfo.ParticipantAttributes[sip.callIDFull] should match")
 	require.Equal(t, expectedReason, receivedReason, "Reason should match")
+}
+
+type interceptorRecorder struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (l *interceptorRecorder) loggingInterceptor(name string) HandlerInterceptor {
+	return func(handler sipgo.RequestHandler) sipgo.RequestHandler {
+		return func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+			l.log(fmt.Sprintf("enter %s", name))
+			handler(log, req, tx)
+			l.log(fmt.Sprintf("exit %s", name))
+		}
+	}
+}
+
+func (l *interceptorRecorder) log(msg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logs = append(l.logs, msg)
+}
+
+func (l *interceptorRecorder) get() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.logs)
+}
+
+func TestService_Interceptors(t *testing.T) {
+	h := &TestHandler{}
+	done := make(chan struct{}, 1)
+
+	sentinel := func(handler sipgo.RequestHandler) sipgo.RequestHandler {
+		return func(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+			handler(log, req, tx)
+			done <- struct{}{}
+		}
+	}
+
+	recorder := &interceptorRecorder{}
+
+	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+	localIP, err := config.GetLocalIP()
+	require.NoError(t, err)
+	sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+
+	// Use a no-op logger to avoid panics from async logging after test completion
+	log := logger.LogRLogger(logr.Discard())
+	s, err := NewService("", &config.Config{
+		HideInboundPort: false,
+		SIPPort:         sipPort,
+		SIPPortListen:   sipPort,
+		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	}, WithInterceptors(sentinel, recorder.loggingInterceptor("a"), recorder.loggingInterceptor("b")))
+	require.NoError(t, err)
+	require.NotNil(t, s)
+	t.Cleanup(s.Stop)
+	s.SetHandler(h)
+	require.NoError(t, s.Start())
+
+	sipUserAgent, err := sipgo.NewUA(
+		sipgo.WithUserAgent("from-user"),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	)
+	require.NoError(t, err)
+
+	client, err := sipgo.NewClient(sipUserAgent)
+	require.NoError(t, err)
+	recipient := sip.Uri{Host: sipServerAddress}
+	req := sip.NewRequest(sip.OPTIONS, recipient)
+	req.SetDestination(sipServerAddress)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	tx, err := client.TransactionRequest(req)
+	require.NoError(t, err)
+	t.Cleanup(tx.Terminate)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second * 2):
+		t.Fatal("handler did not return")
+	}
+
+	wantLogs := []string{
+		"enter a",
+		"enter b",
+		"exit b",
+		"exit a",
+	}
+	require.Equal(t, wantLogs, recorder.get())
 }
 
 // TestDigestAuthSimultaneousCalls tests that simultaneous calls from the same "from" number
@@ -488,7 +591,9 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -695,7 +800,9 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	t.Cleanup(s.Stop)
@@ -949,7 +1056,9 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 		SIPPort:         sipPort,
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler { return NewRPCStateHandler(nil) })
+	}, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 
@@ -1229,4 +1338,145 @@ func TestCreateSIPParticipantAffinity_TrunkWhitelist_WithMaxCalls(t *testing.T) 
 	req = &rpc.InternalCreateSIPParticipantRequest{SipTrunkId: "trunk-x"}
 	got = s.CreateSIPParticipantAffinity(context.Background(), req)
 	require.Equal(t, float32(0), got)
+}
+
+func TestTransferResponse(t *testing.T) {
+	const transferID = "STR_test"
+
+	cases := []struct {
+		Name      string
+		Outcome   transferOutcome
+		Status    livekit.SIPTransferStatus
+		Reason    livekit.SIPTransferReason
+		SIPStatus livekit.SIPStatusCode
+	}{
+		{
+			Name:    "success",
+			Outcome: transferOutcome{TransferID: transferID},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL,
+			Reason:  livekit.SIPTransferReason_STR_COMPLETED,
+		},
+		{
+			Name:    "call ended",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewError(psrpc.Aborted, errTransferCallEnded)},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:  livekit.SIPTransferReason_STR_CALL_ENDED,
+		},
+		{
+			Name: "subscription terminated",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewErrorf(psrpc.UpstreamServerError,
+				"call transfer failed: %w (reason %q, last status %d)", errReferSubscriptionTerminated, "giveup", 100)},
+			Status: livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason: livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED,
+		},
+		{
+			Name: "rejected by the transferee",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w",
+				&livekit.SIPStatus{Code: livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, Status: "Temporarily Unavailable"})},
+			Status:    livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:    livekit.SIPTransferReason_STR_REJECTED,
+			SIPStatus: livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE,
+		},
+		{
+			Name:    "ran out of time",
+			Outcome: transferOutcome{TransferID: transferID, Err: psrpc.NewError(psrpc.Canceled, context.DeadlineExceeded)},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:  livekit.SIPTransferReason_STR_RINGING_TIMEOUT,
+		},
+		{
+			Name:    "no transfer started",
+			Outcome: transferOutcome{Err: psrpc.NewErrorf(psrpc.NotFound, "unknown call")},
+			Status:  livekit.SIPTransferStatus_STS_TRANSFER_FAILED,
+			Reason:  livekit.SIPTransferReason_STR_UNSPECIFIED,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			resp := transferResponse(c.Outcome)
+			require.Equal(t, c.Outcome.TransferID, resp.TransferId)
+			require.Equal(t, c.Status, resp.Status)
+			require.Equal(t, c.Reason, resp.Reason)
+			if c.SIPStatus == 0 {
+				require.Nil(t, resp.SipStatus)
+				return
+			}
+			require.NotNil(t, resp.SipStatus)
+			require.Equal(t, c.SIPStatus, resp.SipStatus.Code)
+		})
+	}
+}
+
+// TestTransferCallEndedIsNotAnError pins temporary behaviour. When the call ends
+// before the transfer completes, the transfer has failed, but the RPC reports
+// that only in the response and returns no error: callers branch on the error,
+// and this case has always reached them as a success, so erroring now would
+// break them. Once that reclassification has been announced to customers, this
+// case becomes an error like any other failure, and this test should be
+// deleted along with the special case it covers.
+func TestTransferCallEndedIsNotAnError(t *testing.T) {
+	const (
+		callID     = "test-call"
+		transferTo = "tel:+15551234567"
+		transferID = "STR_test"
+	)
+
+	// newService returns a service holding one call, with the transfer to that
+	// call already finished and reporting out.
+	newService := func(out transferOutcome) *Service {
+		s := newServiceForAffinity(&config.Config{})
+		s.log = logger.GetLogger()
+		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+		s.srv.byLocalTag[LocalTag(callID)] = &inboundCall{}
+
+		pending := &PendingTransfer{
+			CallID:     callID,
+			TransferTo: transferTo,
+			Done:       make(chan transferOutcome, 1),
+		}
+		pending.Done <- out
+		pending.Outcome.Store(&out)
+		s.pendingTransfers[LocalTag(callID)] = pending
+		return s
+	}
+
+	req := &rpc.InternalTransferSIPParticipantRequest{
+		SipCallId:  callID,
+		TransferTo: transferTo,
+	}
+
+	t.Run("call ended", func(t *testing.T) {
+		s := newService(transferOutcome{
+			TransferID: transferID,
+			Err:        psrpc.NewError(psrpc.Aborted, errTransferCallEnded),
+		})
+
+		resp, err := s.TransferSIPParticipant(t.Context(), req)
+		require.NoError(t, err, "a call that ended mid-transfer must not surface as an error")
+		require.NotNil(t, resp)
+		require.Equal(t, transferID, resp.TransferId)
+		require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, resp.Status)
+		require.Equal(t, livekit.SIPTransferReason_STR_CALL_ENDED, resp.Reason)
+		require.Nil(t, resp.SipStatus)
+	})
+
+	t.Run("other failures still error", func(t *testing.T) {
+		// Only the call-ended case is swallowed. Everything else keeps erroring,
+		// which is what callers already handle.
+		sipStatus := &livekit.SIPStatus{
+			Code:   livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE,
+			Status: "Temporarily Unavailable",
+		}
+		s := newService(transferOutcome{
+			TransferID: transferID,
+			Err:        psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w", sipStatus),
+		})
+
+		resp, err := s.TransferSIPParticipant(t.Context(), req)
+		require.Error(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, resp.Status)
+		require.Equal(t, livekit.SIPTransferReason_STR_REJECTED, resp.Reason)
+		require.NotNil(t, resp.SipStatus)
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, resp.SipStatus.Code)
+	})
 }

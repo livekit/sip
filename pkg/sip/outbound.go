@@ -138,6 +138,8 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		Stats:                &call.stats.Port,
 		NoInputResample:      !RoomResample,
 		IgnorePreanswerData:  true,
+		DrainingIdleTimeout:  conf.RTPDrainingIdleTimeout,
+		DrainingDuration:     conf.RTPDrainingDuration,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(ctx, EndCall{
@@ -209,8 +211,6 @@ func (c *outboundCall) setErrStatus(ctx context.Context, err error) {
 func (c *outboundCall) Dial(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Dial")
 	defer span.End()
-	ctx, cancel := context.WithTimeout(ctx, c.sipConf.maxCallDuration)
-	defer cancel()
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 
@@ -239,7 +239,6 @@ func (c *outboundCall) WaitClose(ctx context.Context) error {
 	return c.waitClose(ctx, c.tid)
 }
 func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
-	ctx = context.WithoutCancel(ctx)
 	defer c.ensureClosed(ctx)
 
 	ticker := time.NewTicker(stateUpdateTick)
@@ -256,11 +255,11 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			c.log.Debugw("sending keep-alive")
 			c.state.ForceFlush()
 		case <-c.Disconnected():
-			term := terminationFromRoomDisconnect(c.lkRoom.ClosedReason())
+			roomReason := c.lkRoom.ClosedReason()
 			c.CloseWith(ctx, EndCall{
 				Status: callDropped,
-				Term:   term,
-				Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+				Term:   terminationFromRoomDisconnect(roomReason),
+				Reason: disconnectReasonFromRoomClose(roomReason),
 			})
 			return nil
 		case <-c.media.Timeout():
@@ -268,6 +267,13 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 			err := psrpc.NewErrorf(psrpc.DeadlineExceeded, "media timeout")
 			c.setErrStatus(ctx, err)
 			return err
+		case <-ctx.Done():
+			c.CloseWith(ctx, EndCall{
+				Status: CallHangup,
+				Term:   stats.Success("hangup"),
+				Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+			})
+			return nil
 		case <-c.Closed():
 			return nil
 		}
@@ -277,8 +283,10 @@ func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
 func (c *outboundCall) DialAsync(ctx context.Context) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.DialAsync")
 	defer span.End()
-	ctx = context.WithoutCancel(ctx)
+
 	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.sipConf.maxCallDuration)
+		defer cancel()
 		if err := c.Dial(ctx); err != nil {
 			return
 		}
@@ -372,7 +380,9 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		// attributes_to_headers mapping in the setHeaders callback.
 		// See: https://github.com/livekit/sip/issues/404
 		c.stopSIP(ctx, end.Term, end.Headers)
-		c.media.Close()
+		if c.media != nil {
+			c.media.Close()
+		}
 
 		if r := c.lkRoom; r != nil {
 			_ = r.CloseOutput()
@@ -420,6 +430,10 @@ func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
 	if err := c.dialSIP(ctx, tid); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
 		res := classifyInviteError(err)
+		if !c.sigTs.InviteTime.IsZero() {
+			// INVITE sent: a call may exist, so don't surface a retryable 5xx.
+			res = res.afterInvite()
+		}
 		c.close(ctx, res.EndCall)
 		return res.returnErr
 	}
@@ -539,6 +553,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 		case <-tx.Done():
 			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 		case res := <-tx.Responses():
+			if res == nil {
+				return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+			}
 			status := res.StatusCode
 			if setState != nil {
 				setState(res.StatusCode, res.Headers())
@@ -548,6 +565,46 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			}
 			// continue
 			cnt++
+		}
+	}
+}
+
+// cancelResponseGrace bounds how long a cancelled INVITE is watched for a 2xx.
+var cancelResponseGrace = 5 * time.Second
+
+// watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
+// the answered call is not orphaned. It owns tx and terminates it when done.
+func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction) {
+	defer tx.Terminate()
+	timer := time.NewTimer(cancelResponseGrace)
+	defer timer.Stop()
+	for {
+		select {
+		case res := <-tx.Responses():
+			if res == nil {
+				return
+			}
+			switch res.StatusCode / 100 {
+			case 1:
+				continue // provisional; keep waiting
+			case 2:
+				log.Infow("cancelled INVITE answered; sending ACK and BYE")
+				applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
+				_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
+				bye := sip.NewByeRequest(req, res, nil)
+				bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+				if getHeaders != nil {
+					for k, v := range getHeaders(nil) {
+						bye.AppendHeader(sip.NewHeader(k, v))
+					}
+				}
+				_ = cli.WriteRequest(bye)
+			}
+			return
+		case <-tx.Done():
+			return
+		case <-timer.C:
+			return
 		}
 	}
 }
@@ -705,6 +762,13 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.sigTs.AckTime = time.Now()
 	joinDur()
 
+	if err := ctx.Err(); err != nil {
+		// Aborted while the callee answered: the 200 is ACKed, so error out to
+		// tear the dialog down with a BYE instead of leaking a zombie call.
+		c.log.Infow("outbound call answered after abort; hanging up", "error", err)
+		return err
+	}
+
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.AudioCodec = mc.Audio.Codec.Info().SDPName
@@ -725,14 +789,14 @@ func (c *outboundCall) handleDTMF(ev dtmf.Event) {
 	}, lksdk.WithDataPublishReliable(true))
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (transferID string, retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.transferCall")
 	defer span.End()
 	var err error
 
-	tID := c.state.StartTransfer(transferTo)
+	transferID = c.state.StartTransfer(transferTo)
 	defer func() {
-		c.state.EndTransfer(tID, retErr)
+		c.state.EndTransfer(transferID, retErr)
 	}()
 
 	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
@@ -764,7 +828,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	err = c.cc.transferCall(ctx, transferTo, headers, c.closing.Watch())
 	if err != nil {
 		c.log.Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
-		return err
+		return transferID, err
 	}
 
 	c.log.Infow("outbound call transferred", "transferTo", transferTo)
@@ -778,7 +842,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		})
 	})
 
-	return nil
+	return transferID, nil
 }
 
 func (c *Client) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
@@ -950,25 +1014,32 @@ authLoop:
 		case sip.StatusOK:
 			break authLoop
 		default:
-			return nil, fmt.Errorf("unexpected status from INVITE response: %w", &livekit.SIPStatus{
+			st := &livekit.SIPStatus{
 				Code:   livekit.SIPStatusCode(resp.StatusCode),
 				Status: resp.Reason,
-			})
+			}
+			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
+				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
+			}
+			return nil, fmt.Errorf("unexpected status from INVITE response: %w", st)
 		case sip.StatusBadRequest,
 			sip.StatusNotFound,
 			sip.StatusTemporarilyUnavailable,
 			sip.StatusNotAcceptableHere,
 			sip.StatusBusyHere:
-			err := &livekit.SIPStatus{
+			st := &livekit.SIPStatus{
 				Code:   livekit.SIPStatusCode(resp.StatusCode),
 				Status: resp.Reason,
 			}
 			if body := resp.Body(); len(body) != 0 {
-				err.Status = string(body)
+				st.Status = string(body)
 			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
-				err.Status = s.Value()
+				st.Status = s.Value()
 			}
-			return nil, fmt.Errorf("INVITE failed: %w", err)
+			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
+				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
+			}
+			return nil, fmt.Errorf("INVITE failed: %w", st)
 		case sip.StatusUnauthorized:
 			authHeaderName = "WWW-Authenticate"
 			authHeaderRespName = "Authorization"
@@ -1019,6 +1090,15 @@ authLoop:
 		return nil, psrpc.NewErrorf(psrpc.Internal, "no tag in To header in INVITE response")
 	}
 
+	applyInviteResponse(req, resp)
+	return c.inviteOk.Body(), nil
+}
+
+// applyInviteResponse rewrites the INVITE request in place so ACK/BYE built from
+// it reach the answering party: recipient from Contact, route set from
+// Record-Route, and the cached destination flushed when either changed. We don't
+// plumb the request back to the caller, so we mutate it to update the route set.
+func applyInviteResponse(req *sip.Request, resp *sip.Response) {
 	flushDestinationCache := false
 	if cont := resp.Contact(); cont != nil {
 		newContact := cont.Address
@@ -1046,7 +1126,6 @@ authLoop:
 	if flushDestinationCache {
 		req.MessageData.SetDestination("") // Undo destination fixing
 	}
-	return c.inviteOk.Body(), nil
 }
 
 func (c *sipOutbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
@@ -1098,7 +1177,12 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	if err != nil {
 		return nil, nil, err
 	}
-	defer tx.Terminate()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			tx.Terminate()
+		}
+	}()
 
 	// Log the actual local port used for TCP connections from the DialPort range
 	if req.Transport() == "TCP" {
@@ -1119,6 +1203,11 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 
 	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
+	if err != nil && resp == nil && (ctx.Err() != nil || c.c.closing.IsBroken()) {
+		// Cancelled: return now, but watch for a racing 2xx in the background.
+		handedOff = true
+		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
+	}
 	return req, resp, err
 }
 
@@ -1160,7 +1249,7 @@ func (c *sipOutbound) sendBye(ctx context.Context, headers map[string]string) {
 	}
 	c.setCSeq(r)
 	c.drop()
-	sendAndACK(ctx, c, r)
+	sendBye(ctx, c.log, c, r)
 }
 
 func (c *sipOutbound) sendCancel(ctx context.Context, headers map[string]string) {
@@ -1229,39 +1318,33 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		return err
 	}
 
-	select {
-	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
-	case <-callDone:
-		// At this point, REFER was accepted, but we received a BYE, nothing to do, also not an error
-		c.log.Infow("refer canceled by BYE from remote")
-		return nil
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return waitReferResult(ctx, c.log, callDone, c.referDone)
 }
 
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
-	method, cseq, status, reason, err := handleNotify(req)
+	info, err := handleNotify(req)
 	if err != nil {
 		c.log.Infow("error parsing NOTIFY request", "error", err)
 
 		return err
 	}
 
-	c.log.Infow("handling NOTIFY", "method", method, "status", status, "reason", reason, "cseq", cseq)
+	c.log.Infow("handling NOTIFY", "method", info.Method, "status", info.Status,
+		"reason", info.Reason, "cseq", info.CSeq, "subscription", info.Sub.String())
 
-	switch method {
+	switch info.Method {
 	default:
 		return nil
 	case sip.REFER:
+		// Read referCseq under the lock, then release it before handing the
+		// result over. That handoff can park on the unbuffered channel for
+		// notifyAckTimeout, and while we hold the read lock every caller of
+		// c.mu.Lock() waits: AcceptBye and Close among them, so an arriving BYE
+		// would be what we blocked.
 		c.mu.RLock()
-		defer c.mu.RUnlock()
-		handleReferNotify(cseq, status, reason, c.referCseq, c.referDone)
+		referCseq := c.referCseq
+		c.mu.RUnlock()
+		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,15 +142,18 @@ type Handler interface {
 	OnSessionEnd(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string)
 }
 
+// HandlerInterceptor wraps a handler function.
+type HandlerInterceptor func(sipgo.RequestHandler) sipgo.RequestHandler
+
 type Server struct {
-	log          logger.Logger
-	mon          *stats.Monitor
-	region       string
-	sipSrv       *sipgo.Server
-	getStateHandler  GetStateHandler
-	getRoom      GetRoomFunc
-	sipListeners []io.Closer
-	sipUnhandled RequestHandler
+	log             logger.Logger
+	mon             *stats.Monitor
+	region          string
+	sipSrv          *sipgo.Server
+	getStateHandler GetStateHandler
+	getRoom         GetRoomFunc
+	sipListeners    []io.Closer
+	sipUnhandled    RequestHandler
 
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
@@ -165,9 +169,10 @@ type Server struct {
 		byLocalTag *expirable.LRU[LocalTag, *inboundCallInfo]
 	}
 
-	handler Handler
-	conf    *config.Config
-	sconf   *ServiceConfig
+	handler      Handler
+	conf         *config.Config
+	sconf        *ServiceConfig
+	interceptors []HandlerInterceptor
 
 	cli *Client // optional, for outbound reinvite handling
 
@@ -201,6 +206,15 @@ func WithClient(cli *Client) ServerOption {
 	}
 }
 
+// WithInterceptors configures all sip handlers to be wrapped with the given set
+// of interceptors. Interceptors are applied s.t. the first interceptor is the
+// outermost one.
+func WithInterceptors(interceptors ...HandlerInterceptor) ServerOption {
+	return func(s *Server) {
+		s.interceptors = interceptors
+	}
+}
+
 func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...ServerOption) *Server {
 	if log == nil {
 		log = logger.GetLogger()
@@ -210,7 +224,7 @@ func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats
 		conf:               conf,
 		region:             region,
 		mon:                mon,
-		getStateHandler:        getStateHandler,
+		getStateHandler:    getStateHandler,
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
@@ -307,6 +321,14 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 
 type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
 
+func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler {
+	ret := handler
+	for _, interceptor := range slices.Backward(s.interceptors) {
+		ret = interceptor(ret)
+	}
+	return ret
+}
+
 func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
 	s.sconf = sc
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
@@ -330,12 +352,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 		return err
 	}
 
-	s.sipSrv.OnOptions(s.onOptions)
-	s.sipSrv.OnInvite(s.onInvite)
-	s.sipSrv.OnAck(s.onAck)
-	s.sipSrv.OnBye(s.onBye)
-	s.sipSrv.OnNotify(s.onNotify)
-	s.sipSrv.OnNoRoute(s.OnNoRoute)
+	s.sipSrv.OnOptions(s.wrapHandler(s.onOptions))
+	s.sipSrv.OnInvite(s.wrapHandler(s.onInvite))
+	s.sipSrv.OnAck(s.wrapHandler(s.onAck))
+	s.sipSrv.OnBye(s.wrapHandler(s.onBye))
+	s.sipSrv.OnNotify(s.wrapHandler(s.onNotify))
+	s.sipSrv.OnNoRoute(s.wrapHandler(s.OnNoRoute))
 	s.sipUnhandled = unhandled
 
 	listenIP := s.conf.ListenIP

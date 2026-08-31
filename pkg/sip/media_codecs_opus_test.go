@@ -26,7 +26,38 @@ import (
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/media-sdk/sdp"
+	"github.com/livekit/protocol/livekit"
 )
+
+func TestResolveSDPName(t *testing.T) {
+	t.Run("two-part name resolves to three-part", func(t *testing.T) {
+		got := resolveSDPName("opus/48000")
+		require.Equal(t, OpusSDPName, got)
+	})
+	t.Run("exact three-part match returns empty", func(t *testing.T) {
+		got := resolveSDPName("opus/48000/2")
+		require.Empty(t, got)
+	})
+	t.Run("unknown codec returns empty", func(t *testing.T) {
+		got := resolveSDPName("unknown/8000")
+		require.Empty(t, got)
+	})
+}
+
+func TestCodecSetWithOpus(t *testing.T) {
+	enableOpusForTest(t)
+
+	m := &livekit.SIPMediaConfig{
+		OnlyListedCodecs: true,
+		Codecs: []*livekit.SIPCodec{
+			{Name: "opus", Rate: 48000},
+		},
+	}
+	s, err := codecSet(m)
+	require.NoError(t, err)
+	require.True(t, s.IsEnabledByName(OpusSDPName),
+		"codecSet should enable opus/48000/2 when opus/48000 is listed")
+}
 
 // enableOpusForTest turns Opus on for a test and restores disabled state after.
 func enableOpusForTest(t *testing.T) {
@@ -38,7 +69,7 @@ func enableOpusForTest(t *testing.T) {
 // TestOpusDisabledByDefault verifies that without calling SetOpusEnabled,
 // Opus is absent from defaultCodecs — so existing deployments are unaffected.
 func TestOpusDisabledByDefault(t *testing.T) {
-	c := sdp.CodecByNameWith(defaultCodecs, OpusSDPName)
+	c := sdp.CodecByNameWith(defaultCodecs, OpusSDPName, nil)
 	require.Nil(t, c, "opus must not appear in defaultCodecs by default")
 }
 
@@ -47,7 +78,7 @@ func TestOpusDisabledByDefault(t *testing.T) {
 func TestOpusRegistered(t *testing.T) {
 	enableOpusForTest(t)
 
-	c := sdp.CodecByNameWith(defaultCodecs, OpusSDPName)
+	c := sdp.CodecByNameWith(defaultCodecs, OpusSDPName, nil)
 	require.NotNil(t, c, "opus codec must be present in defaultCodecs when enabled")
 
 	_, ok := c.(msdk.AudioCodec)
@@ -83,13 +114,13 @@ func TestOpusInSDPOffer(t *testing.T) {
 func TestOpusPreferredOverG722(t *testing.T) {
 	enableOpusForTest(t)
 
-	opusC, ok := sdp.CodecByNameWith(defaultCodecs, OpusSDPName).(msdk.AudioCodec)
+	opusC, ok := sdp.CodecByNameWith(defaultCodecs, OpusSDPName, nil).(msdk.AudioCodec)
 	require.True(t, ok, "opus must be an AudioCodec")
 
-	ulawC, ok := sdp.CodecByNameWith(defaultCodecs, g711.ULawSDPName).(msdk.AudioCodec)
+	ulawC, ok := sdp.CodecByNameWith(defaultCodecs, g711.ULawSDPName, nil).(msdk.AudioCodec)
 	require.True(t, ok, "PCMU must be an AudioCodec")
 
-	g722C, ok := sdp.CodecByNameWith(defaultCodecs, g722.SDPName).(msdk.AudioCodec)
+	g722C, ok := sdp.CodecByNameWith(defaultCodecs, g722.SDPName, nil).(msdk.AudioCodec)
 	require.True(t, ok, "G722 must be an AudioCodec")
 
 	desc := sdp.MediaDesc{

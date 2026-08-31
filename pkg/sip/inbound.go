@@ -320,6 +320,23 @@ func sdpBodyFromRequest(req *sip.Request) []byte {
 	return req.Body()
 }
 
+func providerLabel(p *livekit.ProviderInfo) string {
+	switch p.GetType() {
+	case livekit.ProviderType_PROVIDER_TYPE_INTERNAL:
+		internalPrefix := "internal/"
+		if name := p.GetName(); name != "" {
+			return internalPrefix + strings.ToLower(name)
+		}
+
+		return internalPrefix + stats.ProviderUnknown
+	case livekit.ProviderType_PROVIDER_TYPE_EXTERNAL:
+		// External names are customer-supplied trunk names, left out to keep the label bounded.
+		return "external"
+	default:
+		return stats.ProviderUnknown
+	}
+}
+
 func updateRemoteFromSDP(media *MediaPort, log logger.Logger, codecs *msdk.CodecSet, body []byte) {
 	if len(body) == 0 || media == nil {
 		return
@@ -478,6 +495,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if r.TrunkID != "" {
 		log = log.WithValues("sipTrunk", r.TrunkID)
 	}
+	cmon.SetProvider(providerLabel(r.ProviderInfo))
 
 	initial := &livekit.SIPCallInfo{
 		CallId:        string(cc.ID()),
@@ -1067,10 +1085,11 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			c.close(ctx, end)
 			return nil
 		case <-c.lkRoom.Closed():
+			roomReason := c.lkRoom.ClosedReason()
 			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-				info.DisconnectReason = livekit.DisconnectReason_CLIENT_INITIATED
+				info.DisconnectReason = disconnectReasonFromRoomClose(roomReason)
 			})
-			c.closeWithTerm(ctx, terminationFromRoomDisconnect(c.lkRoom.ClosedReason()))
+			c.closeWithTerm(ctx, terminationFromRoomDisconnect(roomReason))
 			return nil
 		case <-c.media.Timeout():
 			return c.mediaTimeout(ctx)
@@ -1105,6 +1124,8 @@ func (c *inboundCall) runMediaConn(tid traceid.ID, offerData []byte, mconf *sipM
 		LogSignalChanges:     logSignalChanges,
 		Stats:                &c.stats.Port,
 		NoInputResample:      !RoomResample,
+		DrainingIdleTimeout:  conf.RTPDrainingIdleTimeout,
+		DrainingDuration:     conf.RTPDrainingDuration,
 	}, RoomSampleRate)
 	if err != nil {
 		return nil, err
@@ -1329,7 +1350,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	if !c.done.CompareAndSwap(false, true) {
 		return
 	}
-	defer c.mon.StageDurTimer("close")
+	defer c.mon.StageDurTimer("close")()
 	c.stats.Closed.Store(true)
 	result := Result{
 		Code:   sip.StatusBusyHere,
@@ -1347,7 +1368,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			Status: "Request Terminated",
 		}
 	}
-	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Reason)
+	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Term.Reason)
 	defer func() {
 		c.stats.Update()
 		c.printStats(log)
@@ -1422,7 +1443,7 @@ func (c *inboundCall) closeWithTimeout(ctx context.Context, isError bool) {
 func (c *inboundCall) closeWithNoACK(ctx context.Context) {
 	c.close(ctx, EndCall{
 		Status: callNoACK,
-		Term:   stats.ServerError("no-ack"),
+		Term:   stats.Indeterminate("no-ack"),
 	})
 }
 
@@ -1616,12 +1637,12 @@ func (c *inboundCall) handleDTMF(tone dtmf.Event) {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (retErr error) {
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (transferID string, retErr error) {
 	var err error
 
-	tID := c.state.StartTransfer(transferTo)
+	transferID = c.state.StartTransfer(transferTo)
 	defer func() {
-		c.state.EndTransfer(tID, retErr)
+		c.state.EndTransfer(transferID, retErr)
 	}()
 
 	if dialtone && c.started.IsBroken() && !c.done.Load() {
@@ -1653,7 +1674,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	err = c.cc.TransferCall(ctx, transferTo, headers, c.ctx.Done())
 	if err != nil {
 		c.log().Infow("inbound call failed to transfer", "error", err, "transferTo", transferTo)
-		return err
+		return transferID, err
 	}
 
 	c.log().Infow("inbound call transferred", "transferTo", transferTo)
@@ -1661,8 +1682,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() { c.Close() })
 
-	return nil
-
+	return transferID, nil
 }
 
 func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
@@ -2139,7 +2159,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	c.setCSeq(r)
 	c.swapSrcDst(r)
 	c.drop()
-	sendAndACK(ctx, c, r)
+	sendBye(ctx, c.log, c, r)
 }
 
 func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[string]string) {
@@ -2210,36 +2230,30 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 		return err
 	}
 
-	select {
-	case <-ctx.Done():
-		return psrpc.NewErrorf(psrpc.Canceled, "refer canceled")
-	case <-callDone:
-		// At this point, REFER was accepted, but we received a BYE, nothing to do, also not an error
-		c.log.Infow("refer canceled by BYE from remote")
-		return nil
-	case err := <-c.referDone:
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return waitReferResult(ctx, c.log, callDone, c.referDone)
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
-	method, cseq, status, reason, err := handleNotify(req)
+	info, err := handleNotify(req)
 	if err != nil {
 		return err
 	}
-	c.log.Infow("handling NOTIFY", "method", method, "status", status, "reason", reason, "cseq", cseq)
+	c.log.Infow("handling NOTIFY", "method", info.Method, "status", info.Status,
+		"reason", info.Reason, "cseq", info.CSeq, "subscription", info.Sub.String())
 
-	switch method {
+	switch info.Method {
 	default:
 		return nil
 	case sip.REFER:
+		// Read referCseq under the lock, then release it before handing the
+		// result over. That handoff can park on the unbuffered channel for
+		// notifyAckTimeout, and while we hold the read lock every caller of
+		// c.mu.Lock() waits: AcceptBye and CloseWithStatus among them, so an
+		// arriving BYE would be what we blocked.
 		c.mu.RLock()
-		defer c.mu.RUnlock()
-		handleReferNotify(cseq, status, reason, c.referCseq, c.referDone)
+		referCseq := c.referCseq
+		c.mu.RUnlock()
+		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}
 }

@@ -15,11 +15,13 @@
 package sip
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,9 +30,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -38,6 +42,11 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
+)
+
+const (
+	parsedMetric  = "livekit_sip_sdp_parsed_total"
+	offeredMetric = "livekit_sip_codec_offered_total"
 )
 
 func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
@@ -48,11 +57,24 @@ func newTestCallMonitor(t testing.TB) *stats.CallMonitor {
 	return mon.NewCall(stats.Inbound, "test", "test")
 }
 
+func newTestMediaPort(t testing.TB, provider string) *MediaPort {
+	t.Helper()
+	mon := newTestCallMonitor(t)
+	mon.SetProvider(provider)
+	mp, err := NewMediaPortWith(1, logger.GetLogger(), mon, nil, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, 8000)
+	require.NoError(t, err)
+	t.Cleanup(func() { mp.Close() })
+	return mp
+}
+
 type testUDPConn struct {
-	addr   netip.AddrPort
-	closed chan struct{}
-	buf    chan []byte
-	peer   atomic.Pointer[testUDPConn]
+	addr     netip.AddrPort
+	closed   chan struct{}
+	buf      chan []byte
+	peer     atomic.Pointer[testUDPConn]
+	deadline chan time.Time
 }
 
 func (c *testUDPConn) Read(b []byte) (int, error) {
@@ -73,10 +95,15 @@ func (c *testUDPConn) RemoteAddr() net.Addr {
 }
 
 func (c *testUDPConn) SetDeadline(t time.Time) error {
+	c.SetReadDeadline(t)
 	return nil
 }
 
 func (c *testUDPConn) SetReadDeadline(t time.Time) error {
+	select {
+	case c.deadline <- t:
+	default:
+	}
 	return nil
 }
 
@@ -89,16 +116,31 @@ func (c *testUDPConn) ReadFromUDPAddrPort(buf []byte) (int, netip.AddrPort, erro
 	if peer == nil {
 		return 0, netip.AddrPort{}, io.ErrClosedPipe
 	}
-	select {
-	case <-c.closed:
-		return 0, netip.AddrPort{}, io.ErrClosedPipe
-	case data := <-c.buf:
-		n := copy(buf, data)
-		var err error
-		if n < len(data) {
-			err = io.ErrShortBuffer
+	var curDeadline time.Time
+
+	for {
+		var deadlineCh <-chan time.Time = nil
+		if !curDeadline.IsZero() {
+			deadlineCh = time.After(time.Until(curDeadline))
 		}
-		return n, peer.addr, err
+		select {
+		case <-c.closed:
+			return 0, netip.AddrPort{}, io.ErrClosedPipe
+		case <-deadlineCh:
+			return 0, netip.AddrPort{}, os.ErrDeadlineExceeded
+		case newDeadline := <-c.deadline:
+			if !newDeadline.IsZero() && (newDeadline.Before(curDeadline) || curDeadline.IsZero()) {
+				curDeadline = newDeadline
+			}
+			continue
+		case data := <-c.buf:
+			n := copy(buf, data)
+			var err error
+			if n < len(data) {
+				err = io.ErrShortBuffer
+			}
+			return n, peer.addr, err
+		}
 	}
 }
 
@@ -140,8 +182,9 @@ func newTestConn(i int) *testUDPConn {
 			netip.AddrFrom4([4]byte{byte(i), byte(i), byte(i), byte(i)}),
 			uint16(10000*i),
 		),
-		buf:    make(chan []byte, 10),
-		closed: make(chan struct{}),
+		buf:      make(chan []byte, 10),
+		closed:   make(chan struct{}),
+		deadline: make(chan time.Time, 1),
 	}
 }
 
@@ -787,4 +830,197 @@ func TestSymmetricRTP(t *testing.T) {
 		require.NotNil(t, curDstPtr)
 		require.Equal(t, newAddr.String(), curDstPtr.String())
 	})
+}
+
+func generateDTMFPackets(t *testing.T, digits string) [][]*rtp.Packet {
+	t.Helper()
+	var buf rtp.Buffer
+	packets := make([][]*rtp.Packet, len(digits))
+	last := len(buf)
+	w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+	timestamp := uint32(1000)
+	for i := range digits {
+		err := dtmf.Write(context.Background(), nil, w, timestamp, digits[i:i+1])
+		require.NoError(t, err)
+		require.NotEmpty(t, buf)
+		timestamp += uint32(dtmf.SampleRate / 2)
+		packets[i] = slices.Clone(buf[last:])
+		last = len(buf)
+	}
+	return packets
+}
+
+func dropPackets(t *testing.T, dropType string, packets []*rtp.Packet) []*rtp.Packet {
+	t.Helper()
+	switch dropType {
+	case "none":
+		return packets
+	case "first":
+		require.Greater(t, len(packets), 3)
+		return packets[3:]
+	case "last":
+		require.Greater(t, len(packets), 3)
+		return packets[:len(packets)-3]
+	case "middle":
+		require.Greater(t, len(packets), 6)
+		ret := slices.Clone(packets[:3])
+		ret = append(ret, packets[len(packets)-3:]...)
+		return ret
+	default:
+		t.Fatal("unknown drop type: " + dropType)
+		return nil
+	}
+}
+
+func TestMediaPortDTMF(t *testing.T) {
+	digitCases := []string{"1", "12", "123"}
+	lossCases := []string{"none", "first", "last", "middle"}
+
+	for _, digits := range digitCases {
+		packets := generateDTMFPackets(t, digits)
+		for _, lossPackets := range lossCases {
+			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
+				p := &MediaPort{}
+				p.lastDTMFEvent.Store(math.MaxUint64)
+				got := ""
+				p.HandleDTMF(func(ev dtmf.Event) {
+					t.Logf("received DTMF event: %+v", ev)
+					got = fmt.Sprintf("%s%s", got, strconv.Itoa(int(ev.Code)))
+				})
+				for _, digitPackets := range packets {
+					sendPackets := dropPackets(t, lossPackets, digitPackets)
+					t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
+					for _, pkt := range sendPackets {
+						h := pkt.Header
+						t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
+						require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
+					}
+				}
+				t.Logf("sent: %s", digits)
+				t.Logf("got: %s", got)
+				require.Equal(t, digits, got)
+			})
+		}
+	}
+}
+
+func TestMediaPortDTMFSameTimestamp(t *testing.T) {
+	// Some SIP carriers reuse the RTP timestamp across different DTMF digits.
+	// Verify that each distinct event code is still reported even when timestamps are shared.
+	p := &MediaPort{}
+	p.lastDTMFEvent.Store(math.MaxUint64)
+	var codes []byte
+	p.HandleDTMF(func(ev dtmf.Event) {
+		codes = append(codes, ev.Code)
+	})
+
+	// Three different digits, all with the same timestamp (non-standard but seen in production).
+	sameTS := uint32(100000)
+	// Use digit characters so we go through dtmf.Write which produces proper DTMF packets.
+	digits := "123"
+
+	for i := range digits {
+		var buf rtp.Buffer
+		w := rtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+		err := dtmf.Write(context.Background(), nil, w, sameTS, digits[i:i+1])
+		require.NoError(t, err)
+		require.NotEmpty(t, buf)
+		// Take the first packet of each digit and send to handler.
+		// All packets share the same timestamp, simulating the bug scenario.
+		pkt := buf[0]
+		h := pkt.Header
+		require.NoError(t, p.dtmfHandler(&h, pkt.Payload))
+	}
+
+	require.Equal(t, 3, len(codes))
+	require.NotEqual(t, codes[0], codes[1])
+	require.NotEqual(t, codes[1], codes[2])
+	require.NotEqual(t, codes[0], codes[2])
+}
+
+// Test util for incrementing prometheus counter metrics.
+func gatherCounter(t testing.TB, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	var total float64
+	for _, f := range families {
+		// Matching metric
+		if f.GetName() != name {
+			continue
+		}
+	metrics:
+		for _, m := range f.GetMetric() {
+			got := make(map[string]string, len(m.GetLabel()))
+			for _, l := range m.GetLabel() {
+				got[l.GetName()] = l.GetValue()
+			}
+			// Matching labels
+			for k, v := range labels {
+				if got[k] != v {
+					continue metrics
+				}
+			}
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// Report codecs offered during SDP even when the offer fails to match any codecs
+func TestSetOfferReportsCodecsBeforeFailing(t *testing.T) {
+	mp := newTestMediaPort(t, "internal/somecarrier")
+
+	parsed := map[string]string{"dir": "in", "provider": "internal/somecarrier"}
+	other := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": codecOther}
+	pcmu := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": "PCMU/8000"}
+
+	parsedBefore := gatherCounter(t, parsedMetric, parsed)
+	otherBefore := gatherCounter(t, offeredMetric, other)
+	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
+
+	offer := sdpWithMedia("m=audio 5004 RTP/AVP 96", "a=rtpmap:96 SPEEX/16000")
+	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	require.ErrorIs(t, err, sdp.ErrNoCommonMedia)
+
+	// Codecs that are not part of the internal set are classified as "other"
+	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
+	require.Equal(t, otherBefore+1, gatherCounter(t, offeredMetric, other))
+	require.Equal(t, pcmuBefore, gatherCounter(t, offeredMetric, pcmu))
+}
+
+func TestSetOfferReportsCodecsPerProvider(t *testing.T) {
+	mp := newTestMediaPort(t, "internal/somecarrier")
+
+	parsed := map[string]string{"dir": "in", "provider": "internal/somecarrier"}
+	pcmu := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": "PCMU/8000"}
+	g722 := map[string]string{"dir": "in", "provider": "internal/somecarrier", "codec": "G722/8000"}
+
+	parsedBefore := gatherCounter(t, parsedMetric, parsed)
+	pcmuBefore := gatherCounter(t, offeredMetric, pcmu)
+	g722Before := gatherCounter(t, offeredMetric, g722)
+
+	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 9",
+		"a=rtpmap:0 PCMU/8000", "a=rtpmap:9 G722/8000")
+	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+
+	require.Equal(t, parsedBefore+1, gatherCounter(t, parsedMetric, parsed))
+	require.Equal(t, pcmuBefore+1, gatherCounter(t, offeredMetric, pcmu))
+	require.Equal(t, g722Before+1, gatherCounter(t, offeredMetric, g722))
+}
+
+// Without SetProvider - the pre-auth path - offers still land somewhere rather
+// than being dropped.
+func TestSetOfferReportsUnknownProvider(t *testing.T) {
+	mp := newTestMediaPort(t, "")
+
+	parsed := map[string]string{"dir": "in", "provider": stats.ProviderUnknown}
+	before := gatherCounter(t, parsedMetric, parsed)
+
+	offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
+	_, _, err := mp.SetOffer(offer, defaultCodecs, sdp.EncryptionNone)
+	require.NoError(t, err)
+
+	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))
 }

@@ -77,13 +77,17 @@ func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {
 }
 
 type SIPOutboundTestParams struct {
-	TrunkOut string            // trunk ID for outbound call
-	RoomOut  string            // room for outbound call
-	AttrsOut map[string]string // expected attributes for outbound participants
-	TrunkIn  string            // trunk ID for inbound call
-	RuleIn   string            // rule ID for inbound call
-	AttrsIn  map[string]string // expected attributes for inbound participants
-	NoDMTF   bool              // do not test DTMF
+	TrunkOut    string            // trunk ID for outbound call
+	NumberOut   string            // number for outbound call (LK phone numbers)
+	RoomOut     string            // room for outbound call
+	AttrsOut    map[string]string // expected attributes for outbound participants
+	HeadersOut  map[string]string // headers for outbound call
+	NumberIn    string            // number for inbound call (LK phone numbers)
+	NumberInExp string            // expected inbound number, as seen in the inbound call
+	TrunkIn     string            // trunk ID for inbound call
+	RuleIn      string            // rule ID for inbound call
+	AttrsIn     map[string]string // expected attributes for inbound participants
+	NoDMTF      bool              // do not test DTMF
 }
 
 func loadVal[T any](ptr *atomic.Pointer[T]) T {
@@ -101,27 +105,41 @@ func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 
 	t.Logf("+%.3fs: getting trunk info", secSince(start))
 
-	trsOut, err := lkOut.SIP.GetSIPOutboundTrunksByIDs(ctx, []string{params.TrunkOut})
-	require.NoError(t, err)
-	trOut := trsOut[0]
-	require.NotNil(t, trOut, "trunk not found")
-	require.NotEmpty(t, trOut.Numbers, "no trunk numbers for outbound")
-	numOut := trOut.Numbers[0]
-	t.Logf("+%.3fs: using outbound trunk %q (%s, num: %s)", secSince(start), trOut.Name, trOut.SipTrunkId, numOut)
+	numOut := params.NumberOut
+	if numOut == "" {
+		trsOut, err := lkOut.SIP.GetSIPOutboundTrunksByIDs(ctx, []string{params.TrunkOut})
+		require.NoError(t, err)
+		trOut := trsOut[0]
+		require.NotNil(t, trOut, "trunk not found")
+		require.NotEmpty(t, trOut.Numbers, "no trunk numbers for outbound")
+		numOut = trOut.Numbers[0]
+		t.Logf("+%.3fs: using outbound trunk %q (%s, num: %s)", secSince(start), trOut.Name, trOut.SipTrunkId, numOut)
+	} else {
+		t.Logf("+%.3fs: using outbound number %q", secSince(start), numOut)
+	}
 
-	trsIn, err := lkIn.SIP.GetSIPInboundTrunksByIDs(ctx, []string{params.TrunkIn})
-	require.NoError(t, err)
-	trIn := trsIn[0]
-	require.NotNil(t, trIn, "trunk not found")
-	require.NotEmpty(t, trIn.Numbers, "no trunk numbers for inbound")
-	numIn := trIn.Numbers[0]
-	t.Logf("+%.3fs: using inbound trunk %q (%s, num: %s)", secSince(start), trIn.Name, trIn.SipTrunkId, numIn)
+	numIn := params.NumberIn
+	if numIn == "" {
+		trsIn, err := lkIn.SIP.GetSIPInboundTrunksByIDs(ctx, []string{params.TrunkIn})
+		require.NoError(t, err)
+		trIn := trsIn[0]
+		require.NotNil(t, trIn, "trunk not found")
+		require.NotEmpty(t, trIn.Numbers, "no trunk numbers for inbound")
+		numIn = trIn.Numbers[0]
+		t.Logf("+%.3fs: using inbound trunk %q (%s, num: %s)", secSince(start), trIn.Name, trIn.SipTrunkId, numIn)
+	} else {
+		t.Logf("+%.3fs: using inbound number %q (%s)", secSince(start), numIn, params.TrunkIn)
+	}
 
 	rulesIn, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, []string{params.RuleIn})
 	require.NoError(t, err)
 	ruleIn := rulesIn[0]
 	require.NotNil(t, ruleIn, "rule not found")
-	require.True(t, len(ruleIn.TrunkIds) == 0 || slices.Contains(ruleIn.TrunkIds, trIn.SipTrunkId), "selected rule doesn't match the trunk")
+	if params.NumberIn == "" {
+		require.True(t, len(ruleIn.TrunkIds) == 0 || slices.Contains(ruleIn.TrunkIds, params.TrunkIn), "selected rule doesn't match the trunk")
+	} else {
+		require.True(t, len(ruleIn.TrunkIds) > 0 && slices.Contains(ruleIn.TrunkIds, params.TrunkIn), "selected rule doesn't have a number associated with it")
+	}
 	ruleDir, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleDirect)
 	require.True(t, ok, "unsupported dispatch rule type %T", ruleIn.Rule.Rule)
 	rule := ruleDir.DispatchRuleDirect
@@ -284,12 +302,14 @@ Check logs for call:
 	t.Logf("+%.3fs: creating sip participant", secSince(start))
 	r := lkOut.CreateSIPParticipant(t, &livekit.CreateSIPParticipantRequest{
 		SipTrunkId:          params.TrunkOut,
+		SipNumber:           params.NumberOut,
 		SipCallTo:           numIn,
 		RoomName:            params.RoomOut,
 		ParticipantIdentity: outIdentity,
 		ParticipantName:     outName,
 		ParticipantMetadata: outMeta,
 		Dtmf:                roomPin,
+		Headers:             params.HeadersOut,
 	})
 	t.Logf("+%.3fs: outbound call ID: %s", secSince(start), r.SipCallId)
 
@@ -304,7 +324,9 @@ Check logs for call:
 		"sip.callStatus":       "active",
 		"sip.trunkPhoneNumber": numOut,
 		"sip.phoneNumber":      numIn,
-		"sip.trunkID":          params.TrunkOut,
+	}
+	if params.TrunkOut != "" {
+		expAttrsOut["sip.trunkID"] = params.TrunkOut
 	}
 	for k, v := range params.AttrsOut {
 		expAttrsOut[k] = v
@@ -324,12 +346,16 @@ Check logs for call:
 	readyIn.Wait()
 
 	t.Logf("+%.3fs: asserting outbound room", secSince(start))
+	numInExp := numIn
+	if params.NumberInExp != "" {
+		numInExp = params.NumberInExp
+	}
 	expAttrsIn := map[string]string{
 		"sip.callID":           AttrTestAny, // special case
 		"sip.callTag":          AttrTestAny, // special case
 		"sip.callIDFull":       AttrTestAny, // special case
 		"sip.callStatus":       "active",
-		"sip.trunkPhoneNumber": numIn,
+		"sip.trunkPhoneNumber": numInExp,
 		"sip.phoneNumber":      numOut,
 		"sip.trunkID":          params.TrunkIn,
 		"sip.ruleID":           params.RuleIn,
@@ -498,7 +524,10 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
 				t.Logf("+%.3fs: Outbound participant disconnected: %s", secSince(start), rp.Identity())
 				if rp.Identity() != identityTest {
-					close(outClosed)
+					select {
+					case outClosed <- struct{}{}:
+					default:
+					}
 				}
 			},
 		},
@@ -608,7 +637,10 @@ func TestCreateSipParticipant(t TB, ctx context.Context, lkOut, lkIn *LiveKit, r
 			OnParticipantDisconnected: func(rp *lksdk.RemoteParticipant) {
 				t.Logf("+%.3fs: Inbound participant disconnected: %s", secSince(start), rp.Identity())
 				if rp.Identity() != identityTest {
-					close(inClosed)
+					select {
+					case inClosed <- struct{}{}:
+					default:
+					}
 				}
 			},
 		},
