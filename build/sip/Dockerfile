@@ -24,10 +24,9 @@ WORKDIR /workspace
 # install libopus
 RUN apt-get update && apt-get install -y pkg-config libopus-dev libopusfile-dev libsoxr-dev
 
-# download go modules (replace => ./third_party/server-sdk-go)
+# download go modules
 COPY go.mod .
 COPY go.sum .
-COPY third_party/ third_party/
 RUN go mod download
 
 # copy source
