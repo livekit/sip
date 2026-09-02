@@ -596,6 +596,60 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 	}
 }
 
+// Reproduces a PBX transfer: the far end keeps the same 5-tuple but starts
+// relaying a different source, so LiveKit sees a new SSRC whose sequence
+// numbers are far *behind* the previous stream. Before the fix, every packet
+// of the new stream was rejected by the shared jitter buffer as "expired".
+func TestMediaPipelineJitterNewSSRCBackwardSeq(t *testing.T) {
+	const (
+		oldSSRC = uint32(0xA0000001)
+		newSSRC = uint32(0xB0000002)
+		oldSeq  = uint16(21280) // old stream ends near 21294 like the captured call
+		newSeq  = uint16(12676) // new stream starts here: 8618 behind, inside the 32768 half-space
+		perSSRC = 15
+	)
+	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	h := newPipelineHarness(t, RoomSampleRate)
+	h.jitter = true
+	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+
+	clock := codec.Info().RTPClockRate
+	if clock == 0 {
+		clock = codec.Info().SampleRate
+	}
+	samplesPerFrame := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	sample := h.codecFrame()
+
+	// Phase 1: original stream decodes.
+	// Pace the injections: media-sdk's per-SSRC read stream buffers 10 packets
+	// and drops on overflow, so a tight burst would lose packets at the socket.
+	for i := uint16(0); i < perSSRC; i++ {
+		h.injectAudio(oldSSRC, oldSeq+i, samplesPerFrame*uint32(i+1), sample)
+		time.Sleep(2 * time.Millisecond)
+	}
+	require.Eventually(t, func() bool { return h.roomAudio.len() > 0 },
+		2*time.Second, 5*time.Millisecond, "original stream should decode")
+	afterOld := h.roomAudio.len()
+
+	// Phase 2: transfer. New SSRC, sequence space restarts far behind prevSN.
+	for i := uint16(0); i < perSSRC; i++ {
+		h.injectAudio(newSSRC, newSeq+i, samplesPerFrame*uint32(i+1), sample)
+		time.Sleep(2 * time.Millisecond)
+	}
+	require.Eventually(t, func() bool { return h.packetCount.Load() >= 2*perSSRC },
+		2*time.Second, 5*time.Millisecond, "all RTP should be read from the socket")
+	require.Eventually(t, func() bool { return h.roomAudio.len() > afterOld },
+		2*time.Second, 5*time.Millisecond,
+		"audio from the new SSRC must reach the room (dropped=%d, audioPackets=%d)",
+		h.pipeline.conf.stats.JitterBufferPacketsDropped.Load(),
+		h.pipeline.conf.stats.AudioPackets.Load())
+	require.Eventually(t, func() bool { return h.pipeline.conf.stats.AudioPackets.Load() >= 2*perSSRC },
+		2*time.Second, 5*time.Millisecond, "every packet of both streams should pass the jitter buffer")
+	assert.Equal(t, uint64(0), h.pipeline.conf.stats.JitterBufferPacketsDropped.Load(),
+		"a new SSRC must not be treated as expired packets of the old one")
+	assert.Equal(t, uint64(2), h.ssrcCount.Load())
+}
+
 func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	const rate = 48000
 	d := pipelineTestDTMF[1] // event-only
