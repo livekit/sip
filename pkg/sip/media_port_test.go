@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -926,4 +927,56 @@ func TestSetOfferReportsUnknownProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, before+1, gatherCounter(t, parsedMetric, parsed))
+}
+
+// stubParse stands in for sdp.ParseOfferWith/ParseAnswerWith so the recovery
+// wrapper can be exercised without hand-crafting SDP that panics the parser.
+type stubParse struct {
+	calls int
+	res   *sdp.Offer
+	err   error
+	panic any
+}
+
+func (s *stubParse) parse(*msdk.CodecSet, []byte) (*sdp.Offer, error) {
+	s.calls++
+	if s.panic != nil {
+		panic(s.panic)
+	}
+	return s.res, s.err
+}
+
+func TestParseSDPWithRecovery(t *testing.T) {
+	parseErr := errors.New("malformed SDP")
+
+	t.Run("parse error reaches the caller intact", func(t *testing.T) {
+		fn := &stubParse{err: parseErr}
+		res, err := parseSDPWithRecovery(logger.NewTestLogger(t), nil, fn.parse, defaultCodecs, nil)
+		require.ErrorIs(t, err, parseErr)
+		require.Nil(t, res)
+		require.Equal(t, 1, fn.calls)
+	})
+
+	t.Run("panic with an error value becomes an error", func(t *testing.T) {
+		fn := &stubParse{panic: errors.New("index out of range")}
+		res, err := parseSDPWithRecovery(logger.NewTestLogger(t), nil, fn.parse, defaultCodecs, nil)
+		require.EqualError(t, err, "invalid SDP")
+		require.Nil(t, res)
+		require.Equal(t, 1, fn.calls)
+	})
+
+	t.Run("panic with a non-error value becomes an error", func(t *testing.T) {
+		fn := &stubParse{panic: "boom"}
+		res, err := parseSDPWithRecovery(logger.NewTestLogger(t), nil, fn.parse, defaultCodecs, nil)
+		require.EqualError(t, err, "invalid SDP")
+		require.Nil(t, res)
+		require.Equal(t, 1, fn.calls)
+	})
+
+	t.Run("a recovered panic still classifies as an SDP error", func(t *testing.T) {
+		fn := &stubParse{panic: "boom"}
+		_, err := parseSDPWithRecovery(logger.NewTestLogger(t), nil, fn.parse, defaultCodecs, nil)
+		f := SDPError{Err: err}.ClassifyInvite()
+		require.Equal(t, stats.ClientError("sdp-error"), f.Term)
+	})
 }

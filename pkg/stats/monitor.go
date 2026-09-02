@@ -258,7 +258,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Namespace:   "livekit",
 		Subsystem:   "sip",
 		Name:        "sdp_parse_errors_total",
-		Help:        "Total number of SDP parses that resulted in a recovered panic",
+		Help:        "Total number of SDP parses that resulted in an error",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, []string{"dir", "provider", "reason"}))
 

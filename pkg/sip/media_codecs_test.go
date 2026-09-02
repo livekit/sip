@@ -61,7 +61,7 @@ func TestPeerCodecNames(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			offer, err := parseOfferWith(logger.GetLogger(), nil, defaultCodecs, c.sdp)
+			offer, err := parseOfferWith(logger.NewTestLogger(t), nil, defaultCodecs, c.sdp)
 			require.NoError(t, err)
 			require.ElementsMatch(t, c.exp, peerCodecNames(offer.MediaDesc))
 		})
