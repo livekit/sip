@@ -650,6 +650,40 @@ func TestMediaPipelineJitterNewSSRCBackwardSeq(t *testing.T) {
 	assert.Equal(t, uint64(2), h.ssrcCount.Load())
 }
 
+func TestMediaPipelineJitterStatsAccumulateAcrossSSRC(t *testing.T) {
+	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	h := newPipelineHarness(t, RoomSampleRate)
+	h.jitter = true
+	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+
+	clock := codec.Info().RTPClockRate
+	if clock == 0 {
+		clock = codec.Info().SampleRate
+	}
+	spf := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	sample := h.codecFrame()
+
+	// Each stream: seq 1,2,3 then skip 4,5 then 6,7,8 => 2 lost per stream.
+	inject := func(ssrc uint32) {
+		for _, seq := range []uint16{1, 2, 3, 6, 7, 8} {
+			h.injectAudio(ssrc, seq, spf*uint32(seq), sample)
+			time.Sleep(2 * time.Millisecond) // per-SSRC read stream drops on a 10-packet burst
+		}
+	}
+	inject(0x1111)
+	inject(0x2222)
+
+	require.Eventually(t, func() bool { return h.packetCount.Load() >= 12 },
+		2*time.Second, 5*time.Millisecond)
+	// Loss is only declared once the gap expires (60ms jitter latency), so wait.
+	require.Eventually(t, func() bool {
+		return h.pipeline.conf.stats.JitterBufferPacketsLost.Load() >= 4
+	}, 2*time.Second, 5*time.Millisecond, "lost=%d should be the sum over both SSRCs, not the last buffer's count",
+		h.pipeline.conf.stats.JitterBufferPacketsLost.Load())
+	assert.Equal(t, uint64(4), h.pipeline.conf.stats.JitterBufferPacketsLost.Load())
+	assert.Equal(t, uint64(0), h.pipeline.conf.stats.JitterBufferPacketsDropped.Load())
+}
+
 func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	const rate = 48000
 	d := pipelineTestDTMF[1] // event-only
