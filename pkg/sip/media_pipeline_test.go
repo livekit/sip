@@ -181,6 +181,7 @@ type pipelineHarness struct {
 	codec       msdk.AudioCodec
 	audioPT     byte
 	dtmfPT      byte
+	jitter      bool // when true, configure() enables the jitter buffer
 }
 
 func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
@@ -240,7 +241,7 @@ func (h *pipelineHarness) configure(codec msdk.AudioCodec, audioPT, dtmfPT byte,
 	h.codec = codec
 	h.audioPT = audioPT
 	h.dtmfPT = dtmfPT
-	h.conf.opts = &MediaOptions{DTMFAudio: dtmfAudio}
+	h.conf.opts = &MediaOptions{DTMFAudio: dtmfAudio, EnableJitterBuffer: h.jitter}
 
 	pipe, err := NewMediaPortPipeline(h.conf, h.mediaConfig(), h.port, h.audioIn, h.dtmfIn, h.audioIn.SampleRate())
 	require.NoError(h.t, err)
