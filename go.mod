@@ -12,7 +12,7 @@ require (
 	github.com/livekit/media-sdk v0.0.0-20260824180721-c8704a7f6202
 	github.com/livekit/mediatransportutil v0.0.0-20260727210231-81a5287a7109
 	github.com/livekit/protocol v1.50.5-0.20260821144838-17c16cf496fd
-	github.com/livekit/psrpc v0.7.3
+	github.com/livekit/psrpc v0.7.4
 	github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260821165736-9b5928e4fcb8
 	github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
