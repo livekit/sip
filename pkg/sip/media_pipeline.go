@@ -227,6 +227,8 @@ func (nopCloseRTPHandler) Close() {}
 //
 // Returns nil if the pipeline has already been closed.
 func (p *mediaPortPipeline) newStreamHandler() rtp.HandlerCloser {
+	// muxToRoom doubles as the "pipeline still open" flag: it is cleared in Close() after
+	// every read loop has exited. inputChain is stable once setupInput returns.
 	ptr := p.muxToRoom.Load()
 	if ptr == nil || *ptr == nil {
 		return nil
@@ -359,7 +361,9 @@ func (p *mediaPortPipeline) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 	)
 	hnd := p.newStreamHandler()
 	if hnd == nil {
-		// Pipeline already closed; drain until the stream ends so the session can shut down.
+		// Defensive: cannot happen today, because Close() clears muxToRoom only after
+		// rtpLoopWG.Wait() and rtpLoop itself is in that group. If it ever does, drain
+		// until the stream ends so the session can shut down.
 		for {
 			if _, err := r.ReadRTP(&h, buf); err != nil {
 				return

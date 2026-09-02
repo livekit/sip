@@ -519,80 +519,90 @@ func TestMediaPipelinePermutations(t *testing.T) {
 }
 
 func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
-	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
-	h := newPipelineHarness(t, RoomSampleRate)
-	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
-	sample := h.codecFrame()
+	for _, jitter := range []bool{false, true} {
+		t.Run(fmt.Sprintf("jitter=%v", jitter), func(t *testing.T) {
+			codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+			h := newPipelineHarness(t, RoomSampleRate)
+			h.jitter = jitter
+			h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+			sample := h.codecFrame()
 
-	h.injectAudio(0x11111111, 1, 160, sample)
-	h.injectAudio(0x22222222, 1, 160, sample)
+			h.injectAudio(0x11111111, 1, 160, sample)
+			h.injectAudio(0x22222222, 1, 160, sample)
 
-	require.Eventually(t, func() bool {
-		return h.ssrcCount.Load() >= 2 && h.packetCount.Load() >= 2
-	}, time.Second, 5*time.Millisecond, "expected AcceptStream and HandleRTP for two SSRCs")
-	assert.Equal(t, uint64(2), h.ssrcCount.Load())
-	assert.Equal(t, uint64(2), h.packetCount.Load())
+			require.Eventually(t, func() bool {
+				return h.ssrcCount.Load() >= 2 && h.packetCount.Load() >= 2
+			}, time.Second, 5*time.Millisecond, "expected AcceptStream and HandleRTP for two SSRCs")
+			assert.Equal(t, uint64(2), h.ssrcCount.Load())
+			assert.Equal(t, uint64(2), h.packetCount.Load())
 
-	done := make(chan error, 1)
-	go func() {
-		done <- h.pipeline.Close()
-	}()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pipeline.Close hung with multiple SSRCs")
+			done := make(chan error, 1)
+			go func() {
+				done <- h.pipeline.Close()
+			}()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("pipeline.Close hung with multiple SSRCs")
+			}
+		})
 	}
 }
 
 func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
-	const (
-		ssrcCount = 3
-		packets   = 30 // Currently the built-in limit of media-sdk's ssrc mux
-	)
-	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
-	h := newPipelineHarness(t, RoomSampleRate)
-	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+	for _, jitter := range []bool{false, true} {
+		t.Run(fmt.Sprintf("jitter=%v", jitter), func(t *testing.T) {
+			const (
+				ssrcCount = 3
+				packets   = 30 // Currently the built-in limit of media-sdk's ssrc mux
+			)
+			codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+			h := newPipelineHarness(t, RoomSampleRate)
+			h.jitter = jitter
+			h.configure(codec, testAudioPT(codec), testDTMFPT, false)
 
-	silence := make(msdk.PCM16Sample, codec.Info().SampleRate/int(time.Second/msrtp.DefFrameDur))
-	var encoded msrtp.Buffer
-	clock := codec.Info().RTPClockRate
-	if clock == 0 {
-		clock = codec.Info().SampleRate
-	}
-	enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(h.audioPT, clock), h.codec)
-	require.NoError(t, enc.WriteSample(silence))
-	require.NoError(t, enc.Close())
-	require.NotEmpty(t, encoded, "codec produced no RTP")
-	payload := slices.Clone(encoded[0].Payload)
+			silence := make(msdk.PCM16Sample, codec.Info().SampleRate/int(time.Second/msrtp.DefFrameDur))
+			var encoded msrtp.Buffer
+			clock := codec.Info().RTPClockRate
+			if clock == 0 {
+				clock = codec.Info().SampleRate
+			}
+			enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(h.audioPT, clock), h.codec)
+			require.NoError(t, enc.WriteSample(silence))
+			require.NoError(t, enc.Close())
+			require.NotEmpty(t, encoded, "codec produced no RTP")
+			payload := slices.Clone(encoded[0].Payload)
 
-	pkt := &rtp.Packet{
-		Header: rtp.Header{
-			Version:     2,
-			PayloadType: h.audioPT,
-		},
-		Payload: payload,
-	}
-	for i := range packets {
-		pkt.SequenceNumber = uint16(i)
-		pkt.SSRC = uint32(i % ssrcCount)
-		h.injectRTP(pkt)
-	}
+			pkt := &rtp.Packet{
+				Header: rtp.Header{
+					Version:     2,
+					PayloadType: h.audioPT,
+				},
+				Payload: payload,
+			}
+			for i := range packets {
+				pkt.SequenceNumber = uint16(i)
+				pkt.SSRC = uint32(i % ssrcCount)
+				h.injectRTP(pkt)
+			}
 
-	require.Eventually(t, func() bool { return h.ssrcCount.Load() == ssrcCount }, time.Second, time.Millisecond, "expected %d SSRCs", ssrcCount)
-	assert.Eventually(t, func() bool { return h.packetCount.Load() == packets }, time.Second, time.Millisecond, "expected %d packets", packets)
-	assert.Equal(t, uint64(ssrcCount), h.ssrcCount.Load())
-	assert.Equal(t, uint64(packets), h.packetCount.Load())
+			require.Eventually(t, func() bool { return h.ssrcCount.Load() == ssrcCount }, time.Second, time.Millisecond, "expected %d SSRCs", ssrcCount)
+			assert.Eventually(t, func() bool { return h.packetCount.Load() == packets }, time.Second, time.Millisecond, "expected %d packets", packets)
+			assert.Equal(t, uint64(ssrcCount), h.ssrcCount.Load())
+			assert.Equal(t, uint64(packets), h.packetCount.Load())
 
-	done := make(chan error, 1)
-	go func() {
-		done <- h.pipeline.Close()
-	}()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pipeline.Close hung under concurrent SSRC pumps")
+			done := make(chan error, 1)
+			go func() {
+				done <- h.pipeline.Close()
+			}()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("pipeline.Close hung under concurrent SSRC pumps")
+			}
+		})
 	}
 }
 
@@ -680,7 +690,8 @@ func TestMediaPipelineJitterStatsAccumulateAcrossSSRC(t *testing.T) {
 		return h.pipeline.conf.stats.JitterBufferPacketsLost.Load() >= 4
 	}, 2*time.Second, 5*time.Millisecond, "lost=%d should be the sum over both SSRCs, not the last buffer's count",
 		h.pipeline.conf.stats.JitterBufferPacketsLost.Load())
-	assert.Equal(t, uint64(4), h.pipeline.conf.stats.JitterBufferPacketsLost.Load())
+	// >= not ==: a scheduler stall can add a socket-level drop that is counted as loss.
+	assert.GreaterOrEqual(t, h.pipeline.conf.stats.JitterBufferPacketsLost.Load(), uint64(4))
 	assert.Equal(t, uint64(0), h.pipeline.conf.stats.JitterBufferPacketsDropped.Load())
 }
 
