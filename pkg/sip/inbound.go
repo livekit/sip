@@ -958,10 +958,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return rejectMedia(err)
 	}
 
-	var sdpResponseBody []byte
+	var sdpBody []byte
 	expectingLateAnswer := len(rawSDP) == 0
 	if expectingLateAnswer {
-		sdpResponseBody, err = c.media.GenerateOffer()
+		sdpBody, err = c.media.GenerateOffer()
 		if err != nil {
 			return rejectMedia(err)
 		}
@@ -973,13 +973,13 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if !expectingLateAnswer {
 			// Negotiate before Accept so pin prompts and DTMF have a live pipeline.
 			// Encryption is picked here, before the room is selected.
-			sdpResponseBody, err = c.negotiateMedia(rawSDP)
+			sdpBody, err = c.negotiateMedia(rawSDP)
 			if err != nil {
 				return rejectMedia(err)
 			}
 		}
 		c.connectPinDTMF()
-		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpResponseBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
+		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
 			return err // could be success if the caller hung up
 		}
 		disp, ok, err = c.pinPrompt(ctx, trunkID)
@@ -1003,11 +1003,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	status := CallRinging
 	if pinPrompt {
 		status = CallActive
-	}
-
-	// We can't negotiate media until we've received an answer.
-	if !expectingLateAnswer && !pinPrompt {
-		sdpResponseBody, err = c.negotiateMedia(rawSDP)
+	} else if !expectingLateAnswer {
+		// We can't negotiate media until we've received an answer.
+		sdpBody, err = c.negotiateMedia(rawSDP)
 		if err != nil {
 			return rejectMedia(err)
 		}
@@ -1032,7 +1030,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
-		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpResponseBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
+		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
 	}
@@ -1292,13 +1290,14 @@ func (c *inboundCall) negotiateMedia(sdpData []byte) ([]byte, error) {
 	var answerData []byte
 	var err error
 
-	c.mon.SDPSize(len(sdpData) /*isOffer=*/, true)
+	c.mon.SDPSize(len(sdpData), true)
 	c.log().Debugw("SDP offer", "sdp", string(sdpData))
 
-	if answerData, err = c.media.GenerateAnswer(sdpData); err != nil {
+	answerData, err = c.media.GenerateAnswer(sdpData)
+	if err != nil {
 		return nil, err
 	}
-	c.mon.SDPSize(len(answerData) /*isOffer=*/, false)
+	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
 	if err = c.updateCallStateAudioLocked(); err != nil {
@@ -1320,7 +1319,7 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 
 	// TODO(alexfish): Should we create a new stats histogram for late
 	// answers?
-	c.mon.SDPSize(len(answerData) /*isOffer=*/, false)
+	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("Late SDP answer", "sdp", string(answerData))
 	if err := c.media.ProcessAnswer(answerData); err != nil {
 		return err
