@@ -663,7 +663,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 			opt(msg.req, nil) // Simulate added headers
 		}
 
-		offer, err := sdp.ParseOfferWith(defaultCodecs, msg.req.Body())
+		offer, err := parseOfferWith(logger.GetLogger(), nil, defaultCodecs, msg.req.Body())
 		require.NoError(t, err)
 		sdpAnswer, _, err := offer.Answer(netip.MustParseAddr("4.3.2.1"), 0xB00, sdp.EncryptionNone)
 		require.NoError(t, err)

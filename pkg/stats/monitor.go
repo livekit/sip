@@ -77,6 +77,7 @@ type Monitor struct {
 	cpuLoad                  prometheus.Gauge
 	sdpSize                  *prometheus.HistogramVec
 	sdpParsed                *prometheus.CounterVec
+	sdpParseErrors           *prometheus.CounterVec
 	codecOffered             *prometheus.CounterVec
 	nodeAvailable            prometheus.GaugeFunc
 	transfersTotal           *prometheus.CounterVec
@@ -252,6 +253,14 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "Number of SDP bodies parsed successfully during SDP negotiation",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 	}, []string{"dir", "provider", "reinvite"}))
+
+	m.sdpParseErrors = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "sdp_parse_errors_total",
+		Help:        "Total number of SDP parses that resulted in an error",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider", "reason"}))
 
 	m.codecOffered = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -546,6 +555,26 @@ func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
 		typ = "offer"
 	}
 	c.m.sdpSize.WithLabelValues(typ).Observe(float64(sz))
+}
+
+// SDPParsePanic increments a counter denoting the number of times a panic has
+// occurred during SDP parsing.
+func (c *CallMonitor) SDPParsePanic() {
+	c.m.sdpParseErrors.With(prometheus.Labels{
+		"dir":      c.dir,
+		"provider": c.providerLabel(),
+		"reason":   "panic",
+	}).Inc()
+}
+
+// SDPParseError increments a counter denoting the number of times a non-panic
+// error has occurred during SDP parsing.
+func (c *CallMonitor) SDPParseError() {
+	c.m.sdpParseErrors.With(prometheus.Labels{
+		"dir":      c.dir,
+		"provider": c.providerLabel(),
+		"reason":   "other",
+	}).Inc()
 }
 
 func (m *Monitor) TransferStarted(dir CallDir) {

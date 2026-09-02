@@ -17,11 +17,13 @@ package sip
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/netip"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -783,7 +785,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
-	offer, err := sdp.ParseOfferWith(p.codecs, offerData)
+	offer, err := parseOfferWith(p.log, p.mon, p.codecs, offerData)
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
@@ -820,7 +822,7 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 		return errors.New("no offer generated")
 	}
 
-	answer, err := sdp.ParseAnswerWith(p.codecs, answerData)
+	answer, err := parseAnswerWith(p.log, p.mon, p.codecs, answerData)
 	if err != nil {
 		return SDPError{Err: err}
 	}
@@ -858,6 +860,35 @@ func (p *mediaPort) NegotiatedAudio() *sdp.AudioConfig {
 		return nil
 	}
 	return &p.negotiated.Audio
+}
+
+func parseSDPWithRecovery[T any](log logger.Logger, mon *stats.CallMonitor, fn func(*msdk.CodecSet, []byte) (*T, error), codecs *msdk.CodecSet, data []byte) (res *T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicErr, ok := r.(error)
+			if !ok {
+				panicErr = fmt.Errorf("%v", r)
+			}
+			log.Errorw("panic while parsing SDP", panicErr, "stacktrace", string(debug.Stack()))
+			if mon != nil {
+				mon.SDPParsePanic()
+			}
+			res, err = nil, errors.New("invalid SDP")
+		}
+	}()
+	res, err = fn(codecs, data)
+	if err != nil && mon != nil {
+		mon.SDPParseError()
+	}
+	return res, err
+}
+
+func parseOfferWith(log logger.Logger, mon *stats.CallMonitor, codecs *msdk.CodecSet, data []byte) (*sdp.Offer, error) {
+	return parseSDPWithRecovery(log, mon, sdp.ParseOfferWith, codecs, data)
+}
+
+func parseAnswerWith(log logger.Logger, mon *stats.CallMonitor, codecs *msdk.CodecSet, data []byte) (*sdp.Answer, error) {
+	return parseSDPWithRecovery(log, mon, sdp.ParseAnswerWith, codecs, data)
 }
 
 // Building pipeline

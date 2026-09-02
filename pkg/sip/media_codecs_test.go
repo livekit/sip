@@ -17,9 +17,8 @@ package sip
 import (
 	"testing"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/stretchr/testify/require"
-
-	"github.com/livekit/media-sdk/sdp"
 )
 
 // sdpWithMedia builds a minimal SDP body with the given m= line and attributes.
@@ -62,7 +61,7 @@ func TestPeerCodecNames(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			offer, err := sdp.ParseOfferWith(defaultCodecs, c.sdp)
+			offer, err := parseOfferWith(logger.NewTestLogger(t), nil, defaultCodecs, c.sdp)
 			require.NoError(t, err)
 			require.ElementsMatch(t, c.exp, peerCodecNames(offer.MediaDesc))
 		})
