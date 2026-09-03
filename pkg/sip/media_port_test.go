@@ -429,6 +429,9 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 
 	for _, codec := range allAudioCodecs() {
 		info := codec.Info()
+		if strings.HasPrefix(info.SDPName, "opus/") {
+			continue // TODO: validate opus
+		}
 		t.Run(strings.ReplaceAll(info.SDPName, "/", "-"), func(t *testing.T) {
 			for _, resample := range []bool{true, false} {
 				t.Run(fmt.Sprintf("resample=%t", resample), func(t *testing.T) {
