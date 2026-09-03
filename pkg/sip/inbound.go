@@ -409,6 +409,13 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
+		if existing.LateAnswerPending() {
+			// Our offer from the 200 OK has not been answered yet. Negotiating a new offer now would
+			// discard the pending one and break the late answer when the ACK arrives.
+			existing.log().Infow("rejecting reinvite, late answer pending", "cseq", cc.InviteCSeq())
+			cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
+			return nil
+		}
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		if err := existing.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
 			log.Errorw("failed to update inbound call SDP", err)
@@ -734,10 +741,13 @@ type inboundCall struct {
 	joinDur     func() time.Duration
 	done        atomic.Bool
 	started     core.Fuse
-	stats       Stats
-	sigTs       SignalingTimestamps
-	jitterBuf   bool
-	projectID   string
+	// lateAnswerPending is set while we have sent an SDP offer in the 200 OK and have not yet
+	// processed the answer from the ACK.
+	lateAnswerPending atomic.Bool
+	stats             Stats
+	sigTs             SignalingTimestamps
+	jitterBuf         bool
+	projectID         string
 }
 
 func (s *Server) newInboundCall(
@@ -961,6 +971,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	var sdpBody []byte
 	expectingLateAnswer := len(rawSDP) == 0
 	if expectingLateAnswer {
+		c.lateAnswerPending.Store(true)
 		sdpBody, err = c.media.GenerateOffer()
 		if err != nil {
 			return rejectMedia(err)
@@ -1309,6 +1320,8 @@ func (c *inboundCall) negotiateMedia(sdpData []byte) ([]byte, error) {
 func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
+	defer c.lateAnswerPending.Store(false)
+
 	if c.media == nil {
 		return errors.New("media port not created")
 	}
@@ -1326,6 +1339,13 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	}
 
 	return c.updateCallStateAudioLocked()
+}
+
+// LateAnswerPending reports whether the call sent an SDP offer in its 200 OK and is still
+// waiting for the answer in the ACK. While this is true, the offer/answer exchange is open
+// and a re-INVITE cannot be negotiated (RFC 3264 §5, RFC 3261 §14.2).
+func (c *inboundCall) LateAnswerPending() bool {
+	return c.lateAnswerPending.Load()
 }
 
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
@@ -2257,6 +2277,12 @@ retries:
 }
 
 func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
+	cseq := req.CSeq()
+	if cseq == nil || cseq.SeqNo != c.inviteCSeq {
+		c.log.Debugw("ignoring ACK for another INVITE", "inviteCSeq", c.inviteCSeq, "ackCSeq", cseq)
+		return
+	}
+	// Only store the first ACK seen.
 	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
 }

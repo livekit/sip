@@ -233,6 +233,22 @@ func (c *lateOfferCall) expectClosedWithoutMedia(t *testing.T) {
 	require.Nil(t, c.media().NegotiatedAudio(), "media must not be negotiated without a valid answer")
 }
 
+// reinvite sends an in-dialog INVITE with a fresh offer from the caller and returns the final response.
+// sipgo ACKs non-2xx responses itself; a 2xx is ACKed here.
+func (c *lateOfferCall) reinvite(t *testing.T, ctx context.Context) *sip.Response {
+	t.Helper()
+	req, _, err := c.call.Invite(nil)
+	require.NoError(t, err)
+	tx, err := c.st.TestUA.Client.TransactionRequest(req)
+	require.NoError(t, err)
+	t.Cleanup(tx.Terminate)
+	resp := getFinalResponseOrFail(t, ctx, tx)
+	if resp.StatusCode < 300 {
+		require.NoError(t, c.st.TestUA.Client.WriteRequest(sip.NewAckRequest(req, resp, nil)))
+	}
+	return resp
+}
+
 // hangup ends an established call from the caller side.
 func (c *lateOfferCall) hangup(t *testing.T) {
 	t.Helper()
@@ -337,5 +353,28 @@ func TestInboundLateOffer(t *testing.T) {
 
 		c.expectBye(t, ctx)
 		c.expectClosedWithoutMedia(t)
+	})
+
+	t.Run("reinvite_before_ack", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		c := st.inviteWithoutOffer(t)
+		c.expectOffer(t, ctx)
+
+		// Our offer is still unanswered: a re-INVITE cannot be negotiated yet.
+		resp := c.reinvite(t, ctx)
+		require.Equal(t, statusRequestPending, resp.StatusCode, "re-INVITE before the late answer should get 491")
+		require.Nil(t, c.media().NegotiatedAudio(), "rejected re-INVITE must not negotiate media")
+
+		// The pending exchange still completes normally.
+		c.ack(t, c.answer(t, callerRTP))
+		c.expectActive(t, callerRTP)
+		t.Cleanup(func() { c.hangup(t) })
+
+		// With the exchange complete, re-INVITEs are accepted again.
+		resp = c.reinvite(t, ctx)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "re-INVITE after the late answer should get 200 OK")
 	})
 }
