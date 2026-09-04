@@ -959,6 +959,51 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
 }
 
+// A call that rings for the whole ringing timeout without the room ever subscribing
+// is rejected with ringing_timeout_status, or 486 Busy Here when it is not configured.
+func TestRingingTimeoutStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		configed int
+		expected sip.StatusCode
+	}{
+		{name: "unconfigured", configed: 0, expected: sip.StatusBusyHere},
+		{name: "configured", configed: 480, expected: sip.StatusTemporarilyUnavailable},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := &TestHandler{
+				DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+					identity := fmt.Sprintf("test-participant-%s", info.Call.SipCallId)
+					return CallDispatch{
+						Result:         DispatchAccept,
+						RingingTimeout: 500 * time.Millisecond,
+						Room: RoomConfig{
+							RoomName: "test-room",
+							Participant: ParticipantConfig{
+								Identity: identity,
+								Name:     identity,
+							},
+						},
+					}
+				},
+			}
+			st := NewServiceTest(t, &serviceTestConfig{
+				GetRoom: newTestRoomConfig(&testRoomConfig{ringForever: true}),
+				Handler: h,
+			})
+			st.Server.conf.RingingTimeoutStatus = c.configed
+
+			call := newTestCall(st.TestUA, false)
+			req, _, err := call.Invite(nil)
+			require.NoError(t, err)
+
+			resp := st.TestUA.TransactionRequest(t, req, true)
+			require.Equal(t, c.expected, resp.StatusCode)
+		})
+	}
+}
+
 // TestSameCallIDForAuthFlow verifies that the same LiveKit call ID is assigned to both
 // the initial INVITE (without auth) and the subsequent INVITE (with auth)
 func TestSameCallIDForAuthFlow(t *testing.T) {

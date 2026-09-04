@@ -1300,7 +1300,11 @@ func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) 
 		c.close(ctx, end)
 		return false, psrpc.NewErrorf(psrpc.Canceled, "rpc terminated the call")
 	case <-timer.C:
-		c.closeWithTerm(ctx, stats.ServerError("cannot-subscribe"))
+		c.close(ctx, EndCall{
+			Status: callDropped,
+			Term:   stats.ServerError("cannot-subscribe"),
+			Code:   sip.StatusCode(c.s.conf.RingingTimeoutStatus),
+		})
 		return false, psrpc.NewErrorf(psrpc.DeadlineExceeded, "room subscription timed out")
 	case <-c.lkRoom.Subscribed():
 		return true, nil
@@ -1441,6 +1445,9 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			Code:   sip.StatusRequestTerminated,
 			Status: "Request Terminated",
 		}
+	}
+	if end.Code != 0 {
+		result = Result{Code: end.Code}
 	}
 	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Term.Reason)
 	defer func() {
