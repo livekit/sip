@@ -110,7 +110,7 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	cli.mediaConn.EnableTimeout(false) // enabled later
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
-	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
+	cli.mediaDTMF = cli.media.NewStream(101, codec.Info().RTPClockRate)
 	cli.audioOut, err = mixer.NewMixer(rtp.EncodePCM(cli.mediaAudio, cli.audioCodec), rtp.DefFrameDur, 1, mixer.WithOutputChannel())
 	if err != nil {
 		cli.Close()
@@ -442,7 +442,8 @@ func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
 	w := c.audioOut.NewInput()
 	defer w.Close()
-	return dtmf.Write(context.Background(), w, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
+	sampleRate := c.audioCodec.Info().RTPClockRate
+	return dtmf.Write(context.Background(), w, c.mediaDTMF, sampleRate, c.mediaAudio.GetCurrentTimestamp(), digits)
 }
 
 func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
@@ -572,7 +573,7 @@ func (c *Client) createOffer() ([]byte, error) {
 				},
 				Attributes: []sdp.Attribute{
 					{Key: "rtpmap", Value: fmt.Sprintf("%d %s", c.audioType, c.audioCodec.Info().SDPName)},
-					{Key: "rtpmap", Value: "101 " + dtmf.SDPNameAndRate},
+					{Key: "rtpmap", Value: fmt.Sprintf("101 %s/%d", dtmf.SDPNameOnly, c.audioCodec.Info().RTPClockRate)},
 				},
 			},
 		},
