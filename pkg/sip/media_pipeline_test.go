@@ -187,6 +187,7 @@ type pipelineHarness struct {
 	codec       msdk.AudioCodec
 	audioPT     byte
 	dtmfPT      byte
+	jitter      bool // when true, configure() enables the jitter buffer
 }
 
 func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
@@ -249,7 +250,7 @@ func (h *pipelineHarness) configure(codec msdk.AudioCodec, audioPT, dtmfPT byte,
 	h.codec = codec
 	h.audioPT = audioPT
 	h.dtmfPT = dtmfPT
-	h.conf.opts = &MediaOptions{DTMFAudio: dtmfAudio}
+	h.conf.opts = &MediaOptions{DTMFAudio: dtmfAudio, EnableJitterBuffer: h.jitter}
 
 	pipe, err := NewMediaPortPipeline(h.conf, h.mediaConfig(), h.port, h.audioIn, h.dtmfIn, h.audioIn.SampleRate())
 	require.NoError(h.t, err)
@@ -527,80 +528,214 @@ func TestMediaPipelinePermutations(t *testing.T) {
 }
 
 func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
-	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
-	h := newPipelineHarness(t, RoomSampleRate)
-	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
-	sample := h.codecFrame()
+	for _, jitter := range []bool{false, true} {
+		t.Run(fmt.Sprintf("jitter=%v", jitter), func(t *testing.T) {
+			codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+			h := newPipelineHarness(t, RoomSampleRate)
+			h.jitter = jitter
+			h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+			sample := h.codecFrame()
 
-	h.injectAudio(0x11111111, 1, 160, sample)
-	h.injectAudio(0x22222222, 1, 160, sample)
+			h.injectAudio(0x11111111, 1, 160, sample)
+			h.injectAudio(0x22222222, 1, 160, sample)
 
-	require.Eventually(t, func() bool {
-		return h.ssrcCount.Load() >= 2 && h.packetCount.Load() >= 2
-	}, time.Second, 5*time.Millisecond, "expected AcceptStream and HandleRTP for two SSRCs")
-	assert.Equal(t, uint64(2), h.ssrcCount.Load())
-	assert.Equal(t, uint64(2), h.packetCount.Load())
+			require.Eventually(t, func() bool {
+				return h.ssrcCount.Load() >= 2 && h.packetCount.Load() >= 2
+			}, time.Second, 5*time.Millisecond, "expected AcceptStream and HandleRTP for two SSRCs")
+			assert.Equal(t, uint64(2), h.ssrcCount.Load())
+			assert.Equal(t, uint64(2), h.packetCount.Load())
 
-	done := make(chan error, 1)
-	go func() {
-		done <- h.pipeline.Close()
-	}()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("pipeline.Close hung with multiple SSRCs")
+			done := make(chan error, 1)
+			go func() {
+				done <- h.pipeline.Close()
+			}()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("pipeline.Close hung with multiple SSRCs")
+			}
+		})
 	}
 }
 
 func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
+	for _, jitter := range []bool{false, true} {
+		t.Run(fmt.Sprintf("jitter=%v", jitter), func(t *testing.T) {
+			const (
+				ssrcCount = 3
+				packets   = 30 // Currently the built-in limit of media-sdk's ssrc mux
+			)
+			codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+			h := newPipelineHarness(t, RoomSampleRate)
+			h.jitter = jitter
+			h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+
+			silence := make(msdk.PCM16Sample, codec.Info().SampleRate/int(time.Second/msrtp.DefFrameDur))
+			var encoded msrtp.Buffer
+			clock := codec.Info().RTPClockRate
+			if clock == 0 {
+				clock = codec.Info().SampleRate
+			}
+			enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(h.audioPT, clock), h.codec)
+			require.NoError(t, enc.WriteSample(silence))
+			require.NoError(t, enc.Close())
+			require.NotEmpty(t, encoded, "codec produced no RTP")
+			payload := slices.Clone(encoded[0].Payload)
+
+			pkt := &rtp.Packet{
+				Header: rtp.Header{
+					Version:     2,
+					PayloadType: h.audioPT,
+				},
+				Payload: payload,
+			}
+			for i := range packets {
+				pkt.SequenceNumber = uint16(i)
+				pkt.SSRC = uint32(i % ssrcCount)
+				h.injectRTP(pkt)
+			}
+
+			require.Eventually(t, func() bool { return h.ssrcCount.Load() == ssrcCount }, time.Second, time.Millisecond, "expected %d SSRCs", ssrcCount)
+			assert.Eventually(t, func() bool { return h.packetCount.Load() == packets }, time.Second, time.Millisecond, "expected %d packets", packets)
+			assert.Equal(t, uint64(ssrcCount), h.ssrcCount.Load())
+			assert.Equal(t, uint64(packets), h.packetCount.Load())
+
+			done := make(chan error, 1)
+			go func() {
+				done <- h.pipeline.Close()
+			}()
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(2 * time.Second):
+				t.Fatal("pipeline.Close hung under concurrent SSRC pumps")
+			}
+		})
+	}
+}
+
+// Reproduces a PBX transfer: the far end keeps the same 5-tuple but starts
+// relaying a different source, so LiveKit sees a new SSRC whose sequence
+// numbers are far *behind* the previous stream. Before the fix, every packet
+// of the new stream was rejected by the shared jitter buffer as "expired".
+func TestMediaPipelineJitterNewSSRCBackwardSeq(t *testing.T) {
 	const (
-		ssrcCount = 3
-		packets   = 30 // Currently the built-in limit of media-sdk's ssrc mux
+		oldSSRC = uint32(0xA0000001)
+		newSSRC = uint32(0xB0000002)
+		oldSeq  = uint16(21280) // old stream ends near 21294 like the captured call
+		newSeq  = uint16(12676) // new stream starts here: 8618 behind, inside the 32768 half-space
+		perSSRC = 15
 	)
 	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
 	h := newPipelineHarness(t, RoomSampleRate)
+	h.jitter = true
 	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
 
-	silence := make(msdk.PCM16Sample, codec.Info().SampleRate/int(time.Second/msrtp.DefFrameDur))
-	var encoded msrtp.Buffer
 	clock := codec.Info().RTPClockRate
 	if clock == 0 {
 		clock = codec.Info().SampleRate
 	}
-	enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(h.audioPT, clock), h.codec)
-	require.NoError(t, enc.WriteSample(silence))
-	require.NoError(t, enc.Close())
-	require.NotEmpty(t, encoded, "codec produced no RTP")
-	payload := slices.Clone(encoded[0].Payload)
+	samplesPerFrame := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	sample := h.codecFrame()
 
-	pkt := &rtp.Packet{
-		Header: rtp.Header{
-			Version:     2,
-			PayloadType: h.audioPT,
-		},
-		Payload: payload,
+	// Phase 1: original stream decodes.
+	// Pace the injections: media-sdk's per-SSRC read stream buffers 10 packets
+	// and drops on overflow, so a tight burst would lose packets at the socket.
+	for i := uint16(0); i < perSSRC; i++ {
+		h.injectAudio(oldSSRC, oldSeq+i, samplesPerFrame*uint32(i+1), sample)
+		time.Sleep(2 * time.Millisecond)
 	}
-	for i := range packets {
-		pkt.SequenceNumber = uint16(i)
-		pkt.SSRC = uint32(i % ssrcCount)
-		h.injectRTP(pkt)
+	require.Eventually(t, func() bool { return h.roomAudio.len() > 0 },
+		2*time.Second, 5*time.Millisecond, "original stream should decode")
+	afterOld := h.roomAudio.len()
+
+	// Phase 2: transfer. New SSRC, sequence space restarts far behind prevSN.
+	for i := uint16(0); i < perSSRC; i++ {
+		h.injectAudio(newSSRC, newSeq+i, samplesPerFrame*uint32(i+1), sample)
+		time.Sleep(2 * time.Millisecond)
 	}
+	require.Eventually(t, func() bool { return h.packetCount.Load() >= 2*perSSRC },
+		2*time.Second, 5*time.Millisecond, "all RTP should be read from the socket")
+	require.Eventually(t, func() bool { return h.roomAudio.len() > afterOld },
+		2*time.Second, 5*time.Millisecond,
+		"audio from the new SSRC must reach the room (dropped=%d, audioPackets=%d)",
+		h.pipeline.conf.stats.JitterBufferPacketsDropped.Load(),
+		h.pipeline.conf.stats.AudioPackets.Load())
+	require.Eventually(t, func() bool { return h.pipeline.conf.stats.AudioPackets.Load() >= 2*perSSRC },
+		2*time.Second, 5*time.Millisecond, "every packet of both streams should pass the jitter buffer")
+	assert.Equal(t, uint64(0), h.pipeline.conf.stats.JitterBufferPacketsDropped.Load(),
+		"a new SSRC must not be treated as expired packets of the old one")
+	assert.Equal(t, uint64(2), h.ssrcCount.Load())
+}
 
-	require.Eventually(t, func() bool { return h.ssrcCount.Load() == ssrcCount }, time.Second, time.Millisecond, "expected %d SSRCs", ssrcCount)
-	assert.Eventually(t, func() bool { return h.packetCount.Load() == packets }, time.Second, time.Millisecond, "expected %d packets", packets)
-	assert.Equal(t, uint64(ssrcCount), h.ssrcCount.Load())
-	assert.Equal(t, uint64(packets), h.packetCount.Load())
+func TestMediaPipelineJitterStatsAccumulateAcrossSSRC(t *testing.T) {
+	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	h := newPipelineHarness(t, RoomSampleRate)
+	h.jitter = true
+	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
 
+	clock := codec.Info().RTPClockRate
+	if clock == 0 {
+		clock = codec.Info().SampleRate
+	}
+	spf := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	sample := h.codecFrame()
+
+	// Each stream: seq 1,2,3 then skip 4,5 then 6,7,8 => 2 lost per stream.
+	inject := func(ssrc uint32) {
+		for _, seq := range []uint16{1, 2, 3, 6, 7, 8} {
+			h.injectAudio(ssrc, seq, spf*uint32(seq), sample)
+			time.Sleep(2 * time.Millisecond) // per-SSRC read stream drops on a 10-packet burst
+		}
+	}
+	inject(0x1111)
+	inject(0x2222)
+
+	require.Eventually(t, func() bool { return h.packetCount.Load() >= 12 },
+		2*time.Second, 5*time.Millisecond)
+	// Loss is only declared once the gap expires (60ms jitter latency), so wait.
+	require.Eventually(t, func() bool {
+		return h.pipeline.conf.stats.JitterBufferPacketsLost.Load() >= 4
+	}, 2*time.Second, 5*time.Millisecond, "lost=%d should be the sum over both SSRCs, not the last buffer's count",
+		h.pipeline.conf.stats.JitterBufferPacketsLost.Load())
+	// >= not ==: a scheduler stall can add a socket-level drop that is counted as loss.
+	assert.GreaterOrEqual(t, h.pipeline.conf.stats.JitterBufferPacketsLost.Load(), uint64(4))
+	assert.Equal(t, uint64(0), h.pipeline.conf.stats.JitterBufferPacketsDropped.Load())
+}
+
+// Covers the defensive "pipeline already closed" path: once muxToRoom is
+// cleared, newStreamHandler returns nil and a read loop that starts in that
+// state drains its stream, counting packets as ignored, without touching the
+// chain. Close() cannot reach this state today (it waits for the read loops
+// first), so the test forces it directly.
+func TestMediaPipelineReadLoopAfterHandlerCleared(t *testing.T) {
+	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	h := newPipelineHarness(t, RoomSampleRate)
+	h.jitter = true
+	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+
+	old := h.pipeline.muxToRoom.Swap(nil)
+	require.NotNil(t, old)
+	require.Nil(t, h.pipeline.newStreamHandler(), "no handler once the pipeline is marked closed")
+
+	before := h.roomAudio.len()
+	h.injectAudio(0xDEAD, 1, 160, h.codecFrame())
+	require.Eventually(t, func() bool {
+		return h.pipeline.conf.stats.IgnoredPackets.Load() >= 1
+	}, time.Second, 5*time.Millisecond, "packet should be drained and counted as ignored")
+	assert.Equal(t, uint64(1), h.ssrcCount.Load())
+	assert.Equal(t, before, h.roomAudio.len(), "nothing must reach the room without a handler")
+
+	// Put the chain back so Close() releases it, then close with the draining loop still blocked in ReadRTP.
+	h.pipeline.muxToRoom.Store(old)
 	done := make(chan error, 1)
-	go func() {
-		done <- h.pipeline.Close()
-	}()
+	go func() { done <- h.pipeline.Close() }()
 	select {
 	case err := <-done:
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("pipeline.Close hung under concurrent SSRC pumps")
+		t.Fatal("pipeline.Close hung with a draining read loop")
 	}
 }
 

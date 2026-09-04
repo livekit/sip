@@ -71,19 +71,21 @@ type mediaPortPipeline struct {
 	conf *MediaPortPipelineConfig // Expected to be owned by caller, not managed
 
 	// Owned by pipeline
-	ctx           context.Context
-	cancel        context.CancelFunc
-	sess          rtp.Session
-	rtpLoopWG     sync.WaitGroup
-	muxToRoom     atomic.Pointer[rtp.HandlerCloser]
-	dtmfMixer     *mixer.Mixer
-	audioToRoom   rtp.HandlerCloser
-	dtmfToRoom    rtp.HandlerCloser
-	dtmfHandler   msdk.WriteCloser[string] // Reference, not closed
-	audioToPort   msdk.PCM16Writer         // post-mixer chain towards port
-	mixerToPort   msdk.PCM16Writer         // Reference, not closed
-	dtmfToPort    msdk.WriteCloser[string]
-	lastDTMFEvent atomic.Uint64 // composite (timestamp, event code) of last DTMF packet seen
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	sess                rtp.Session
+	rtpLoopWG           sync.WaitGroup
+	muxToRoom           atomic.Pointer[rtp.HandlerCloser] // shared inbound chain; jitter-free
+	inputChain          rtp.HandlerCloser                 // streamStats -> mux, wrapped per SSRC when jitter is on
+	inboundLatencyEntry atomic.Int64                      // shared entry timestamp for the inbound latency probe
+	dtmfMixer           *mixer.Mixer
+	audioToRoom         rtp.HandlerCloser
+	dtmfToRoom          rtp.HandlerCloser
+	dtmfHandler         msdk.WriteCloser[string] // Reference, not closed
+	audioToPort         msdk.PCM16Writer         // post-mixer chain towards port
+	mixerToPort         msdk.PCM16Writer         // Reference, not closed
+	dtmfToPort          msdk.WriteCloser[string]
+	lastDTMFEvent       atomic.Uint64 // composite (timestamp, event code) of last DTMF packet seen
 }
 
 // Returns insulated (nopCloser) connectors, preventing anchor close from closing pipeline.
@@ -158,9 +160,8 @@ func (p *mediaPortPipeline) init(
 // Construct the Audio and optionally DTMF pipeline from SIP RTP to LK PCM, in reverse order.
 func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[string]) error {
 	var err error
-	var inboundLatencyEntry atomic.Int64
 	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
-	sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
+	sink = newLatencyPCMExit(sink, &p.inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
 	codecInfo := mc.Audio.Codec.Info()
 	sink = msdk.ResampleWriter(sink, codecInfo.SampleRate)
 	sink = newMediaWriterCount(sink, &p.conf.stats.AudioInFrames, &p.conf.stats.AudioInSamples)
@@ -202,17 +203,56 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 		mux.Register(d.Type, dtmfType)
 	}
 
-	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.conf.stats.MuxStats)
-	if p.conf.opts.EnableJitterBuffer {
-		hnd = rtp.HandleJitter(hnd, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
-			p.conf.stats.JitterBufferPacketsLost.Store(packetsLost)
-			p.conf.stats.JitterBufferPacketsDropped.Store(packetsDropped)
-		}))
-	}
-	hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
+	// The jitter buffer is deliberately NOT part of this shared chain. A jitter
+	// buffer tracks one sequence-number space, and each SSRC has its own, so
+	// rtpReadLoop wraps the chain with a fresh buffer per stream (newStreamHandler).
+	p.inputChain = newRTPStreamStats(mux, &p.conf.stats.MuxStats)
 
+	hnd := newLatencyRTPEntry(p.inputChain, &p.inboundLatencyEntry)
 	p.muxToRoom.Store(&hnd)
 	return nil
+}
+
+// nopCloseRTPHandler lets a per-stream wrapper (e.g. a jitter buffer) be closed
+// without closing the shared chain underneath it.
+type nopCloseRTPHandler struct {
+	rtp.HandlerCloser
+}
+
+func (nopCloseRTPHandler) Close() {}
+
+// newStreamHandler returns the inbound handler for one RTP read stream (one SSRC).
+//
+// Without a jitter buffer every stream shares muxToRoom. With a jitter buffer
+// each stream gets its own, because jitter.Buffer keys everything off the last
+// popped sequence number and a new SSRC (a B2BUA transfer, a PBX relaying a new
+// leg) starts an unrelated sequence space. Sharing one buffer made any new
+// stream whose first sequence number fell within 32768 *behind* the old one be
+// dropped as "expired" until it caught up, i.e. silence for minutes.
+//
+// Returns nil if the pipeline has already been closed.
+func (p *mediaPortPipeline) newStreamHandler() rtp.HandlerCloser {
+	// muxToRoom doubles as the "pipeline still open" flag: it is cleared in Close() after
+	// every read loop has exited. inputChain is stable once setupInput returns.
+	ptr := p.muxToRoom.Load()
+	if ptr == nil || *ptr == nil {
+		return nil
+	}
+	if !p.conf.opts.EnableJitterBuffer {
+		return nopCloseRTPHandler{*ptr} // shared; owned and closed by the pipeline
+	}
+	// Per-buffer counters are cumulative for that buffer only; fold deltas into
+	// the port-wide stats so the "call statistics" line keeps counting across SSRCs.
+	var lastLost, lastDropped uint64
+	hnd := rtp.HandleJitter(
+		nopCloseRTPHandler{p.inputChain},
+		jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
+			p.conf.stats.JitterBufferPacketsLost.Add(packetsLost - lastLost)
+			p.conf.stats.JitterBufferPacketsDropped.Add(packetsDropped - lastDropped)
+			lastLost, lastDropped = packetsLost, packetsDropped
+		}),
+	)
+	return newLatencyRTPEntry(hnd, &p.inboundLatencyEntry)
 }
 
 // Processes an incoming telephony-event packet, turns into SipDTMF, and forwards it.
@@ -333,6 +373,19 @@ func (p *mediaPortPipeline) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 		h        rtp.Header
 		errorCnt int
 	)
+	hnd := p.newStreamHandler()
+	if hnd == nil {
+		// Defensive: cannot happen today, because Close() clears muxToRoom only after
+		// rtpLoopWG.Wait() and rtpLoop itself is in that group. If it ever does, drain
+		// until the stream ends so the session can shut down.
+		for {
+			if _, err := r.ReadRTP(&h, buf); err != nil {
+				return
+			}
+			p.conf.stats.IgnoredPackets.Add(1)
+		}
+	}
+	defer hnd.Close() // closes only the per-stream jitter buffer (if any)
 	for {
 		h = rtp.Header{}
 		n, err := r.ReadRTP(&h, buf)
@@ -355,16 +408,6 @@ func (p *mediaPortPipeline) rtpReadLoop(log logger.Logger, r rtp.ReadStream) {
 			continue // ignore partial messages
 		}
 
-		ptr := p.muxToRoom.Load()
-		if ptr == nil {
-			p.conf.stats.IgnoredPackets.Add(1)
-			continue
-		}
-		hnd := *ptr
-		if hnd == nil {
-			p.conf.stats.IgnoredPackets.Add(1)
-			continue
-		}
 		err = hnd.HandleRTP(&h, buf[:n])
 		if err != nil {
 			log := log.WithValues(
