@@ -718,6 +718,8 @@ type inboundCall struct {
 	callStart   time.Time
 	extraAttrs  map[string]string
 	attrsToHdr  map[string]string
+	attrsMu     sync.Mutex
+	cachedAttrs map[string]string // last-seen participant attrs for BYE/REFER after room teardown (#404)
 	ctx         context.Context
 	cancel      func()
 	closeReason atomic.Pointer[ReasonHeader]
@@ -1460,10 +1462,11 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 		defer log.Infow("Inbound call closed")
 	}
 
+	// Snapshot attrs before teardown. Prefer live room state, but keep the
+	// cache so attributes_to_headers still works when the agent deleted the
+	// room first (Room() is already nil). See livekit/sip#404.
+	c.snapshotParticipantAttrs()
 	// Send BYE _before_ closing media/room connection.
-	// This ensures participant attributes are still available for
-	// attributes_to_headers mapping in the setHeaders callback.
-	// See: https://github.com/livekit/sip/issues/404
 	c.cc.CloseWithStatus(ctx, result, end.Headers)
 	c.closeMedia()
 	if callDurFn := c.callDur; callDurFn != nil {
@@ -1614,6 +1617,7 @@ func (c *inboundCall) setStatus(v CallStatus) {
 	r.LocalParticipant.SetAttributes(map[string]string{
 		livekit.AttrSIPCallStatus: attr,
 	})
+	c.snapshotParticipantAttrs()
 }
 
 func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomConfig, status CallStatus) error {
@@ -1646,6 +1650,10 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	if err != nil {
 		return err
 	}
+	// Seed attrs cache from the join config so BYE mapping works even if the
+	// room is torn down before we read LocalParticipant again (#404).
+	c.storeParticipantAttrs(partConf.Attributes)
+	c.snapshotParticipantAttrs()
 	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
 		return err
 	}
@@ -1896,11 +1904,44 @@ func (c *sipInbound) fillHeaders(headers map[string]string) map[string]string {
 	if c == nil || c.call == nil || len(c.call.attrsToHdr) == 0 {
 		return headers
 	}
-	r := c.call.lkRoom.Room()
-	if r == nil {
+	attrs := c.call.participantAttributes()
+	if len(attrs) == 0 {
 		return headers
 	}
-	return AttrsToHeaders(r.LocalParticipant.Attributes(), c.call.attrsToHdr, headers)
+	return AttrsToHeaders(attrs, c.call.attrsToHdr, headers)
+}
+
+// snapshotParticipantAttrs caches LocalParticipant attributes while the room
+// is still connected. Used so BYE/REFER can map attributes_to_headers after
+// the room has already been torn down (livekit/sip#404).
+func (c *inboundCall) snapshotParticipantAttrs() {
+	if c == nil || c.lkRoom == nil {
+		return
+	}
+	r := c.lkRoom.Room()
+	if r == nil || r.LocalParticipant == nil {
+		return
+	}
+	attrs := r.LocalParticipant.Attributes() // clones
+	c.attrsMu.Lock()
+	c.cachedAttrs = attrs
+	c.attrsMu.Unlock()
+}
+
+func (c *inboundCall) storeParticipantAttrs(attrs map[string]string) {
+	if c == nil || len(attrs) == 0 {
+		return
+	}
+	c.attrsMu.Lock()
+	c.cachedAttrs = maps.Clone(attrs)
+	c.attrsMu.Unlock()
+}
+
+func (c *inboundCall) participantAttributes() map[string]string {
+	c.snapshotParticipantAttrs()
+	c.attrsMu.Lock()
+	defer c.attrsMu.Unlock()
+	return maps.Clone(c.cachedAttrs)
 }
 
 func (c *sipInbound) Drop() {
