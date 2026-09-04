@@ -48,6 +48,13 @@ type SIPServer struct {
 }
 
 func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
+	return runSIPServerWithWsURL(t, lk, lk.WsUrl)
+}
+
+// runSIPServerWithWsURL routes the SIP service's room signal connection through
+// wsURL. Nothing else in the harness reads it, so a test can point it at a proxy
+// and break that one connection.
+func runSIPServerWithWsURL(t testing.TB, lk *LiveKit, wsURL string) *SIPServer {
 	rc, err := redis.GetRedisClient(lk.Redis)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +71,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		NodeID:             utils.NewGuid("NS_"),
 		ApiKey:             lk.ApiKey,
 		ApiSecret:          lk.ApiSecret,
-		WsUrl:              lk.WsUrl,
+		WsUrl:              wsURL,
 		Redis:              lk.Redis,
 		SIPPort:            sipPort,
 		SIPPortListen:      sipPort,
