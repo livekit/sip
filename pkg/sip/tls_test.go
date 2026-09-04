@@ -8,6 +8,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestClientCertificateFunc(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		fn := clientCertificateFunc(nil)
+		cert, err := fn(&tls.CertificateRequestInfo{})
+		require.NoError(t, err)
+		require.Nil(t, cert)
+	})
+
+	t.Run("presents first cert even when CA filter would exclude it", func(t *testing.T) {
+		// Minimal placeholder certificate; GetClientCertificate must return it
+		// regardless of CertificateRequestInfo.AcceptableCAs.
+		placeholder := tls.Certificate{Certificate: [][]byte{{0x30}}}
+		fn := clientCertificateFunc([]tls.Certificate{placeholder})
+		cri := &tls.CertificateRequestInfo{
+			AcceptableCAs: [][]byte{[]byte("cn=unrelated-ca")},
+		}
+		cert, err := fn(cri)
+		require.NoError(t, err)
+		require.NotNil(t, cert)
+		require.Equal(t, placeholder.Certificate, cert.Certificate)
+	})
+}
+
 func TestParseCipherSuites(t *testing.T) {
 	log := logger.NewTestLogger(t)
 
