@@ -1178,6 +1178,7 @@ func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config
 	logSignalChanges, _ := strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(c.log(), c.mon, &MediaOptions{
 		IP:                   c.s.sconf.MediaIP,
+		BindIP:               resolveMediaBindIP(c.s.conf),
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.s.conf.MediaTimeoutInitial,
 		MediaTimeout:         mconf.MediaTimeout,

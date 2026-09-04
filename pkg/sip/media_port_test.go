@@ -69,6 +69,22 @@ func newTestMediaPort(t testing.TB, provider string) MediaPort {
 	return mp
 }
 
+func TestMediaPortBindIP(t *testing.T) {
+	mon := newTestCallMonitor(t)
+	bindIP := netip.MustParseAddr("127.0.0.1")
+	mp, err := NewMediaPort(1, logger.GetLogger(), mon, &MediaOptions{
+		IP:     bindIP,
+		BindIP: bindIP,
+		Ports:  rtcconfig.PortRange{Start: 20000, End: 20020},
+	}, 8000)
+	require.NoError(t, err)
+	t.Cleanup(func() { mp.Close() })
+
+	addr, ok := mp.port.LocalAddr().(*net.UDPAddr)
+	require.True(t, ok)
+	require.True(t, addr.IP.Equal(net.ParseIP("127.0.0.1")), "RTP socket must bind BindIP, got %v", addr.IP)
+}
+
 type testUDPConn struct {
 	addr   netip.AddrPort
 	closed chan struct{}
