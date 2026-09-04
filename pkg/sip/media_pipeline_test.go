@@ -695,6 +695,41 @@ func TestMediaPipelineJitterStatsAccumulateAcrossSSRC(t *testing.T) {
 	assert.Equal(t, uint64(0), h.pipeline.conf.stats.JitterBufferPacketsDropped.Load())
 }
 
+// Covers the defensive "pipeline already closed" path: once muxToRoom is
+// cleared, newStreamHandler returns nil and a read loop that starts in that
+// state drains its stream, counting packets as ignored, without touching the
+// chain. Close() cannot reach this state today (it waits for the read loops
+// first), so the test forces it directly.
+func TestMediaPipelineReadLoopAfterHandlerCleared(t *testing.T) {
+	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	h := newPipelineHarness(t, RoomSampleRate)
+	h.jitter = true
+	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+
+	old := h.pipeline.muxToRoom.Swap(nil)
+	require.NotNil(t, old)
+	require.Nil(t, h.pipeline.newStreamHandler(), "no handler once the pipeline is marked closed")
+
+	before := h.roomAudio.len()
+	h.injectAudio(0xDEAD, 1, 160, h.codecFrame())
+	require.Eventually(t, func() bool {
+		return h.pipeline.conf.stats.IgnoredPackets.Load() >= 1
+	}, time.Second, 5*time.Millisecond, "packet should be drained and counted as ignored")
+	assert.Equal(t, uint64(1), h.ssrcCount.Load())
+	assert.Equal(t, before, h.roomAudio.len(), "nothing must reach the room without a handler")
+
+	// Put the chain back so Close() releases it, then close with the draining loop still blocked in ReadRTP.
+	h.pipeline.muxToRoom.Store(old)
+	done := make(chan error, 1)
+	go func() { done <- h.pipeline.Close() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline.Close hung with a draining read loop")
+	}
+}
+
 func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	const rate = 48000
 	d := pipelineTestDTMF[1] // event-only
