@@ -134,6 +134,10 @@ type Config struct {
 	DisableRejectedInviteCache bool `yaml:"disable_rejected_invite_cache"`
 	// AddRecordRoute forces SIP to add Record-Route headers to the responses.
 	AddRecordRoute bool `yaml:"add_record_route"`
+	// DisableDNSSRV turns off DNS SRV lookups for outbound destinations, so a
+	// hostname without an explicit port is resolved with a plain address lookup
+	// at the transport's default port.
+	DisableDNSSRV bool `yaml:"disable_dns_srv"`
 
 	// AudioDTMF forces SIP to generate audio DTMF tones in addition to digital.
 	AudioDTMF              bool    `yaml:"audio_dtmf"`

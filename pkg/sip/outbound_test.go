@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -292,6 +293,91 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 		require.Equal(t, testInviteTargetHost, ackReq.req.Recipient.Host)
 		require.Equal(t, "proxy.example.com:5060", ackReq.req.Destination())
 		require.NotEqual(t, testInviteCachedDestination, ackReq.req.Destination())
+	})
+}
+
+func TestOutboundINVITEUsesSRVDestination(t *testing.T) {
+	// sip.example.com publishes an SRV record, so the INVITE must go to the SRV
+	// target and port rather than to the A record on the default port.
+	dns := fakeDNS{
+		srv: map[string][]*net.SRV{
+			"_sip._udp." + testInviteTargetHost: {{Target: "edge1.example.com.", Port: 5080}},
+		},
+		addr: map[string][]net.IPAddr{
+			"edge1.example.com":  ipAddrs("192.0.2.10"),
+			testInviteTargetHost: ipAddrs("192.0.2.1"),
+		},
+	}
+	const srvDest = "192.0.2.10:5080"
+
+	_, tr, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{DNS: dns}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		// Assert here, while the INVITE is in flight: applyInviteResponse may
+		// rewrite the destination once the response is handled.
+		require.Equal(t, srvDest, tr.req.Destination())
+		// The SRV target only picks the hop; the request URI keeps the hostname.
+		require.Equal(t, testInviteTargetHost, tr.req.Recipient.Host)
+
+		resp.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: testInviteTargetHost, Port: 5060}})
+	})
+	require.NotNil(t, tr)
+	require.NotNil(t, ackReq)
+
+	// The ACK follows the INVITE to the same host instead of resolving again.
+	require.Equal(t, srvDest, ackReq.req.Destination())
+}
+
+func TestOutboundINVITERouteHeaderIsTheNextHop(t *testing.T) {
+	// With an outbound proxy configured, the Route header is the next hop, so it
+	// is the proxy that gets resolved, not the request URI. Route headers are
+	// added as generic headers, but Route() parses those lazily, so the next hop
+	// is picked the same way the transport layer picks it.
+	conf := minimalTestConfig(t)
+	conf.OutboundRouteHeaders = []string{"<sip:proxy.example.com;lr>"}
+	cfg := TestClientConfig{
+		Config: conf,
+		DNS: fakeDNS{
+			srv: map[string][]*net.SRV{
+				"_sip._udp.proxy.example.com":       {{Target: "edge-proxy.example.com.", Port: 5090}},
+				"_sip._udp." + testInviteTargetHost: {{Target: "edge1.example.com.", Port: 5080}},
+			},
+			addr: map[string][]net.IPAddr{
+				"edge-proxy.example.com": ipAddrs("192.0.2.20"),
+				"edge1.example.com":      ipAddrs("192.0.2.10"),
+				testInviteTargetHost:     ipAddrs("192.0.2.1"),
+			},
+		},
+	}
+
+	participantReq := MinimalCreateSIPParticipantRequest()
+	participantReq.FeatureFlags = map[string]string{outboundRouteHeadersFeatureFlag: "true"}
+
+	waitOutboundINVITEAndACK(t, cfg, participantReq, func(tr *transactionRequest, resp *sip.Response) {
+		require.NotNil(t, tr.req.Route(), "Route header should be visible through the typed accessor")
+		require.Equal(t, "192.0.2.20:5090", tr.req.Destination())
+		require.Equal(t, testInviteTargetHost, tr.req.Recipient.Host)
+
+		resp.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: testInviteTargetHost, Port: 5060}})
+	})
+}
+
+func TestOutboundINVITEDNSSRVDisabled(t *testing.T) {
+	// With SRV lookups disabled the destination is left to the transport layer.
+	conf := minimalTestConfig(t)
+	conf.DisableDNSSRV = true
+	cfg := TestClientConfig{
+		Config: conf,
+		DNS: fakeDNS{
+			srv: map[string][]*net.SRV{
+				"_sip._udp." + testInviteTargetHost: {{Target: "edge1.example.com.", Port: 5080}},
+			},
+			addr: map[string][]net.IPAddr{"edge1.example.com": ipAddrs("192.0.2.10")},
+		},
+	}
+
+	waitOutboundINVITEAndACK(t, cfg, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		// Destination() falls back to the request URI, so check the pinned field.
+		require.Empty(t, tr.req.MessageData.Destination())
+		resp.AppendHeader(&sip.ContactHeader{Address: sip.Uri{Host: testInviteTargetHost, Port: 5060}})
 	})
 }
 
