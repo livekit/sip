@@ -49,6 +49,12 @@ const (
 	// allocated call can't inherit a port a peer is still sending stale media to.
 	DefaultRTPDrainingIdleTimeout = 30 * time.Second // release once no packets arrive for this long
 	DefaultRTPDrainingDuration    = 10 * time.Minute // hard cap on how long a port stays draining
+	// DefaultHangupDrainTime is how long a locally-initiated hangup keeps
+	// feeding media to the peer before sending BYE. Audio buffered in the room
+	// mixer, the encoder, and in-flight RTP needs this window to clear the wire;
+	// without it the last word of a voicemail is clipped on abrupt hangups
+	// (issue #4737).
+	DefaultHangupDrainTime = 500 * time.Millisecond
 )
 
 type TLSCert struct {
@@ -113,14 +119,18 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
-	MediaTimeout         time.Duration   `yaml:"media_timeout"`
-	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
-	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	MediaTimeout        time.Duration `yaml:"media_timeout"`
+	MediaTimeoutInitial time.Duration `yaml:"media_timeout_initial"`
+	SymmetricRTP        bool          `yaml:"symmetric_rtp"`
 	// RTPDrainingIdleTimeout / RTPDrainingDuration control how long a closed call's RTP
 	// port is kept bound and draining before it can be reallocated. Set to a negative
 	// value to disable. Zero uses the defaults.
 	RTPDrainingIdleTimeout time.Duration `yaml:"rtp_draining_idle_timeout"`
 	RTPDrainingDuration    time.Duration `yaml:"rtp_draining_duration"`
+	// HangupDrainTime controls how long a locally-initiated hangup keeps feeding
+	// media to the SIP peer before sending BYE. Zero uses the default; a
+	// negative value disables the drain.
+	HangupDrainTime      time.Duration   `yaml:"hangup_drain_time"`
 	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
 	Codecs               map[string]bool `yaml:"codecs"`
 
@@ -204,6 +214,11 @@ func (c *Config) Init() error {
 		c.RTPDrainingDuration = DefaultRTPDrainingDuration
 	} else if c.RTPDrainingDuration < 0 {
 		c.RTPDrainingDuration = 0 // disabled
+	}
+	if c.HangupDrainTime == 0 {
+		c.HangupDrainTime = DefaultHangupDrainTime
+	} else if c.HangupDrainTime < 0 {
+		c.HangupDrainTime = 0 // disabled
 	}
 	if c.MaxCpuUtilization <= 0 || c.MaxCpuUtilization > 1 {
 		c.MaxCpuUtilization = 0.9
