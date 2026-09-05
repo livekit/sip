@@ -95,6 +95,8 @@ type TestHandler struct {
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
 	OnInboundInfoFunc      func(log logger.Logger, call *rpc.SIPCall, headers Headers)
 	OnSessionEndFunc       func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string)
+	// FeatureFlags are returned by the default DispatchCall.
+	FeatureFlags map[string]string
 }
 
 func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
@@ -118,6 +120,7 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 				Name:     identity,
 			},
 		},
+		FeatureFlags: h.FeatureFlags,
 	}
 }
 
