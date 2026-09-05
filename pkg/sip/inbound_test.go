@@ -256,8 +256,30 @@ func (c *lateOfferCall) hangup(t *testing.T) {
 	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "BYE should get 200 OK")
 }
 
+func TestInboundLateOfferDisabled(t *testing.T) {
+	// No feature flags: late offer is off for the project.
+	st := NewServiceTest(t, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	c := st.inviteWithoutOffer(t)
+	resp := getFinalResponseOrFail(t, ctx, c.tx)
+	// Same rejection as before late offer support: negotiating an empty offer fails.
+	require.Equal(t, sip.StatusInternalServerError, resp.StatusCode, "offerless INVITE should be rejected when late offer is disabled")
+	require.Empty(t, resp.Body(), "rejection must not carry an offer")
+
+	// The response is sent before the call is deregistered.
+	require.Eventually(t, func() bool {
+		st.Server.cmu.RLock()
+		defer st.Server.cmu.RUnlock()
+		return len(st.Server.byLocalTag) == 0
+	}, 5*time.Second, 10*time.Millisecond, "rejected call should be deregistered")
+}
+
 func TestInboundLateOffer(t *testing.T) {
 	st := NewServiceTest(t, nil)
+	// Enable late offer at the project level.
+	st.Server.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
 	callerRTP := netip.MustParseAddrPort("127.0.0.1:2827")
 
 	t.Run("success", func(t *testing.T) {

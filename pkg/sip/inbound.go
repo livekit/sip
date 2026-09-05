@@ -968,8 +968,17 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return rejectMedia(err)
 	}
 
+	var expectingLateAnswer bool
+	if len(rawSDP) == 0 {
+		expectingLateAnswer = featureFlagEnabled(disp.FeatureFlags, lateOfferFeatureFlag)
+		if !expectingLateAnswer {
+			log.Infow("Offerless INVITE, but late offer is not enabled for this project")
+		} else {
+			log.Infow("Offerless INVITE")
+		}
+	}
+
 	var sdpBody []byte
-	expectingLateAnswer := len(rawSDP) == 0
 	if expectingLateAnswer {
 		c.lateAnswerPending.Store(true)
 		sdpBody, err = c.media.GenerateOffer()
