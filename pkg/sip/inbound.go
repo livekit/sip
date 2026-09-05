@@ -985,6 +985,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if err != nil {
 			return rejectMedia(err)
 		}
+		c.mon.SDPSize(len(sdpBody), true)
 	}
 
 	ok := false
