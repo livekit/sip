@@ -1470,7 +1470,11 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 		// wire before the BYE tears the call down. Without this, the last
 		// word of a voicemail is clipped on abrupt hangups (issue #4737).
 		c.log().Debugw("draining media before hangup", "drain", drain)
-		time.Sleep(drain)
+		// Sleep via select so a context cancellation cuts the drain short.
+		select {
+		case <-ctx.Done():
+		case <-time.After(drain):
+		}
 	}
 	c.cc.CloseWithStatus(ctx, result, end.Headers)
 	c.closeMedia()

@@ -400,8 +400,18 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 			// buffered in the mixer, encoder, and in-flight RTP clears the
 			// wire before the BYE tears the call down. Without this, the last
 			// word of a voicemail is clipped on abrupt hangups (issue #4737).
+			//
+			// Close/CloseWith/CloseWithTimeout call this with c.mu held, so
+			// release it while sleeping — a 500ms drain must not block
+			// Participant() readers or a concurrent shutdown for that long.
+			c.mu.Unlock()
 			c.log.Debugw("draining media before hangup", "drain", drain)
-			time.Sleep(drain)
+			// Sleep via select so a context cancellation cuts the drain short.
+			select {
+			case <-ctx.Done():
+			case <-time.After(drain):
+			}
+			c.mu.Lock()
 		}
 		c.stopSIP(ctx, end.Term, end.Headers)
 		if c.media != nil {
