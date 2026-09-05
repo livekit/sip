@@ -1346,6 +1346,12 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	if err := c.media.ProcessAnswer(answerData); err != nil {
 		return err
 	}
+	// The 200 OK carried our offer; re-INVITE replies must echo the negotiated SDP instead.
+	localSDP, err := c.media.GetLocalSDP()
+	if err != nil {
+		return err
+	}
+	c.cc.SetOwnSDP(localSDP)
 
 	return c.updateCallStateAudioLocked()
 }
@@ -2215,6 +2221,12 @@ func (c *sipInbound) OwnSDP() []byte {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lastSDP
+}
+
+func (c *sipInbound) SetOwnSDP(sdpData []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastSDP = sdpData
 }
 
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string, waitForAck bool) error {

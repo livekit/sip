@@ -395,8 +395,13 @@ func TestInboundLateOffer(t *testing.T) {
 		c.expectActive(t, callerRTP)
 		t.Cleanup(func() { c.hangup(t) })
 
-		// With the exchange complete, re-INVITEs are accepted again.
+		// With the exchange complete, re-INVITEs are accepted again, and the reply must be the
+		// negotiated SDP rather than the multi-codec offer we sent in the original 200 OK.
 		resp = c.reinvite(t, ctx)
 		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "re-INVITE after the late answer should get 200 OK")
+		localSDP, err := c.media().GetLocalSDP()
+		require.NoError(t, err)
+		require.Equal(t, localSDP, resp.Body(), "re-INVITE reply should carry the negotiated local SDP")
+		require.NotEqual(t, c.ok.Body(), resp.Body(), "re-INVITE reply must not echo the original offer")
 	})
 }
