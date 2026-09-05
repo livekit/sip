@@ -1074,7 +1074,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	return c.waitForCallEnd(ctx, ackReceived, ackTimeout, mconf.MediaTimeout)
 }
 
-func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData []byte, expectingLateOffer bool) error {
+func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData []byte, waitForAck bool) error {
 	headers := disp.Headers
 	c.attrsToHdr = disp.AttributesToHeaders
 	if r := c.lkRoom.Room(); r != nil {
@@ -1082,7 +1082,7 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 	}
 	c.log().Infow("Accepting the call", "headers", headers)
 	taccept := c.mon.StageDurTimer("sip-accept")
-	err := c.cc.Accept(ctx, sdpData, headers, expectingLateOffer)
+	err := c.cc.Accept(ctx, sdpData, headers, waitForAck)
 	taccept()
 	c.sigTs.AcceptTime = time.Now()
 	if errors.Is(err, errNoACK) {
@@ -1307,13 +1307,10 @@ func (c *inboundCall) negotiateMedia(sdpData []byte) ([]byte, error) {
 	}
 	defer c.mon.StageDurTimer("start-media")()
 
-	var answerData []byte
-	var err error
-
 	c.mon.SDPSize(len(sdpData), true)
 	c.log().Debugw("SDP offer", "sdp", string(sdpData))
 
-	answerData, err = c.media.GenerateAnswer(sdpData)
+	answerData, err := c.media.GenerateAnswer(sdpData)
 	if err != nil {
 		return nil, err
 	}
@@ -1346,7 +1343,6 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	if err := c.media.ProcessAnswer(answerData); err != nil {
 		return err
 	}
-	// The 200 OK carried our offer; re-INVITE replies must echo the negotiated SDP instead.
 	localSDP, err := c.media.GetLocalSDP()
 	if err != nil {
 		return err
