@@ -28,6 +28,7 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/logger/medialogutils"
 	"github.com/livekit/protocol/redis"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -86,6 +87,8 @@ type Config struct {
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
 
+	PSRPC rpc.PSRPCConfig `yaml:"psrpc,omitempty"`
+
 	HealthPort           int                 `yaml:"health_port"`
 	PrometheusPort       int                 `yaml:"prometheus_port"`
 	PProfPort            int                 `yaml:"pprof_port"`
@@ -113,16 +116,16 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
-	MediaTimeout         time.Duration   `yaml:"media_timeout"`
-	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
-	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	MediaTimeout        time.Duration `yaml:"media_timeout"`
+	MediaTimeoutInitial time.Duration `yaml:"media_timeout_initial"`
+	SymmetricRTP        bool          `yaml:"symmetric_rtp"`
 	// RTPDrainingIdleTimeout / RTPDrainingDuration control how long a closed call's RTP
 	// port is kept bound and draining before it can be reallocated. Set to a negative
 	// value to disable. Zero uses the defaults.
-	RTPDrainingIdleTimeout time.Duration `yaml:"rtp_draining_idle_timeout"`
-	RTPDrainingDuration    time.Duration `yaml:"rtp_draining_duration"`
-	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
-	Codecs               map[string]bool `yaml:"codecs"`
+	RTPDrainingIdleTimeout time.Duration   `yaml:"rtp_draining_idle_timeout"`
+	RTPDrainingDuration    time.Duration   `yaml:"rtp_draining_duration"`
+	IgnoreLocalAddrInSDP   bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
+	Codecs                 map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
@@ -158,6 +161,7 @@ func NewConfig(confString string) (*Config, error) {
 		ApiSecret:   os.Getenv("LIVEKIT_API_SECRET"),
 		WsUrl:       os.Getenv("LIVEKIT_WS_URL"),
 		ServiceName: "sip",
+		PSRPC:       rpc.DefaultPSRPCConfig,
 	}
 	if confString != "" {
 		if err := yaml.Unmarshal([]byte(confString), conf); err != nil {

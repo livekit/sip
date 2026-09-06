@@ -24,7 +24,7 @@ func TestSIP(t *testing.T) {
 		t.Skip("missing env vars")
 	}
 
-	bus := psrpc.NewLocalMessageBus()
+	bus := psrpc.NewLocalMessageBus(conf.PSRPC.BusOptions()...)
 	svc, err := NewService(t, conf, bus)
 	require.NoError(t, err)
 	defer svc.Stop(true)

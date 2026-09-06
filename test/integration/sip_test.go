@@ -66,6 +66,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		ApiSecret:          lk.ApiSecret,
 		WsUrl:              lk.WsUrl,
 		Redis:              lk.Redis,
+		PSRPC:              rpc.DefaultPSRPCConfig,
 		SIPPort:            sipPort,
 		SIPPortListen:      sipPort,
 		ListenIP:           local.String(),
@@ -83,7 +84,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		jaeger.Configure(t.Context(), conf.JaegerURL, conf.ServiceName)
 	}
 
-	bus := psrpc.NewRedisMessageBus(rc)
+	bus := psrpc.NewRedisMessageBus(rc, conf.PSRPC.BusOptions()...)
 	psrpcCli, err := rpc.NewIOInfoClient(bus,
 		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
 	)
