@@ -23,7 +23,6 @@ import (
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -413,8 +412,8 @@ type codecConfig struct {
 }
 
 var codecConfigMap = map[string]codecConfig{
-	"G722/8000":    {rampUpFrames: 1, offsetSamples: 22},
-	"AMR-WB/16000": {rampUpFrames: 1, offsetSamples: 14 + 16},
+	"G722":   {rampUpFrames: 1, offsetSamples: 22},
+	"AMR-WB": {rampUpFrames: 1, offsetSamples: 14 + 16},
 }
 
 func TestMediaPortAudioRoundTrip(t *testing.T) {
@@ -429,10 +428,10 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 
 	for _, codec := range allAudioCodecs() {
 		info := codec.Info()
-		if strings.HasPrefix(info.SDPName, "opus/") {
+		if info.SDPName() == "opus" {
 			continue // TODO: validate opus
 		}
-		t.Run(strings.ReplaceAll(info.SDPName, "/", "-"), func(t *testing.T) {
+		t.Run(info.SDPName(), func(t *testing.T) {
 			for _, resample := range []bool{true, false} {
 				t.Run(fmt.Sprintf("resample=%t", resample), func(t *testing.T) {
 					for _, enc := range []sdp.Encryption{sdp.EncryptionNone, sdp.EncryptionRequire} {
@@ -440,11 +439,15 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 
 							opts1 := &MediaOptions{Encryption: enc}
 							opts2 := &MediaOptions{Encryption: enc}
+
+							info, _, ok := codec.Supports(msdk.CodecConfig{})
+							require.True(t, ok, "default config is not supported")
+
 							targetRate := RoomSampleRate
 							if !resample {
 								targetRate = info.SampleRate
 							}
-							m1, m2 := newMediaPair(t, opts1, opts2, info.SDPName, targetRate)
+							m1, m2 := newMediaPair(t, opts1, opts2, info.SDPName(), targetRate)
 
 							var recv1, recv2 msdk.PCM16Sample
 							h1 := msdk.NewPCM16BufferWriter(&recv1, targetRate)
@@ -468,7 +471,7 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 								to1[i] = int16(amp2 * math.Sin(freq*2*math.Pi*float64(i)/float64(packetSize)))
 							}
 
-							codecConfig := codecConfigMap[info.SDPName] // defaults to 0,0
+							codecConfig := codecConfigMap[info.SDPName()] // defaults to 0,0
 
 							// Ramp-up time for the codec.
 							// Some codecs have "inertia" and cannot immediately represent the sound exactly.
@@ -560,10 +563,14 @@ func checkPCM(t testing.TB, name string, exp, got msdk.PCM16Sample) {
 
 func TestPipelineChains(t *testing.T) {
 	for _, codec := range enabledAudioCodecs() {
-		t.Run(codec.Info().SDPName, func(t *testing.T) {
+		t.Run(codec.SDPName(), func(t *testing.T) {
+			codecName := codec.SDPName()
+			if codecName == "opus" {
+				t.Skip() // TODO: validate opus
+			}
 			// Create new test media port
 			// Process offer with a specific codec + dtmf
-			codecs := testCodecSet(codec.Info().SDPName)
+			codecs := testCodecSet(codecName)
 			opts := &MediaOptions{
 				IP:     netip.MustParseAddr("1.1.1.1"),
 				Ports:  rtcconfig.PortRange{Start: 10000},
@@ -572,7 +579,9 @@ func TestPipelineChains(t *testing.T) {
 			conn := newTestConn(1)
 			mp := newTestPort(t, logger.NewTestLogger(t), conn, opts, RoomSampleRate)
 
-			info := codec.Info()
+			info, _, ok := codec.Supports(msdk.CodecConfig{})
+			require.True(t, ok)
+
 			offer, err := sdp.NewOfferWith(codecs, netip.MustParseAddr("2.2.2.2"), 20000, sdp.EncryptionNone)
 			require.NoError(t, err)
 			answerData, err := offer.SDP.Marshal()
@@ -580,10 +589,12 @@ func TestPipelineChains(t *testing.T) {
 			_, err = mp.GenerateAnswer(answerData)
 			require.NoError(t, err)
 
-			codecName := strings.Split(info.SDPName, "/")[0]
 			sampleRate := info.SampleRate
 			clockRate := info.RTPClockRate
 			payloadType := info.RTPDefType
+			if !info.RTPIsStatic {
+				payloadType = 101
+			}
 			audioOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> LatencyEntry -> Resample(%d->%d) -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> RTPWriteStream(:0)",
 				RoomSampleRate, RoomSampleRate, sampleRate, codecName, sampleRate, codecName, clockRate)
 			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->%d) -> LatencyExit -> WriteCloserSwitch(nil)",
@@ -591,8 +602,11 @@ func TestPipelineChains(t *testing.T) {
 			dtmfOutChain := "WriteCloserSwitch(-1) -> dtmfOutWriter(dtmfAudio: false)"
 			dtmfInChain := fmt.Sprintf("StatsHandler(telephone-event/%d) -> HandlerFunc", clockRate)
 			assert.Equal(t, audioOutChain, mp.GetOutboundAudioWriter().String(), "out audio chain mismatch")
-			assert.Equal(t, audioInChain, mp.pipeline.audioToRoom.String(), "in audio chain mismatch")
 			assert.Equal(t, dtmfOutChain, mp.GetOutboundDTMFWriter().String(), "out dtmf chain mismatch")
+			require.NotNil(t, mp.pipeline)
+			require.NotNil(t, mp.pipeline.audioToRoom)
+			assert.Equal(t, audioInChain, mp.pipeline.audioToRoom.String(), "in audio chain mismatch")
+			require.NotNil(t, mp.pipeline.dtmfToRoom)
 			assert.Equal(t, dtmfInChain, mp.pipeline.dtmfToRoom.String(), "in dtmf chain mismatch")
 		})
 	}

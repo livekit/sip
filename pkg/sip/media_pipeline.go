@@ -118,13 +118,13 @@ func (p *mediaPortPipeline) init(
 	if mc.Crypto != nil {
 		crypto = mc.Crypto.Profile.String()
 	}
-	var dtmfInfo sdp.DTMFInfo
+	var dtmfInfo sdp.CodecInfo
 	if d := mc.Audio.DTMF; d != nil {
 		dtmfInfo = *d
 	}
 	p.conf.log.Infow("using codecs",
-		"audio-codec", mc.Audio.Codec.Info().SDPName, "audio-rtp", mc.Audio.Type,
-		"dtmf-rate", dtmfInfo.Rate, "dtmf-rtp", dtmfInfo.Type,
+		"audio-codec", mc.Audio.Info.SDPFullName(), "audio-rtp", mc.Audio.Type,
+		"dtmf-codec", dtmfInfo.Info.SDPFullName(), "dtmf-rtp", dtmfInfo.Type,
 		"srtp", crypto,
 	)
 
@@ -161,19 +161,24 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	var inboundLatencyEntry atomic.Int64
 	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
 	sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
-	codecInfo := mc.Audio.Codec.Info()
+	codecInfo := mc.Audio.Info
 	sink = msdk.ResampleWriter(sink, codecInfo.SampleRate)
 	sink = newMediaWriterCount(sink, &p.conf.stats.AudioInFrames, &p.conf.stats.AudioInSamples)
 
 	if p.conf.opts.LogSignalChanges {
-		sink, err = NewSignalLogger(p.conf.log, "input", sink)
+		l, err := NewSignalLogger(p.conf.log, "input", sink)
 		if err != nil {
 			sink.Close()
 			return err
 		}
+		sink = l
 	}
 
-	audioHandler := rtp.DecodePCM(sink, mc.Audio.Codec, mc.Audio.Type)
+	audioHandler, err := rtp.DecodePCMWithCodec(sink, mc.Audio.Codec, mc.Audio.Info.CodecConfig, mc.Audio.Type)
+	if err != nil {
+		sink.Close()
+		return err
+	}
 
 	// SilenceFiller injects silence after decoding, but it needs access to RTP headers
 	// And these are only available before decoding, hence it wraps both audioHandler & sink
@@ -185,14 +190,14 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	mux.SetDefault(newRTPStatsHandler(p.conf.mon, "", nil))
 
 	audioType := newRTPHandlerCount(
-		newRTPStatsHandler(p.conf.mon, codecInfo.SDPName, audioHandler),
+		newRTPStatsHandler(p.conf.mon, codecInfo.SDPFullName(), audioHandler),
 		&p.conf.stats.AudioPackets, &p.conf.stats.AudioBytes,
 	)
 	p.audioToRoom = audioType
 	mux.Register(mc.Audio.Type, audioType)
 
 	if d := mc.Audio.DTMF; d != nil && d.Type != 0 {
-		name := fmt.Sprintf("%s/%d", dtmf.SDPNameOnly, d.Rate)
+		name := d.Info.SDPFullName()
 		p.dtmfHandler = dtmfToRoom // Close doesn't propagate through rtp.HandlerFunc
 		dtmfType := newRTPHandlerCount(
 			newRTPStatsHandler(p.conf.mon, name, rtp.HandlerFunc(p.handleEventRTP)),
@@ -242,7 +247,7 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 		return fmt.Errorf("failed to open write stream: %w", err)
 	}
 
-	var dtmfInfo sdp.DTMFInfo
+	var dtmfInfo sdp.CodecInfo
 	if d := mc.Audio.DTMF; d != nil {
 		dtmfInfo = *d
 	}
@@ -250,22 +255,26 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 	// Latency measurement: shared timestamp between entry (PCM writer) and exit (RTP writer).
 	var outboundLatencyEntry atomic.Int64
 
-	codecInfo := mc.Audio.Codec.Info()
+	codecInfo := mc.Audio.Info
 	w = newLatencyRTPExit(w, &outboundLatencyEntry, &p.conf.stats.LatencyOut)
-	w = newRTPStatsWriter(p.conf.mon, mc.Audio.Type, dtmfInfo.Type, codecInfo.SDPName, dtmf.SDPNameOnly, w)
+	w = newRTPStatsWriter(p.conf.mon, mc.Audio.Type, dtmfInfo.Type, codecInfo.SDPFullName(), dtmf.SDPNameOnly, w)
 	s := rtp.NewSeqWriter(w)
 	audioOutRTP := s.NewStream(mc.Audio.Type, codecInfo.RTPClockRate)
 
-	audioOut := rtp.EncodePCM(audioOutRTP, mc.Audio.Codec)
+	audioOut, err := rtp.EncodePCMWithCodec(audioOutRTP, mc.Audio.Codec, mc.Audio.Info.CodecConfig)
+	if err != nil {
+		return err
+	}
 
 	audioOut = newMediaWriterCount(audioOut, &p.conf.stats.AudioOutFrames, &p.conf.stats.AudioOutSamples)
 
 	if p.conf.opts.LogSignalChanges {
-		audioOut, err = NewSignalLogger(p.conf.log, "mixed", audioOut)
+		l, err := NewSignalLogger(p.conf.log, "mixed", audioOut)
 		if err != nil {
 			audioOut.Close() // need to close since it's not linked to the port yet
 			return err
 		}
+		audioOut = l
 	}
 
 	audioOut = msdk.ResampleWriter(audioOut, incomingSampleRate)
@@ -292,13 +301,13 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 
 		p.dtmfToPort = &dtmfOutWriter{
 			log:        p.conf.log,
-			pcmRate:    dtmfInfo.Rate,
+			pcmRate:    dtmfInfo.Info.SampleRate,
 			ctx:        p.ctx,
-			dtmfEvents: s.NewStream(dtmfInfo.Type, dtmfInfo.Rate),
+			dtmfEvents: s.NewStream(dtmfInfo.Type, dtmfInfo.Info.RTPClockRate),
 			dtmfAudio:  dtmfAudio,
 			getTimestamp: func() uint32 {
 				audioTs := audioOutRTP.GetCurrentTimestamp()
-				return uint32(uint64(audioTs) * uint64(dtmfInfo.Rate) / uint64(codecInfo.RTPClockRate))
+				return uint32(uint64(audioTs) * uint64(dtmfInfo.Info.RTPClockRate) / uint64(codecInfo.RTPClockRate))
 			},
 		}
 	}

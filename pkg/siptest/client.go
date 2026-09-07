@@ -92,18 +92,24 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.Number = "1000"
 	}
 	if conf.Codec == "" {
-		conf.Codec = g711.ULawSDPNameAndRate
+		conf.Codec = g711.ULawSDPNameOnly
 	}
-	codec := lksdp.CodecByName(conf.Codec).(msdk.AudioCodec)
+	codecConfig := msdk.CodecConfig{SampleRate: 8000}
+	codecInfo, create, ok := lksdp.CodecByNameWith(nil, conf.Codec).Supports(codecConfig)
+	if !ok {
+		return nil, fmt.Errorf("unsupported codec: %q (%+v)", conf.Codec, codecConfig)
+	}
+	codec := create().(msdk.AudioCodec)
+
 	cli := &Client{
 		id:         id,
 		conf:       conf,
 		ack:        make(chan struct{}, 1),
 		log:        conf.Log,
 		audioCodec: codec,
-		audioType:  codec.Info().RTPDefType,
+		audioType:  codecInfo.RTPDefType,
 	}
-	if !codec.Info().RTPIsStatic {
+	if !codecInfo.RTPIsStatic {
 		cli.audioType = 102
 	}
 	cli.mediaConn = rtpconn.NewConn(&rtpconn.ConnConfig{TimeoutCallback: conf.OnMediaTimeout})
@@ -572,7 +578,7 @@ func (c *Client) createOffer() ([]byte, error) {
 					Formats: []string{strconv.Itoa(int(c.audioType)) + " 101"},
 				},
 				Attributes: []sdp.Attribute{
-					{Key: "rtpmap", Value: fmt.Sprintf("%d %s", c.audioType, c.audioCodec.Info().SDPName)},
+					{Key: "rtpmap", Value: fmt.Sprintf("%d %s", c.audioType, c.audioCodec.Info().SDPName())},
 					{Key: "rtpmap", Value: fmt.Sprintf("101 %s/%d", dtmf.SDPNameOnly, c.audioCodec.Info().RTPClockRate)},
 				},
 			},

@@ -1278,7 +1278,7 @@ func (c *inboundCall) updateCallStateAudioLocked() error {
 		return fmt.Errorf("media does not have negotiated audio")
 	}
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = audio.Codec.Info().SDPName
+		info.AudioCodec = audio.Info.SDPFullName()
 	})
 	return nil
 }
@@ -1404,7 +1404,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 	defer span.End()
 	dtmfRate := 0
 	if ac := c.media.NegotiatedAudio(); ac != nil && ac.DTMF != nil {
-		dtmfRate = ac.DTMF.Rate
+		dtmfRate = ac.DTMF.Info.RTPClockRate
 	}
 	c.log().Infow("Requesting Pin for SIP call", "dtmfRate", dtmfRate)
 	if dtmfRate == 0 {

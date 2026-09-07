@@ -996,10 +996,10 @@ func (p *mediaPort) onNewMediaPacket() {
 	p.lastPacketTime.Store(time.Now().UnixNano())
 }
 
-type changeSetSummary uint
+type ChangeSetSummary uint
 
 const (
-	changeSetNew changeSetSummary = 1 << iota // 1 << 0 = 1
+	changeSetNew ChangeSetSummary = 1 << iota // 1 << 0 = 1
 	changeSetAudioCodec
 	changeSetDTMF
 	changeSetCrypto
@@ -1008,19 +1008,15 @@ const (
 	changeSetPeerDirection
 )
 
-func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
+func NewChangeSetSummary(current, new *sdp.MediaConfig) ChangeSetSummary {
 	if current == nil {
 		return changeSetNew
 	}
-	var changeSetSummary changeSetSummary
-	if current.Audio.Codec.Info().SDPName != new.Audio.Codec.Info().SDPName || current.Audio.Type != new.Audio.Type {
+	var changeSetSummary ChangeSetSummary
+	if !current.Audio.Equals(&new.Audio.CodecInfo) {
 		changeSetSummary |= changeSetAudioCodec
 	}
-	if (current.Audio.DTMF == nil) != (new.Audio.DTMF == nil) {
-		changeSetSummary |= changeSetDTMF
-	} else if current.Audio.DTMF != nil &&
-		(current.Audio.DTMF.Type != new.Audio.DTMF.Type ||
-			current.Audio.DTMF.Rate != new.Audio.DTMF.Rate) {
+	if !current.Audio.DTMF.Equals(new.Audio.DTMF) {
 		changeSetSummary |= changeSetDTMF
 	}
 	a, b := current.Crypto, new.Crypto
@@ -1049,10 +1045,10 @@ func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
 	return changeSetSummary
 }
 
-func (c changeSetSummary) shouldReconfigure() bool {
+func (c ChangeSetSummary) shouldReconfigure() bool {
 	return c&(changeSetNew|changeSetAudioCodec|changeSetDTMF|changeSetCrypto) != 0
 }
 
-func (c changeSetSummary) includes(feature changeSetSummary) bool {
+func (c ChangeSetSummary) includes(feature ChangeSetSummary) bool {
 	return c&feature != 0
 }
