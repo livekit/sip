@@ -985,6 +985,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if err != nil {
 			return rejectMedia(err)
 		}
+		c.mon.SDPSize(len(sdpBody), false, true)
 	}
 
 	ok := false
@@ -1300,7 +1301,6 @@ func (c *inboundCall) negotiateMedia(sdpOffer []byte) ([]byte, error) {
 		return nil, err
 	}
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
-	c.mon.SDPSize(len(answerData), false, true)
 
 	if err = c.updateCallStateAudioLocked(); err != nil {
 		return nil, err
