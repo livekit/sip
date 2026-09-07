@@ -561,7 +561,13 @@ func (c *outboundCall) connectMedia() {
 	// double-closing later.
 	c.lkRoomIn = nil
 
-	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
+	rate := 8000
+	if mc := c.media.NegotiatedAudio(); mc != nil {
+		if d := mc.DTMF; d != nil {
+			rate = d.Info.RTPClockRate
+		}
+	}
+	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter(rate)); old != nil {
 		old.Close()
 		c.log.Warnw("media port has unexpected inbound DTMF writer", nil)
 	}
@@ -795,7 +801,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = audio.Codec.Info().SDPName
+		info.AudioCodec = audio.Info.SDPFullName()
 		if r := c.lkRoom.Room(); r != nil {
 			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}

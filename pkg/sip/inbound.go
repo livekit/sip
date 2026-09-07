@@ -1304,7 +1304,7 @@ func (c *inboundCall) updateCallStateAudioLocked() error {
 		return fmt.Errorf("media does not have negotiated audio")
 	}
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = audio.Codec.Info().SDPName
+		info.AudioCodec = audio.Info.SDPFullName()
 	})
 	return nil
 }
@@ -1430,7 +1430,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 	defer span.End()
 	dtmfRate := 0
 	if ac := c.media.NegotiatedAudio(); ac != nil && ac.DTMF != nil {
-		dtmfRate = ac.DTMF.Rate
+		dtmfRate = ac.DTMF.Info.RTPClockRate
 	}
 	c.log().Infow("Requesting Pin for SIP call", "dtmfRate", dtmfRate)
 	if dtmfRate == 0 {
@@ -1796,7 +1796,13 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 		c.log().Warnw("media port has unexpected inbound audio writer", nil)
 		old.Close()
 	}
-	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter()); old != nil {
+	rate := 8000
+	if mc := c.media.NegotiatedAudio(); mc != nil {
+		if d := mc.DTMF; d != nil {
+			rate = d.Info.RTPClockRate
+		}
+	}
+	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter(rate)); old != nil {
 		old.Close() // Can be pinDTMFWriter
 	}
 	return nil

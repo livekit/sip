@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -278,6 +279,9 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, ip netip.Addr, id, num
 
 	err = cli.Dial(conf.SIP.Address, conf.SIP.Host, conf.Number, headers)
 	if err != nil {
+		if e, ok := errors.AsType[*livekit.SIPStatus](err); ok {
+			t.Error("SIP Status:", e)
+		}
 		t.Fatal(err)
 	}
 	if conf.Pin != "" || forcePin {
@@ -756,8 +760,8 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 
 func TestSIPAudio(t *testing.T) {
 	for _, codec := range []string{
-		g711.ULawSDPNameAndRate,
-		g722.SDPNameAndRate,
+		g711.ULawSDPNameOnly,
+		g722.SDPNameOnly,
 	} {
 		codec := codec
 		t.Run(codec, func(t *testing.T) {
@@ -791,7 +795,7 @@ func TestSIPAudio(t *testing.T) {
 						if i == 0 {
 							// Make first client always use the same codec.
 							// This way we can see how different codecs interact.
-							codec = g711.ULawSDPNameAndRate
+							codec = g711.ULawSDPNameOnly
 						}
 						wg.Add(1)
 						go func() {

@@ -17,9 +17,7 @@ package sip
 // Register supported audio codecs
 import (
 	"errors"
-	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
@@ -37,17 +35,12 @@ var defaultCodecs = msdk.NewCodecSet()
 
 func init() {
 	defaultCodecs.SetEnabledMap(map[string]bool{
-		g711.ALawSDPNameAndRate: true,
-		g711.ULawSDPNameAndRate: true,
-		g722.SDPNameAndRate:     true,
-		amrwb.SDPNameAndRate:    false, // optional
+		dtmf.SDPNameOnly:     true,
+		g711.ALawSDPNameOnly: true,
+		g711.ULawSDPNameOnly: true,
+		g722.SDPNameOnly:     true,
+		amrwb.SDPNameOnly:    false, // optional
 	})
-	for _, c := range msdk.Codecs() {
-		info := c.Info()
-		if strings.HasPrefix(info.SDPName, dtmf.SDPNameOnly+"/") {
-			defaultCodecs.SetEnabled(info.SDPName, true)
-		}
-	}
 }
 
 func DefaultCodecs() *msdk.CodecSet {
@@ -60,26 +53,21 @@ func DefaultCodecs() *msdk.CodecSet {
 const codecOther = "other"
 
 func peerCodecNames(d sdp.MediaDesc) []string {
-	names := make([]string, 0, len(d.Codecs))
-	for _, c := range d.Codecs {
-		if slices.ContainsFunc(d.DTMF, func(info sdp.DTMFInfo) bool {
-			return c.Type == info.Type
-		}) {
-			// DTMF is parsed out of a=rtpmap into DTMFType, but its payload type is
-			// still listed in m=audio, where it resolves to no codec. Appended below.
-			continue
-		}
-		name := codecOther
-		if c.Codec != nil {
-			name = c.Codec.Info().SDPName
-		}
-		if !slices.Contains(names, name) {
-			names = append(names, name)
+	names := make([]string, 0, len(d.Audio)+len(d.Data)+len(d.Unknown))
+	add := func(list []sdp.CodecInfo) {
+		for _, c := range list {
+			name := c.Info.SDPFullName()
+			if c.Info.Name == "" {
+				name = "other"
+			}
+			if !slices.Contains(names, name) {
+				names = append(names, name)
+			}
 		}
 	}
-	for _, c := range d.DTMF {
-		names = append(names, fmt.Sprintf("%s/%d", dtmf.SDPNameOnly, c.Rate))
-	}
+	add(d.Audio)
+	add(d.Data)
+	add(d.Unknown)
 	return names
 }
 
@@ -120,35 +108,15 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 	} else {
 		s = defaultCodecs.NewSet() // inherit from default
 	}
-	var dtmfRates []uint32
 	for _, codec := range m.Codecs {
 		name := codec.Name
 		if name == "" {
 			return nil, errors.New("no codec name specified")
 		}
 		rate := codec.Rate
-		if rate == 0 {
-			// Set default rate
-			switch name {
-			case g711.ALawSDPNameOnly, g711.ULawSDPNameOnly:
-				rate = 8000
-			case g722.SDPNameOnly:
-				rate = 8000 // actually 16000, it's a know bug in the spec
-			case amrwb.SDPNameOnly:
-				rate = 16000
-			default:
-				return nil, fmt.Errorf("sample rate not specified for codec: %q", name)
-			}
-		}
-		name = fmt.Sprintf("%s/%d", name, rate)
 		s.SetEnabled(name, true)
-		if !slices.Contains(dtmfRates, rate) {
-			dtmfRates = append(dtmfRates, rate)
-		}
+		_ = rate // TODO: we only support fixed rate codecs so far; add whitelist for codec configs later
 	}
-	slices.Sort(dtmfRates)
-	for _, rate := range dtmfRates {
-		s.SetEnabled(fmt.Sprintf("%s/%d", dtmf.SDPNameOnly, rate), true)
-	}
+	s.SetEnabled(dtmf.SDPNameOnly, true)
 	return s, nil
 }

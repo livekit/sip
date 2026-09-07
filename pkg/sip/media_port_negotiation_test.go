@@ -16,7 +16,6 @@ package sip
 
 import (
 	"errors"
-	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -96,16 +95,15 @@ func testCodecSet(names ...string) *msdk.CodecSet {
 	set := msdk.NewCodecSet()
 	for _, name := range names {
 		set.SetEnabled(name, true)
-		rate := strings.Split(name, "/")[1]
-		set.SetEnabled(fmt.Sprintf("%s/%s", dtmf.SDPNameOnly, rate), true)
+		set.SetEnabled(dtmf.SDPNameOnly, true)
 	}
 	return set
 }
 
-func enabledAudioCodecs() []msdk.Codec {
-	var audio []msdk.Codec
+func enabledAudioCodecs() []msdk.CodecType {
+	var audio []msdk.CodecType
 	for _, c := range msdk.GlobalCodecs().ListEnabled() {
-		if _, ok := c.(msdk.AudioCodec); !ok {
+		if !isAudioCodec(c) {
 			continue // telephone-event and other non-audio codecs
 		}
 		audio = append(audio, c)
@@ -113,13 +111,12 @@ func enabledAudioCodecs() []msdk.Codec {
 	return audio
 }
 
-func isAudioCodec(c msdk.Codec) bool {
-	_, ok := c.(msdk.AudioCodec)
-	return ok
+func isAudioCodec(c msdk.CodecType) bool {
+	return c.Info().Kind == msdk.Audio
 }
 
-func allAudioCodecs() []msdk.Codec {
-	var audio []msdk.Codec
+func allAudioCodecs() []msdk.CodecType {
+	var audio []msdk.CodecType
 	for _, c := range msdk.Codecs() {
 		if !isAudioCodec(c) {
 			continue // telephone-event and other non-audio codecs
@@ -133,11 +130,8 @@ func answerCodec(t testing.TB, answerData []byte) string {
 	t.Helper()
 	answer, err := parseAnswerWith(logger.NewTestLogger(t), nil, defaultCodecs, answerData)
 	require.NoError(t, err)
-	for _, c := range answer.Codecs {
-		if !isAudioCodec(c.Codec) {
-			continue // telephone-event and other non-audio codecs
-		}
-		return c.Codec.Info().SDPName
+	for _, c := range answer.Audio {
+		return c.Info.SDPFullName()
 	}
 	t.Fatal("no audio codec in answer")
 	return ""
@@ -153,7 +147,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 	}
 
 	t.Run("offer lists only enabled codecs", func(t *testing.T) {
-		m := newLocked(t, g711.ALawSDPNameAndRate)
+		m := newLocked(t, g711.ALawSDPNameOnly)
 
 		offerData, err := m.GenerateOffer()
 		require.NoError(t, err)
@@ -162,19 +156,18 @@ func TestMediaPortCodecSet(t *testing.T) {
 		require.NoError(t, err)
 
 		var names []string
-		for _, c := range offer.Codecs {
-			if !isAudioCodec(c.Codec) {
-				continue // telephone-event and other non-audio codecs
-			}
-			names = append(names, c.Codec.Info().SDPName)
+		for _, c := range offer.Audio {
+			names = append(names, c.Info.SDPFullName())
 		}
 		assert.Equal(t, []string{g711.ALawSDPNameAndRate}, names)
-		assert.NotNil(t, offer.DTMF)
-		assert.NotZero(t, offer.DTMF[0].Type, "DTMF type should still be offered")
+		assert.NotEmpty(t, offer.Data)
+		d := offer.Data[0]
+		assert.Equal(t, dtmf.SDPNameOnly, d.Info.Name)
+		assert.NotZero(t, d.Type, "DTMF type should still be offered")
 	})
 
 	t.Run("answer picks an enabled codec", func(t *testing.T) {
-		m := newLocked(t, g711.ALawSDPNameAndRate)
+		m := newLocked(t, g711.ALawSDPNameOnly)
 
 		// Peer offers both, only PCMA is enabled here.
 		offer := sdpWithMedia("m=audio 5004 RTP/AVP 0 8",
@@ -185,7 +178,7 @@ func TestMediaPortCodecSet(t *testing.T) {
 	})
 
 	t.Run("offer without an enabled codec is rejected", func(t *testing.T) {
-		m := newLocked(t, g711.ALawSDPNameAndRate)
+		m := newLocked(t, g711.ALawSDPNameOnly)
 
 		offer := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
 		_, err := m.GenerateAnswer(offer)
@@ -198,7 +191,7 @@ func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
 	// TODO: change this test to confirm renegotiation when it's enabled
 	m := newTestPort(t, logger.NewTestLogger(t), newTestConn(1), &MediaOptions{
 		IP:     newIP("127.0.0.1"),
-		Codecs: testCodecSet(g711.ULawSDPNameAndRate, g722.SDPNameAndRate),
+		Codecs: testCodecSet(g711.ULawSDPNameOnly, g722.SDPNameOnly),
 	}, RoomSampleRate)
 
 	sdpA := sdpWithMedia("m=audio 5004 RTP/AVP 0", "a=rtpmap:0 PCMU/8000")
@@ -254,7 +247,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 		m2 := newTestPort(t, log.WithName("two"), c2, &MediaOptions{
 			IP:     newIP("2.2.2.2"),
 			Ports:  rtcconfig.PortRange{Start: 20000},
-			Codecs: testCodecSet(g711.ULawSDPNameAndRate),
+			Codecs: testCodecSet(g711.ULawSDPNameOnly),
 		}, RoomSampleRate)
 
 		answerData := negotiate(t, m1, m2)
@@ -266,7 +259,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 
 		// G722 samples at 16k, so the encode leaf changes sample rate under the same
 		// room-facing switch.
-		m2.codecs = testCodecSet(g722.SDPNameAndRate)
+		m2.codecs = testCodecSet(g722.SDPNameOnly)
 
 		answerData = negotiate(t, m1, m2)
 		require.Equal(t, g722.SDPNameAndRate, answerCodec(t, answerData))
