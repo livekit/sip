@@ -713,7 +713,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if err != nil {
 		return err
 	}
-	c.mon.SDPSize(len(sdpOfferData), true)
+	c.mon.SDPSize(len(sdpOfferData), true, false)
 	c.log.Debugw("SDP offer", "sdp", string(sdpOfferData))
 	joinDur := c.mon.JoinDur()
 
@@ -762,7 +762,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		return err
 	}
 	c.sigTs.AcceptTime = time.Now()
-	c.mon.SDPSize(len(sdpResp), false)
+	c.mon.SDPSize(len(sdpResp), false, true)
 	c.log.Debugw("SDP answer", "sdp", string(sdpResp))
 
 	c.log = LoggerWithHeaders(c.log, c.cc)
