@@ -1436,10 +1436,82 @@ func TestTransferCallEndedIsNotAnError(t *testing.T) {
 
 		resp, err := s.TransferSIPParticipant(t.Context(), req)
 		require.Error(t, err)
-		require.NotNil(t, resp)
-		require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, resp.Status)
-		require.Equal(t, livekit.SIPTransferReason_STR_REJECTED, resp.Reason)
-		require.NotNil(t, resp.SipStatus)
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, resp.SipStatus.Code)
+		require.Nil(t, resp)
+
+		transferErr := livekit.SIPTransferErrorFrom(err)
+		require.NotNil(t, transferErr)
+		require.Equal(t, transferID, transferErr.TransferId)
+		require.Equal(t, livekit.SIPTransferReason_STR_REJECTED, transferErr.Reason)
+		st := livekit.SIPStatusFrom(err)
+		require.NotNil(t, st)
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, st.Code)
 	})
+}
+
+// TestTransferErrorDetails checks that a failed transfer reports its reason on
+// the error.
+func TestTransferErrorDetails(t *testing.T) {
+	const transferID = "STR_test"
+	sipStatus := &livekit.SIPStatus{
+		Code:   livekit.SIPStatusCode_SIP_STATUS_BUSY_HERE,
+		Status: "Busy Here",
+	}
+	cases := []struct {
+		Name      string
+		Err       error
+		Reason    livekit.SIPTransferReason
+		Code      psrpc.ErrorCode
+		SIPStatus *livekit.SIPStatus
+	}{
+		{
+			Name: "rejected by the transferee",
+			Err:  psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w", sipStatus),
+			// ApplySIPStatus takes the code from the SIP status.
+			Code:      psrpc.ResourceExhausted,
+			Reason:    livekit.SIPTransferReason_STR_REJECTED,
+			SIPStatus: sipStatus,
+		},
+		{
+			Name:   "ran out of time",
+			Err:    psrpc.NewError(psrpc.Canceled, context.DeadlineExceeded),
+			Code:   psrpc.Canceled,
+			Reason: livekit.SIPTransferReason_STR_RINGING_TIMEOUT,
+		},
+		{
+			Name:   "subscription terminated",
+			Err:    psrpc.NewErrorf(psrpc.UpstreamServerError, "call transfer failed: %w", errReferSubscriptionTerminated),
+			Code:   psrpc.UpstreamServerError,
+			Reason: livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED,
+		},
+		{
+			Name:   "no transfer started",
+			Err:    psrpc.NewErrorf(psrpc.NotFound, "unknown call"),
+			Code:   psrpc.NotFound,
+			Reason: livekit.SIPTransferReason_STR_UNSPECIFIED,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			err := transferError(transferOutcome{TransferID: transferID, Err: c.Err})
+			require.Error(t, err)
+			require.ErrorIs(t, err, c.Err, "the original error must stay unwrappable")
+
+			code, ok := psrpc.GetErrorCode(err)
+			require.True(t, ok)
+			require.Equal(t, c.Code, code)
+
+			transferErr := livekit.SIPTransferErrorFrom(err)
+			require.NotNil(t, transferErr, "the transfer reason must reach the caller on the error")
+			require.Equal(t, transferID, transferErr.TransferId)
+			require.Equal(t, c.Reason, transferErr.Reason)
+
+			got := livekit.SIPStatusFrom(err)
+			if c.SIPStatus == nil {
+				require.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got, "a SIP status attached by ApplySIPStatus must survive")
+			require.Equal(t, c.SIPStatus.Code, got.Code)
+		})
+	}
 }
