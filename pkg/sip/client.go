@@ -67,6 +67,7 @@ type Client struct {
 	mon    *stats.Monitor
 
 	sipCli SIPClient
+	dns    DNSResolver
 
 	closing     core.Fuse
 	cmu         sync.Mutex
@@ -84,6 +85,16 @@ func WithGetSipClient(fn GetSipClientFunc) ClientOption {
 	return func(c *Client) {
 		if fn != nil {
 			c.getSipClient = fn
+		}
+	}
+}
+
+// WithDNSResolver overrides the resolver used to locate outbound destinations.
+// Defaults to net.DefaultResolver.
+func WithDNSResolver(r DNSResolver) ClientOption {
+	return func(c *Client) {
+		if r != nil {
+			c.dns = r
 		}
 	}
 }
@@ -108,6 +119,7 @@ func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats
 		getStateHandler: getStateHandler,
 		getSipClient:    DefaultGetSipClientFunc,
 		getRoom:         DefaultGetRoomFunc,
+		dns:             net.DefaultResolver,
 		activeCalls:     make(map[LocalTag]*outboundCall),
 	}
 	for _, option := range options {
