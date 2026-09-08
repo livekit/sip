@@ -1016,7 +1016,11 @@ func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
 	if current.Audio.Codec.Info().SDPName != new.Audio.Codec.Info().SDPName || current.Audio.Type != new.Audio.Type {
 		changeSetSummary |= changeSetAudioCodec
 	}
-	if current.Audio.DTMFType != new.Audio.DTMFType {
+	if (current.Audio.DTMF == nil) != (new.Audio.DTMF == nil) {
+		changeSetSummary |= changeSetDTMF
+	} else if current.Audio.DTMF != nil &&
+		(current.Audio.DTMF.Type != new.Audio.DTMF.Type ||
+			current.Audio.DTMF.Rate != new.Audio.DTMF.Rate) {
 		changeSetSummary |= changeSetDTMF
 	}
 	a, b := current.Crypto, new.Crypto

@@ -9,10 +9,10 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20260824180721-c8704a7f6202
+	github.com/livekit/media-sdk v0.0.0-20260903090624-c6c8d0976284
 	github.com/livekit/mediatransportutil v0.0.0-20260727210231-81a5287a7109
-	github.com/livekit/protocol v1.50.5-0.20260821144838-17c16cf496fd
-	github.com/livekit/psrpc v0.7.4
+	github.com/livekit/protocol v1.51.1-0.20260905133529-a4f4b5c0c23f
+	github.com/livekit/psrpc v0.7.6
 	github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260821165736-9b5928e4fcb8
 	github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
@@ -26,7 +26,7 @@ require (
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -57,7 +57,7 @@ require (
 	github.com/docker/cli v29.2.0+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v1.4.0
+	github.com/emiago/sipgo v1.5.0
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
