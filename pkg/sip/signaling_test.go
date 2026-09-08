@@ -429,6 +429,13 @@ type serviceTestConfig struct {
 	GetRoom GetRoomFunc
 }
 
+// NewServiceTest builds a test harness that fakes a remote SIP peer and liveKit
+// services. It uses sipgo over local network to send and receive SIP messages.
+
+// NOTE: Most tests should use this harness, with the following exceptions:
+// 1. Next-hop routing. If a message would be sent to a destination we cannot intercept.
+// 2. Noncompliant messages & behavior sipgo will not send or accept.
+// In either one of these use cases, use NewTestSIP instead.
 func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	t.Helper()
 
@@ -663,7 +670,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 			opt(msg.req, nil) // Simulate added headers
 		}
 
-		offer, err := parseOfferWith(logger.GetLogger(), nil, defaultCodecs, msg.req.Body())
+		offer, err := sdp.ParseOfferWith(defaultCodecs, msg.req.Body())
 		require.NoError(t, err)
 		sdpAnswer, _, err := offer.Answer(netip.MustParseAddr("4.3.2.1"), 0xB00, sdp.EncryptionNone)
 		require.NoError(t, err)
@@ -1766,6 +1773,122 @@ func TestRouteSet(t *testing.T) {
 			// The call ended before any NOTIFY reported the transfer outcome.
 			err := <-transferRes
 			require.ErrorIs(t, err, errTransferCallEnded)
+		})
+	})
+}
+
+func TestRetransmission(t *testing.T) {
+	st := NewServiceTest(t, nil)
+	// Withhold ACK, expect server-side retransmission of 200
+	t.Run("INVITE-200", func(t *testing.T) {
+		t.Parallel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		t.Cleanup(tx.Terminate)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+
+		resp := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+		remoteTag, ok := resp.To().Params.Get("tag")
+		require.True(t, ok, "remote tag should be present")
+		call.SetRemoteTag(LocalTag(remoteTag))
+		call.SetRemoteSDP(resp.Body())
+		call.SetRouteSet(resp, true)
+		t.Cleanup(func() {
+			bye := call.NewRequest(sip.BYE)
+			st.TestUA.TransactionRequest(t, bye, true)
+		})
+
+		for range 2 {
+			resp = getFinalResponseOrFail(t, ctx, tx)
+			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "Expecting 200 OK")
+		}
+
+		call.localCseq--
+		ackReq := call.NewRequest(sip.ACK)
+		err = st.TestUA.Client.WriteRequest(ackReq)
+		require.NoError(t, err)
+	})
+
+	// Resend invite-200, expect client-side retransmission of ACK
+	t.Run("ACK", func(t *testing.T) {
+		t.Skip("TODO: Known gap at this time")
+		t.Parallel()
+
+		call := newTestCall(st.TestUA, true)
+		req := call.CreateSipParticipantRequest()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+
+		inviteCh := make(chan *sipUARequest, 1)
+		st.mu.Lock()
+		st.Pending[string(call.remoteTag)] = inviteCh
+		st.mu.Unlock()
+		defer func() {
+			st.mu.Lock()
+			delete(st.Pending, string(call.remoteTag))
+			st.mu.Unlock()
+		}()
+
+		_, err := st.Client.CreateSIPParticipant(ctx, req)
+		require.NoError(t, err)
+
+		var msg *sipUARequest
+		select {
+		case msg = <-inviteCh:
+			t.Logf("invite received: %+v", msg)
+		case <-ctx.Done():
+			require.Fail(t, "timeout waiting for invite")
+		}
+
+		require.NotNil(t, msg, "unexpected nil message")
+
+		require.Equal(t, string(call.remoteTag), msg.req.From().Params.GetOr("tag", ""), "remote tag should be the same")
+		require.Equal(t, call.remoteUser, msg.req.From().Address.User, "remote user should be the same")
+		require.Equal(t, call.localUser, msg.req.To().Address.User, "local user should be the same")
+
+		offer, err := sdp.ParseOfferWith(defaultCodecs, msg.req.Body())
+		require.NoError(t, err)
+		sdpAnswer, _, err := offer.Answer(netip.MustParseAddr("4.3.2.1"), 0xB00, sdp.EncryptionNone)
+		require.NoError(t, err)
+		answerBytes, err := sdpAnswer.SDP.Marshal()
+		require.NoError(t, err)
+		resp := sip.NewResponseFromRequest(msg.req, sip.StatusOK, "OK", answerBytes)
+		resp.To().Params.Add("tag", call.localTag)
+
+		call.callID = msg.req.CallID().Value()
+		call.remoteCseq = msg.req.CSeq().SeqNo
+		call.SetRemoteSDP(msg.req.Body())
+		call.SetLocalSDP(resp.Body())
+		call.SetRouteSet(resp, false)
+		reqSink := st.TestUA.RegisterSink(call.localTag, "")
+
+		// Now we want to send 3x 200 responses
+		for range 3 {
+			err = msg.tx.Respond(resp)
+			require.NoError(t, err)
+
+			select {
+			case ack := <-reqSink:
+				require.Equal(t, sip.ACK, ack.req.Method)
+				require.Equal(t, msg.req.CSeq().SeqNo, ack.req.CSeq().SeqNo)
+				require.Equal(t, msg.req.CallID().Value(), ack.req.CallID().Value())
+				require.Equal(t, call.localTag, ack.req.To().Params.GetOr("tag", ""))
+			case <-ctx.Done():
+				require.Fail(t, "timeout waiting for ACK retransmission")
+			}
+		}
+		t.Cleanup(func() {
+			bye := call.NewRequest(sip.BYE)
+			st.TestUA.TransactionRequest(t, bye, false)
 		})
 	})
 }

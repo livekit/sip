@@ -91,7 +91,7 @@ type lateOfferCall struct {
 }
 
 // inviteWithoutOffer sends an INVITE with no body.
-func (st *serviceTest) inviteWithoutOffer(t *testing.T) *lateOfferCall {
+func inviteWithoutOffer(t *testing.T, st *serviceTest) *lateOfferCall {
 	t.Helper()
 
 	call := newTestCall(st.TestUA, false)
@@ -262,7 +262,7 @@ func TestInboundLateOfferDisabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	c := st.inviteWithoutOffer(t)
+	c := inviteWithoutOffer(t, st)
 	resp := getFinalResponseOrFail(t, ctx, c.tx)
 	// Same rejection as before late offer support: negotiating an empty offer fails.
 	require.Equal(t, sip.StatusBadRequest, resp.StatusCode, "offerless INVITE should be rejected when late offer is disabled")
@@ -287,7 +287,7 @@ func TestInboundLateOffer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 
-		c := st.inviteWithoutOffer(t)
+		c := inviteWithoutOffer(t, st)
 		c.expectOffer(t, ctx)
 
 		// The offer must point at the media port allocated for this call.
@@ -308,7 +308,7 @@ func TestInboundLateOffer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 
-		c := st.inviteWithoutOffer(t)
+		c := inviteWithoutOffer(t, st)
 		c.expectOffer(t, ctx)
 
 		// Withhold the ACK: the UAS must retransmit the 200 OK, with the same offer.
@@ -328,7 +328,7 @@ func TestInboundLateOffer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
 
-		c := st.inviteWithoutOffer(t)
+		c := inviteWithoutOffer(t, st)
 		c.expectOffer(t, ctx)
 
 		// Count 200 OK retransmissions until the server gives up and sends BYE.
@@ -356,7 +356,7 @@ func TestInboundLateOffer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 
-		c := st.inviteWithoutOffer(t)
+		c := inviteWithoutOffer(t, st)
 		c.expectOffer(t, ctx)
 		c.ack(t, nil)
 
@@ -369,7 +369,7 @@ func TestInboundLateOffer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 
-		c := st.inviteWithoutOffer(t)
+		c := inviteWithoutOffer(t, st)
 		c.expectOffer(t, ctx)
 		c.ack(t, []byte("invalid SDP answer"))
 
@@ -382,7 +382,7 @@ func TestInboundLateOffer(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 
-		c := st.inviteWithoutOffer(t)
+		c := inviteWithoutOffer(t, st)
 		c.expectOffer(t, ctx)
 
 		// Our offer is still unanswered: a re-INVITE cannot be negotiated yet.
