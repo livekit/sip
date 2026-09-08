@@ -1202,7 +1202,7 @@ func (w *pinDTMFWriter) String() string {
 }
 
 func (w *pinDTMFWriter) SampleRate() int {
-	return 0
+	return dtmf.SampleRate
 }
 
 func (w *pinDTMFWriter) Close() error {

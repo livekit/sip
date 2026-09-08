@@ -803,7 +803,7 @@ func (w *inboundDTMFWriter) String() string {
 }
 
 func (w *inboundDTMFWriter) SampleRate() int {
-	return 0
+	return dtmf.SampleRate
 }
 
 func (w *inboundDTMFWriter) Close() error {

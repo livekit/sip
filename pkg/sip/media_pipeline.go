@@ -118,13 +118,9 @@ func (p *mediaPortPipeline) init(
 	if mc.Crypto != nil {
 		crypto = mc.Crypto.Profile.String()
 	}
-	var dtmfInfo sdp.DTMFInfo
-	if d := mc.Audio.DTMF; d != nil {
-		dtmfInfo = *d
-	}
 	p.conf.log.Infow("using codecs",
 		"audio-codec", mc.Audio.Codec.Info().SDPName, "audio-rtp", mc.Audio.Type,
-		"dtmf-rate", dtmfInfo.Rate, "dtmf-rtp", dtmfInfo.Type,
+		"dtmf-rtp", mc.Audio.DTMFType,
 		"srtp", crypto,
 	)
 
@@ -191,15 +187,14 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	p.audioToRoom = audioType
 	mux.Register(mc.Audio.Type, audioType)
 
-	if d := mc.Audio.DTMF; d != nil && d.Type != 0 {
-		name := fmt.Sprintf("%s/%d", dtmf.SDPNameOnly, d.Rate)
+	if mc.Audio.DTMFType != 0 {
 		p.dtmfHandler = dtmfToRoom // Close doesn't propagate through rtp.HandlerFunc
 		dtmfType := newRTPHandlerCount(
-			newRTPStatsHandler(p.conf.mon, name, rtp.HandlerFunc(p.handleEventRTP)),
+			newRTPStatsHandler(p.conf.mon, dtmf.SDPNameAndRate, rtp.HandlerFunc(p.handleEventRTP)),
 			&p.conf.stats.DTMFPackets, &p.conf.stats.DTMFBytes,
 		)
 		p.dtmfToRoom = dtmfType
-		mux.Register(d.Type, dtmfType)
+		mux.Register(mc.Audio.DTMFType, dtmfType)
 	}
 
 	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.conf.stats.MuxStats)
@@ -242,17 +237,12 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 		return fmt.Errorf("failed to open write stream: %w", err)
 	}
 
-	var dtmfInfo sdp.DTMFInfo
-	if d := mc.Audio.DTMF; d != nil {
-		dtmfInfo = *d
-	}
-
 	// Latency measurement: shared timestamp between entry (PCM writer) and exit (RTP writer).
 	var outboundLatencyEntry atomic.Int64
 
 	codecInfo := mc.Audio.Codec.Info()
 	w = newLatencyRTPExit(w, &outboundLatencyEntry, &p.conf.stats.LatencyOut)
-	w = newRTPStatsWriter(p.conf.mon, mc.Audio.Type, dtmfInfo.Type, codecInfo.SDPName, dtmf.SDPNameOnly, w)
+	w = newRTPStatsWriter(p.conf.mon, mc.Audio.Type, mc.Audio.DTMFType, codecInfo.SDPName, dtmf.SDPName, w)
 	s := rtp.NewSeqWriter(w)
 	audioOutRTP := s.NewStream(mc.Audio.Type, codecInfo.RTPClockRate)
 
@@ -275,7 +265,7 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 	p.audioToPort = audioOut
 	p.mixerToPort = audioOut
 
-	if dtmfInfo.Type != 0 {
+	if mc.Audio.DTMFType != 0 {
 		var dtmfAudio msdk.PCM16Writer = nil
 		if p.conf.opts.DTMFAudio {
 			// Add separate mixer for DTMF audio.
@@ -291,15 +281,11 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 		}
 
 		p.dtmfToPort = &dtmfOutWriter{
-			log:        p.conf.log,
-			pcmRate:    dtmfInfo.Rate,
-			ctx:        p.ctx,
-			dtmfEvents: s.NewStream(dtmfInfo.Type, dtmfInfo.Rate),
-			dtmfAudio:  dtmfAudio,
-			getTimestamp: func() uint32 {
-				audioTs := audioOutRTP.GetCurrentTimestamp()
-				return uint32(uint64(audioTs) * uint64(dtmfInfo.Rate) / uint64(codecInfo.RTPClockRate))
-			},
+			log:          p.conf.log,
+			ctx:          p.ctx,
+			dtmfEvents:   s.NewStream(mc.Audio.DTMFType, dtmf.SampleRate),
+			dtmfAudio:    dtmfAudio,
+			getTimestamp: audioOutRTP.GetCurrentTimestamp,
 		}
 	}
 	return nil
@@ -444,8 +430,7 @@ func (s *serializedRTPHandler) Close() {
 
 // dtmfOutWriter sends SipDTMF as RFC 4733 telephone-events (optional in-band audio).
 type dtmfOutWriter struct {
-	log     logger.Logger
-	pcmRate int
+	log logger.Logger
 
 	mu           sync.Mutex
 	ctx          context.Context // canceled by pipeline Close, aborts an in-flight digit train
@@ -459,7 +444,7 @@ func (w *dtmfOutWriter) String() string {
 }
 
 func (w *dtmfOutWriter) SampleRate() int {
-	return 0
+	return dtmf.SampleRate
 }
 
 func (w *dtmfOutWriter) Close() error {
@@ -491,7 +476,7 @@ func (w *dtmfOutWriter) WriteSample(sample string) error {
 	if w.dtmfEvents != nil {
 		rtpTs = w.getTimestamp() // TODO: Maybe time to introduce the auto timestamp feature?
 	}
-	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, w.pcmRate, rtpTs, sample)
+	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, rtpTs, sample)
 	if err != nil {
 		return err
 	}

@@ -429,9 +429,6 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 
 	for _, codec := range allAudioCodecs() {
 		info := codec.Info()
-		if strings.HasPrefix(info.SDPName, "opus/") {
-			continue // TODO: validate opus
-		}
 		t.Run(strings.ReplaceAll(info.SDPName, "/", "-"), func(t *testing.T) {
 			for _, resample := range []bool{true, false} {
 				t.Run(fmt.Sprintf("resample=%t", resample), func(t *testing.T) {
@@ -588,7 +585,7 @@ func TestPipelineChains(t *testing.T) {
 				RoomSampleRate, RoomSampleRate, sampleRate, codecName, sampleRate, codecName, clockRate)
 			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->%d) -> LatencyExit -> WriteCloserSwitch(nil)",
 				codecName, clockRate, payloadType, codecName, sampleRate, RoomSampleRate)
-			dtmfOutChain := "WriteCloserSwitch(-1) -> dtmfOutWriter(dtmfAudio: false)"
+			dtmfOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> dtmfOutWriter(dtmfAudio: false)", clockRate)
 			dtmfInChain := fmt.Sprintf("StatsHandler(telephone-event/%d) -> HandlerFunc", clockRate)
 			assert.Equal(t, audioOutChain, mp.GetOutboundAudioWriter().String(), "out audio chain mismatch")
 			assert.Equal(t, audioInChain, mp.pipeline.audioToRoom.String(), "in audio chain mismatch")
