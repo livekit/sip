@@ -1469,8 +1469,9 @@ func TestTransferErrorDetails(t *testing.T) {
 		{
 			Name: "rejected by the transferee",
 			Err:  psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w", sipStatus),
-			// ApplySIPStatus takes the code from the SIP status.
-			Code:      psrpc.ResourceExhausted,
+			// Code is left unset: a SIP status decides it, so the expected value
+			// is derived below rather than pinned to whatever the SIP-to-gRPC
+			// table maps 486 to today.
 			Reason:    livekit.SIPTransferReason_STR_REJECTED,
 			SIPStatus: sipStatus,
 		},
@@ -1499,9 +1500,16 @@ func TestTransferErrorDetails(t *testing.T) {
 			require.Error(t, err)
 			require.ErrorIs(t, err, c.Err, "the original error must stay unwrappable")
 
+			wantCode := c.Code
+			if c.SIPStatus != nil {
+				// The SIP status decides the code, not the code the incoming
+				// error arrived with.
+				wantCode = psrpc.ErrorCodeFromGRPC(c.SIPStatus.GRPCStatus().Code())
+				require.NotEqual(t, psrpc.UpstreamClientError, wantCode)
+			}
 			code, ok := psrpc.GetErrorCode(err)
 			require.True(t, ok)
-			require.Equal(t, c.Code, code)
+			require.Equal(t, wantCode, code)
 
 			transferErr := livekit.SIPTransferErrorFrom(err)
 			require.NotNil(t, transferErr, "the transfer reason must reach the caller on the error")
