@@ -243,7 +243,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SDP size in bytes",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     sizeBuckets,
-	}, []string{"type"}))
+	}, []string{"type", "source"}))
 
 	m.sdpParsed = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -540,12 +540,16 @@ func (c *CallMonitor) PeerSDP(names []string, reinvite bool) {
 	}
 }
 
-func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
+func (c *CallMonitor) SDPSize(sz int, isOffer bool, isFromRemote bool) {
 	typ := "answer"
 	if isOffer {
 		typ = "offer"
 	}
-	c.m.sdpSize.WithLabelValues(typ).Observe(float64(sz))
+	source := "local"
+	if isFromRemote {
+		source = "remote"
+	}
+	c.m.sdpSize.WithLabelValues(typ, source).Observe(float64(sz))
 }
 
 func (m *Monitor) TransferStarted(dir CallDir) {

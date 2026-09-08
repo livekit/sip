@@ -409,9 +409,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	existing := s.byLocalTag[cc.ID()]
 	s.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
-		if existing.LateAnswerPending() {
-			// Our offer from the 200 OK has not been answered yet. Negotiating a new offer now would
-			// discard the pending one and break the late answer when the ACK arrives.
+		if existing.lateAnswerPending.Load() {
 			existing.log().Infow("rejecting reinvite, late answer pending", "cseq", cc.InviteCSeq())
 			cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 			return nil
@@ -718,32 +716,30 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 }
 
 type inboundCall struct {
-	s           *Server
-	tid         traceid.ID
-	logPtr      atomic.Pointer[logger.Logger]
-	cc          *sipInbound
-	mon         *stats.CallMonitor
-	state       *CallState
-	callStart   time.Time
-	extraAttrs  map[string]string
-	attrsToHdr  map[string]string
-	ctx         context.Context
-	cancel      func()
-	closeReason atomic.Pointer[ReasonHeader]
-	call        *rpc.SIPCall
-	mmu         sync.Mutex
-	media       MediaPort
-	mediaCodecs *msdk.CodecSet
-	dtmf        chan dtmf.Event // buffered
-	endCall     chan EndCall    // buffered
-	lkRoom      RoomInterface   // LiveKit room; only active after correct pin is entered
-	callDur     func() time.Duration
-	joinDur     func() time.Duration
-	done        atomic.Bool
-	started     core.Fuse
-	// lateAnswerPending is set while we have sent an SDP offer in the 200 OK and have not yet
-	// processed the answer from the ACK.
-	lateAnswerPending atomic.Bool
+	s                 *Server
+	tid               traceid.ID
+	logPtr            atomic.Pointer[logger.Logger]
+	cc                *sipInbound
+	mon               *stats.CallMonitor
+	state             *CallState
+	callStart         time.Time
+	extraAttrs        map[string]string
+	attrsToHdr        map[string]string
+	ctx               context.Context
+	cancel            func()
+	closeReason       atomic.Pointer[ReasonHeader]
+	call              *rpc.SIPCall
+	mmu               sync.Mutex
+	media             MediaPort
+	mediaCodecs       *msdk.CodecSet
+	dtmf              chan dtmf.Event // buffered
+	endCall           chan EndCall    // buffered
+	lkRoom            RoomInterface   // LiveKit room; only active after correct pin is entered
+	callDur           func() time.Duration
+	joinDur           func() time.Duration
+	done              atomic.Bool
+	started           core.Fuse
+	lateAnswerPending atomic.Bool // later offer generated, answer pending
 	stats             Stats
 	sigTs             SignalingTimestamps
 	jitterBuf         bool
@@ -914,7 +910,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		pinPrompt = true
 	}
 
-	rawSDP := req.Body()
+	sdpOffer := req.Body()
 	log := c.log()
 	if h := req.ContentLength(); h != nil {
 		log = log.WithValues("contentLength", int(*h))
@@ -932,7 +928,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 
 	rejectMedia := func(err error) error {
 		sipReason := sip.StatusInternalServerError
-		log := log.WithValues("sdp", string(rawSDP))
+		log := log.WithValues("sdp", string(sdpOffer))
 		status, term := callDropped, stats.ServerError("media-failed")
 		if errors.Is(err, sdp.ErrNoCommonMedia) {
 			status, term = callMediaFailed, stats.ClientError("no-common-codec")
@@ -968,37 +964,32 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return rejectMedia(err)
 	}
 
+	var sdpBody []byte // To be sent with 200 OK
 	var expectingLateAnswer bool
-	if len(rawSDP) == 0 {
-		expectingLateAnswer = featureFlagEnabled(disp.FeatureFlags, lateOfferFeatureFlag)
-		if !expectingLateAnswer {
-			log.Infow("Offerless INVITE, but late offer is not enabled for this project")
-		} else {
-			log.Infow("Offerless INVITE")
+	if len(sdpOffer) == 0 {
+		if !featureFlagEnabled(disp.FeatureFlags, lateOfferFeatureFlag) {
+			err := SDPError{Err: fmt.Errorf("received INVITE without offer, late offer disabled")}
+			return rejectMedia(err)
 		}
-	}
-
-	var sdpBody []byte
-	if expectingLateAnswer {
+		log.Infow("later offer enabled")
+		expectingLateAnswer = true
 		c.lateAnswerPending.Store(true)
 		sdpBody, err = c.media.GenerateOffer()
 		if err != nil {
 			return rejectMedia(err)
 		}
-		c.mon.SDPSize(len(sdpBody), true)
+		c.mon.SDPSize(len(sdpBody), true, false)
+	} else {
+		c.mon.SDPSize(len(sdpOffer), true, true)
+		sdpBody, err = c.negotiateMedia(sdpOffer)
+		if err != nil {
+			return rejectMedia(err)
+		}
+		c.mon.SDPSize(len(sdpBody), false, false)
 	}
 
 	ok := false
 	if pinPrompt {
-		// We can't negotiate media until we receive an answer.
-		if !expectingLateAnswer {
-			// Negotiate before Accept so pin prompts and DTMF have a live pipeline.
-			// Encryption is picked here, before the room is selected.
-			sdpBody, err = c.negotiateMedia(rawSDP)
-			if err != nil {
-				return rejectMedia(err)
-			}
-		}
 		c.connectPinDTMF()
 		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
 			return err // could be success if the caller hung up
@@ -1024,12 +1015,6 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	status := CallRinging
 	if pinPrompt {
 		status = CallActive
-	} else if !expectingLateAnswer {
-		// We can't negotiate media until we've received an answer.
-		sdpBody, err = c.negotiateMedia(rawSDP)
-		if err != nil {
-			return rejectMedia(err)
-		}
 	}
 
 	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
@@ -1145,6 +1130,7 @@ func (c *inboundCall) acceptCallAndWaitForMedia(ctx context.Context, disp CallDi
 				c.log().Infow("unsupported content type", "contentType", h.Value())
 			}
 		}
+		c.mon.SDPSize(len(sdp), false, true)
 		if err := c.negotiateMediaForLateAnswer(sdp); err != nil {
 			return false, nil, err
 		}
@@ -1297,7 +1283,7 @@ func (c *inboundCall) updateCallStateAudioLocked() error {
 	return nil
 }
 
-func (c *inboundCall) negotiateMedia(sdpData []byte) ([]byte, error) {
+func (c *inboundCall) negotiateMedia(sdpOffer []byte) ([]byte, error) {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	if c.media == nil {
@@ -1308,14 +1294,12 @@ func (c *inboundCall) negotiateMedia(sdpData []byte) ([]byte, error) {
 	}
 	defer c.mon.StageDurTimer("start-media")()
 
-	c.mon.SDPSize(len(sdpData), true)
-	c.log().Debugw("SDP offer", "sdp", string(sdpData))
+	c.log().Debugw("SDP offer", "sdp", string(sdpOffer))
 
-	answerData, err := c.media.GenerateAnswer(sdpData)
+	answerData, err := c.media.GenerateAnswer(sdpOffer)
 	if err != nil {
 		return nil, err
 	}
-	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("SDP answer", "sdp", string(answerData))
 
 	if err = c.updateCallStateAudioLocked(); err != nil {
@@ -1337,9 +1321,6 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	}
 	defer c.mon.StageDurTimer("process-late-answer")()
 
-	// TODO(alexfish): Should we create a new stats histogram for late
-	// answers?
-	c.mon.SDPSize(len(answerData), false)
 	c.log().Debugw("Late SDP answer", "sdp", string(answerData))
 	if err := c.media.ProcessAnswer(answerData); err != nil {
 		return err
@@ -1351,13 +1332,6 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	c.cc.SetOwnSDP(localSDP)
 
 	return c.updateCallStateAudioLocked()
-}
-
-// LateAnswerPending reports whether the call sent an SDP offer in its 200 OK and is still
-// waiting for the answer in the ACK. While this is true, the offer/answer exchange is open
-// and a re-INVITE cannot be negotiated (RFC 3264 §5, RFC 3261 §14.2).
-func (c *inboundCall) LateAnswerPending() bool {
-	return c.lateAnswerPending.Load()
 }
 
 func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
