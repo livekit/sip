@@ -2188,6 +2188,8 @@ func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
 	c.respond(status, reason)
 }
 
+// TODO(alexfish): Remove this function in favor once re-invites are
+// consistently responded to with the MediaPort's local SDP.
 func (c *sipInbound) OwnSDP() []byte {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
