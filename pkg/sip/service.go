@@ -463,12 +463,8 @@ func transferReason(err error) (livekit.SIPTransferReason, *livekit.SIPStatus) {
 	return livekit.SIPTransferReason_STR_UNSPECIFIED, nil
 }
 
-// transferResponse reports the outcome of a transfer in the response.
-//
-// Deprecated: only STR_CALL_ENDED still needs this, because it is temporarily
-// reported as a success. Every other outcome travels on the error, see
-// transferError. Remove along with the response fields once STR_CALL_ENDED
-// becomes an error too.
+// transferResponse reports the outcome of a transfer in the response. Only
+// STR_CALL_ENDED still needs it, and it goes away once that becomes an error.
 func transferResponse(out transferOutcome) *rpc.InternalTransferSIPParticipantResponse {
 	reason, sipStatus := transferReason(out.Err)
 	status := livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL
