@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -287,7 +288,7 @@ type testSIPClientTransaction struct {
 }
 
 func (t *testSIPClientTransaction) Terminate() {
-	t.log.Infow("Terminating transaction %v", t)
+	t.log.Infow("Terminating transaction", "tx", fmt.Sprintf("%p", t))
 	if t.responses != nil {
 		close(t.responses)
 		t.responses = nil
@@ -331,7 +332,7 @@ func (t *testSIPClientTransaction) Cancel() error {
 }
 
 func (t *testSIPClientTransaction) SendResponse(resp *sip.Response) error {
-	t.log.Infow("SIP Response sent on transaction %v:\n%s\n", t, resp.String())
+	t.log.Infow("SIP Response sent on transaction", "tx", fmt.Sprintf("%p", t), "response", resp.String())
 	select {
 	case t.responses <- resp:
 		return nil
@@ -458,7 +459,7 @@ func (w *testSIPClient) TransactionRequest(req *sip.Request, options ...sipgo.Cl
 	if len(options) > 0 {
 		panic("options not supported for testSIPClient")
 	}
-	w.log.Infow("SIP TransactionRequest sent on client %v:\n%s\n", w, req.String())
+	w.log.Infow("SIP TransactionRequest sent on client", "client", fmt.Sprintf("%p", w), "request", req.String())
 	w.FillRequestBlanks(req)
 	sequence := w.sequence.Add(1)
 	tx := &testSIPClientTransaction{
@@ -481,7 +482,7 @@ func (w *testSIPClient) WriteRequest(req *sip.Request, options ...sipgo.ClientRe
 	if len(options) > 0 {
 		panic("options not supported for testSIPClient")
 	}
-	w.log.Infow("SIP WriteRequest sent on client", "client", w, "request", req.String())
+	w.log.Infow("SIP WriteRequest sent on client", "client", fmt.Sprintf("%p", w), "request", req.String())
 	w.FillRequestBlanks(req)
 	sequence := w.sequence.Add(1)
 	reqReq := &sipRequest{
@@ -654,7 +655,7 @@ type testSIPServerTransaction struct {
 
 func (t *testSIPServerTransaction) Terminate() {
 	t.terminateOnce.Do(func() {
-		t.log.Infow("Terminating server transaction %v", t)
+		t.log.Infow("Terminating server transaction", "tx", fmt.Sprintf("%p", t))
 		close(t.done)
 	})
 }
