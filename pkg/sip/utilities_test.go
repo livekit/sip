@@ -17,6 +17,8 @@ package sip
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
@@ -37,6 +40,13 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
+)
+
+const (
+	testSIPWait     = 2 * time.Second
+	testSIPSource   = "127.0.0.1:5060"
+	testMinimalSDP  = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+	testSIPTxBuffer = 16
 )
 
 // MockIOInfoClient is a no-op implementation of rpc.IOInfoClient for testing
@@ -347,15 +357,33 @@ type sipRequest struct {
 // Works by mocking SIPClient interface, and providing tests with channels to listen for messages on.
 // An interface mirroring sipgo.Client to be able to mock it in tests.
 type testSIPClient struct {
-	log          logger.Logger
-	client       *sipgo.Client
-	requests     chan *sipRequest
-	transactions chan *transactionRequest
-	sequence     uint64
+	log      logger.Logger
+	sequence atomic.Uint64
+
+	mu                     sync.Mutex
+	transactionByCallID    map[string][]*transactionRequest
+	transactionBySipCallID map[string][]*transactionRequest
+	requestByCallID        map[string][]*sipRequest
+	requestBySipCallID     map[string][]*sipRequest
+	wakeup                 chan struct{}
 }
 
 func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
-	sipgo.ClientRequestAddVia(w.client, req)
+	if req.Via() == nil {
+		via := &sip.ViaHeader{
+			ProtocolName:    "SIP",
+			ProtocolVersion: "2.0",
+			Transport:       req.Transport(),
+			Host:            "127.0.0.1",
+			Port:            5060,
+			Params:          sip.NewParams(),
+		}
+		if via.Transport == "" {
+			via.Transport = "UDP"
+		}
+		via.Params.Add("branch", sip.GenerateBranchN(16))
+		req.PrependHeader(via)
+	}
 	if req.From() == nil {
 		req.AppendHeader(&sip.FromHeader{Address: sip.Uri{User: "caller", Host: "example.com"}})
 	}
@@ -387,31 +415,66 @@ func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
 	}
 }
 
+func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ch := w.wakeup
+	w.wakeup = make(chan struct{})
+	defer close(ch)
+	form := txReq.req.From()
+	if form == nil {
+		panic("from header is required")
+	}
+	tag, ok := form.Params.Get("tag")
+	if !ok {
+		panic("tag is required")
+	}
+	sipCallID := txReq.req.CallID().Value()
+	w.transactionByCallID[tag] = append(w.transactionByCallID[tag], txReq)
+	w.transactionBySipCallID[sipCallID] = append(w.transactionBySipCallID[sipCallID], txReq)
+}
+
+func (w *testSIPClient) deliverReq(req *sipRequest) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ch := w.wakeup
+	w.wakeup = make(chan struct{})
+	defer close(ch)
+	form := req.req.From()
+	if form == nil {
+		panic("from header is required")
+	}
+	tag, ok := form.Params.Get("tag")
+	if !ok {
+		panic("tag is required")
+	}
+	sipCallID := req.req.CallID().Value()
+	w.requestByCallID[tag] = append(w.requestByCallID[tag], req)
+	w.requestBySipCallID[sipCallID] = append(w.requestBySipCallID[sipCallID], req)
+
+}
+
 func (w *testSIPClient) TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
 	if len(options) > 0 {
 		panic("options not supported for testSIPClient")
 	}
 	w.log.Infow("SIP TransactionRequest sent on client %v:\n%s\n", w, req.String())
 	w.FillRequestBlanks(req)
-	w.sequence++
+	sequence := w.sequence.Add(1)
 	tx := &testSIPClientTransaction{
 		log:       w.log,
-		responses: make(chan *sip.Response, 1),
+		responses: make(chan *sip.Response, testSIPTxBuffer),
 		cancels:   make(chan struct{}),
 		done:      make(chan struct{}),
-		err:       make(chan error),
+		err:       make(chan error, 1),
 	}
 	txReq := &transactionRequest{
-		sequence:    w.sequence,
+		sequence:    sequence,
 		req:         req,
 		transaction: tx,
 	}
-	select {
-	case w.transactions <- txReq:
-		return tx, nil
-	default:
-		return nil, errors.New("failed to add transaction request")
-	}
+	w.deliverTx(txReq)
+	return tx, nil
 }
 
 func (w *testSIPClient) WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error {
@@ -420,67 +483,353 @@ func (w *testSIPClient) WriteRequest(req *sip.Request, options ...sipgo.ClientRe
 	}
 	w.log.Infow("SIP WriteRequest sent on client", "client", w, "request", req.String())
 	w.FillRequestBlanks(req)
-	w.sequence++
+	sequence := w.sequence.Add(1)
 	reqReq := &sipRequest{
-		sequence: w.sequence,
+		sequence: sequence,
 		req:      req,
 	}
-	select {
-	case w.requests <- reqReq:
-		return nil
-	default:
-		return errors.New("failed to add request")
+	w.deliverReq(reqReq)
+	return nil
+}
+
+func (w *testSIPClient) removeTransactionLocked(txReqs []*transactionRequest) (*transactionRequest, bool) {
+	if len(txReqs) == 0 {
+		return nil, false
+	}
+	txReq := txReqs[0]
+	callID := txReq.req.From().Params.GetOr("tag", "")
+	sipCallID := txReq.req.CallID().Value()
+	byCallID := w.transactionByCallID[callID]
+	if len(byCallID) <= 0 {
+		panic("callID not found")
+	} else if txReq != byCallID[0] {
+		panic("unexpected transaction request")
+	}
+	w.transactionByCallID[callID] = byCallID[1:]
+
+	bySipCallID := w.transactionBySipCallID[sipCallID]
+	if len(bySipCallID) <= 0 {
+		panic("sipCallID not found")
+	} else if txReq != bySipCallID[0] {
+		panic("unexpected transaction request")
+	}
+	w.transactionBySipCallID[sipCallID] = bySipCallID[1:]
+	return txReq, true
+}
+
+func (w *testSIPClient) removeRequestLocked(reqs []*sipRequest) (*sipRequest, bool) {
+	if len(reqs) == 0 {
+		return nil, false
+	}
+	req := reqs[0]
+	callID := req.req.From().Params.GetOr("tag", "")
+	sipCallID := req.req.CallID().Value()
+	byCallID := w.requestByCallID[callID]
+	if len(byCallID) <= 0 {
+		panic("callID not found")
+	} else if req != byCallID[0] {
+		panic("unexpected transaction request")
+	}
+	if len(byCallID) == 1 {
+		delete(w.requestByCallID, callID)
+	} else {
+		w.requestByCallID[callID] = byCallID[1:]
+	}
+
+	bySipCallID := w.requestBySipCallID[sipCallID]
+	if len(bySipCallID) <= 0 {
+		panic("sipCallID not found")
+	} else if req != bySipCallID[0] {
+		panic("unexpected transaction request")
+	}
+	if len(bySipCallID) == 1 {
+		delete(w.requestBySipCallID, sipCallID)
+	} else {
+		w.requestBySipCallID[sipCallID] = bySipCallID[1:]
+	}
+	return req, true
+}
+
+func (w *testSIPClient) WaitTransactionTimeout(d time.Duration, callID string, sipCallID string) (*transactionRequest, error) {
+	if callID == "" && sipCallID == "" {
+		panic("callID or sipCallID is required")
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for {
+		w.mu.Lock()
+		if w.wakeup == nil {
+			panic("test client not closed")
+		}
+		if callID != "" {
+			txReq, ok := w.removeTransactionLocked(w.transactionByCallID[callID])
+			if ok {
+				w.mu.Unlock()
+				return txReq, nil
+			}
+		}
+		if sipCallID != "" {
+			txReq, ok := w.removeTransactionLocked(w.transactionBySipCallID[sipCallID])
+			if ok {
+				w.mu.Unlock()
+				return txReq, nil
+			}
+		}
+		wakeup := w.wakeup
+		w.mu.Unlock()
+
+		select {
+		case <-timer.C:
+			return nil, errors.New("timeout waiting for TransactionRequest")
+		case <-wakeup:
+			continue
+		}
+	}
+}
+func (w *testSIPClient) WaitRequestTimeout(d time.Duration, callID string, sipCallID string) (*sipRequest, error) {
+	if callID == "" && sipCallID == "" {
+		panic("callID or sipCallID is required")
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for {
+		w.mu.Lock()
+		if w.wakeup == nil {
+			panic("test client not closed")
+		}
+		if callID != "" {
+			reqs, ok := w.removeRequestLocked(w.requestByCallID[callID])
+			if ok {
+				w.mu.Unlock()
+				return reqs, nil
+			}
+		}
+		if sipCallID != "" {
+			reqs, ok := w.removeRequestLocked(w.requestBySipCallID[sipCallID])
+			if ok {
+				w.mu.Unlock()
+				return reqs, nil
+			}
+		}
+		wakeup := w.wakeup
+		w.mu.Unlock()
+
+		select {
+		case <-timer.C:
+			return nil, errors.New("timeout waiting for SIPRequest")
+		case <-wakeup:
+			continue
+		}
 	}
 }
 
 func (w *testSIPClient) Close() error {
-	if w.requests != nil {
-		close(w.requests)
-		w.requests = nil
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.wakeup != nil {
+		close(w.wakeup)
+		w.wakeup = nil
 	}
-	if w.transactions != nil {
-		close(w.transactions)
-		w.transactions = nil
-	}
-	return w.client.Close()
+	return nil
 }
 
-var createdClients = make(chan *testSIPClient, 10)
+var (
+	_ SIPClient             = (*testSIPClient)(nil)
+	_ sip.ClientTransaction = (*testSIPClientTransaction)(nil)
+	_ sip.ServerTransaction = (*testSIPServerTransaction)(nil)
+)
 
-func NewTestClientFunc(log logger.Logger) GetSipClientFunc {
-	return func(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
-		client, err := sipgo.NewClient(ua, options...)
-		if err != nil {
-			return nil, err
-		}
-		testClient := &testSIPClient{
-			log:          log,
-			client:       client,
-			requests:     make(chan *sipRequest, 10),         // Buffered to avoid blocking
-			transactions: make(chan *transactionRequest, 10), // Buffered to avoid blocking
-		}
+// testSIPServerTransaction fakes sipgo's ServerTransaction so tests can inject
+// requests into package handlers and observe Respond, without a sipgo Server.
+type testSIPServerTransaction struct {
+	log           logger.Logger
+	req           *sip.Request
+	responses     chan *sip.Response
+	acks          chan *sip.Request
+	cancels       chan *sip.Request
+	done          chan struct{}
+	err           chan error
+	terminateOnce sync.Once
+}
 
-		select {
-		case createdClients <- testClient:
-			return testClient, nil
-		default:
-			return nil, errors.New("failed to add test client")
-		}
+func (t *testSIPServerTransaction) Terminate() {
+	t.terminateOnce.Do(func() {
+		t.log.Infow("Terminating server transaction %v", t)
+		close(t.done)
+	})
+}
+
+func (t *testSIPServerTransaction) Done() <-chan struct{} {
+	return t.done
+}
+
+func (t *testSIPServerTransaction) Err() error {
+	if t.err == nil {
+		return nil
+	}
+	return <-t.err
+}
+
+func (t *testSIPServerTransaction) Respond(res *sip.Response) error {
+	t.log.Infow("SIP Respond on server transaction", "response", res.String())
+	select {
+	case <-t.done:
+		return errors.New("transaction terminated")
+	case t.responses <- res:
+		return nil
 	}
 }
 
-// TestClientConfig holds configuration for creating a test Client
-type TestClientConfig struct {
-	Region       string           // Defaults to "test"
-	Config       *config.Config   // Creates minimal config if nil
-	Monitor      *stats.Monitor   // Minimal monitor if nil
-	GetIOClient  GetStateHandler  // MockIOInfoClient if nil
-	GetSipClient GetSipClientFunc // NewTestClientFunc if nil
-	GetRoom      GetRoomFunc      // newTestRoom if nil
-	Handler      Handler          // empty TestHandler if nil
+func (t *testSIPServerTransaction) Acks() <-chan *sip.Request {
+	return t.acks
 }
 
-func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
+func (t *testSIPServerTransaction) Cancels() <-chan *sip.Request {
+	return t.cancels
+}
+
+func (t *testSIPServerTransaction) SendAck(req *sip.Request) {
+	if req == nil {
+		req = sip.NewRequest(sip.ACK, sip.Uri{})
+	}
+	select {
+	case <-t.done:
+	case t.acks <- req:
+	}
+}
+
+func (t *testSIPServerTransaction) SendCancel(req *sip.Request) {
+	if req == nil {
+		req = sip.NewRequest(sip.CANCEL, sip.Uri{})
+	}
+	select {
+	case <-t.done:
+	case t.cancels <- req:
+	}
+}
+
+func (t *testSIPServerTransaction) WaitResponseTimeout(tb testing.TB, d time.Duration) *sip.Response {
+	tb.Helper()
+	select {
+	case res, ok := <-t.responses:
+		if !ok {
+			tb.Fatal("server transaction closed while waiting for response")
+			return nil
+		}
+		return res
+	case <-time.After(d):
+		tb.Fatalf("timeout waiting for SIP response after %s", d)
+		return nil
+	}
+}
+
+// TestSIPConfig holds configuration for creating a testSIPHarness fixture.
+type TestSIPConfig struct {
+	Region      string          // Defaults to "test"
+	Config      *config.Config  // Creates minimal config if nil
+	Monitor     *stats.Monitor  // Minimal monitor if nil
+	GetIOClient GetStateHandler // MockIOInfoClient if nil
+	GetRoom     GetRoomFunc     // newTestRoom if nil
+	Handler     Handler         // empty TestHandler if nil
+}
+
+// testSIPHarness is a sipgo-less test fixture
+// It allows testing orchestration logic without sipgo, and specifically
+// without the need to work around certain peculiarities of the real thing
+// Inbound requests are managed via testSIPServerTransaction
+// Outbound requests are managed via testSIPClient
+type testSIPHarness struct {
+	log           logger.Logger
+	Client        *Client
+	Server        *Server
+	client        *testSIPClient
+	clientCreated atomic.Bool
+}
+
+// Wait for the package to send a SIP request to a remote endpoint
+func (h *testSIPHarness) WaitTransaction(tb testing.TB, timeout time.Duration, callID string, sipCallID string) *transactionRequest {
+	tb.Helper()
+	res, err := h.client.WaitTransactionTimeout(timeout, callID, sipCallID)
+	if err != nil {
+		tb.Fatalf("error waiting for TransactionRequest: %v", err)
+		return nil
+	}
+	return res
+}
+
+// Wait for the package to send a non-transaction SIP request to a remote endpoint
+func (h *testSIPHarness) WaitRequest(tb testing.TB, timeout time.Duration, callID string, sipCallID string) *sipRequest {
+	tb.Helper()
+	res, err := h.client.WaitRequestTimeout(timeout, callID, sipCallID)
+	if err != nil {
+		tb.Fatalf("error waiting for Request: %v", err)
+		return nil
+	}
+	return res
+}
+
+// Handle delivers req to the package as sipgo would: INVITE/ACK/BYE/NOTIFY/OPTIONS
+// hit Server handlers, anything else falls through to Client.OnRequest then OnNoRoute.
+// Dispatch runs in a goroutine because inbound Accept blocks until ACK.
+func (h *testSIPHarness) Handle(req *sip.Request) *testSIPServerTransaction {
+	if req.Source() == "" {
+		req.SetSource(testSIPSource)
+	}
+	if req.Destination() == "" {
+		req.SetDestination(testSIPSource)
+	}
+	tx := &testSIPServerTransaction{
+		log:       h.log,
+		req:       req,
+		responses: make(chan *sip.Response, testSIPTxBuffer),
+		acks:      make(chan *sip.Request, testSIPTxBuffer),
+		cancels:   make(chan *sip.Request, testSIPTxBuffer),
+		done:      make(chan struct{}),
+		err:       make(chan error, 1),
+	}
+	go h.dispatch(req, tx)
+	return tx
+}
+
+func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
+	log := slog.New(logger.ToSlogHandler(h.log))
+	switch req.Method {
+	case sip.INVITE:
+		h.Server.onInvite(log, req, tx)
+	case sip.ACK:
+		h.Server.onAck(log, req, tx)
+	case sip.BYE:
+		h.Server.onBye(log, req, tx)
+	case sip.NOTIFY:
+		h.Server.onNotify(log, req, tx)
+	case sip.OPTIONS:
+		h.Server.onOptions(log, req, tx)
+	default:
+		if h.Client != nil && h.Client.OnRequest(req, tx) {
+			return
+		}
+		h.Server.OnNoRoute(log, req, tx)
+	}
+}
+
+func (h *testSIPHarness) newClient(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
+	if h.clientCreated.Swap(true) {
+		panic("client must only be created once")
+	}
+	return h.client, nil
+}
+
+// NewTestSIP builds a test harness that replaces sipgo's client, server, and
+// transport layers. sipgo's message and transaction types are still used.
+//
+// When package needs to be tested as the server, use Handle().
+// When testing package client behavior, use WaitTransaction() or WaitRequest().
+//
+// NOTE: Most tests should use NewServiceTest.
+// This utility and driver is only here for two edge cases:
+// 1. Next-hop routing. If a message would be sent to a destination we cannot intercept.
+// 2. Noncompliant messages & behavior sipgo will not send or accept.
+func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 	t.Helper()
 	if cfg.Region == "" {
 		cfg.Region = "test"
@@ -532,16 +881,26 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 			return NewRPCStateHandler(&MockIOInfoClient{})
 		}
 	}
-	if cfg.GetSipClient == nil {
-		cfg.GetSipClient = NewTestClientFunc(log)
-	}
 	if cfg.GetRoom == nil {
 		cfg.GetRoom = newTestRoomConfig(nil)
 	}
 	if cfg.Handler == nil {
 		cfg.Handler = &TestHandler{}
 	}
-	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(cfg.GetSipClient), WithGetRoomClient(cfg.GetRoom))
+
+	h := &testSIPHarness{
+		log: log,
+		client: &testSIPClient{
+			log:                    log,
+			requestByCallID:        make(map[string][]*sipRequest),
+			requestBySipCallID:     make(map[string][]*sipRequest),
+			transactionByCallID:    make(map[string][]*transactionRequest),
+			transactionBySipCallID: make(map[string][]*transactionRequest),
+			wakeup:                 make(chan struct{}),
+		},
+	}
+
+	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(h.newClient), WithGetRoomClient(cfg.GetRoom))
 	client.SetHandler(cfg.Handler)
 
 	// Set up service config with minimal values
@@ -562,7 +921,22 @@ func NewOutboundTestClient(t testing.TB, cfg TestClientConfig) *Client {
 	t.Cleanup(func() {
 		client.Stop()
 	})
-	return client
+
+	srv := NewServer(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetRoomServer(cfg.GetRoom), WithClient(client))
+	srv.SetHandler(cfg.Handler)
+	srv.sconf = sconf
+	srv.sipUnhandled = client.OnRequest
+	t.Cleanup(srv.Stop)
+
+	h.Client = client
+	h.Server = srv
+	return h
+}
+
+// NewOutboundTestClient starts a Client with the sipgo-less mock. Prefer NewTestSIP
+// when the test needs to wait on transactions or inject inbound requests.
+func NewOutboundTestClient(t testing.TB, cfg TestSIPConfig) *Client {
+	return NewTestSIP(t, cfg).Client
 }
 
 // MinimalCreateSIPParticipantRequest creates a minimal valid request for testing.
@@ -574,12 +948,44 @@ func MinimalCreateSIPParticipantRequest() *rpc.InternalCreateSIPParticipantReque
 		Address:             "sip.example.com",
 		Number:              "+0987654321",
 		Hostname:            localIP.String(),
-		RoomName:            "test-room",
+		RoomName:            guid.New(guid.RoomPrefix + "TEST_"),
 		ParticipantIdentity: "test-participant",
 		ParticipantName:     "Test Participant",
-		SipCallId:           "test-call-id",
+		SipCallId:           guid.New(guid.SIPCallPrefix + "TEST_"),
 		Transport:           livekit.SIPTransport_SIP_TRANSPORT_UDP,
 		WsUrl:               "ws://localhost:7880",
 		Token:               "test-token",
 	}
+}
+
+// MinimalInviteRequest builds a UDP INVITE the inbound handlers will accept.
+func MinimalInviteRequest() *sip.Request {
+	to := sip.Uri{User: "+1234567890", Host: "sip.example.com", Port: 5060}
+	from := sip.Uri{User: "+0987654321", Host: "127.0.0.1", Port: 5060}
+	req := sip.NewRequest(sip.INVITE, to)
+	fromH := &sip.FromHeader{Address: from, Params: sip.NewParams()}
+	fromH.Params.Add("tag", sip.GenerateTagN(16))
+	req.AppendHeader(fromH)
+	req.AppendHeader(&sip.ToHeader{Address: to})
+	req.AppendHeader(&sip.ContactHeader{Address: from})
+	cid := sip.CallIDHeader("test-call-" + sip.GenerateTagN(16))
+	req.AppendHeader(&cid)
+	req.AppendHeader(&sip.CSeqHeader{SeqNo: 1, MethodName: sip.INVITE})
+	via := &sip.ViaHeader{
+		ProtocolName:    "SIP",
+		ProtocolVersion: "2.0",
+		Transport:       "UDP",
+		Host:            "127.0.0.1",
+		Port:            5060,
+		Params:          sip.NewParams(),
+	}
+	via.Params.Add("branch", "z9hG4bK"+sip.GenerateTagN(16))
+	req.AppendHeader(via)
+	maxfwd := sip.MaxForwardsHeader(70)
+	req.AppendHeader(&maxfwd)
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.SetBody([]byte(testMinimalSDP))
+	req.SetSource(testSIPSource)
+	req.SetDestination(testSIPSource)
+	return req
 }

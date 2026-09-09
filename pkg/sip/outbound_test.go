@@ -67,7 +67,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	addedRouteURI := sip.Uri{Host: "added-header.com", UriParams: sip.HeaderParams{{"lr", ""}}}
 	initialRouteHeader := sip.RouteHeader{Address: initialRouteURI}
 	addedRouteHeader := sip.RouteHeader{Address: addedRouteURI}
-	client := NewOutboundTestClient(t, TestClientConfig{})
+	h := NewTestSIP(t, TestSIPConfig{})
 	req := MinimalCreateSIPParticipantRequest()
 	req.Headers = map[string]string{
 		"Route": initialRouteHeader.Value(),
@@ -75,7 +75,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { // Allow test to continue
-		_, err := client.CreateSIPParticipant(ctx, req)
+		_, err := h.Client.CreateSIPParticipant(ctx, req)
 		if err != nil && ctx.Err() == nil {
 			// Only log error if context wasn't cancelled
 			t.Logf("CreateSIPParticipant error: %v", err)
@@ -83,26 +83,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	}()
 
 	t.Log("Waiting for INVITE to be sent")
-
-	var sipClient *testSIPClient
-	select {
-	case sipClient = <-createdClients:
-		t.Cleanup(func() { _ = sipClient.Close() })
-	case <-time.After(100 * time.Millisecond):
-		cancel()
-		require.Fail(t, "expected client to be created")
-		return
-	}
-
-	var tr *transactionRequest
-	select {
-	case tr = <-sipClient.transactions:
-		t.Cleanup(func() { tr.transaction.Terminate() })
-	case <-time.After(500 * time.Millisecond):
-		cancel()
-		require.Fail(t, "expected transaction request to be created")
-		return
-	}
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
 
 	t.Log("Received INVITE, validating")
 
@@ -116,8 +97,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 
 	t.Log("INVITE okay, sending fake response")
 
-	minimalSDP := []byte("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
-	response := sip.NewSDPResponseFromRequest(tr.req, minimalSDP)
+	response := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
 	require.NotNil(t, response, "NewSDPResponseFromRequest returned nil")
 	response.RemoveHeader("Record-Route")
 	rr1 := sip.RecordRouteHeader{Address: addedRouteURI}
@@ -127,17 +107,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	tr.transaction.SendResponse(response)
 
 	t.Log("Wait for ACK to be sent")
-
-	// Make sure ACK is okay
-	var ackReq *sipRequest
-	select {
-	case ackReq = <-sipClient.requests:
-		// All good
-	case <-time.After(100 * time.Millisecond):
-		cancel()
-		require.Fail(t, "expected ACK request to be created")
-		return
-	}
+	ackReq := h.WaitRequest(t, time.Second, req.SipCallId, "")
 
 	t.Log("Received ACK, validating")
 
@@ -155,7 +125,6 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 }
 
 const (
-	testMinimalSDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
 	// Simulates sipgo caching a DNS-resolved transport target on the INVITE.
 	testInviteCachedDestination = "10.0.0.1:5060"
 	testInviteTargetHost        = "sip.example.com"
@@ -166,41 +135,24 @@ const (
 // 200 OK is delivered to the transaction.
 func waitOutboundINVITEAndACK(
 	t *testing.T,
-	clientCfg TestClientConfig,
+	clientCfg TestSIPConfig,
 	participantReq *rpc.InternalCreateSIPParticipantRequest,
 	mutate func(tr *transactionRequest, resp *sip.Response),
-) (*testSIPClient, *transactionRequest, *sipRequest) {
+) (*testSIPHarness, *transactionRequest, *sipRequest) {
 
-	client := NewOutboundTestClient(t, clientCfg)
+	h := NewTestSIP(t, clientCfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	go func() {
-		_, err := client.CreateSIPParticipant(ctx, participantReq)
+		_, err := h.Client.CreateSIPParticipant(ctx, participantReq)
 		if err != nil && ctx.Err() == nil {
 			t.Logf("CreateSIPParticipant error: %v", err)
 			t.Fail()
 		}
 	}()
 
-	var sipClient *testSIPClient
-	select {
-	case sipClient = <-createdClients:
-		t.Cleanup(func() { _ = sipClient.Close() })
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected test SIP client to be created")
-		return nil, nil, nil
-	}
-
-	var tr *transactionRequest
-	select {
-	case tr = <-sipClient.transactions:
-		t.Cleanup(func() { tr.transaction.Terminate() })
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected INVITE transaction")
-		return sipClient, nil, nil
-	}
-
+	tr := h.WaitTransaction(t, time.Second, participantReq.SipCallId, "")
 	require.Equal(t, sip.INVITE, tr.req.Method)
 
 	resp := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
@@ -208,31 +160,18 @@ func waitOutboundINVITEAndACK(
 	mutate(tr, resp)
 	require.NoError(t, tr.transaction.SendResponse(resp))
 
-	var ackReq *sipRequest
-	select {
-	case ackReq = <-sipClient.requests:
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected ACK request")
-		return sipClient, tr, nil
-	}
-
+	ackReq := h.WaitRequest(t, time.Second, participantReq.SipCallId, "")
 	require.Equal(t, sip.ACK, ackReq.req.Method)
-	return sipClient, tr, ackReq
+	return h, tr, ackReq
 }
 
 // answerBYE waits for the call to send a BYE and responds 200 OK.
 // If we don't explicitly answer the BYE, then a test might hang, as sipOutbound
 // expects a response before closing the call.
-func answerBYE(t *testing.T, sipClient *testSIPClient, timeout time.Duration) {
+func answerBYE(t *testing.T, h *testSIPHarness, timeout time.Duration, callID string) {
 	t.Helper()
 
-	var byeTx *transactionRequest
-	select {
-	case byeTx = <-sipClient.transactions:
-	case <-time.After(timeout):
-		require.Fail(t, "expected BYE transaction")
-		return
-	}
+	byeTx := h.WaitTransaction(t, timeout, callID, "")
 	require.Equal(t, sip.BYE, byeTx.req.Method)
 
 	resp := sip.NewResponseFromRequest(byeTx.req, 200, "OK", nil)
@@ -250,7 +189,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 		)
 		contactURI := sip.Uri{Host: contactHost, Port: contactPort}
 
-		_, _, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		_, _, ackReq := waitOutboundINVITEAndACK(t, TestSIPConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
 			require.Equal(t, testInviteTargetHost, tr.req.Recipient.Host)
 			tr.req.SetDestination(testInviteCachedDestination)
 			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
@@ -266,7 +205,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 	t.Run("unchanged contact keeps cached destination", func(t *testing.T) {
 		contactURI := sip.Uri{Host: testInviteTargetHost, Port: 5060}
 
-		_, _, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		_, _, ackReq := waitOutboundINVITEAndACK(t, TestSIPConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
 			tr.req.SetDestination(testInviteCachedDestination)
 			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
 		})
@@ -282,7 +221,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 		proxyURI := sip.Uri{Host: "proxy.example.com", Port: 5060, UriParams: sip.HeaderParams{{"lr", ""}}}
 		contactURI := sip.Uri{Host: testInviteTargetHost, Port: 5060}
 
-		_, _, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		_, _, ackReq := waitOutboundINVITEAndACK(t, TestSIPConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
 			tr.req.SetDestination(testInviteCachedDestination)
 			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
 			resp.AppendHeader(&sip.RecordRouteHeader{Address: proxyURI})
@@ -391,7 +330,7 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			ended := make(chan sessionEnd, 1)
 
-			clientCfg := TestClientConfig{Handler: &TestHandler{
+			clientCfg := TestSIPConfig{Handler: &TestHandler{
 				OnSessionEndFunc: func(_ context.Context, _ *CallIdentifier, state *CallState, reason string) {
 					ended <- sessionEnd{reason: reason, info: state.Info()}
 				},
@@ -400,11 +339,11 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 			req := MinimalCreateSIPParticipantRequest()
 			req.WaitUntilAnswered = testCase.waitUntilAnswered
 			req.MaxCallDuration = durationpb.New(maxCallDuration)
-			sipClient, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
+			h, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
 				func(tr *transactionRequest, resp *sip.Response) {})
-			require.NotNil(t, sipClient)
+			require.NotNil(t, h)
 
-			answerBYE(t, sipClient, maxCallDuration+waitSlack)
+			answerBYE(t, h, maxCallDuration+waitSlack, req.SipCallId)
 
 			select {
 			case end := <-ended:
