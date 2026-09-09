@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/icholy/digest"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/status"
 
 	msdk "github.com/livekit/media-sdk"
 
@@ -1521,8 +1522,24 @@ func TestTransferErrorDetails(t *testing.T) {
 				require.Nil(t, got)
 				return
 			}
-			require.NotNil(t, got, "a SIP status attached by ApplySIPStatus must survive")
+			require.NotNil(t, got)
 			require.Equal(t, c.SIPStatus.Code, got.Code)
+
+			// The status rides both nested and standalone, so a client that
+			// cannot resolve SIPTransferError still finds it. See transferError.
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			var sawStatus, sawTransfer bool
+			for _, d := range st.Details() {
+				switch d.(type) {
+				case *livekit.SIPStatus:
+					sawStatus = true
+				case *livekit.SIPTransferError:
+					sawTransfer = true
+				}
+			}
+			require.True(t, sawTransfer, "SIPTransferError detail missing")
+			require.True(t, sawStatus, "standalone SIPStatus detail missing")
 		})
 	}
 }

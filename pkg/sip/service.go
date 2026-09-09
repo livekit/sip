@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/livekit/sipgo/transport"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -375,11 +376,20 @@ func transferError(out transferOutcome) error {
 	if !ok {
 		code = psrpc.Unknown
 	}
-	return psrpc.NewError(code, out.Err, &livekit.SIPTransferError{
+	details := []proto.Message{&livekit.SIPTransferError{
 		TransferId: out.TransferID,
 		Reason:     reason,
 		SipStatus:  sipStatus,
-	})
+	}}
+	if sipStatus != nil {
+		// Deliberately the same status twice. A client whose protocol predates
+		// SIPTransferError cannot resolve that detail, and the Go SDK swaps the
+		// twirp error for a status error before the caller sees it, so its
+		// metadata is out of reach too. This copy keeps SIPStatusFrom working
+		// for those clients. Remove once they have all moved on.
+		details = append(details, sipStatus)
+	}
+	return psrpc.NewError(code, out.Err, details...)
 }
 
 func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
