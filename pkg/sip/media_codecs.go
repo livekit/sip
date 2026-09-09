@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
@@ -40,8 +41,13 @@ func init() {
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
 		amrwb.SDPNameAndRate:    false, // optional
-		dtmf.SDPNameAndRate:     true,
 	})
+	for _, c := range msdk.Codecs() {
+		info := c.Info()
+		if strings.HasPrefix(info.SDPName, dtmf.SDPNameOnly+"/") {
+			defaultCodecs.SetEnabled(info.SDPName, true)
+		}
+	}
 }
 
 func DefaultCodecs() *msdk.CodecSet {
@@ -56,7 +62,9 @@ const codecOther = "other"
 func peerCodecNames(d sdp.MediaDesc) []string {
 	names := make([]string, 0, len(d.Codecs))
 	for _, c := range d.Codecs {
-		if d.DTMFType != 0 && c.Type == d.DTMFType {
+		if slices.ContainsFunc(d.DTMF, func(info sdp.DTMFInfo) bool {
+			return c.Type == info.Type
+		}) {
 			// DTMF is parsed out of a=rtpmap into DTMFType, but its payload type is
 			// still listed in m=audio, where it resolves to no codec. Appended below.
 			continue
@@ -69,8 +77,8 @@ func peerCodecNames(d sdp.MediaDesc) []string {
 			names = append(names, name)
 		}
 	}
-	if d.DTMFType != 0 {
-		names = append(names, dtmf.SDPNameAndRate)
+	for _, c := range d.DTMF {
+		names = append(names, fmt.Sprintf("%s/%d", dtmf.SDPNameOnly, c.Rate))
 	}
 	return names
 }
@@ -112,6 +120,7 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 	} else {
 		s = defaultCodecs.NewSet() // inherit from default
 	}
+	var dtmfRates []uint32
 	for _, codec := range m.Codecs {
 		name := codec.Name
 		if name == "" {
@@ -133,7 +142,13 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		}
 		name = fmt.Sprintf("%s/%d", name, rate)
 		s.SetEnabled(name, true)
+		if !slices.Contains(dtmfRates, rate) {
+			dtmfRates = append(dtmfRates, rate)
+		}
 	}
-	s.SetEnabled(dtmf.SDPNameAndRate, true)
+	slices.Sort(dtmfRates)
+	for _, rate := range dtmfRates {
+		s.SetEnabled(fmt.Sprintf("%s/%d", dtmf.SDPNameOnly, rate), true)
+	}
 	return s, nil
 }

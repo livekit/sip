@@ -16,6 +16,7 @@ package sip
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -93,9 +94,10 @@ func requireAudioFlows(t testing.TB, src *mediaPort, dst *recvBuffer) {
 
 func testCodecSet(names ...string) *msdk.CodecSet {
 	set := msdk.NewCodecSet()
-	set.SetEnabled(dtmf.SDPNameAndRate, true)
 	for _, name := range names {
 		set.SetEnabled(name, true)
+		rate := strings.Split(name, "/")[1]
+		set.SetEnabled(fmt.Sprintf("%s/%s", dtmf.SDPNameOnly, rate), true)
 	}
 	return set
 }
@@ -111,10 +113,15 @@ func enabledAudioCodecs() []msdk.Codec {
 	return audio
 }
 
+func isAudioCodec(c msdk.Codec) bool {
+	_, ok := c.(msdk.AudioCodec)
+	return ok
+}
+
 func allAudioCodecs() []msdk.Codec {
 	var audio []msdk.Codec
 	for _, c := range msdk.Codecs() {
-		if _, ok := c.(msdk.AudioCodec); !ok {
+		if !isAudioCodec(c) {
 			continue // telephone-event and other non-audio codecs
 		}
 		audio = append(audio, c)
@@ -127,8 +134,8 @@ func answerCodec(t testing.TB, answerData []byte) string {
 	answer, err := parseAnswerWith(logger.NewTestLogger(t), nil, defaultCodecs, answerData)
 	require.NoError(t, err)
 	for _, c := range answer.Codecs {
-		if c.Codec == nil || (answer.DTMFType != 0 && c.Type == answer.DTMFType) {
-			continue
+		if !isAudioCodec(c.Codec) {
+			continue // telephone-event and other non-audio codecs
 		}
 		return c.Codec.Info().SDPName
 	}
@@ -156,13 +163,14 @@ func TestMediaPortCodecSet(t *testing.T) {
 
 		var names []string
 		for _, c := range offer.Codecs {
-			if c.Codec == nil || (offer.DTMFType != 0 && c.Type == offer.DTMFType) {
-				continue
+			if !isAudioCodec(c.Codec) {
+				continue // telephone-event and other non-audio codecs
 			}
 			names = append(names, c.Codec.Info().SDPName)
 		}
 		assert.Equal(t, []string{g711.ALawSDPNameAndRate}, names)
-		assert.NotZero(t, offer.DTMFType, "DTMF should still be offered")
+		assert.NotNil(t, offer.DTMF)
+		assert.NotZero(t, offer.DTMF[0].Type, "DTMF type should still be offered")
 	})
 
 	t.Run("answer picks an enabled codec", func(t *testing.T) {
