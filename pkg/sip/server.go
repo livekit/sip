@@ -176,7 +176,8 @@ type Server struct {
 
 	cli *Client // optional, for outbound reinvite handling
 
-	res mediaRes
+	res             mediaRes
+	dtlsCertificate *dtlsCertificate
 }
 
 type inProgressInvite struct {
@@ -204,6 +205,10 @@ func WithClient(cli *Client) ServerOption {
 	return func(s *Server) {
 		s.cli = cli
 	}
+}
+
+func WithDTLSSRTPCertificate(cert *dtlsCertificate) ServerOption {
+	return func(s *Server) { s.dtlsCertificate = cert }
 }
 
 // WithInterceptors configures all sip handlers to be wrapped with the given set
