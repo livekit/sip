@@ -371,6 +371,9 @@ type MediaOptions struct {
 	Codecs               *msdk.CodecSet
 	Encryption           sdp.Encryption
 	DTMFAudio            bool
+	DTLSEnabled          bool
+	DTLSCertificate      *dtlsCertificate
+	DTLSHandshakeTimeout time.Duration
 }
 
 func (o *MediaOptions) ApplyDefaults() {
@@ -532,6 +535,7 @@ type mediaPort struct {
 	localSDP   []byte
 	offer      *sdp.Offer
 	negotiated *sdp.MediaConfig
+	dtls       *dtlsMediaConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -785,6 +789,22 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
+	dtlsConf, err := parseDTLSOffer(offerData, p.opts.DTLSCertificate)
+	if err != nil {
+		return nil, SDPError{Err: err}
+	}
+	if dtlsConf != nil && !p.opts.DTLSEnabled {
+		return nil, SDPError{Err: fmt.Errorf("%w: disabled", errDTLSSDP)}
+	}
+	if dtlsConf != nil {
+		p.mu.RLock()
+		activeDTLS := p.dtls
+		if sameDTLSRemoteTransport(activeDTLS, dtlsConf) {
+			reuseDTLSLocalTransport(dtlsConf, activeDTLS)
+		}
+		p.mu.RUnlock()
+	}
+
 	offer, err := parseOfferWith(p.log, p.mon, p.codecs, offerData)
 	if err != nil {
 		return nil, SDPError{Err: err}
@@ -793,16 +813,25 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	isReinvite := p.negotiated != nil
 	p.mu.RUnlock()
 	p.reportPeerCodecs(offer.MediaDesc, isReinvite)
-	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
+	answerEncryption := p.encryption
+	if dtlsConf != nil {
+		answerEncryption = sdp.EncryptionNone
+	}
+	answer, mc, err := offer.Answer(p.externalIP, p.Port(), answerEncryption, sdp.WithLocalProfiles(p.localCrypto))
 	if err != nil {
 		return nil, SDPError{Err: err}
+	}
+	if dtlsConf != nil {
+		if err := addDTLSAnswer(&answer.SDP, dtlsConf); err != nil {
+			return nil, SDPError{Err: err}
+		}
 	}
 
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
 		return nil, err
 	}
-	err = p.configure(mc, answerData)
+	err = p.configure(mc, dtlsConf, answerData)
 	if err != nil {
 		return nil, err
 	}
@@ -836,7 +865,7 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 		return err
 	}
 
-	err = p.configure(mc, localSDPBytes)
+	err = p.configure(mc, nil, localSDPBytes)
 	if err != nil {
 		return err
 	}
@@ -893,7 +922,7 @@ func parseAnswerWith(log logger.Logger, mon *stats.CallMonitor, codecs *msdk.Cod
 
 // Building pipeline
 
-func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
+func (p *mediaPort) configure(c *sdp.MediaConfig, dtlsConf *dtlsMediaConfig, localSDP []byte) error {
 	// Map the durable udpConn + WriteCloserSwitch anchors onto a fresh mediaPortPipeline.
 	// Rebuild from scratch under mu: closePipelineLocked (soft-closes the session via udpConn),
 	// Reopen the port, then Configure a new generation and Swap TX leaves into the anchors.
@@ -912,6 +941,9 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	}
 
 	changeSetSummary := NewChangeSetSummary(p.negotiated, c)
+	if !sameDTLSRemoteTransport(p.dtls, dtlsConf) {
+		changeSetSummary |= changeSetDTLSTransport
+	}
 
 	if changeSetSummary.includes(changeSetLocalAddr) {
 		return errors.New("unexpected local address change")
@@ -950,7 +982,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
 	}
 	if changeSetSummary.shouldReconfigure() {
-		if changeSetSummary != changeSetNew {
+		if changeSetSummary != changeSetNew && !changeSetSummary.includes(changeSetDTLSTransport) {
 			// Explicitly disable renegotiation for now
 			// Compatibility to today's behavior: return 200 OK, but don't reconfigure the pipeline
 			return nil
@@ -969,6 +1001,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 			stats:     p.stats,
 			onNewSSRC: p.mediaReceived.Break,
 			onPacket:  p.onNewMediaPacket,
+			dtls:      dtlsConf,
 		}
 		newPipeline, err := NewMediaPortPipeline(
 			pipelineConfig,
@@ -984,10 +1017,10 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 		audioToPort, dtmfToPort = newPipeline.GetConnectors() // These are not propagating Close()
 		p.pipeline = newPipeline
-
-		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
+		p.localSDP = localSDP
 	}
 	p.negotiated = c
+	p.dtls = dtlsConf
 	return nil
 }
 
@@ -1006,6 +1039,7 @@ const (
 	changeSetLocalAddr
 	changeSetRemoteAddr
 	changeSetPeerDirection
+	changeSetDTLSTransport
 )
 
 func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
@@ -1046,7 +1080,7 @@ func NewChangeSetSummary(current, new *sdp.MediaConfig) changeSetSummary {
 }
 
 func (c changeSetSummary) shouldReconfigure() bool {
-	return c&(changeSetNew|changeSetAudioCodec|changeSetDTMF|changeSetCrypto) != 0
+	return c&(changeSetNew|changeSetAudioCodec|changeSetDTMF|changeSetCrypto|changeSetDTLSTransport) != 0
 }
 
 func (c changeSetSummary) includes(feature changeSetSummary) bool {
