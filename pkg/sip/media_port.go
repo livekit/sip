@@ -371,6 +371,9 @@ type MediaOptions struct {
 	Codecs               *msdk.CodecSet
 	Encryption           sdp.Encryption
 	DTMFAudio            bool
+	DTLSEnabled          bool
+	DTLSCertificate      *dtlsCertificate
+	DTLSHandshakeTimeout time.Duration
 }
 
 func (o *MediaOptions) ApplyDefaults() {
@@ -785,6 +788,14 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return p.GetLocalSDP()
 	}
 
+	dtlsConf, err := parseDTLSOffer(offerData, p.opts.DTLSCertificate)
+	if err != nil {
+		return nil, SDPError{Err: err}
+	}
+	if dtlsConf != nil && !p.opts.DTLSEnabled {
+		return nil, SDPError{Err: fmt.Errorf("%w: disabled", errDTLSSDP)}
+	}
+
 	offer, err := parseOfferWith(p.log, p.mon, p.codecs, offerData)
 	if err != nil {
 		return nil, SDPError{Err: err}
@@ -793,16 +804,25 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	isReinvite := p.negotiated != nil
 	p.mu.RUnlock()
 	p.reportPeerCodecs(offer.MediaDesc, isReinvite)
-	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
+	answerEncryption := p.encryption
+	if dtlsConf != nil {
+		answerEncryption = sdp.EncryptionNone
+	}
+	answer, mc, err := offer.Answer(p.externalIP, p.Port(), answerEncryption, sdp.WithLocalProfiles(p.localCrypto))
 	if err != nil {
 		return nil, SDPError{Err: err}
+	}
+	if dtlsConf != nil {
+		if err := addDTLSAnswer(&answer.SDP, dtlsConf); err != nil {
+			return nil, SDPError{Err: err}
+		}
 	}
 
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
 		return nil, err
 	}
-	err = p.configure(mc, answerData)
+	err = p.configure(mc, dtlsConf, answerData)
 	if err != nil {
 		return nil, err
 	}
@@ -836,7 +856,7 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 		return err
 	}
 
-	err = p.configure(mc, localSDPBytes)
+	err = p.configure(mc, nil, localSDPBytes)
 	if err != nil {
 		return err
 	}
@@ -893,7 +913,7 @@ func parseAnswerWith(log logger.Logger, mon *stats.CallMonitor, codecs *msdk.Cod
 
 // Building pipeline
 
-func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
+func (p *mediaPort) configure(c *sdp.MediaConfig, dtlsConf *dtlsMediaConfig, localSDP []byte) error {
 	// Map the durable udpConn + WriteCloserSwitch anchors onto a fresh mediaPortPipeline.
 	// Rebuild from scratch under mu: closePipelineLocked (soft-closes the session via udpConn),
 	// Reopen the port, then Configure a new generation and Swap TX leaves into the anchors.
@@ -969,6 +989,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 			stats:     p.stats,
 			onNewSSRC: p.mediaReceived.Break,
 			onPacket:  p.onNewMediaPacket,
+			dtls:      dtlsConf,
 		}
 		newPipeline, err := NewMediaPortPipeline(
 			pipelineConfig,

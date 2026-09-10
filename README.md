@@ -67,6 +67,10 @@ psrpc: # optional gzip compression of psrpc bus payloads, see the compatibility 
     quality: gzip level 1-9. 0, the default, disables compression
     threshold: payload bytes below which compression is skipped (default 1024)
     max_decompressed_size: cap on an inbound payload after decompression, 0 for unlimited
+enable_opus: offer the Opus codec for SIP media (default false, experimental)
+dtls_srtp:
+  enabled: accept WebRTC-style DTLS-SRTP offers (default false, experimental)
+  handshake_timeout: maximum time for ICE/DTLS setup (default 10s)
 ```
 
 The config file can be added to a mounted volume with its location passed in the SIP_CONFIG_FILE env var, or its body can be passed in the SIP_CONFIG_BODY env var.
@@ -83,6 +87,16 @@ The config file can be added to a mounted volume with its location passed in the
 >
 > The remaining `psrpc` keys (`max_attempts`, `timeout`, `backoff`, `buffer_size`) are accepted for config
 > parity with LiveKit server, but SIP does not read them.
+
+#### Codecs
+
+PCMU, PCMA, G722, and DTMF are negotiated by default. Opus is **disabled by default** - set `enable_opus: true` to offer it. Validate interoperability with your SIP infrastructure before enabling in production.
+
+When enabled, Opus (`opus/48000/2`, 48 kHz mono) is preferred over G722 and G711. Peers that do not support Opus fall back to G722, then G711 transparently.
+
+#### DTLS-SRTP
+
+Set `dtls_srtp.enabled: true` to accept inbound `UDP/TLS/RTP/SAVPF` offers with DTLS fingerprints. ICE-lite offers, including those used by Meta WhatsApp Business Calling, are supported over IPv4. Existing RTP and SDES-SRTP calls continue to use their original media paths.
 
 ### Using the SIP service
 
