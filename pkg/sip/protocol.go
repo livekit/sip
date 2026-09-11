@@ -70,6 +70,7 @@ type EndCall struct {
 	Term    stats.Termination
 	Reason  livekit.DisconnectReason // disconnect reason for LiveKit participant
 	Headers map[string]string        // extra headers to send to SIP peer
+	Code    sip.StatusCode           // SIP status for an unanswered call; zero picks the default
 }
 
 var statusNamesMap = map[int]string{
