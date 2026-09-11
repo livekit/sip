@@ -560,6 +560,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cmon.InviteErrorShort(stats.ClientError("auth-other"))
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.NotFound, "auth failure")
+	case AuthRejectedAsError:
+		// Own metric reason so auth-service contract violations show up as their own series.
+		cmon.InviteErrorShort(stats.ClientError("auth-rejected-as-error"))
+		log.Warnw("Rejecting inbound, auth service returned a rejection as an error", nil)
+		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
+		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was rejected by the auth service")
 	case AuthPassword:
 		if s.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.

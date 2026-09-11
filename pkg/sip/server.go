@@ -75,8 +75,11 @@ const (
 	AuthAccept
 	AuthQuotaExceeded
 	AuthNoTrunkFound
-	// AuthFailureUnknown is a catch-all error type.
-	AuthFailureUnknown
+	// AuthRejectedAsError is a rejection the auth service reported as an error
+	// instead of a response.
+	AuthRejectedAsError
+	// AuthFailureOther is a catch-all value.
+	AuthFailureOther
 )
 
 type AuthInfo struct {

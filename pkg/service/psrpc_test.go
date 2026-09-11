@@ -23,12 +23,16 @@ func (c fakeIOClient) GetSIPTrunkAuthentication(context.Context, *rpc.GetSIPTrun
 	return c.resp, c.err
 }
 
-func TestGetAuthCredentials(t *testing.T) {
-	call := &rpc.SIPCall{
+func testCall() *rpc.SIPCall {
+	return &rpc.SIPCall{
 		LkCallId: "call",
 		From:     &livekit.SIPUri{User: "from"},
 		To:       &livekit.SIPUri{User: "to"},
 	}
+}
+
+func TestGetAuthCredentials(t *testing.T) {
+	call := testCall()
 	cases := []struct {
 		name string
 		resp *rpc.GetSIPTrunkAuthenticationResponse
@@ -53,8 +57,42 @@ func TestGetAuthCredentials(t *testing.T) {
 		})
 	}
 
-	t.Run("transport error", func(t *testing.T) {
-		_, err := GetAuthCredentials(context.Background(), fakeIOClient{err: psrpc.ErrNoResponse}, call)
-		require.True(t, errors.Is(err, psrpc.ErrNoResponse))
-	})
+}
+
+func TestGetAuthCredentials_ServiceErrorPassesThrough(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"no response", psrpc.ErrNoResponse},
+		{"timeout", psrpc.ErrRequestTimedOut},
+		{"canceled", psrpc.ErrRequestCanceled},
+		{"internal", psrpc.NewErrorf(psrpc.Internal, "db down")},
+		{"uncoded", errors.New("plain")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := GetAuthCredentials(context.Background(), fakeIOClient{err: c.err}, testCall())
+			require.ErrorIs(t, err, c.err)
+		})
+	}
+}
+
+func TestGetAuthCredentials_RejectionErrorBecomesResult(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"failed precondition", psrpc.NewErrorf(psrpc.FailedPrecondition, "multiple trunks")},
+		{"invalid argument", psrpc.NewErrorf(psrpc.InvalidArgument, "bad source ip")},
+		{"permission denied", psrpc.NewErrorf(psrpc.PermissionDenied, "anycast not allowed")},
+		{"not found", psrpc.NewErrorf(psrpc.NotFound, "no trunk")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, err := GetAuthCredentials(context.Background(), fakeIOClient{err: c.err}, testCall())
+			require.NoError(t, err)
+			require.Equal(t, sip.AuthRejectedAsError, r.Result)
+		})
+	}
 }

@@ -241,6 +241,21 @@ func TestService_AuthFailureOther(t *testing.T) {
 	})
 }
 
+func TestService_AuthFailureRejectedAsError(t *testing.T) {
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthRejectedAsError}, nil
+		},
+	}
+	testInvite(t, h, false, "foo", "bar", func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(403), res.StatusCode)
+	})
+}
+
 func TestService_DispatchUnavailable(t *testing.T) {
 	const (
 		expectedFromUser = "foo"
