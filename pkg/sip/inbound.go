@@ -558,7 +558,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk found for call")
 	case AuthFailureOther:
 		cmon.InviteErrorShort(stats.ClientError("auth-other"))
-		cc.RespondAndDrop(sip.StatusUnauthorized, "Auth failure")
+		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.NotFound, "auth failure")
 	case AuthPassword:
 		if s.conf.HideInboundPort {

@@ -237,7 +237,7 @@ func TestService_AuthFailureOther(t *testing.T) {
 		require.Equal(t, sip.StatusCode(100), res.StatusCode)
 
 		res = getResponseOrFail(t, tx)
-		require.Equal(t, sip.StatusCode(401), res.StatusCode)
+		require.Equal(t, sip.StatusCode(403), res.StatusCode)
 	})
 }
 
