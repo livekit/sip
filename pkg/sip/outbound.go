@@ -795,7 +795,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	}
 
 	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		info.AudioCodec = audio.Codec.Info().SDPName
+		info.AudioCodec = audio.Info.SDPFullName()
 		if r := c.lkRoom.Room(); r != nil {
 			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}

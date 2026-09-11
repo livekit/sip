@@ -32,7 +32,6 @@ import (
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
-	"github.com/livekit/media-sdk/opus"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/logger"
@@ -40,47 +39,19 @@ import (
 
 const testDTMFPT = byte(101)
 
-func audioCodecByName(t testing.TB, name string) msdk.AudioCodec {
+func audioCodecByName(t testing.TB, name string) msdk.CodecType {
 	t.Helper()
 	for _, c := range msdk.Codecs() {
-		if strings.EqualFold(c.Info().SDPName, name) {
-			ac, ok := c.(msdk.AudioCodec)
-			require.True(t, ok, "codec %s is not audio", name)
-			return ac
+		if strings.EqualFold(c.SDPName(), name) {
+			require.True(t, c.Info().Kind == msdk.Audio, "codec %s is not audio", name)
+			return c
 		}
 	}
 	t.Skipf("codec %s is not registered", name)
 	return nil
 }
 
-// Opus is not a registered SIP SDP codec; wrap media-sdk/opus so the pipeline
-// can encode/decode at RoomSampleRate (no resample).
-func testOpusCodec(t testing.TB) msdk.AudioCodec {
-	t.Helper()
-	log := logger.NewTestLogger(t)
-	return msdk.NewAudioCodec(msdk.CodecInfo{
-		SDPName:      "opus/48000",
-		SampleRate:   RoomSampleRate,
-		RTPClockRate: RoomSampleRate,
-	},
-		func(w msdk.PCM16Writer) msdk.WriteCloser[opus.Sample] {
-			d, err := opus.Decode(w, 1, log)
-			if err != nil {
-				panic(err)
-			}
-			return d
-		},
-		func(w msdk.WriteCloser[opus.Sample]) msdk.PCM16Writer {
-			e, err := opus.Encode(w, 1, log)
-			if err != nil {
-				panic(err)
-			}
-			return e
-		},
-	)
-}
-
-func testAudioPT(c msdk.AudioCodec) byte {
+func testAudioPT(c msdk.CodecType) byte {
 	info := c.Info()
 	if info.RTPIsStatic {
 		return info.RTPDefType
@@ -89,6 +60,7 @@ func testAudioPT(c msdk.AudioCodec) byte {
 }
 
 type dtmfCollector struct {
+	rate   int
 	mu     sync.Mutex
 	events []string
 }
@@ -103,7 +75,12 @@ func (c *dtmfCollector) String() string {
 	return res
 }
 
-func (c *dtmfCollector) SampleRate() int { return dtmf.SampleRate }
+func (c *dtmfCollector) SampleRate() int {
+	if c.rate > 0 {
+		return c.rate
+	}
+	return 8000
+}
 
 func (c *dtmfCollector) Close() error { return nil }
 
@@ -178,9 +155,9 @@ type pipelineHarness struct {
 	pipeline    *mediaPortPipeline
 	ssrcCount   atomic.Uint64
 	packetCount atomic.Uint64
+	audio       *sdp.CodecInfo
+	dtmf        *sdp.CodecInfo
 	codec       msdk.AudioCodec
-	audioPT     byte
-	dtmfPT      byte
 }
 
 func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
@@ -194,8 +171,8 @@ func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
 		port:      newUDPConn(log, local, false),
 		audioIn:   msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
 		audioOut:  msdk.NewWriteCloserSwitch[msdk.PCM16Sample](sampleRate),
-		dtmfIn:    msdk.NewWriteCloserSwitch[string](dtmf.SampleRate),
-		dtmfOut:   msdk.NewWriteCloserSwitch[string](dtmf.SampleRate),
+		dtmfIn:    msdk.NewWriteCloserSwitch[string](0),
+		dtmfOut:   msdk.NewWriteCloserSwitch[string](0),
 		roomAudio: &pcmCollector{sampleRate: sampleRate},
 		roomDTMF:  &dtmfCollector{},
 	}
@@ -223,23 +200,106 @@ func newPipelineHarness(t *testing.T, sampleRate int) *pipelineHarness {
 	return h
 }
 
+func dtmfCodec(s *msdk.CodecSet, typ byte, rate, ch int) *sdp.CodecInfo {
+	const name = dtmf.SDPNameOnly
+	c := sdp.CodecByNameWith(s, name)
+	ci := c.Info()
+	return &sdp.CodecInfo{
+		Type:  typ,
+		Codec: c,
+		Info: msdk.CodecInfo{
+			CodecTypeInfo: msdk.CodecTypeInfo{
+				Name:     name,
+				Kind:     msdk.Data,
+				Priority: ci.Priority - rate/8000,
+				FileExt:  ci.FileExt,
+			},
+			CodecConfig: msdk.CodecConfig{
+				SampleRate: rate,
+				Channels:   ch,
+				Params:     msdk.CodecParams{{Key: "0-16"}},
+			},
+			RTPClockRate: rate,
+		},
+	}
+}
+
+func staticCodec(s *msdk.CodecSet, typ byte, name string, rtpRate int, cc msdk.CodecConfig) sdp.CodecInfo {
+	c := sdp.CodecByNameWith(s, name)
+	ci := c.Info()
+	return sdp.CodecInfo{
+		Type:  typ,
+		Codec: c,
+		Info: msdk.CodecInfo{
+			CodecTypeInfo: msdk.CodecTypeInfo{
+				Name:        name,
+				Kind:        msdk.Audio,
+				RTPDefType:  typ,
+				RTPIsStatic: true,
+				Priority:    ci.Priority,
+				FileExt:     ci.FileExt,
+			},
+			CodecConfig:  cc,
+			RTPClockRate: rtpRate,
+		},
+	}
+}
+
+func dynamicCodec(s *msdk.CodecSet, typ byte, name string, rtpRate int, cc msdk.CodecConfig) sdp.CodecInfo {
+	c := sdp.CodecByNameWith(s, name)
+	ci := c.Info()
+	return sdp.CodecInfo{
+		Type:  typ,
+		Codec: c,
+		Info: msdk.CodecInfo{
+			CodecTypeInfo: msdk.CodecTypeInfo{
+				Name:     name,
+				Kind:     msdk.Audio,
+				Priority: ci.Priority,
+				FileExt:  ci.FileExt,
+			},
+			CodecConfig:  cc,
+			RTPClockRate: rtpRate,
+		},
+	}
+}
+
 func (h *pipelineHarness) mediaConfig() *sdp.MediaConfig {
 	return &sdp.MediaConfig{
 		Local:  h.local.addr,
 		Remote: h.remote.addr,
 		Audio: sdp.AudioConfig{
-			Codec:    h.codec,
-			Type:     h.audioPT,
-			DTMFType: h.dtmfPT,
+			CodecInfo: *h.audio,
+			DTMF:      h.dtmf,
 		},
 	}
 }
 
-func (h *pipelineHarness) configure(codec msdk.AudioCodec, audioPT, dtmfPT byte, dtmfAudio bool) {
+func (h *pipelineHarness) configureType(codec msdk.CodecType, rate int, audioPT, dtmfPT byte, dtmfAudio bool) sdp.CodecInfo {
+	info, create, ok := codec.Supports(msdk.CodecConfig{SampleRate: rate})
+	require.True(h.t, ok, "configuration not supported: %s/%d", codec.SDPName(), rate)
+	ac := create().(msdk.AudioCodec)
+	h.configure(info, codec, ac, audioPT, dtmfPT, dtmfAudio)
+	sinfo := sdp.CodecInfo{
+		Type:  audioPT,
+		Codec: codec,
+		Info:  info,
+	}
+	h.audio = &sinfo
+	h.dtmf = dtmfCodec(nil, dtmfPT, info.RTPClockRate, 0)
+	return sinfo
+}
+
+func (h *pipelineHarness) configure(info msdk.CodecInfo, codec msdk.CodecType, ac msdk.AudioCodec, audioPT, dtmfPT byte, dtmfAudio bool) {
 	h.t.Helper()
-	h.codec = codec
-	h.audioPT = audioPT
-	h.dtmfPT = dtmfPT
+	h.codec = ac
+	sinfo := sdp.CodecInfo{
+		Type:  audioPT,
+		Codec: codec,
+		Info:  info,
+	}
+	h.audio = &sinfo
+	h.dtmf = dtmfCodec(nil, dtmfPT, info.RTPClockRate, 0)
 	h.conf.opts = &MediaOptions{DTMFAudio: dtmfAudio}
 
 	pipe, err := NewMediaPortPipeline(h.conf, h.mediaConfig(), h.port, h.audioIn, h.dtmfIn, h.audioIn.SampleRate())
@@ -254,7 +314,7 @@ func (h *pipelineHarness) configure(codec msdk.AudioCodec, audioPT, dtmfPT byte,
 	}
 }
 
-func (h *pipelineHarness) reconfigure(codec msdk.AudioCodec, audioPT, dtmfPT byte, dtmfAudio bool) {
+func (h *pipelineHarness) reconfigure(codec msdk.CodecType, rate int, audioPT, dtmfPT byte, dtmfAudio bool) {
 	h.t.Helper()
 	if h.pipeline != nil {
 		require.NoError(h.t, h.pipeline.Close())
@@ -262,7 +322,7 @@ func (h *pipelineHarness) reconfigure(codec msdk.AudioCodec, audioPT, dtmfPT byt
 	h.port.Reopen()
 	h.ssrcCount.Store(0)
 	h.packetCount.Store(0)
-	h.configure(codec, audioPT, dtmfPT, dtmfAudio)
+	h.configureType(codec, rate, audioPT, dtmfPT, dtmfAudio)
 }
 
 func (h *pipelineHarness) drainRemote() {
@@ -314,7 +374,7 @@ func (h *pipelineHarness) injectAudio(ssrc uint32, seq uint16, ts uint32, pcm ms
 		clock = h.codec.Info().SampleRate
 	}
 	var buf msrtp.Buffer
-	stream := msrtp.NewSeqWriter(&buf).NewStream(h.audioPT, clock)
+	stream := msrtp.NewSeqWriter(&buf).NewStream(h.audio.Type, clock)
 	enc := msrtp.EncodePCM(stream, h.codec)
 	require.NoError(h.t, enc.WriteSample(pcm))
 	require.NoError(h.t, enc.Close())
@@ -332,7 +392,7 @@ func (h *pipelineHarness) injectAudio(ssrc uint32, seq uint16, ts uint32, pcm ms
 func (h *pipelineHarness) injectDTMFDigit(ssrc uint32, digit string, ts uint32) {
 	h.t.Helper()
 	require.NotEmpty(h.t, digit)
-	pt := h.dtmfPT
+	pt := h.dtmf.Type
 	if pt == 0 {
 		pt = testDTMFPT
 	}
@@ -377,7 +437,7 @@ func (h *pipelineHarness) testAudioFromRoom(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if pkt.PayloadType == h.audioPT && len(pkt.Payload) > 0 {
+		if pkt.PayloadType == h.audio.Type && len(pkt.Payload) > 0 {
 			found = true
 		}
 	}
@@ -413,7 +473,7 @@ func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
 
 func (h *pipelineHarness) testDTMFFromRoom(t *testing.T) {
 	h.drainRemote()
-	if h.dtmfPT == 0 {
+	if h.dtmf == nil || h.dtmf.Type == 0 {
 		require.NoError(t, h.dtmfOut.WriteSample("5"))
 		h.drainRemote()
 		return
@@ -427,7 +487,7 @@ func (h *pipelineHarness) testDTMFFromRoom(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		pkt, ok := h.readRemotePacket(20 * time.Millisecond)
-		if ok && pkt.PayloadType == h.dtmfPT {
+		if ok && pkt.PayloadType == h.dtmf.Type {
 			return
 		}
 	}
@@ -441,7 +501,7 @@ func (h *pipelineHarness) testDTMFFromPort(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return h.packetCount.Load() > packetsBefore
 	}, time.Second, 5*time.Millisecond, "RTP should be accepted")
-	if h.dtmfPT == 0 {
+	if h.dtmf == nil || h.dtmf.Type == 0 {
 		require.Equal(t, before, len(h.roomDTMF.snapshot()), "DTMF disabled: must not reach room")
 		return
 	}
@@ -501,14 +561,13 @@ var (
 
 func TestMediaPipelinePermutations(t *testing.T) {
 	for _, spec := range pipelineTestCodecs {
-		t.Run(spec.Info().SDPName, func(t *testing.T) {
-			codec := spec.(msdk.AudioCodec)
-			pt := testAudioPT(codec)
+		t.Run(spec.SDPName(), func(t *testing.T) {
+			pt := testAudioPT(spec)
 			for _, rate := range pipelineTestRates {
 				for _, d := range pipelineTestDTMF {
 					t.Run(fmt.Sprintf("%dHz/%s", rate, d.name), func(t *testing.T) {
 						h := newPipelineHarness(t, rate)
-						h.configure(codec, pt, d.pt, d.audio)
+						h.configureType(spec, 0, pt, d.pt, d.audio)
 						h.runDirections(t)
 					})
 				}
@@ -518,9 +577,9 @@ func TestMediaPipelinePermutations(t *testing.T) {
 }
 
 func TestMediaPipelineTeardownMultiSSRC(t *testing.T) {
-	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	codec := audioCodecByName(t, g711.ULawSDPNameOnly)
 	h := newPipelineHarness(t, RoomSampleRate)
-	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+	h.configureType(codec, 0, testAudioPT(codec), testDTMFPT, false)
 	sample := h.codecFrame()
 
 	h.injectAudio(0x11111111, 1, 160, sample)
@@ -549,17 +608,17 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 		ssrcCount = 3
 		packets   = 30 // Currently the built-in limit of media-sdk's ssrc mux
 	)
-	codec := audioCodecByName(t, g711.ULawSDPNameAndRate)
+	codec := audioCodecByName(t, g711.ULawSDPNameOnly)
 	h := newPipelineHarness(t, RoomSampleRate)
-	h.configure(codec, testAudioPT(codec), testDTMFPT, false)
+	cinfo := h.configureType(codec, 0, testAudioPT(codec), testDTMFPT, false)
 
-	silence := make(msdk.PCM16Sample, codec.Info().SampleRate/int(time.Second/msrtp.DefFrameDur))
+	silence := make(msdk.PCM16Sample, cinfo.Info.SampleRate/int(time.Second/msrtp.DefFrameDur))
 	var encoded msrtp.Buffer
-	clock := codec.Info().RTPClockRate
+	clock := cinfo.Info.RTPClockRate
 	if clock == 0 {
-		clock = codec.Info().SampleRate
+		clock = cinfo.Info.SampleRate
 	}
-	enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(h.audioPT, clock), h.codec)
+	enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(cinfo.Type, clock), h.codec)
 	require.NoError(t, enc.WriteSample(silence))
 	require.NoError(t, enc.Close())
 	require.NotEmpty(t, encoded, "codec produced no RTP")
@@ -568,7 +627,7 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 	pkt := &rtp.Packet{
 		Header: rtp.Header{
 			Version:     2,
-			PayloadType: h.audioPT,
+			PayloadType: cinfo.Type,
 		},
 		Payload: payload,
 	}
@@ -600,15 +659,13 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	d := pipelineTestDTMF[1] // event-only
 
 	for _, from := range pipelineTestCodecs {
-		t.Run("from_"+from.Info().SDPName, func(t *testing.T) {
+		t.Run("from_"+from.SDPName(), func(t *testing.T) {
 			for _, to := range pipelineTestCodecs {
-				t.Run("to_"+to.Info().SDPName, func(t *testing.T) {
-					c1 := from.(msdk.AudioCodec)
-					c2 := to.(msdk.AudioCodec)
+				t.Run("to_"+to.SDPName(), func(t *testing.T) {
 					h := newPipelineHarness(t, rate)
-					h.configure(c1, testAudioPT(c1), d.pt, d.audio)
+					h.configureType(from, 0, testAudioPT(from), d.pt, d.audio)
 					t.Run("gen1", h.runDirections)
-					h.reconfigure(c2, testAudioPT(c2), d.pt, d.audio)
+					h.reconfigure(to, 0, testAudioPT(to), d.pt, d.audio)
 					t.Run("gen2", h.runDirections)
 				})
 			}
@@ -616,18 +673,18 @@ func TestMediaPipelineReuseUDPConn(t *testing.T) {
 	}
 }
 
-func generateDTMFPackets(t *testing.T, digits string) [][]*rtp.Packet {
+func generateDTMFPackets(t *testing.T, rate int, digits string) [][]*rtp.Packet {
 	t.Helper()
 	var buf msrtp.Buffer
 	packets := make([][]*rtp.Packet, len(digits))
 	last := len(buf)
-	w := msrtp.NewSeqWriter(&buf).NewStream(101, dtmf.SampleRate)
+	w := msrtp.NewSeqWriter(&buf).NewStream(101, rate)
 	timestamp := uint32(1000)
 	for i := range digits {
-		err := dtmf.Write(context.Background(), nil, w, timestamp, digits[i:i+1])
+		err := dtmf.Write(context.Background(), nil, w, rate, timestamp, digits[i:i+1])
 		require.NoError(t, err)
 		require.NotEmpty(t, buf)
-		timestamp += uint32(dtmf.SampleRate / 2)
+		timestamp += uint32(rate / 2)
 		packets[i] = slices.Clone(buf[last:])
 		last = len(buf)
 	}
@@ -660,27 +717,30 @@ func TestMediaPipelineDTMF(t *testing.T) {
 	// Multi-digit test, including correct handling of lost packets
 	digitCases := []string{"1", "12", "123"}
 	lossCases := []string{"none", "first", "last", "middle"}
+	rates := []int{8000, 16000, 48000}
 
 	for _, digits := range digitCases {
-		packets := generateDTMFPackets(t, digits)
-		for _, lossPackets := range lossCases {
-			t.Run(fmt.Sprintf("digits=%s/loss=%s", digits, lossPackets), func(t *testing.T) {
-				got := &dtmfCollector{}
-				p := &mediaPortPipeline{dtmfHandler: got}
-				p.lastDTMFEvent.Store(math.MaxUint64)
-				for _, digitPackets := range packets {
-					sendPackets := dropPackets(t, lossPackets, digitPackets)
-					t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
-					for _, pkt := range sendPackets {
-						h := pkt.Header
-						t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
-						require.NoError(t, p.handleEventRTP(&h, pkt.Payload))
+		for _, rate := range rates {
+			packets := generateDTMFPackets(t, rate, digits)
+			for _, lossPackets := range lossCases {
+				t.Run(fmt.Sprintf("digits=%s/loss=%s/rate=%d", digits, lossPackets, rate), func(t *testing.T) {
+					got := &dtmfCollector{}
+					p := &mediaPortPipeline{dtmfHandler: got}
+					p.lastDTMFEvent.Store(math.MaxUint64)
+					for _, digitPackets := range packets {
+						sendPackets := dropPackets(t, lossPackets, digitPackets)
+						t.Logf("sending %d/%d packets", len(sendPackets), len(digitPackets))
+						for _, pkt := range sendPackets {
+							h := pkt.Header
+							t.Logf("sending packet: seq=%d, ts=%d, marker=%t", h.SequenceNumber, h.Timestamp, h.Marker)
+							require.NoError(t, p.handleEventRTP(&h, pkt.Payload))
+						}
 					}
-				}
-				t.Logf("sent: %s", digits)
-				t.Logf("got: %s", got.String())
-				require.Equal(t, digits, got.String())
-			})
+					t.Logf("sent: %s", digits)
+					t.Logf("got: %s", got.String())
+					require.Equal(t, digits, got.String())
+				})
+			}
 		}
 	}
 }

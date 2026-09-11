@@ -92,25 +92,31 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 		conf.Number = "1000"
 	}
 	if conf.Codec == "" {
-		conf.Codec = g711.ULawSDPNameAndRate
+		conf.Codec = g711.ULawSDPNameOnly
 	}
-	codec := lksdp.CodecByName(conf.Codec).(msdk.AudioCodec)
+	codecConfig := msdk.CodecConfig{SampleRate: 8000}
+	codecInfo, create, ok := lksdp.CodecByNameWith(nil, conf.Codec).Supports(codecConfig)
+	if !ok {
+		return nil, fmt.Errorf("unsupported codec: %q (%+v)", conf.Codec, codecConfig)
+	}
+	codec := create().(msdk.AudioCodec)
+
 	cli := &Client{
 		id:         id,
 		conf:       conf,
 		ack:        make(chan struct{}, 1),
 		log:        conf.Log,
 		audioCodec: codec,
-		audioType:  codec.Info().RTPDefType,
+		audioType:  codecInfo.RTPDefType,
 	}
-	if !codec.Info().RTPIsStatic {
+	if !codecInfo.RTPIsStatic {
 		cli.audioType = 102
 	}
 	cli.mediaConn = rtpconn.NewConn(&rtpconn.ConnConfig{TimeoutCallback: conf.OnMediaTimeout})
 	cli.mediaConn.EnableTimeout(false) // enabled later
 	cli.media = rtp.NewSeqWriter(cli.mediaConn)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
-	cli.mediaDTMF = cli.media.NewStream(101, dtmf.SampleRate)
+	cli.mediaDTMF = cli.media.NewStream(101, codec.Info().RTPClockRate)
 	cli.audioOut, err = mixer.NewMixer(rtp.EncodePCM(cli.mediaAudio, cli.audioCodec), rtp.DefFrameDur, 1, mixer.WithOutputChannel())
 	if err != nil {
 		cli.Close()
@@ -442,7 +448,8 @@ func (c *Client) SendDTMF(digits string) error {
 	c.log.Debug("sending dtmf", "str", digits)
 	w := c.audioOut.NewInput()
 	defer w.Close()
-	return dtmf.Write(context.Background(), w, c.mediaDTMF, c.mediaAudio.GetCurrentTimestamp(), digits)
+	sampleRate := c.audioCodec.Info().RTPClockRate
+	return dtmf.Write(context.Background(), w, c.mediaDTMF, sampleRate, c.mediaAudio.GetCurrentTimestamp(), digits)
 }
 
 func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
@@ -571,8 +578,8 @@ func (c *Client) createOffer() ([]byte, error) {
 					Formats: []string{strconv.Itoa(int(c.audioType)) + " 101"},
 				},
 				Attributes: []sdp.Attribute{
-					{Key: "rtpmap", Value: fmt.Sprintf("%d %s", c.audioType, c.audioCodec.Info().SDPName)},
-					{Key: "rtpmap", Value: "101 " + dtmf.SDPNameAndRate},
+					{Key: "rtpmap", Value: fmt.Sprintf("%d %s", c.audioType, c.audioCodec.Info().SDPName())},
+					{Key: "rtpmap", Value: fmt.Sprintf("101 %s/%d", dtmf.SDPNameOnly, c.audioCodec.Info().RTPClockRate)},
 				},
 			},
 		},
