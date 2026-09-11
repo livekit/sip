@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/livekit/sipgo/transport"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -346,32 +347,64 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 }
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
-	resp, err := s.transferSIPParticipant(ctx, req)
-	if errors.Is(err, errTransferCallEnded) {
+	out := s.transferSIPParticipant(ctx, req)
+	if errors.Is(out.Err, errTransferCallEnded) {
 		// Temporary: the call ended before the transfer completed, so the
 		// transfer did not succeed. This should be a failure, but for backward
 		// compatibility reasons, keeping this as a success for the time being,
 		// i.e. no error, but more details in the response.
 		s.log.Infow("transfer: call ended before it completed, reporting it in the response",
-			"callID", req.SipCallId, "transferTo", req.TransferTo, "transferID", resp.GetTransferId())
-		return resp, nil
+			"callID", req.SipCallId, "transferTo", req.TransferTo, "transferID", out.TransferID)
+		return transferResponse(out), nil
 	}
-	return resp, siperrors.ApplySIPStatus(err)
+	if out.Err != nil {
+		return nil, transferError(out)
+	}
+	return transferResponse(out), nil
 }
 
-func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
+// transferError reports the outcome of a failed transfer on the error.
+func transferError(out transferOutcome) error {
+	if out.Err == nil {
+		return nil
+	}
+	reason, sipStatus := transferReason(out.Err)
+	// Borrow the code only. ApplySIPStatus derives it from the SIP status when
+	// the failure carries one, and is a pass-through otherwise, leaving the code
+	// the error already had.
+	code, ok := psrpc.GetErrorCode(siperrors.ApplySIPStatus(out.Err))
+	if !ok {
+		code = psrpc.Unknown
+	}
+	details := []proto.Message{&livekit.SIPTransferError{
+		TransferId: out.TransferID,
+		Reason:     reason,
+		SipStatus:  sipStatus,
+	}}
+	if sipStatus != nil {
+		// Deliberately the same status twice. A client whose protocol predates
+		// SIPTransferError cannot resolve that detail, and the Go SDK swaps the
+		// twirp error for a status error before the caller sees it, so its
+		// metadata is out of reach too. This copy keeps SIPStatusFrom working
+		// for those clients. Remove once they have all moved on.
+		details = append(details, sipStatus)
+	}
+	return psrpc.NewError(code, out.Err, details...)
+}
+
+func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	// Check if provider is internal and config is set before allowing transfer
 	if err := s.checkInternalProviderRequest(ctx, req.SipCallId); err != nil {
-		return transferResponse(transferOutcome{Err: err}), err
+		return transferOutcome{Err: err}
 	}
 
 	pending, isNew := s.getOrCreatePendingTransfer(req.SipCallId, req.TransferTo)
 	if !isNew {
 		if pending.TransferTo != req.TransferTo {
 			err := psrpc.NewErrorf(psrpc.InvalidArgument, "call already being transferred elsewhere")
-			return transferResponse(transferOutcome{Err: err}), err
+			return transferOutcome{Err: err}
 		}
 		// Already transferred, resume wait
 		s.log.Debugw("repeated request for call transfer", "callID", req.SipCallId, "transferTo", req.TransferTo)
@@ -414,40 +447,46 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 				out = *pOut
 			}
 		}
-		return transferResponse(out), out.Err
+		return out
 	case <-ctx.Done():
-		err := psrpc.NewError(psrpc.Canceled, ctx.Err())
-		return transferResponse(transferOutcome{Err: err}), err
+		return transferOutcome{Err: psrpc.NewError(psrpc.Canceled, ctx.Err())}
 	}
 }
 
-// transferResponse adds more details to the outcome of a transfer.
-func transferResponse(out transferOutcome) *rpc.InternalTransferSIPParticipantResponse {
-	resp := &rpc.InternalTransferSIPParticipantResponse{
-		TransferId: out.TransferID,
-		Status:     livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL,
-		Reason:     livekit.SIPTransferReason_STR_COMPLETED,
+// transferReason classifies how a transfer ended. A rejected transfer also
+// reports the SIP status the transferee, or its provider, answered with.
+func transferReason(err error) (livekit.SIPTransferReason, *livekit.SIPStatus) {
+	if err == nil {
+		return livekit.SIPTransferReason_STR_COMPLETED, nil
 	}
-	if out.Err == nil {
-		return resp
-	}
-	resp.Status = livekit.SIPTransferStatus_STS_TRANSFER_FAILED
-	resp.Reason = livekit.SIPTransferReason_STR_UNSPECIFIED
-
 	var sipStatus *livekit.SIPStatus
 	switch {
-	case errors.Is(out.Err, errTransferCallEnded):
-		resp.Reason = livekit.SIPTransferReason_STR_CALL_ENDED
-	case errors.Is(out.Err, errReferSubscriptionTerminated):
-		resp.Reason = livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED
-	case errors.As(out.Err, &sipStatus):
-		// The transferee, or its provider, answered with a final status.
-		resp.Reason = livekit.SIPTransferReason_STR_REJECTED
-		resp.SipStatus = sipStatus
-	case errors.Is(out.Err, context.DeadlineExceeded):
-		resp.Reason = livekit.SIPTransferReason_STR_RINGING_TIMEOUT
+	case errors.Is(err, errTransferCallEnded):
+		return livekit.SIPTransferReason_STR_CALL_ENDED, nil
+	case errors.Is(err, errReferSubscriptionTerminated):
+		return livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED, nil
+	case errors.As(err, &sipStatus):
+		return livekit.SIPTransferReason_STR_REJECTED, sipStatus
+	case errors.Is(err, context.DeadlineExceeded):
+		return livekit.SIPTransferReason_STR_RINGING_TIMEOUT, nil
 	}
-	return resp
+	return livekit.SIPTransferReason_STR_UNSPECIFIED, nil
+}
+
+// transferResponse reports the outcome of a transfer in the response. Only
+// STR_CALL_ENDED still needs it, and it goes away once that becomes an error.
+func transferResponse(out transferOutcome) *rpc.InternalTransferSIPParticipantResponse {
+	reason, sipStatus := transferReason(out.Err)
+	status := livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL
+	if out.Err != nil {
+		status = livekit.SIPTransferStatus_STS_TRANSFER_FAILED
+	}
+	return &rpc.InternalTransferSIPParticipantResponse{
+		TransferId: out.TransferID,
+		Status:     status,
+		Reason:     reason,
+		SipStatus:  sipStatus,
+	}
 }
 
 func (s *Service) getOrCreatePendingTransfer(callID string, transferTo string) (*PendingTransfer, bool) {
