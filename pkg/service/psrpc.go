@@ -28,19 +28,19 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, ca
 		return sip.AuthInfo{}, err
 	}
 
-	// Handle specific authentication error codes
-	switch resp.ErrorCode {
-	case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_QUOTA_EXCEEDED:
+	if resp.ErrorCode != rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NONE {
+		var authResult sip.AuthResult
+		switch resp.ErrorCode {
+		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_QUOTA_EXCEEDED:
+			authResult = sip.AuthQuotaExceeded
+		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
+			authResult = sip.AuthNoTrunkFound
+		default:
+			authResult = sip.AuthFailureUnknown
+		}
 		return sip.AuthInfo{
 			ProjectID:     resp.ProjectId,
-			Result:        sip.AuthQuotaExceeded,
-			ProviderInfo:  resp.ProviderInfo,
-			Observability: resp.Observability,
-		}, nil
-	case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
-		return sip.AuthInfo{
-			ProjectID:     resp.ProjectId,
-			Result:        sip.AuthNoTrunkFound,
+			Result:        authResult,
 			ProviderInfo:  resp.ProviderInfo,
 			Observability: resp.Observability,
 		}, nil
