@@ -1785,6 +1785,7 @@ func (c *inboundCall) joinRoom(ctx context.Context, rconf RoomConfig, status Cal
 		c.closeWithTerm(ctx, stats.ServerError("participant-failed"))
 		return fmt.Errorf("cannot create LiveKit participant: %w", err)
 	}
+	c.sigTs.JoinRoomTime = time.Now()
 	return nil
 }
 
