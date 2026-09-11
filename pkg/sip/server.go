@@ -75,6 +75,11 @@ const (
 	AuthAccept
 	AuthQuotaExceeded
 	AuthNoTrunkFound
+	// AuthRejectedAsError is a rejection the auth service reported as an error
+	// instead of a response.
+	AuthRejectedAsError
+	// AuthFailureOther is a catch-all value.
+	AuthFailureOther
 )
 
 type AuthInfo struct {

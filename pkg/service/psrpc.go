@@ -6,6 +6,7 @@ import (
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 
 	"github.com/livekit/sip/pkg/sip"
 )
@@ -25,22 +26,27 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, ca
 	})
 
 	if err != nil {
+		if code, ok := psrpc.GetErrorCode(err); ok && isAuthRejectionCode(code) {
+			logger.GetLogger().Warnw("auth service returned a rejection as an error", err,
+				"callID", call.LkCallId, "code", code)
+			return sip.AuthInfo{Result: sip.AuthRejectedAsError}, nil
+		}
 		return sip.AuthInfo{}, err
 	}
 
-	// Handle specific authentication error codes
-	switch resp.ErrorCode {
-	case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_QUOTA_EXCEEDED:
+	if resp.ErrorCode != rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NONE {
+		var authResult sip.AuthResult
+		switch resp.ErrorCode {
+		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_QUOTA_EXCEEDED:
+			authResult = sip.AuthQuotaExceeded
+		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
+			authResult = sip.AuthNoTrunkFound
+		default:
+			authResult = sip.AuthFailureOther
+		}
 		return sip.AuthInfo{
 			ProjectID:     resp.ProjectId,
-			Result:        sip.AuthQuotaExceeded,
-			ProviderInfo:  resp.ProviderInfo,
-			Observability: resp.Observability,
-		}, nil
-	case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
-		return sip.AuthInfo{
-			ProjectID:     resp.ProjectId,
-			Result:        sip.AuthNoTrunkFound,
+			Result:        authResult,
 			ProviderInfo:  resp.ProviderInfo,
 			Observability: resp.Observability,
 		}, nil
@@ -75,6 +81,17 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, ca
 		ProviderInfo:  resp.ProviderInfo,
 		Observability: resp.Observability,
 	}, nil
+}
+
+// isAuthRejectionCode reports whether a psrpc code describes a decision about the request rather
+// than an auth service availability issue.
+func isAuthRejectionCode(code psrpc.ErrorCode) bool {
+	switch code {
+	case psrpc.InvalidArgument, psrpc.FailedPrecondition, psrpc.PermissionDenied,
+		psrpc.Unauthenticated, psrpc.NotFound:
+		return true
+	}
+	return false
 }
 
 func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, log logger.Logger, info *sip.CallInfo) sip.CallDispatch {
