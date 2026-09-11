@@ -36,6 +36,9 @@ type SignalingTimestamps struct {
 	// Inbound: 200 OK sent; Outbound: 200 OK received.
 	AcceptTime time.Time
 
+	// Inbound only: LiveKit room join completed (participant created).
+	JoinRoomTime time.Time
+
 	// Outbound only: time the API request was received (call creation).
 	APITime time.Time
 
@@ -63,6 +66,11 @@ func (ts *SignalingTimestamps) Log(log logger.Logger) {
 	// INVITE -> first 180/183 Ringing
 	if !ts.RingingTime.IsZero() {
 		fields = append(fields, "inviteToRingingMs", ts.RingingTime.Sub(ts.InviteTime).Milliseconds())
+	}
+
+	// INVITE -> room join (inbound)
+	if !ts.JoinRoomTime.IsZero() {
+		fields = append(fields, "inviteToJoinRoomMs", ts.JoinRoomTime.Sub(ts.InviteTime).Milliseconds())
 	}
 
 	// INVITE -> 200 OK
