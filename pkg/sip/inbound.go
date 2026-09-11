@@ -556,8 +556,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		log.Warnw("Rejecting inbound, no trunk found", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "No trunk found")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk found for call")
-	case AuthFailureUnknown:
-		cmon.InviteErrorShort(stats.ClientError("auth-unknown"))
+	case AuthFailureOther:
+		cmon.InviteErrorShort(stats.ClientError("auth-other"))
 		cc.RespondAndDrop(sip.StatusUnauthorized, "Auth failure")
 		return psrpc.NewErrorf(psrpc.NotFound, "auth failure")
 	case AuthPassword:

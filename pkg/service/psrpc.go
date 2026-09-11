@@ -36,7 +36,7 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, ca
 		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
 			authResult = sip.AuthNoTrunkFound
 		default:
-			authResult = sip.AuthFailureUnknown
+			authResult = sip.AuthFailureOther
 		}
 		return sip.AuthInfo{
 			ProjectID:     resp.ProjectId,
