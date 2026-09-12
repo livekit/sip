@@ -119,26 +119,23 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		if name == "" {
 			return nil, errors.New("no codec name specified")
 		}
-		rate := codec.Rate
 
-		// Opus only supports 48 kHz; it has a distinct SDP name format
-		// ("opus/48000") and its own default rate, so handle it early.
+		// Per RFC 7587 §6.1, Opus RTP clock rate is always 48000 Hz.
+		// Different audio bandwidths (narrowband 8k, wideband 16k,
+		// fullband 48k) are negotiated via fmtp:maxplaybackrate,
+		// not via the rtpmap clock rate. Use the canonical SDP name.
 		if name == opus.SDPNameOnly {
-			if rate == 0 {
-				rate = 48000
-			}
-			name = fmt.Sprintf("%s/%d", name, rate)
-			s.SetEnabled(name, true)
+			s.SetEnabled(opus.SDPName, true)
 			continue
 		}
 
+		rate := codec.Rate
 		if rate == 0 {
-			// Set default rate
 			switch name {
 			case g711.ALawSDPNameOnly, g711.ULawSDPNameOnly:
 				rate = 8000
 			case g722.SDPNameOnly:
-				rate = 8000 // actually 16000, it's a know bug in the spec
+				rate = 8000 // actually 16000, it's a known bug in the spec
 			case amrwb.SDPNameOnly:
 				rate = 16000
 			default:
