@@ -26,6 +26,7 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
+	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/sdp"
 
 	msdk "github.com/livekit/media-sdk"
@@ -39,6 +40,7 @@ func init() {
 		g711.ALawSDPNameAndRate: true,
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
+		opus.SDPName:            true,
 		amrwb.SDPNameAndRate:    false, // optional
 		dtmf.SDPNameAndRate:     true,
 	})
@@ -118,6 +120,18 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 			return nil, errors.New("no codec name specified")
 		}
 		rate := codec.Rate
+
+		// Opus only supports 48 kHz; it has a distinct SDP name format
+		// ("opus/48000") and its own default rate, so handle it early.
+		if name == opus.SDPNameOnly {
+			if rate == 0 {
+				rate = 48000
+			}
+			name = fmt.Sprintf("%s/%d", name, rate)
+			s.SetEnabled(name, true)
+			continue
+		}
+
 		if rate == 0 {
 			// Set default rate
 			switch name {
