@@ -39,6 +39,7 @@ func init() {
 		g711.ALawSDPNameOnly: true,
 		g711.ULawSDPNameOnly: true,
 		g722.SDPNameOnly:     true,
+		opusSDPNameOnly:      true,
 		amrwb.SDPNameOnly:    false, // optional
 	})
 }
@@ -51,6 +52,13 @@ func DefaultCodecs() *msdk.CodecSet {
 // codec set, since their name is dropped during SDP parsing and to keep the
 // label bounded
 const codecOther = "other"
+
+// opusSDPNameOnly is the bare Opus SDP name (RFC 7587 §6.1: the clock rate is
+// always 48000 Hz and stereo is expressed via channels=2). Referenced as a
+// literal because the media-sdk opus package is CGo-only; the codec itself is
+// registered by media-sdk's all package on CGo builds and stays missing on
+// CGO_ENABLED=0 builds, where CheckCodecAvailability warns about it.
+const opusSDPNameOnly = "opus"
 
 func peerCodecNames(d sdp.MediaDesc) []string {
 	names := make([]string, 0, len(d.Audio)+len(d.Data)+len(d.Unknown))
