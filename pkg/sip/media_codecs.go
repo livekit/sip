@@ -31,6 +31,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 )
 
 var defaultCodecs = msdk.NewCodecSet()
@@ -48,6 +49,22 @@ func init() {
 
 func DefaultCodecs() *msdk.CodecSet {
 	return defaultCodecs
+}
+
+// CheckCodecAvailability logs warnings for codecs that are enabled in the
+// default set but whose backing media-sdk CodecType is not registered —
+// most commonly because a CGo codec (opus, amrwb) was skipped in a
+// CGO_ENABLED=0 build.
+func CheckCodecAvailability(log logger.Logger) {
+	codecs := defaultCodecs.ListEnabled()
+	for _, c := range codecs {
+		name := c.Info().SDPName
+		if sdp.CodecByNameWith(defaultCodecs, name) == nil {
+			log.Warnw("codec enabled but not registered (missing CGo dependency?)",
+				nil, "codec", name,
+			)
+		}
+	}
 }
 
 // Metric label used for advertised codecs that are not part of the internal
