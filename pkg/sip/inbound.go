@@ -1029,6 +1029,17 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	tsub := c.mon.StageDurTimer("track-subscribe")
 	c.lkRoom.Subscribe()
 	tsub()
+
+	// Ensure RoomId is set, even if the caller hangs up before the call is answered
+	c.state.Update(func(info *livekit.SIPCallInfo) {
+		if r := c.lkRoom.Room(); r != nil {
+			info.RoomId = r.SID()
+			info.RoomName = r.Name()
+		} else {
+			c.log().Warnw("could not set RoomId", nil)
+		}
+	})
+
 	if !pinPrompt {
 		c.log().Infow("Waiting for track subscription(s)")
 		// For dispatches without pin, we first wait for LK participant to become available,
