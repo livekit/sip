@@ -75,6 +75,7 @@ const (
 	AuthAccept
 	AuthQuotaExceeded
 	AuthNoTrunkFound
+	AuthRouteNotAllowed
 	// AuthRejectedAsError is a rejection the auth service reported as an error
 	// instead of a response.
 	AuthRejectedAsError

@@ -226,6 +226,23 @@ func TestService_AuthFailure(t *testing.T) {
 	})
 }
 
+// A route the project may not use is answered with 503 so the carrier fails over
+// to another origination URI rather than treating the call as terminally rejected.
+func TestService_AuthRouteNotAllowed(t *testing.T) {
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthRouteNotAllowed}, nil
+		},
+	}
+	testInvite(t, h, false, "foo", "bar", func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(503), res.StatusCode)
+	})
+}
+
 func TestService_AuthFailureOther(t *testing.T) {
 	h := &TestHandler{
 		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {

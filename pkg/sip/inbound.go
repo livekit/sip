@@ -556,10 +556,15 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		log.Warnw("Rejecting inbound, no trunk found", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "No trunk found")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk found for call")
+	case AuthRouteNotAllowed:
+		cmon.InviteErrorShort(stats.ClientError("route-not-allowed"))
+		log.Warnw("Rejecting inbound, route not allowed", nil)
+		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service temporarily unavailable")
+		return psrpc.NewErrorf(psrpc.PermissionDenied, "route not allowed")
 	case AuthFailureOther:
 		cmon.InviteErrorShort(stats.ClientError("auth-other"))
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
-		return psrpc.NewErrorf(psrpc.NotFound, "auth failure")
+		return psrpc.NewErrorf(psrpc.PermissionDenied, "auth failure")
 	case AuthRejectedAsError:
 		// Own metric reason so auth-service contract violations show up as their own series.
 		cmon.InviteErrorShort(stats.ClientError("auth-rejected-as-error"))

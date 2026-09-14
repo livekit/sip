@@ -41,6 +41,8 @@ func GetAuthCredentials(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, ca
 			authResult = sip.AuthQuotaExceeded
 		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND:
 			authResult = sip.AuthNoTrunkFound
+		case rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_ROUTE_NOT_ALLOWED:
+			authResult = sip.AuthRouteNotAllowed
 		default:
 			authResult = sip.AuthFailureOther
 		}

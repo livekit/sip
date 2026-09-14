@@ -40,6 +40,7 @@ func TestGetAuthCredentials(t *testing.T) {
 	}{
 		{"quota", &rpc.GetSIPTrunkAuthenticationResponse{ErrorCode: rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_QUOTA_EXCEEDED}, sip.AuthQuotaExceeded},
 		{"no trunk", &rpc.GetSIPTrunkAuthenticationResponse{ErrorCode: rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_NO_TRUNK_FOUND}, sip.AuthNoTrunkFound},
+		{"route not allowed", &rpc.GetSIPTrunkAuthenticationResponse{ErrorCode: rpc.SIPTrunkAuthenticationError_SIP_TRUNK_AUTH_ERROR_ROUTE_NOT_ALLOWED}, sip.AuthRouteNotAllowed},
 		{"unknown code", &rpc.GetSIPTrunkAuthenticationResponse{ErrorCode: rpc.SIPTrunkAuthenticationError(99)}, sip.AuthFailureOther},
 		{"accept", &rpc.GetSIPTrunkAuthenticationResponse{SipTrunkId: "T"}, sip.AuthAccept},
 		{"drop", &rpc.GetSIPTrunkAuthenticationResponse{Drop: true}, sip.AuthDrop},
