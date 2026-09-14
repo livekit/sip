@@ -566,7 +566,6 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "auth failure")
 	case AuthRejectedAsError:
-		// Own metric reason so auth-service contract violations show up as their own series.
 		cmon.InviteErrorShort(stats.ClientError("auth-rejected-as-error"))
 		log.Warnw("Rejecting inbound, auth service returned a rejection as an error", nil)
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
