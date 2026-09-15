@@ -1026,7 +1026,6 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		if r := c.lkRoom.Room(); r != nil {
 			info.RoomId = r.SID()
 			info.RoomName = r.Name()
-			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		} else {
 			c.log().Warnw("could not set RoomId: room is nil", nil)
 		}
