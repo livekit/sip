@@ -19,11 +19,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -108,6 +110,57 @@ func (m *MockIOInfoClient) Close() {
 	// No-op for testing
 }
 
+// recordingStateHandler is a StateHandler that keeps a copy of every call info
+// CallState flushes, so tests can assert on what was reported upstream rather
+// than only on the in-memory state.
+type recordingStateHandler struct {
+	mu      sync.Mutex
+	updates []*livekit.SIPCallInfo
+}
+
+var _ StateHandler = (*recordingStateHandler)(nil)
+
+// GetStateHandler returns this recorder for every call in the test.
+func (h *recordingStateHandler) GetStateHandler() GetStateHandler {
+	return func(string, *rpc.SIPCallObservability, *livekit.SIPCallInfo) StateHandler {
+		return h
+	}
+}
+
+func (h *recordingStateHandler) HandleUpdate(info *livekit.SIPCallInfo) {
+	// CallState owns info and keeps mutating it; snapshot before storing.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.updates = append(h.updates, proto.CloneOf(info))
+}
+
+func (h *recordingStateHandler) HandleTransfer(*livekit.SIPTransferInfo) {}
+
+func (h *recordingStateHandler) HandleCallContextRecorded(*livekit.SIPCallInfo) {}
+
+// Updates returns the call infos reported so far, oldest first.
+func (h *recordingStateHandler) Updates() []*livekit.SIPCallInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.updates)
+}
+
+// Last returns the most recently reported call info, or nil if nothing was reported.
+func (h *recordingStateHandler) Last() *livekit.SIPCallInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.updates) == 0 {
+		return nil
+	}
+	return h.updates[len(h.updates)-1]
+}
+
+const (
+	// Room identity reported by the testRoom fake.
+	testRoomName = "test-room"
+	testRoomSID  = "test-room-sid"
+)
+
 // testRoom is a mock Room implementation that skips actual LiveKit connection
 type testRoom struct {
 	room *Room
@@ -164,18 +217,25 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	}
 	resolve.Resolve()
 
-	sdkRoom.OnRoomUpdate(&livekit.Room{ // Set metadata, and specifically Sid
-		Name:            "test-room",
+	// Drive the SDK room through a join so Name() and SID() report values, as
+	// they would after a real connection.
+	sdkRoom.OnRoomJoined(&livekit.Room{
+		Name:            testRoomName,
 		Metadata:        "test-metadata",
-		Sid:             "test-room-sid",
+		Sid:             testRoomSID,
 		NumParticipants: 1,
 		NumPublishers:   1,
-	})
+	}, &livekit.ParticipantInfo{
+		Sid:      "test-participant-id",
+		Identity: "test-participant",
+		Name:     "Test Participant",
+		Kind:     livekit.ParticipantInfo_SIP,
+	}, nil, &livekit.ServerInfo{}, nil)
 
 	// Set up minimal participant info
 	room.p.Store(&ParticipantInfo{
 		ID:       "test-participant-id",
-		RoomName: "test-room",
+		RoomName: testRoomName,
 		Identity: "test-participant",
 		Name:     "Test Participant",
 	})

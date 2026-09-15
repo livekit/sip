@@ -427,6 +427,9 @@ type serviceTest struct {
 
 type serviceTestConfig struct {
 	GetRoom GetRoomFunc
+	// GetStateHandler overrides where CallState flushes go. Defaults to the
+	// no-op RPC handler.
+	GetStateHandler GetStateHandler
 }
 
 // NewServiceTest builds a test harness that fakes a remote SIP peer and liveKit
@@ -444,6 +447,11 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	}
 	if options.GetRoom == nil {
 		options.GetRoom = newTestRoomConfig(nil)
+	}
+	if options.GetStateHandler == nil {
+		options.GetStateHandler = func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+			return NewRPCStateHandler(&MockIOInfoClient{})
+		}
 	}
 
 	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
@@ -479,9 +487,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		conf,
 		log,
 		mon,
-		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
-			return NewRPCStateHandler(&MockIOInfoClient{})
-		},
+		options.GetStateHandler,
 		WithGetRoomClient(options.GetRoom),
 	)
 	srv := NewServer(
@@ -489,9 +495,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		conf,
 		log,
 		mon,
-		func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
-			return NewRPCStateHandler(&MockIOInfoClient{})
-		},
+		options.GetStateHandler,
 		WithGetRoomServer(options.GetRoom),
 		WithClient(cli),
 	)
