@@ -53,11 +53,14 @@ func DefaultCodecs() *msdk.CodecSet {
 // default set but whose backing media-sdk CodecType is not registered —
 // most commonly because a CGo codec (opus, amrwb) was skipped in a
 // CGO_ENABLED=0 build.
+//
+// We check specific known CGo-dependent codec names rather than iterating
+// ListEnabled(), because ListEnabled() only returns registered codecs —
+// an enabled-but-missing codec would never appear in its output.
 func CheckCodecAvailability(log logger.Logger) {
-	codecs := defaultCodecs.ListEnabled()
-	for _, c := range codecs {
-		name := c.Info().SDPName
-		if sdp.CodecByNameWith(defaultCodecs, name) == nil {
+	cgoCodecs := []string{opus.SDPNameOnly, amrwb.SDPNameOnly}
+	for _, name := range cgoCodecs {
+		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name) == nil {
 			log.Warnw("codec enabled but not registered (missing CGo dependency?)",
 				nil, "codec", name,
 			)
