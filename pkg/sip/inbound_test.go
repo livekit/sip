@@ -405,3 +405,100 @@ func TestInboundLateOffer(t *testing.T) {
 		require.NotEqual(t, c.ok.Body(), resp.Body(), "re-INVITE reply must not echo the original offer")
 	})
 }
+
+// TestInboundRoomIDReportedBeforeAnswer covers TEL-1048: the room identity must
+// be recorded on the call state as soon as the room is joined, not only once the
+// call goes active. A caller that hangs up while the call is still ringing would
+// otherwise be reported with an empty RoomId, leaving the call record
+// unattributable to the room it had already joined.
+func TestInboundRoomIDReportedBeforeAnswer(t *testing.T) {
+	states := &recordingStateHandler{}
+	// ringForever keeps the call in the ringing state: the room never reports a
+	// track subscription, so the server never answers the INVITE.
+	st := NewServiceTest(t, &serviceTestConfig{
+		GetRoom:         newTestRoomConfig(&testRoomConfig{ringForever: true}),
+		GetStateHandler: states.GetStateHandler(),
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	call := newTestCall(st.TestUA, false)
+	req, localSDP, err := call.Invite(nil)
+	require.NoError(t, err)
+	call.SetLocalSDP(localSDP)
+
+	inviteTx, err := st.TestUA.Client.TransactionRequest(req)
+	require.NoError(t, err)
+	defer inviteTx.Terminate()
+
+	res100 := getResponseOrFailTimeout(t, ctx, inviteTx)
+	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
+	res180 := getResponseOrFailTimeout(t, ctx, inviteTx)
+	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
+	remoteTag, ok := res180.To().Params.Get("tag")
+	require.True(t, ok, "remote tag should be present")
+	call.SetRemoteTag(LocalTag(remoteTag))
+
+	// The room is joined before the call is answered, so its identity must be
+	// reported upstream while the call is still ringing.
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.RoomId != ""
+	}, 5*time.Second, 10*time.Millisecond, "room SID should be reported while the call is still ringing")
+
+	ringing := states.Last()
+	require.Equal(t, testRoomSID, ringing.RoomId)
+	require.Equal(t, testRoomName, ringing.RoomName)
+	require.Zero(t, ringing.StartedAtNs, "call must not have gone active yet")
+
+	// The caller hangs up before the call is ever answered.
+	require.NoError(t, inviteTx.Cancel(), "should be able to send CANCEL")
+	res := getFinalResponseOrFail(t, ctx, inviteTx)
+	require.Equal(t, sip.StatusCode(487), res.StatusCode, "CANCEL should terminate the INVITE")
+
+	// The room identity must survive on the final record of the abandoned call.
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.EndedAtNs != 0
+	}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
+
+	ended := states.Last()
+	require.Equal(t, testRoomSID, ended.RoomId, "room SID must be retained on the ended call")
+	require.Equal(t, testRoomName, ended.RoomName, "room name must be retained on the ended call")
+	require.Zero(t, ended.StartedAtNs, "call was never answered")
+}
+
+// TestInboundRoomIDReportedOnAnsweredCall is the companion to
+// TestInboundRoomIDReportedBeforeAnswer: reporting the room identity early must
+// not disturb the identity reported for a call that is answered normally, and
+// once reported it must never be dropped from a later update.
+func TestInboundRoomIDReportedOnAnsweredCall(t *testing.T) {
+	states := &recordingStateHandler{}
+	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
+
+	_, ic := st.CreateInboundCall(t)
+	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
+	}, 5*time.Second, 10*time.Millisecond, "active call should be reported")
+
+	active := states.Last()
+	require.Equal(t, testRoomSID, active.RoomId)
+	require.Equal(t, testRoomName, active.RoomName)
+
+	// The identity is reported from the join onwards, and never regresses.
+	joined := false
+	for i, u := range states.Updates() {
+		if u.RoomId == "" {
+			require.False(t, joined, "update %d dropped the room identity after it was reported", i)
+			continue
+		}
+		joined = true
+		require.Equal(t, testRoomSID, u.RoomId, "update %d reported an unexpected room SID", i)
+		require.Equal(t, testRoomName, u.RoomName, "update %d reported an unexpected room name", i)
+	}
+	require.True(t, joined, "room identity should have been reported at least once")
+}
