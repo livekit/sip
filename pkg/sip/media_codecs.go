@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
@@ -32,6 +33,8 @@ import (
 	"github.com/livekit/protocol/livekit"
 )
 
+const OpusSDPName = "opus/48000/2"
+
 var defaultCodecs = msdk.NewCodecSet()
 
 func init() {
@@ -40,6 +43,7 @@ func init() {
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
 		amrwb.SDPNameAndRate:    false, // optional
+		OpusSDPName:             false, // opt-in via enable_opus config flag
 		dtmf.SDPNameAndRate:     true,
 	})
 }
@@ -133,7 +137,27 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		}
 		name = fmt.Sprintf("%s/%d", name, rate)
 		s.SetEnabled(name, true)
+		if sdpName := resolveSDPName(name); sdpName != "" {
+			s.SetEnabled(sdpName, true)
+		}
 	}
 	s.SetEnabled(dtmf.SDPNameAndRate, true)
 	return s, nil
+}
+
+// resolveSDPName finds the full SDP name for a codec specified as "name/rate"
+// by matching against registered codecs. This handles codecs like Opus whose
+// SDP name includes a channel count suffix (e.g., "opus/48000/2").
+func resolveSDPName(name string) string {
+	name = strings.ToLower(name)
+	for _, c := range msdk.Codecs() {
+		sdpName := strings.ToLower(c.Info().SDPName)
+		if sdpName == name {
+			return ""
+		}
+		if strings.HasPrefix(sdpName, name+"/") {
+			return c.Info().SDPName
+		}
+	}
+	return ""
 }
