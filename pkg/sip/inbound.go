@@ -1020,15 +1020,6 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if err := c.joinRoom(ctx, disp.Room, status); err != nil {
 		return fmt.Errorf("failed joining room: %w", err)
 	}
-	// Publish our own track.
-	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {
-		c.log().Errorw("Cannot publish track", err)
-		c.closeWithTerm(ctx, stats.ServerError("publish-failed"))
-		return fmt.Errorf("publishing track to room failed: %w", err)
-	}
-	tsub := c.mon.StageDurTimer("track-subscribe")
-	c.lkRoom.Subscribe()
-	tsub()
 
 	// Ensure RoomId is set, even if the caller hangs up before the call is answered
 	c.state.Update(func(info *livekit.SIPCallInfo) {
@@ -1040,6 +1031,16 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 			c.log().Warnw("could not set RoomId: room is nil", nil)
 		}
 	})
+
+	// Publish our own track.
+	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {
+		c.log().Errorw("Cannot publish track", err)
+		c.closeWithTerm(ctx, stats.ServerError("publish-failed"))
+		return fmt.Errorf("publishing track to room failed: %w", err)
+	}
+	tsub := c.mon.StageDurTimer("track-subscribe")
+	c.lkRoom.Subscribe()
+	tsub()
 
 	if !pinPrompt {
 		c.log().Infow("Waiting for track subscription(s)")
