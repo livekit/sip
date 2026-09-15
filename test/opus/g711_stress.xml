@@ -1,0 +1,65 @@
+&lt;!--
+SIPp UAC stress scenario: G.711 μ-law INVITE (baseline for comparison).
+--&gt;
+&lt;scenario name="G.711 stress"&gt;
+  &lt;send retrans="500"&gt;
+    &lt;![CDATA[
+      INVITE sip:[service]@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: "SIPp" &lt;sip:[local_ip]:[local_port]&gt;;tag=[call_number]
+      To: &lt;sip:[service]@[remote_ip]:[remote_port]&gt;
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: &lt;sip:[local_ip]:[local_port];transport=[transport]&gt;
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=- [call_number] [call_number] IN IP[local_ip_type] [local_ip]
+      s=SIPp
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0 101
+      a=rtpmap:0 PCMU/8000
+      a=rtpmap:101 telephone-event/8000
+      a=ptime:20
+    ]]&gt;
+  &lt;/send&gt;
+
+  &lt;recv response="100" optional="true" /&gt;
+  &lt;recv response="180" optional="true" /&gt;
+  &lt;recv response="200" /&gt;
+
+  &lt;send&gt;
+    &lt;![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: "SIPp" &lt;sip:[local_ip]:[local_port]&gt;;tag=[call_number]
+      To: &lt;sip:[service]@[remote_ip]:[remote_port]&gt;[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 1 ACK
+      Contact: &lt;sip:[local_ip]:[local_port];transport=[transport]&gt;
+      Max-Forwards: 70
+      Content-Length: 0
+    ]]&gt;
+  &lt;/send&gt;
+
+  &lt;pause distribution="uniform" min="2000" max="8000" /&gt;
+
+  &lt;send retrans="500"&gt;
+    &lt;![CDATA[
+      BYE [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: "SIPp" &lt;sip:[local_ip]:[local_port]&gt;;tag=[call_number]
+      To: &lt;sip:[service]@[remote_ip]:[remote_port]&gt;[peer_tag_param]
+      Call-ID: [call_id]
+      CSeq: 2 BYE
+      Contact: &lt;sip:[local_ip]:[local_port];transport=[transport]&gt;
+      Max-Forwards: 70
+      Content-Length: 0
+    ]]&gt;
+  &lt;/send&gt;
+
+  &lt;recv response="200" /&gt;
+&lt;/scenario&gt;

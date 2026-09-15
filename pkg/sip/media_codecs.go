@@ -26,10 +26,12 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
+	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/sdp"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 )
 
 var defaultCodecs = msdk.NewCodecSet()
@@ -39,6 +41,7 @@ func init() {
 		g711.ALawSDPNameAndRate: true,
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
+		opus.SDPName:            true,
 		amrwb.SDPNameAndRate:    false, // optional
 		dtmf.SDPNameAndRate:     true,
 	})
@@ -46,6 +49,25 @@ func init() {
 
 func DefaultCodecs() *msdk.CodecSet {
 	return defaultCodecs
+}
+
+// CheckCodecAvailability logs warnings for codecs that are enabled in the
+// default set but whose backing media-sdk CodecType is not registered —
+// most commonly because a CGo codec (opus, amrwb) was skipped in a
+// CGO_ENABLED=0 build.
+//
+// We check specific known CGo-dependent codec names rather than iterating
+// ListEnabled(), because ListEnabled() only returns registered codecs —
+// an enabled-but-missing codec would never appear in its output.
+func CheckCodecAvailability(log logger.Logger) {
+	cgoCodecs := []string{opus.SDPNameOnly, amrwb.SDPNameOnly}
+	for _, name := range cgoCodecs {
+		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name) == nil {
+			log.Warnw("codec enabled but not registered (missing CGo dependency?)",
+				nil, "codec", name,
+			)
+		}
+	}
 }
 
 // Metric label used for advertised codecs that are not part of the internal
@@ -117,14 +139,23 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		if name == "" {
 			return nil, errors.New("no codec name specified")
 		}
+
+		// Per RFC 7587 §6.1, Opus RTP clock rate is always 48000 Hz.
+		// Different audio bandwidths (narrowband 8k, wideband 16k,
+		// fullband 48k) are negotiated via fmtp:maxplaybackrate,
+		// not via the rtpmap clock rate. Use the canonical SDP name.
+		if name == opus.SDPNameOnly {
+			s.SetEnabled(opus.SDPName, true)
+			continue
+		}
+
 		rate := codec.Rate
 		if rate == 0 {
-			// Set default rate
 			switch name {
 			case g711.ALawSDPNameOnly, g711.ULawSDPNameOnly:
 				rate = 8000
 			case g722.SDPNameOnly:
-				rate = 8000 // actually 16000, it's a know bug in the spec
+				rate = 8000 // actually 16000, it's a known bug in the spec
 			case amrwb.SDPNameOnly:
 				rate = 16000
 			default:
