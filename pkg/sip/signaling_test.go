@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -719,6 +720,23 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 	return call, oc, ackReq
 }
 
+func lookupCall(t *testing.T, st *serviceTest, call *sipUADialogTest) (RoomInterface, MediaPort) {
+	t.Helper()
+	st.Server.cmu.Lock()
+	ic := st.Server.byLocalTag[call.remoteTag]
+	st.Server.cmu.Unlock()
+	if ic != nil {
+		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "inbound call should become active")
+		return ic.lkRoom, ic.media
+	}
+	st.Client.cmu.Lock()
+	oc := st.Client.activeCalls[call.remoteTag]
+	st.Client.cmu.Unlock()
+	require.NotNil(t, oc, "call should be registered as inbound or outbound")
+	require.Eventually(t, oc.started.IsBroken, 5*time.Second, 10*time.Millisecond, "outbound call should become active")
+	return oc.lkRoom, oc.media
+}
+
 func getMediaPort(t *testing.T, m MediaPort) *mediaPort {
 	t.Helper()
 	port, ok := m.(*mediaPort)
@@ -732,6 +750,13 @@ func getMediaPortRemoteAddr(t *testing.T, m MediaPort) netip.AddrPort {
 	dst := port.port.dst.Load()
 	require.NotNil(t, dst, "destination should be set")
 	return *dst
+}
+
+func getRoomAudioOut(t *testing.T, room RoomInterface) *msdk.WriteCloserSwitch[msdk.PCM16Sample] {
+	t.Helper()
+	tr, ok := room.(*testRoom)
+	require.True(t, ok, "room should be a *testRoom")
+	return tr.room.outboundAudio
 }
 
 // incompatibleCodecOffer builds an SDP offer whose only audio codec is not the
@@ -1111,6 +1136,15 @@ func TestTransfer(t *testing.T) {
 		},
 	}
 
+	captureSIPAudio := func(t *testing.T, media MediaPort) *audioCapture {
+		t.Helper()
+		port := getMediaPort(t, media)
+		capture := &audioCapture{rate: port.audioOut.SampleRate()}
+		old := port.audioOut.Swap(capture)
+		t.Cleanup(func() { port.audioOut.Swap(old) })
+		return capture
+	}
+
 	for direction, setupCall := range directions {
 		t.Run(direction, func(t *testing.T) {
 			t.Parallel()
@@ -1323,6 +1357,82 @@ func TestTransfer(t *testing.T) {
 					case <-ctx.Done():
 						require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
 					}
+				}
+			})
+
+			t.Run("dialtone", func(t *testing.T) {
+				// While a dial-tone transfer is pending the SIP participant hears
+				// the ring tone instead of the room. A failed transfer puts the
+				// room audio back.
+				const finalNotifyStatus = 480
+
+				t.Parallel()
+				call := setupCall(t, st)
+				room, media := lookupCall(t, st, call)
+				roomOut := getRoomAudioOut(t, room)
+				sipOut := captureSIPAudio(t, media)
+				require.Same(t, media.GetOutboundAudioWriter(), roomOut.Get(), "room audio should reach the SIP leg before the transfer")
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, true)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				require.Eventually(t, func() bool { return roomOut.Get() == nil },
+					time.Second, 10*time.Millisecond, "room audio should be muted while the dial tone plays")
+				require.Eventually(t, func() bool { return sipOut.toneSamples() > 0 },
+					time.Second, 10*time.Millisecond, "dial tone should reach the SIP leg")
+
+				err = sendNotify(t, ctx, call, []int{100, 180, finalNotifyStatus})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				select {
+				case err := <-transferRes:
+					require.Error(t, err, "transfer should report the failure")
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer to fail")
+				}
+				require.Same(t, media.GetOutboundAudioWriter(), roomOut.Get(), "room audio should be restored after a failed transfer")
+
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+			})
+
+			t.Run("dialtone_room_detached", func(t *testing.T) {
+				// Regression test to ensure that a nil outbound audio writer of
+				// a room doesn't cause a panic cause a panic when a transfer happens.
+				t.Parallel()
+				call := setupCall(t, st)
+				room, media := lookupCall(t, st, call)
+				sipOut := captureSIPAudio(t, media)
+				require.NotNil(t, room.WriteOutboundAudioTo(nil), "room audio should have been attached before detaching it")
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*3)
+				defer cancel()
+
+				transferRes := startTransfer(t, ctx, st, call, referTo, nil, true)
+
+				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				require.Eventually(t, func() bool { return sipOut.toneSamples() > 0 },
+					time.Second, 10*time.Millisecond, "dial tone should reach the SIP leg even with no room audio attached")
+
+				err = sendNotify(t, ctx, call, []int{100, 180, 200})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+				err = handleBye(t, ctx, reqChan, call) // Expecting BYE after successful transfer
+				require.NoError(t, err, "Failed to process BYE request")
+				select {
+				case err := <-transferRes:
+					require.NoError(t, err, "error transferring call, unexpected transfer API response")
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for BYE to arrive")
 				}
 			})
 
@@ -1896,3 +2006,30 @@ func TestRetransmission(t *testing.T) {
 		})
 	})
 }
+
+// audioCapture is a msdk.PCM16Writer that counts the non-silent samples
+// written to it.
+type audioCapture struct {
+	rate       int
+	numSamples atomic.Int64
+}
+
+func (w *audioCapture) String() string { return "audioCapture" }
+
+func (w *audioCapture) SampleRate() int { return w.rate }
+
+func (w *audioCapture) WriteSample(sample msdk.PCM16Sample) error {
+	var n int64
+	for _, v := range sample {
+		if v != 0 {
+			n++
+		}
+	}
+	w.numSamples.Add(n)
+	return nil
+}
+
+func (w *audioCapture) Close() error { return nil }
+
+// toneSamples reports how many non-silent samples have been written so far.
+func (w *audioCapture) toneSamples() int64 { return w.numSamples.Load() }
