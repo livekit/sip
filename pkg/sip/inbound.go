@@ -415,7 +415,14 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			return nil
 		}
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		if err := existing.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+		offerBody := sdpBodyFromRequest(req)
+		if unsupportedHoldOffer(offerBody) {
+			existing.log().Infow("rejecting reinvite, unsupported media direction",
+				"direction", offerDirection(offerBody), "cseq", cc.InviteCSeq())
+			cc.RejectAsKeepAlive(sip.StatusNotAcceptableHere, "Not Acceptable Here")
+			return nil
+		}
+		if err := existing.updateRemoteFromSDP(offerBody); err != nil {
 			log.Errorw("failed to update inbound call SDP", err)
 			if ok := errors.As(err, &SDPError{}); ok {
 				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
@@ -425,7 +432,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			return nil
 		}
 		// TODO(alexfish): Reply with the new SDP.
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
+		cc.AcceptAsKeepAlive(withSDPDirection(existing.cc.OwnSDP(), answerDirectionFor(offerBody)))
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
@@ -442,8 +449,15 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 				return nil
 			}
+			offerBody := sdpBodyFromRequest(req)
+			if unsupportedHoldOffer(offerBody) {
+				oc.log.Infow("rejecting reinvite, unsupported media direction",
+					"direction", offerDirection(offerBody), "cseq", cc.InviteCSeq())
+				cc.RejectAsKeepAlive(sip.StatusNotAcceptableHere, "Not Acceptable Here")
+				return nil
+			}
 			oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-			if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+			if err := oc.updateRemoteFromSDP(offerBody); err != nil {
 				log.Errorw("failed to update outbound call SDP", err)
 				if ok := errors.As(err, &SDPError{}); ok {
 					cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
@@ -454,7 +468,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			}
 			oc.cc.RecordInvite(newCSeq)
 			// TODO(alexfish): Reply with the new SDP.
-			cc.AcceptAsKeepAlive(localSDP)
+			cc.AcceptAsKeepAlive(withSDPDirection(localSDP, answerDirectionFor(offerBody)))
 			return nil
 		}
 
