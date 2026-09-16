@@ -139,6 +139,7 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 	if err != nil {
 		return err
 	}
+	agent.TransactionLayer().UnhandledResponseHandler(c.onUnhandledResponse)
 
 	return nil
 }
@@ -527,6 +528,25 @@ func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
 		return c.onBye(req, tx)
 	case "NOTIFY":
 		return c.onNotify(req, tx)
+	}
+}
+
+func (c *Client) onUnhandledResponse(_ *slog.Logger, resp *sip.Response) {
+	cseq := resp.CSeq()
+	from := resp.From()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || cseq == nil || cseq.MethodName != sip.INVITE || from == nil {
+		return
+	}
+	localTag, ok := getTagFrom(from.Params)
+	if !ok {
+		return
+	}
+	call := c.getActiveCall(LocalTag(localTag))
+	if call == nil {
+		return
+	}
+	if err := call.cc.ackInviteResponse(resp); err != nil {
+		call.log.Warnw("failed to ACK retransmitted INVITE response", err)
 	}
 }
 
