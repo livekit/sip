@@ -692,7 +692,8 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 
 	if c.sipConf.ringingTimeout > 0 {
 		var cancel func()
-		ctx, cancel = context.WithTimeout(ctx, c.sipConf.ringingTimeout)
+		// Cause tells the abort check below a ringing timeout apart from a parent cancellation.
+		ctx, cancel = context.WithTimeoutCause(ctx, c.sipConf.ringingTimeout, ErrSIPRequestTimeout)
 		defer cancel()
 	}
 
@@ -781,11 +782,14 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.sigTs.AckTime = time.Now()
 	joinDur()
 
-	if err := ctx.Err(); err != nil {
+	if ctx.Err() != nil {
 		// Aborted while the callee answered: the 200 is ACKed, so error out to
 		// tear the dialog down with a BYE instead of leaking a zombie call.
-		c.log.Infow("outbound call answered after abort; hanging up", "error", err)
-		return err
+		// Report the cause, not ctx.Err(): a ringing timeout landing here is
+		// the same no-answer as one that beats the 200 OK in sipResponse.
+		cause := context.Cause(ctx)
+		c.log.Infow("outbound call answered after abort; hanging up", "error", cause)
+		return psrpc.NewError(psrpc.Canceled, cause)
 	}
 
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
