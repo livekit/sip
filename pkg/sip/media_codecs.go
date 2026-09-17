@@ -30,6 +30,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 )
 
 var defaultCodecs = msdk.NewCodecSet()
@@ -39,6 +40,7 @@ func init() {
 		g711.ALawSDPNameAndRate: true,
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
+		opusSDPName:             true,
 		amrwb.SDPNameAndRate:    false, // optional
 		dtmf.SDPNameAndRate:     true,
 	})
@@ -48,10 +50,38 @@ func DefaultCodecs() *msdk.CodecSet {
 	return defaultCodecs
 }
 
+// CheckCodecAvailability logs warnings for codecs that are enabled in the
+// default set but whose backing media-sdk CodecType is not registered —
+// most commonly because a CGo codec (opus, amrwb) was skipped in a
+// CGO_ENABLED=0 build.
+//
+// We check specific known CGo-dependent codec names rather than iterating
+// ListEnabled(), because ListEnabled() only returns registered codecs —
+// an enabled-but-missing codec would never appear in its output.
+func CheckCodecAvailability(log logger.Logger) {
+	cgoCodecs := []string{opusSDPName, amrwb.SDPNameAndRate}
+	for _, name := range cgoCodecs {
+		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name, nil) == nil {
+			log.Warnw("codec enabled but not registered (missing CGo dependency?)",
+				nil, "codec", name,
+			)
+		}
+	}
+}
+
 // Metric label used for advertised codecs that are not part of the internal
 // codec set, since their name is dropped during SDP parsing and to keep the
 // label bounded
 const codecOther = "other"
+
+const (
+	// opusBareName is the bare codec name as it appears in SIPCodec config.
+	// The media-sdk does not export the bare form separately.
+	opusBareName = "opus"
+	// opusSDPName is the canonical Opus SDP name per RFC 7587 §6.1: the RTP
+	// clock rate is always 48000 Hz and stereo is expressed via channels=2.
+	opusSDPName = "opus/48000/2"
+)
 
 func peerCodecNames(d sdp.MediaDesc) []string {
 	names := make([]string, 0, len(d.Codecs))
@@ -117,14 +147,23 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		if name == "" {
 			return nil, errors.New("no codec name specified")
 		}
+
+		// Per RFC 7587 §6.1, Opus RTP clock rate is always 48000 Hz.
+		// Different audio bandwidths (narrowband 8k, wideband 16k,
+		// fullband 48k) are negotiated via fmtp:maxplaybackrate,
+		// not via the rtpmap clock rate. Use the canonical SDP name.
+		if name == opusBareName {
+			s.SetEnabled(opusSDPName, true)
+			continue
+		}
+
 		rate := codec.Rate
 		if rate == 0 {
-			// Set default rate
 			switch name {
 			case g711.ALawSDPNameOnly, g711.ULawSDPNameOnly:
 				rate = 8000
 			case g722.SDPNameOnly:
-				rate = 8000 // actually 16000, it's a know bug in the spec
+				rate = 8000 // actually 16000, it's a known bug in the spec
 			case amrwb.SDPNameOnly:
 				rate = 16000
 			default:
