@@ -246,7 +246,7 @@ func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, err := sipResponse(ctx, tx, nil, nil)
+	res, err := sipResponse(ctx, tx, nil, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, res)
 	require.Len(t, tx.cancels, 1, "CANCEL should be sent")
@@ -649,4 +649,52 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			expectErr(t, req, "invalid To header: to user override should be a phone number or SIP user, not a full SIP URI")
 		}
 	})
+}
+
+// sipResponse invokes the onProvisional callback for 1xx responses with a body,
+// and skips it for bodyless provisionals or final responses.
+// See: https://github.com/livekit/sip/issues/813
+func TestSIPResponseEarlyMediaCallback(t *testing.T) {
+	// 183 Session Progress with an SDP body.
+	withBody := sip.NewResponse(sip.StatusSessionInProgress, "Session Progress")
+	withBody.SetBody([]byte("v=0\r\no=- 1 1 IN IP4 9.8.7.6\r\ns=-\r\nc=IN IP4 9.8.7.6\r\nt=0 0\r\nm=audio 12345 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"))
+	withBody.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+
+	// 180 Ringing without a body.
+	withoutBody := sip.NewResponse(sip.StatusRinging, "Ringing")
+
+	// 200 OK (final).
+	ok := sip.NewResponse(sip.StatusOK, "OK")
+
+	for _, tt := range []struct {
+		name    string
+		resps   []*sip.Response
+		wantCB  int
+		wantRet *sip.Response
+	}{
+		{"183 with SDP then 200", []*sip.Response{withBody, ok}, 1, ok},
+		{"180 no body then 200", []*sip.Response{withoutBody, ok}, 0, ok},
+		{"200 only", []*sip.Response{ok}, 0, ok},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tx := &testSIPClientTransaction{
+				log:       logger.NewTestLogger(t),
+				responses: make(chan *sip.Response, len(tt.resps)),
+				done:      make(chan struct{}),
+			}
+			for _, r := range tt.resps {
+				tx.responses <- r
+			}
+			calls := 0
+			res, err := sipResponse(context.Background(), tx, nil, nil, func(res *sip.Response) {
+				calls++
+				require.Equal(t, sip.StatusSessionInProgress, res.StatusCode,
+					"callback should only fire for 183")
+				require.NotEmpty(t, res.Body(), "callback should only fire for bodyful responses")
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantRet, res)
+			require.Equal(t, tt.wantCB, calls, "onProvisional callback call count")
+		})
+	}
 }
