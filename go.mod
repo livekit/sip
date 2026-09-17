@@ -9,12 +9,12 @@ require (
 	github.com/icholy/digest v1.1.0
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.0.0-20260812193843-5a5218b19550
+	github.com/livekit/media-sdk v0.0.0-20260824180721-c8704a7f6202
 	github.com/livekit/mediatransportutil v0.0.0-20260727210231-81a5287a7109
-	github.com/livekit/protocol v1.50.5-0.20260821144838-17c16cf496fd
-	github.com/livekit/psrpc v0.7.3
+	github.com/livekit/protocol v1.51.1-0.20260914212523-e4905c8588fa
+	github.com/livekit/psrpc v0.7.6
 	github.com/livekit/server-sdk-go/v2 v2.18.2-0.20260821165736-9b5928e4fcb8
-	github.com/livekit/sipgo v0.13.2-0.20260519205735-a5b4a38b6ceb
+	github.com/livekit/sipgo v0.13.2-0.20260916140745-9a614a00b141
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/rtp v1.10.5
@@ -22,11 +22,11 @@ require (
 	github.com/pion/webrtc/v4 v4.2.18
 	github.com/prometheus/client_golang v1.24.1
 	github.com/sirupsen/logrus v1.9.4
-	github.com/stretchr/testify v1.12.0
+	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -57,7 +57,7 @@ require (
 	github.com/docker/cli v29.2.0+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v1.4.0
+	github.com/emiago/sipgo v1.5.0
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
@@ -78,7 +78,7 @@ require (
 	github.com/jxskiss/base62 v1.1.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
+	github.com/lithammer/shortuuid/v4 v4.3.0 // indirect
 	github.com/livekit/amrwb-cgo v0.0.0-20260612153743-6d4b69dc1470 // indirect
 	github.com/mackerelio/go-osstat v0.2.8 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
@@ -140,5 +140,5 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 )

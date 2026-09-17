@@ -61,10 +61,10 @@ func (m *mockPCM16Writer) WriteSample(sample msdk.PCM16Sample) error {
 }
 
 func TestSignalLogger_initialization(t *testing.T) {
-	log := logger.GetLogger()
 	next := newMockPCM16Writer(48000)
 
 	t.Run("default initialization", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		out, err := NewSignalLogger(log, "incoming", next)
 		sl, ok := out.(*SignalLogger)
 		require.True(t, ok)
@@ -77,6 +77,7 @@ func TestSignalLogger_initialization(t *testing.T) {
 	})
 
 	t.Run("with valid options", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		out, err := NewSignalLogger(log, "incoming", next, WithNoiseFloor(-60), WithHangoverDuration(2*time.Second), WithEnterVoiceOffsetDB(9), WithExitVoiceOffsetDB(4))
 		sl, ok := out.(*SignalLogger)
 		require.True(t, ok)
@@ -89,6 +90,7 @@ func TestSignalLogger_initialization(t *testing.T) {
 	})
 
 	t.Run("with invalid options", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		_, err := NewSignalLogger(log, "incoming", next, WithHangoverDuration(-time.Second))
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "hangover duration must be positive, got -1s")
@@ -106,7 +108,7 @@ func TestSignalLogger_initialization(t *testing.T) {
 
 func newTestLogger(t *testing.T, opts ...SignalLoggerOption) (*SignalLogger, *mockPCM16Writer) {
 	next := newMockPCM16Writer(48000)
-	out, err := NewSignalLogger(logger.GetLogger(), "incoming", next, opts...)
+	out, err := NewSignalLogger(logger.NewTestLogger(t), "incoming", next, opts...)
 	sl, ok := out.(*SignalLogger)
 	require.True(t, ok)
 	require.NoError(t, err)

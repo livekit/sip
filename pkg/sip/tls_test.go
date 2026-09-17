@@ -9,7 +9,7 @@ import (
 )
 
 func TestParseCipherSuites(t *testing.T) {
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 
 	t.Run("valid cipher suites - secure", func(t *testing.T) {
 		cipherSuites := []string{

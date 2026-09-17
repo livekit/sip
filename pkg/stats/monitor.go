@@ -16,6 +16,7 @@ package stats
 
 import (
 	"errors"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -76,6 +77,7 @@ type Monitor struct {
 	cpuLoad                  prometheus.Gauge
 	sdpSize                  *prometheus.HistogramVec
 	sdpParsed                *prometheus.CounterVec
+	sdpParseErrors           *prometheus.CounterVec
 	codecOffered             *prometheus.CounterVec
 	nodeAvailable            prometheus.GaugeFunc
 	transfersTotal           *prometheus.CounterVec
@@ -242,7 +244,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SDP size in bytes",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     sizeBuckets,
-	}, []string{"type"}))
+	}, []string{"type", "source"}))
 
 	m.sdpParsed = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -250,7 +252,15 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "sdp_parsed_total",
 		Help:        "Number of SDP bodies parsed successfully during SDP negotiation",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "provider"}))
+	}, []string{"dir", "provider", "reinvite"}))
+
+	m.sdpParseErrors = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "sdp_parse_errors_total",
+		Help:        "Total number of SDP parses that resulted in an error",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider", "reason"}))
 
 	m.codecOffered = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -258,7 +268,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "codec_offered_total",
 		Help:        "Number of SDP bodies that advertised a given audio codec",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "provider", "codec"}))
+	}, []string{"dir", "provider", "codec", "reinvite"}))
 
 	m.nodeAvailable = mustRegister(m, prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -526,24 +536,49 @@ func (c *CallMonitor) StageDurTimer(stage string) func() time.Duration {
 
 // PeerSDP increments SDP count and each individual codec from the SDP body.
 // Should be called before codec selection such that failed negotiations are still counted
-func (c *CallMonitor) PeerSDP(names []string) {
+func (c *CallMonitor) PeerSDP(names []string, reinvite bool) {
 	provider := c.providerLabel()
-	c.m.sdpParsed.With(prometheus.Labels{"dir": c.dir, "provider": provider}).Inc()
+	c.m.sdpParsed.With(prometheus.Labels{"dir": c.dir, "provider": provider, "reinvite": strconv.FormatBool(reinvite)}).Inc()
 	for _, name := range names {
 		c.m.codecOffered.With(prometheus.Labels{
 			"dir":      c.dir,
 			"provider": provider,
 			"codec":    name,
+			"reinvite": strconv.FormatBool(reinvite),
 		}).Inc()
 	}
 }
 
-func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
+func (c *CallMonitor) SDPSize(sz int, isOffer bool, isFromRemote bool) {
 	typ := "answer"
 	if isOffer {
 		typ = "offer"
 	}
-	c.m.sdpSize.WithLabelValues(typ).Observe(float64(sz))
+	source := "local"
+	if isFromRemote {
+		source = "remote"
+	}
+	c.m.sdpSize.WithLabelValues(typ, source).Observe(float64(sz))
+}
+
+// SDPParsePanic increments a counter denoting the number of times a panic has
+// occurred during SDP parsing.
+func (c *CallMonitor) SDPParsePanic() {
+	c.m.sdpParseErrors.With(prometheus.Labels{
+		"dir":      c.dir,
+		"provider": c.providerLabel(),
+		"reason":   "panic",
+	}).Inc()
+}
+
+// SDPParseError increments a counter denoting the number of times a non-panic
+// error has occurred during SDP parsing.
+func (c *CallMonitor) SDPParseError() {
+	c.m.sdpParseErrors.With(prometheus.Labels{
+		"dir":      c.dir,
+		"provider": c.providerLabel(),
+		"reason":   "other",
+	}).Inc()
 }
 
 func (m *Monitor) TransferStarted(dir CallDir) {

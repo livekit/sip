@@ -32,6 +32,7 @@ func TestMain(m *testing.M) {
 		log.Fatalf("Could not connect to Docker: %s", err)
 	}
 	Docker = pool
+	requireNoLeftoverSIPTestDocker()
 
 	code := m.Run()
 	os.Exit(code)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
-	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/icholy/digest"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/status"
 
 	msdk "github.com/livekit/media-sdk"
 
@@ -37,7 +37,7 @@ const (
 	testPortSIPMax = 30050
 
 	testPortRTPMin = 30100
-	testPortRTPMax = 30150
+	testPortRTPMax = 32000
 )
 
 func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
@@ -50,11 +50,29 @@ func getResponseOrFail(t *testing.T, tx sip.ClientTransaction) *sip.Response {
 
 	return nil
 }
+func getResponseOrFailTimeout(t *testing.T, ctx context.Context, tx sip.ClientTransaction) *sip.Response {
+	t.Helper()
+	var ctxDone <-chan struct{} = nil
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	select {
+	// Avoid using t.Context, this helper is used in test cleanup code as well.
+	case <-ctxDone:
+		t.Fatal("Context cancelled")
+	case <-tx.Done():
+		t.Fatal("Transaction failed to complete")
+	case res := <-tx.Responses():
+		return res
+	}
 
-func getFinalResponseOrFail(t *testing.T, tx sip.ClientTransaction, req *sip.Request) *sip.Response {
+	return nil
+}
+
+func getFinalResponseOrFail(t *testing.T, ctx context.Context, tx sip.ClientTransaction) *sip.Response {
 	var res *sip.Response
 	for {
-		res = getResponseOrFail(t, tx)
+		res = getResponseOrFailTimeout(t, ctx, tx)
 		if res.StatusCode >= 200 {
 			break
 		}
@@ -78,6 +96,8 @@ type TestHandler struct {
 	DispatchCallFunc       func(ctx context.Context, info *CallInfo) CallDispatch
 	OnInboundInfoFunc      func(log logger.Logger, call *rpc.SIPCall, headers Headers)
 	OnSessionEndFunc       func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string)
+	// FeatureFlags are returned by the default DispatchCall.
+	FeatureFlags map[string]string
 }
 
 func (h TestHandler) GetAuthCredentials(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
@@ -101,6 +121,7 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 				Name:     identity,
 			},
 		},
+		FeatureFlags: h.FeatureFlags,
 	}
 }
 
@@ -140,7 +161,7 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 	require.NoError(t, err)
 
 	// Use a no-op logger to avoid panics from async logging after test completion
-	log := logger.LogRLogger(logr.Discard())
+	log := logger.NewTestLogger(t)
 	s, err := NewService("", &config.Config{
 		HideInboundPort: hidden,
 		SIPPort:         sipPort,
@@ -202,6 +223,53 @@ func TestService_AuthFailure(t *testing.T) {
 
 		res = getResponseOrFail(t, tx)
 		require.Equal(t, sip.StatusCode(503), res.StatusCode)
+	})
+}
+
+// A route the project may not use is answered with 503 so the carrier fails over
+// to another origination URI rather than treating the call as terminally rejected.
+func TestService_AuthRouteNotAllowed(t *testing.T) {
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthRouteNotAllowed}, nil
+		},
+	}
+	testInvite(t, h, false, "foo", "bar", func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(503), res.StatusCode)
+	})
+}
+
+func TestService_AuthFailureOther(t *testing.T) {
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthFailureOther}, nil
+		},
+	}
+	testInvite(t, h, false, "foo", "bar", func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(403), res.StatusCode)
+	})
+}
+
+func TestService_AuthFailureRejectedAsError(t *testing.T) {
+	h := &TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			return AuthInfo{Result: AuthRejectedAsError}, nil
+		},
+	}
+	testInvite(t, h, false, "foo", "bar", func(tx sip.ClientTransaction) {
+		res := getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(100), res.StatusCode)
+
+		res = getResponseOrFail(t, tx)
+		require.Equal(t, sip.StatusCode(403), res.StatusCode)
 	})
 }
 
@@ -325,7 +393,7 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 		tx, err := client.TransactionRequest(req)
 		require.NoError(t, err)
 		t.Cleanup(tx.Terminate)
-		return getFinalResponseOrFail(t, tx, req)
+		return getFinalResponseOrFail(t, nil, tx)
 	}
 
 	// First INVITE: full handler invocation, 404 from DispatchNoRuleReject.
@@ -899,46 +967,32 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	)
 
 	st := NewServiceTest(t, &serviceTestConfig{GetRoom: newTestRoomConfig(&testRoomConfig{ringForever: true})})
-	loopback := netip.MustParseAddr("127.0.0.1")
-	sipServerAddress := st.Address()
 
-	// Create SIP client using sipgo
-	sipUserAgent, err := sipgo.NewUA(
-		sipgo.WithUserAgent(fromUser),
-	)
+	call := newTestCall(st.TestUA, false)
+	req, localSDP, err := call.Invite(nil)
 	require.NoError(t, err)
+	call.SetLocalSDP(localSDP)
 
-	sipClient, err := sipgo.NewClient(sipUserAgent)
-	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
+	defer cancel()
 
-	// Create SDP offer
-	offer, err := sdp.NewOfferWith(defaultCodecs, loopback, 0xB0B, sdp.EncryptionNone)
+	inviteTx, err := st.TestUA.Client.TransactionRequest(req)
 	require.NoError(t, err)
-	offerData, err := offer.SDP.Marshal()
-	require.NoError(t, err)
-
-	// Create INVITE request
-	inviteRecipient := sip.Uri{User: toUser, Host: sipServerAddress}
-	inviteRequest := sip.NewRequest(sip.INVITE, inviteRecipient)
-	inviteRequest.SetDestination(sipServerAddress)
-	inviteRequest.SetBody(offerData)
-	inviteRequest.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-
-	// Send INVITE
-	tx, err := sipClient.TransactionRequest(inviteRequest)
-	require.NoError(t, err)
-	t.Cleanup(tx.Terminate)
+	defer inviteTx.Terminate()
 
 	// Wait for 100 Trying
-	res100 := getResponseOrFail(t, tx)
+	res100 := getResponseOrFailTimeout(t, ctx, inviteTx)
 	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "Should receive 100 Trying")
 
 	// Wait for 180 Ringing (call is now ringing)
-	res180 := getResponseOrFail(t, tx)
+	res180 := getResponseOrFailTimeout(t, ctx, inviteTx)
 	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "Should receive 180 Ringing")
+	remoteTag, ok := res180.To().Params.Get("tag")
+	require.True(t, ok, "remote tag should be present")
+	call.SetRemoteTag(LocalTag(remoteTag))
 
 	// Now send CANCEL
-	err = tx.Cancel()
+	err = inviteTx.Cancel()
 	require.NoError(t, err, "Should be able to send CANCEL")
 
 	// On-the-wire there should be two responses after CANCEL:
@@ -949,51 +1003,11 @@ func TestCANCELSendsBothResponses(t *testing.T) {
 	// Sipgo treats both INVITE and CANCEL as the same transaction, and has special handling
 	// to swallow the 200 OK response to CANCEL, so it can't look like the INVITE got the 200.
 
-	// Collect responses until we get the final 487 or transaction completes
-	var responses []*sip.Response
-
-	// Wait for responses with a timeout
-	timeout := time.After(time.Second)
-
-	// Collect responses until we get 487 or timeout
-	for {
-		select {
-		case res := <-tx.Responses():
-			responses = append(responses, res)
-			cseq := res.CSeq()
-
-			// Debug: log all responses to understand what we're receiving
-			cseqMethod := "nil"
-			if cseq != nil {
-				cseqMethod = string(cseq.MethodName)
-			}
-			t.Logf("Received response: StatusCode=%d, CSeq method=%s", res.StatusCode, cseqMethod)
-
-			if res.StatusCode < 200 {
-				continue
-			}
-			require.Equal(t, sip.StatusCode(487), res.StatusCode, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
-			require.NotNil(t, cseq, "487 response should have CSeq header")
-			require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
-			return // Success!
-
-		case <-tx.Done():
-			t.Fatal("Transaction done without receiving expected 487 response")
-
-		case <-timeout:
-			// Log all received responses for debugging
-			t.Logf("Timeout after receiving %d responses", len(responses))
-			for i, res := range responses {
-				cseq := res.CSeq()
-				cseqMethod := "nil"
-				if cseq != nil {
-					cseqMethod = string(cseq.MethodName)
-				}
-				t.Logf("  Response %d: StatusCode=%d, CSeq method=%s", i+1, res.StatusCode, cseqMethod)
-			}
-			t.Fatal("Timeout waiting for 487 Request Terminated response after CANCEL")
-		}
-	}
+	res := getFinalResponseOrFail(t, ctx, inviteTx)
+	require.Equal(t, sip.StatusCode(487), res.StatusCode, "Should have received 487 Request Terminated response to INVITE when CANCEL is sent")
+	cseq := res.CSeq()
+	require.NotNil(t, cseq, "487 response should have CSeq header")
+	require.Equal(t, sip.INVITE, cseq.MethodName, "487 response should be for INVITE method")
 }
 
 // TestSameCallIDForAuthFlow verifies that the same LiveKit call ID is assigned to both
@@ -1473,10 +1487,106 @@ func TestTransferCallEndedIsNotAnError(t *testing.T) {
 
 		resp, err := s.TransferSIPParticipant(t.Context(), req)
 		require.Error(t, err)
-		require.NotNil(t, resp)
-		require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, resp.Status)
-		require.Equal(t, livekit.SIPTransferReason_STR_REJECTED, resp.Reason)
-		require.NotNil(t, resp.SipStatus)
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, resp.SipStatus.Code)
+		require.Nil(t, resp)
+
+		transferErr := livekit.SIPTransferErrorFrom(err)
+		require.NotNil(t, transferErr)
+		require.Equal(t, transferID, transferErr.TransferId)
+		require.Equal(t, livekit.SIPTransferReason_STR_REJECTED, transferErr.Reason)
+		st := livekit.SIPStatusFrom(err)
+		require.NotNil(t, st)
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, st.Code)
 	})
+}
+
+// TestTransferErrorDetails checks that a failed transfer reports its reason on
+// the error.
+func TestTransferErrorDetails(t *testing.T) {
+	const transferID = "STR_test"
+	sipStatus := &livekit.SIPStatus{
+		Code:   livekit.SIPStatusCode_SIP_STATUS_BUSY_HERE,
+		Status: "Busy Here",
+	}
+	cases := []struct {
+		Name      string
+		Err       error
+		Reason    livekit.SIPTransferReason
+		Code      psrpc.ErrorCode
+		SIPStatus *livekit.SIPStatus
+	}{
+		{
+			Name: "rejected by the transferee",
+			Err:  psrpc.NewErrorf(psrpc.UpstreamClientError, "call transfer failed: %w", sipStatus),
+			// Code is left unset: a SIP status decides it, so the expected value
+			// is derived below rather than pinned to whatever the SIP-to-gRPC
+			// table maps 486 to today.
+			Reason:    livekit.SIPTransferReason_STR_REJECTED,
+			SIPStatus: sipStatus,
+		},
+		{
+			Name:   "ran out of time",
+			Err:    psrpc.NewError(psrpc.Canceled, context.DeadlineExceeded),
+			Code:   psrpc.Canceled,
+			Reason: livekit.SIPTransferReason_STR_RINGING_TIMEOUT,
+		},
+		{
+			Name:   "subscription terminated",
+			Err:    psrpc.NewErrorf(psrpc.UpstreamServerError, "call transfer failed: %w", errReferSubscriptionTerminated),
+			Code:   psrpc.UpstreamServerError,
+			Reason: livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED,
+		},
+		{
+			Name:   "no transfer started",
+			Err:    psrpc.NewErrorf(psrpc.NotFound, "unknown call"),
+			Code:   psrpc.NotFound,
+			Reason: livekit.SIPTransferReason_STR_UNSPECIFIED,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			err := transferError(transferOutcome{TransferID: transferID, Err: c.Err})
+			require.Error(t, err)
+			require.ErrorIs(t, err, c.Err, "the original error must stay unwrappable")
+
+			wantCode := c.Code
+			if c.SIPStatus != nil {
+				// The SIP status decides the code, not the code the incoming
+				// error arrived with.
+				wantCode = psrpc.ErrorCodeFromGRPC(c.SIPStatus.GRPCStatus().Code())
+				require.NotEqual(t, psrpc.UpstreamClientError, wantCode)
+			}
+			code, ok := psrpc.GetErrorCode(err)
+			require.True(t, ok)
+			require.Equal(t, wantCode, code)
+
+			transferErr := livekit.SIPTransferErrorFrom(err)
+			require.NotNil(t, transferErr, "the transfer reason must reach the caller on the error")
+			require.Equal(t, transferID, transferErr.TransferId)
+			require.Equal(t, c.Reason, transferErr.Reason)
+
+			got := livekit.SIPStatusFrom(err)
+			if c.SIPStatus == nil {
+				require.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			require.Equal(t, c.SIPStatus.Code, got.Code)
+
+			// The status rides both nested and standalone, so a client that
+			// cannot resolve SIPTransferError still finds it. See transferError.
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			var sawStatus, sawTransfer bool
+			for _, d := range st.Details() {
+				switch d.(type) {
+				case *livekit.SIPStatus:
+					sawStatus = true
+				case *livekit.SIPTransferError:
+					sawTransfer = true
+				}
+			}
+			require.True(t, sawTransfer, "SIPTransferError detail missing")
+			require.True(t, sawStatus, "standalone SIPStatus detail missing")
+		})
+	}
 }
