@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -43,6 +44,7 @@ type MediaPortPipelineConfig struct {
 	stats     *PortStats
 	onNewSSRC func() bool
 	onPacket  func()
+	dtls      *dtlsMediaConfig
 }
 
 func NewMediaPortPipeline(
@@ -131,7 +133,10 @@ func (p *mediaPortPipeline) init(
 	p.lastDTMFEvent.Store(math.MaxUint64)
 
 	var err error
-	if mc.Crypto != nil {
+	if p.conf.dtls != nil {
+		remote := &net.UDPAddr{IP: mc.Remote.Addr().AsSlice(), Port: int(mc.Remote.Port())}
+		p.sess = newDTLSSRTPSession(p.conf.log, port, p.conf.dtls, p.conf.opts.DTLSHandshakeTimeout, remote)
+	} else if mc.Crypto != nil {
 		p.sess, err = srtp.NewSession(p.conf.log, port, mc.Crypto)
 	} else {
 		p.sess = rtp.NewSession(p.conf.log, port)
