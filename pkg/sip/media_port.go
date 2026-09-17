@@ -435,6 +435,19 @@ type MediaPort interface {
 	// SIDE EFFECT: May cause a rebuild of the pipeline.
 	ProcessAnswer(answer []byte) error
 
+	// ProcessEarlyAnswer processes an SDP body from a provisional 1xx response
+	// (e.g. 183 Session Progress) so that early-media audio (ringback, IVR
+	// announcements) can reach the LiveKit room before the final 200 OK.
+	//
+	// Unlike ProcessAnswer, this does not consume the offer: a subsequent
+	// ProcessAnswer for the final 200 OK will still negotiate normally. If the
+	// final answer carries a different remote address or codec set, the
+	// pipeline is rebuilt by ProcessAnswer's configure call.
+	//
+	// Returns nil (no-op) if the body is empty, so callers can pass a
+	// provisional response unconditionally.
+	ProcessEarlyAnswer(answer []byte) error
+
 	GetLocalSDP() ([]byte, error)
 
 	// NegotiatedAudio returns the audio configuration chosen by SDP negotiation.
@@ -840,6 +853,47 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 	if err != nil {
 		return err
 	}
+	p.SetTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
+	return nil
+}
+
+// ProcessEarlyAnswer connects the media pipeline from a provisional 1xx
+// response's SDP body (early media) without consuming the offer, so the
+// final 200 OK can still be processed via ProcessAnswer.
+func (p *mediaPort) ProcessEarlyAnswer(answerData []byte) error {
+	if len(answerData) == 0 {
+		return nil
+	}
+
+	p.mu.RLock()
+	offer := p.offer
+	p.mu.RUnlock()
+	if offer == nil {
+		return errors.New("no offer generated")
+	}
+
+	answer, err := parseAnswerWith(p.log, p.mon, p.codecs, answerData)
+	if err != nil {
+		return SDPError{Err: err}
+	}
+	mc, localSDP, err := answer.ApplyWithLocal(offer, p.encryption)
+	if err != nil {
+		return SDPError{Err: err}
+	}
+
+	localSDPBytes, err := localSDP.Marshal()
+	if err != nil {
+		return err
+	}
+
+	// configure rebuilds the pipeline and sets p.offer = nil. Restore the
+	// offer afterward so ProcessAnswer (for the final 200 OK) can still run.
+	if err := p.configure(mc, localSDPBytes); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.offer = offer
+	p.mu.Unlock()
 	p.SetTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
 	return nil
 }

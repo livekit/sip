@@ -354,6 +354,52 @@ func TestMediaPortReofferSameCrypto(t *testing.T) {
 	require.Equal(t, mc1.Crypto.Keys.RemoteMasterSalt, mc2.Crypto.Keys.RemoteMasterSalt, "remote master salt must not change")
 }
 
+// ProcessEarlyAnswer connects the pipeline from a provisional response's SDP
+// (early media) without consuming the offer, so the final 200 OK can still be
+// processed via ProcessAnswer. See: https://github.com/livekit/sip/issues/813
+func TestMediaPortEarlyAnswer(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, RoomSampleRate)
+
+	// Generate our offer (as if sent in the INVITE).
+	offerData, err := mp.GenerateOffer()
+	require.NoError(t, err)
+
+	// Peer builds an answer from that offer.
+	offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+	require.NoError(t, err)
+	peerAddr := netip.MustParseAddrPort("9.8.7.6:12345")
+	answer, _, err := offer.Answer(peerAddr.Addr(), int(peerAddr.Port()), sdp.EncryptionNone)
+	require.NoError(t, err)
+	answerData, err := answer.SDP.Marshal()
+	require.NoError(t, err)
+
+	// Simulate a 183 Session Progress: process the answer as early media.
+	require.NoError(t, mp.ProcessEarlyAnswer(answerData),
+		"ProcessEarlyAnswer should connect the pipeline from a provisional SDP")
+
+	// The pipeline should be connected: RemoteAddr reflects the peer's address.
+	require.True(t, mp.RemoteAddr().IsValid(), "RemoteAddr should be set after early media")
+	require.Equal(t, peerAddr, mp.RemoteAddr(),
+		"RemoteAddr should match the early-media SDP")
+
+	// The offer must still be present so the final 200 OK can be processed.
+	mp.mu.RLock()
+	offerStillPresent := mp.offer != nil
+	mp.mu.RUnlock()
+	require.True(t, offerStillPresent, "offer must not be consumed by ProcessEarlyAnswer")
+
+	// Now the final 200 OK arrives (same SDP). ProcessAnswer must still work.
+	require.NoError(t, mp.ProcessAnswer(answerData),
+		"ProcessAnswer for the final 200 OK must still succeed after early media")
+
+	// Negotiated audio should be available.
+	audio := mp.NegotiatedAudio()
+	require.NotNil(t, audio, "NegotiatedAudio must be set after final answer")
+}
+
 // negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.
 func negotiate(t testing.TB, m1, m2 *mediaPort) []byte {
 	t.Helper()
