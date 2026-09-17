@@ -253,6 +253,42 @@ func offerAtEnc(t testing.TB, addr netip.AddrPort, enc sdp.Encryption) []byte {
 	return data
 }
 
+func TestMediaPort(t *testing.T) {
+	// Main resampler has unpredictable (although tiny) output delay
+	// and other randomness in the generated samples.
+	// Enable a predictable resampler to avoid flaky tests.
+	prevOpts := msdk.DefaultResampleOptions
+	msdk.DefaultResampleOptions = []msdk.ResampleOption{
+		msdk.WithPredictableResample(true),
+	}
+	defer func() {
+		msdk.DefaultResampleOptions = prevOpts
+	}()
+	codecList := msdk.Codecs()
+	for _, codec := range codecList {
+		info := codec.Info()
+		tname := strings.ReplaceAll(info.SDPName, "/", "-")
+		t.Run(tname, func(t *testing.T) {
+			codecs := msdk.NewCodecSet()
+			codecs.SetEnabled(info.SDPName, true)
+
+			sub := strings.SplitN(info.SDPName, "/", 3)
+			codecName := sub[0]
+			encName := strings.ToUpper(codecName)
+			nativeRateSDP, err := strconv.Atoi(sub[1])
+			nativeRate := nativeRateSDP
+			require.NoError(t, err)
+			switch codecName {
+			case "telephone-event":
+				t.SkipNow()
+			case "opus":
+				// Lossy perceptual codec; waveform-fidelity assertions don't hold.
+				// Covered by media_codecs_opus_test.go instead.
+				t.SkipNow()
+			case "G722":
+				nativeRate *= 2 // error in RFC
+			}
+
 func TestMediaPortUpdateRemote(t *testing.T) {
 	c1, _ := newUDPPipe()
 	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
@@ -510,6 +546,96 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 						})
 					}
 
+					aliceToBobWrites := 1
+					bobToAliceWrites := 1
+					if tconf.Rate == nativeRate {
+						expChainBase := fmt.Sprintf("Switch(%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s) -> LatencyExit",
+							nativeRate, encName, nativeRate, info.SDPName)
+						if tconf.Encrypted != sdp.EncryptionNone {
+							require.Equal(t, fmt.Sprintf("%s -> SRTPWriteStream", expChainBase), aliceToBobWriteChain)
+							require.Equal(t, fmt.Sprintf("%s -> SRTPWriteStream", expChainBase), bobToAliceWriteChain)
+						} else {
+							require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip2, port2), aliceToBobWriteChain)
+							require.Equal(t, fmt.Sprintf("%s -> RTPWriteStream(%s:%d)", expChainBase, ip1, port1), bobToAliceWriteChain)
+						}
+
+						expChainBase = fmt.Sprintf("SilenceFiller(25) -> RTP(%%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", encName, nativeRate, nativeRate)
+						require.Equal(t, fmt.Sprintf(expChainBase, aliceAudio.Type), bobToAliceHandleChain)
+						require.Equal(t, fmt.Sprintf(expChainBase, bobAudio.Type), aliceToBobHandleChain)
+					} else {
+						expChain := fmt.Sprintf("Switch(48000) -> Resample(48000->%d) -> LatencyEntry -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s) -> LatencyExit -> SRTPWriteStream",
+							nativeRate, encName, nativeRate, info.SDPName)
+						require.Equal(t, expChain, aliceToBobWriteChain)
+						require.Equal(t, expChain, bobToAliceWriteChain)
+
+						// This side does not resample the received audio, it uses sample rate of the RTP source.
+						var expChainAlice string
+						if bobToAliceNoResample {
+							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> LatencyExit -> Switch(%d) -> Buffer(%d)", aliceAudio.Type, encName, nativeRate, nativeRate)
+						} else {
+							expChainAlice = fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", aliceAudio.Type, encName, nativeRate)
+						}
+						// This side resamples the received audio to the expected sample rate.
+						expChainBob := fmt.Sprintf("SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->48000) -> LatencyExit -> Switch(48000) -> Buffer(48000)", bobAudio.Type, encName, nativeRate)
+
+						require.Equal(t, expChainAlice, bobToAliceHandleChain)
+						require.Equal(t, expChainBob, aliceToBobHandleChain)
+					}
+					// Ramp-up time for the codec.
+					// Some codecs have "inertia" and cannot immediately represent the sound exactly.
+					// This is shy we write signal multiple times to give it some time to adapt.
+					// We will also cut the ramp-up part from the destination buffer before comparing.
+					// This variable is in full frames, so that we clearly see where frames start to calculate the offset below.
+					rampUpFrames := 0
+					// Some codecs have an extra buffering internally, and we have to offset the compared sample
+					// by this number of sampled values.
+					offsetSamples := 0
+
+					switch codecName {
+					case "G722":
+						rampUpFrames += 1
+						offsetSamples += 22
+					case "AMR-WB":
+						rampUpFrames += 1
+						offsetSamples += 14 + 16
+					}
+					aliceToBobWrites += rampUpFrames
+					bobToAliceWrites += rampUpFrames
+					discard := rampUpFrames * packetSize
+
+					resampleMult := testRate / nativeRate
+					offsetSamples *= resampleMult
+
+					var wg sync.WaitGroup
+					wg.Add(2)
+					go func() {
+						defer wg.Done()
+						for range aliceToBobWrites {
+							err := aliceToBob.WriteSample(aliceToBobSamples)
+							require.NoError(t, err)
+						}
+					}()
+					go func() {
+						defer wg.Done()
+						for range bobToAliceWrites {
+							err := bobToAlice.WriteSample(bobToAliceSamples)
+							require.NoError(t, err)
+						}
+					}()
+					wg.Wait()
+
+					time.Sleep(time.Second / 4)
+
+					// Cut buffers earlier, otherwise we might get extra samples
+					// that we added to push resampler forward.
+					aliceHandler.Close()
+					bobHandler.Close()
+
+					alicePort.Close()
+					bobPort.Close()
+
+					checkPCM(t, "A -> B", aliceToBobSamples[:packetSize-offsetSamples], bobRecvBuf[discard+offsetSamples:])
+					checkPCM(t, "B -> A", bobToAliceSamples[:packetSize-offsetSamples], aliceRecvBuf[discard+offsetSamples:])
 				})
 			}
 

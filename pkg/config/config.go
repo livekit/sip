@@ -45,6 +45,15 @@ var (
 	DefaultRTPPortRange = rtcconfig.PortRange{Start: 10000, End: 20000}
 )
 
+// OpusConfig tunes the Opus encoder for SIP media. All fields are optional;
+// zero values keep libopus defaults.
+type OpusConfig struct {
+	Bitrate           int  `yaml:"bitrate"`             // target bitrate in bits/sec (e.g. 24000); 0 = auto
+	Complexity        int  `yaml:"complexity"`          // encoder complexity 1-10; 0 = default
+	FEC               bool `yaml:"fec"`                 // enable in-band Forward Error Correction
+	PacketLossPercent int  `yaml:"packet_loss_percent"` // expected packet loss 0-100, tunes FEC
+}
+
 const (
 	// After a call closes we keep its RTP port bound and draining so a freshly
 	// allocated call can't inherit a port a peer is still sending stale media to.

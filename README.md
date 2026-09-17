@@ -62,6 +62,7 @@ prometheus_port: port used to collect prometheus metrics. Used for autoscaling
 log_level: debug, info, warn, or error (default info)
 sip_port: port to listen and send SIP traffic (default 5060)
 rtp_port: port to listen and send RTP traffic (default 10000-20000)
+enable_opus: offer the Opus codec for SIP media (default false, experimental)
 psrpc: # optional gzip compression of psrpc bus payloads, see the compatibility note below
   compression:
     quality: gzip level 1-9. 0, the default, disables compression
@@ -83,6 +84,12 @@ The config file can be added to a mounted volume with its location passed in the
 >
 > The remaining `psrpc` keys (`max_attempts`, `timeout`, `backoff`, `buffer_size`) are accepted for config
 > parity with LiveKit server, but SIP does not read them.
+
+#### Codecs
+
+PCMU, PCMA, G722, and DTMF are negotiated by default. Opus is **disabled by default** - set `enable_opus: true` to offer it. Validate interoperability with your SIP infrastructure before enabling in production.
+
+When enabled, Opus (`opus/48000/2`, 48 kHz mono) is preferred over G722 and G711. Peers that do not support Opus fall back to G722, then G711 transparently.
 
 ### Using the SIP service
 
