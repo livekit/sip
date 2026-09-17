@@ -611,6 +611,12 @@ func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 func (w *testSIPClient) deliverReq(req *sipRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// Close may have drained the client while a caller-side goroutine
+	// (e.g. watchCancelledInvite ACKing a late 2xx within its grace window)
+	// was about to write. Drop the request instead of resuming the client.
+	if w.wakeup == nil {
+		return
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
