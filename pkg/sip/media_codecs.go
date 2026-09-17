@@ -26,7 +26,6 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/g722"
-	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/sdp"
 
 	msdk "github.com/livekit/media-sdk"
@@ -41,7 +40,7 @@ func init() {
 		g711.ALawSDPNameAndRate: true,
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
-		opus.SDPName:            true,
+		opusSDPName:             true,
 		amrwb.SDPNameAndRate:    false, // optional
 		dtmf.SDPNameAndRate:     true,
 	})
@@ -60,9 +59,9 @@ func DefaultCodecs() *msdk.CodecSet {
 // ListEnabled(), because ListEnabled() only returns registered codecs —
 // an enabled-but-missing codec would never appear in its output.
 func CheckCodecAvailability(log logger.Logger) {
-	cgoCodecs := []string{opus.SDPNameOnly, amrwb.SDPNameOnly}
+	cgoCodecs := []string{opusSDPName, amrwb.SDPNameAndRate}
 	for _, name := range cgoCodecs {
-		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name) == nil {
+		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name, nil) == nil {
 			log.Warnw("codec enabled but not registered (missing CGo dependency?)",
 				nil, "codec", name,
 			)
@@ -74,6 +73,15 @@ func CheckCodecAvailability(log logger.Logger) {
 // codec set, since their name is dropped during SDP parsing and to keep the
 // label bounded
 const codecOther = "other"
+
+const (
+	// opusBareName is the bare codec name as it appears in SIPCodec config.
+	// The media-sdk does not export the bare form separately.
+	opusBareName = "opus"
+	// opusSDPName is the canonical Opus SDP name per RFC 7587 §6.1: the RTP
+	// clock rate is always 48000 Hz and stereo is expressed via channels=2.
+	opusSDPName = "opus/48000/2"
+)
 
 func peerCodecNames(d sdp.MediaDesc) []string {
 	names := make([]string, 0, len(d.Codecs))
@@ -144,8 +152,8 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		// Different audio bandwidths (narrowband 8k, wideband 16k,
 		// fullband 48k) are negotiated via fmtp:maxplaybackrate,
 		// not via the rtpmap clock rate. Use the canonical SDP name.
-		if name == opus.SDPNameOnly {
-			s.SetEnabled(opus.SDPName, true)
+		if name == opusBareName {
+			s.SetEnabled(opusSDPName, true)
 			continue
 		}
 
