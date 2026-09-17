@@ -569,17 +569,28 @@ func (c *outboundCall) connectMedia() {
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {
+// onCancel, when set, replaces tx.Cancel() as the way the outstanding INVITE
+// is canceled. It lets the caller send the CANCEL itself so that extra headers
+// (e.g. attributes_to_headers, RFC 3326 Reason) can be attached.
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc, onCancel func()) (*sip.Response, error) {
 	cnt := 0
 	for {
 		select {
 		case <-ctx.Done():
-			_ = tx.Cancel()
+			if onCancel != nil {
+				onCancel()
+			} else {
+				_ = tx.Cancel()
+			}
 			// NOTE: psrpc.Canceled does not auto-retry, whereas psrpc.DeadlineExceeded does
 			// As long as that is the case, avoid psrpc.DeadlineExceeded to prevent hammering of destination.
 			return nil, psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout)
 		case <-stop:
-			_ = tx.Cancel()
+			if onCancel != nil {
+				onCancel()
+			} else {
+				_ = tx.Cancel()
+			}
 			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
 			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
@@ -605,8 +616,12 @@ var cancelResponseGrace = 5 * time.Second
 
 // watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
 // the answered call is not orphaned. It owns tx and terminates it when done.
-func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction) {
+// drop, when set, marks the call state as closed once the watch completes.
+func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction, drop func()) {
 	defer tx.Terminate()
+	if drop != nil {
+		defer drop()
+	}
 	timer := time.NewTimer(cancelResponseGrace)
 	defer timer.Stop()
 	for {
@@ -1173,6 +1188,12 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	if err != nil {
 		return nil, nil, err
 	}
+	// The INVITE is outstanding as soon as the transaction exists (Via is
+	// populated by now). Remember it so that a cancel while still ringing can
+	// build a CANCEL from it, carrying attributes_to_headers and EndCall
+	// headers. Without this, the ringing-state CANCEL would be built by the
+	// transaction layer without any of them. See: https://github.com/livekit/sip/issues/846
+	c.invite = req
 	handedOff := false
 	defer func() {
 		if !handedOff {
@@ -1198,11 +1219,25 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		}
 	}
 
-	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState, func() {
+		// Cancel with attributes_to_headers applied (e.g. RFC 3326 Reason).
+		// NOTE: c.mu is held by this goroutine higher up the stack (Invite),
+		// so all other mutators are blocked on it; call sendCancel directly
+		// instead of re-locking (which would deadlock).
+		c.sendCancel(context.WithoutCancel(ctx), nil)
+	})
 	if err != nil && resp == nil && (ctx.Err() != nil || c.c.closing.IsBroken()) {
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
-		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
+		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx, func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.drop()
+		})
+	} else if resp == nil || resp.StatusCode/100 != 2 {
+		// The INVITE transaction is complete (final response or timeout) and
+		// nothing races with a cancel anymore; there is nothing left to cancel.
+		c.invite = nil
 	}
 	return req, resp, err
 }
