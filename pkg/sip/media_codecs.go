@@ -58,7 +58,7 @@ func DefaultCodecs() *msdk.CodecSet {
 // ListEnabled(), because ListEnabled() only returns registered codecs —
 // an enabled-but-missing codec would never appear in its output.
 func CheckCodecAvailability(log logger.Logger) {
-	cgoCodecs := []string{opus.SDPNameOnly, amrwb.SDPNameOnly}
+	cgoCodecs := []string{opusSDPNameOnly, amrwb.SDPNameOnly}
 	for _, name := range cgoCodecs {
 		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name) == nil {
 			log.Warnw("codec enabled but not registered (missing CGo dependency?)",

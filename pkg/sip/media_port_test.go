@@ -414,6 +414,8 @@ type codecConfig struct {
 var codecConfigMap = map[string]codecConfig{
 	"G722":   {rampUpFrames: 1, offsetSamples: 22},
 	"AMR-WB": {rampUpFrames: 1, offsetSamples: 14 + 16},
+	// Opus adds its standard 6.5ms lookahead delay (~310 samples at 48kHz).
+	"opus": {rampUpFrames: 0, offsetSamples: 311},
 }
 
 func TestMediaPortAudioRoundTrip(t *testing.T) {
