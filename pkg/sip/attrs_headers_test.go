@@ -77,3 +77,38 @@ func TestAttrsToHeaders(t *testing.T) {
 		"X-A":  "1",
 	}, headers)
 }
+
+// snapshotParticipantAttrs skips a read that returns no attributes, so a
+// teardown-time empty read does not wipe the cached values that BYE's
+// attributes_to_headers relies on (livekit/sip#404). This is exercised on
+// the lkRoom == nil path here: the function returns early without touching
+// the cache. The "room up, attributes empty" path is the same guard, but
+// needs a live lksdk participant so it is left to integration.
+func TestSnapshotParticipantAttrsDoesNotWipeCacheOnEmptyRead(t *testing.T) {
+	for _, setup := range []func() *inboundCall{
+		func() *inboundCall {
+			c := &inboundCall{}
+			c.storeParticipantAttrs(map[string]string{"sip.custom": "seeded"})
+			c.snapshotParticipantAttrs() // lkRoom nil → early return, cache intact
+			return c
+		},
+	} {
+		c := setup()
+		c.attrsMu.Lock()
+		got := c.cachedAttrs
+		c.attrsMu.Unlock()
+		require.Equal(t, map[string]string{"sip.custom": "seeded"}, got,
+			"empty/nil room read must not wipe cached attrs")
+	}
+}
+
+func TestOutboundSnapshotParticipantAttrsDoesNotWipeCacheOnEmptyRead(t *testing.T) {
+	c := &outboundCall{}
+	c.storeParticipantAttrs(map[string]string{"sip.custom": "outbound-seeded"})
+	c.snapshotParticipantAttrs() // lkRoom nil → early return, cache intact
+	c.attrsMu.Lock()
+	got := c.cachedAttrs
+	c.attrsMu.Unlock()
+	require.Equal(t, map[string]string{"sip.custom": "outbound-seeded"}, got,
+		"empty/nil room read must not wipe cached attrs")
+}

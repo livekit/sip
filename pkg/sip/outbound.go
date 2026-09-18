@@ -185,6 +185,12 @@ func (c *outboundCall) snapshotParticipantAttrs() {
 		return
 	}
 	attrs := r.LocalParticipant.Attributes() // clones
+	if len(attrs) == 0 {
+		// An empty read (room or participant already torn down) must not
+		// wipe the last known attributes: they back attributes_to_headers
+		// on BYE (livekit/sip#404).
+		return
+	}
 	c.attrsMu.Lock()
 	c.cachedAttrs = attrs
 	c.attrsMu.Unlock()
