@@ -196,7 +196,7 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 // client to retry) from a hard auth failure. Callers should treat
 // (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
 // a finalized error state.
-func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentResponse *Result) {
+func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
 	if auth.Realm == "" {
 		auth.Realm = UserAgent
 	}
@@ -388,6 +388,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	defer span.End()
 
 	var state *CallState
+	var cc *sipInbound
 	defer func() {
 		if state == nil {
 			return
@@ -398,6 +399,15 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 				info.Error = err.Error()
 			} else {
 				info.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
+			}
+			if cc != nil {
+				lastStatus := cc.lastCallStatus.Load()
+				if lastStatus != nil {
+					info.CallStatusCode = &livekit.SIPStatus{
+						Code:   lastStatus.Code,
+						Status: lastStatus.Status,
+					}
+				}
 			}
 			info.EndedAtNs = time.Now().UnixNano()
 		})
@@ -412,7 +422,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 	tr := callTransportFromReq(req)
 
-	cc, err := s.newInbound(req, tx, src)
+	cc, err = s.newInbound(req, tx, src)
 	if err != nil {
 		s.log.Errorw("invalid invite", err)
 		if !s.conf.HideInboundPort {
@@ -1582,17 +1592,6 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			c.log().Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
 		}
 	}()
-
-	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-		// Report the last status to analytics
-		lastStatus := c.cc.lastCallStatus.Load()
-		if lastStatus != nil {
-			info.CallStatusCode = &livekit.SIPStatus{
-				Code:   lastStatus.Code,
-				Status: lastStatus.Status,
-			}
-		}
-	})
 
 	ctx = context.WithoutCancel(ctx)
 	if !c.done.CompareAndSwap(false, true) {
