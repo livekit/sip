@@ -209,10 +209,17 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 
 	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.conf.stats.MuxStats)
 	if p.conf.opts.EnableJitterBuffer {
-		hnd = rtp.HandleJitter(hnd, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
-			p.conf.stats.JitterBufferPacketsLost.Store(packetsLost)
-			p.conf.stats.JitterBufferPacketsDropped.Store(packetsDropped)
-		}))
+		hnd = rtp.HandleJitter(hnd,
+			jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
+				p.conf.stats.JitterBufferPacketsLost.Store(packetsLost)
+				p.conf.stats.JitterBufferPacketsDropped.Store(packetsDropped)
+			}),
+			jitter.WithStatsHandler(func(st *jitter.BufferStats) {
+				p.conf.stats.JitterBufferSSRCSwitches.Store(st.SSRCSwitches)
+				p.conf.stats.JitterBufferPacketsReordered.Store(st.PacketsReordered)
+				p.conf.stats.JitterBufferSequenceRestarts.Store(st.SequenceRestarts)
+			}),
+		)
 	}
 	hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
 
