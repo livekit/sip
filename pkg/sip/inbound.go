@@ -1579,11 +1579,17 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	// AcceptTime is set when acceptCall finishes trying to answer, so a zero
 	// value separates calls we never answered from the rest.
 	if !c.sigTs.InviteTime.IsZero() {
+		var outcome stats.SetupOutcome
+		var setupDur time.Duration
 		if c.sigTs.AcceptTime.IsZero() {
-			c.mon.SetupDur(stats.SetupAbandoned, time.Since(c.sigTs.InviteTime))
+			outcome = stats.SetupAbandoned
+			setupDur = time.Since(c.sigTs.InviteTime)
 		} else {
-			c.mon.SetupDur(stats.SetupAnswered, c.sigTs.AcceptTime.Sub(c.sigTs.InviteTime))
+			outcome = stats.SetupAnswered
+			setupDur = c.sigTs.AcceptTime.Sub(c.sigTs.InviteTime)
 		}
+		c.mon.SetupDur(outcome, setupDur)
+		log = log.WithValues("setupOutcome", string(outcome), "setupDurMs", setupDur.Milliseconds())
 	}
 	isWarn := end.Term.Result == stats.ResultServerError || end.Status == callHangupMedia
 	if isWarn {
