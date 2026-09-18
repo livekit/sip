@@ -166,7 +166,7 @@ func (s *Server) getInvite(sipCallID string) *inProgressInvite {
 
 // scheduleAuthChallengeTimeout finalizes st as SCS_ERROR after authChallengeTimeout
 // unless authResolved is set to true (by a follow-up INVITE) before the timer fires.
-func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logger.Logger) {
+func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logger.Logger, sentStatus *Result) {
 	i.authResolved.Store(false)
 	challengedAt := time.Now()
 	time.AfterFunc(authChallengeTimeout, func() {
@@ -180,6 +180,12 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 			info.Error = "auth challenge issued, no authenticated retry received"
 			// EndedAtNs reflects when the call effectively ended.
 			info.EndedAtNs = challengedAt.UnixNano()
+			if sentStatus != nil {
+				info.CallStatusCode = &livekit.SIPStatus{
+					Code:   livekit.SIPStatusCode(sentStatus.Code),
+					Status: sentStatus.Status,
+				}
+			}
 		})
 	})
 }
@@ -190,7 +196,7 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 // client to retry) from a hard auth failure. Callers should treat
 // (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
 // a finalized error state.
-func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool) {
+func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentResponse *Result) {
 	if auth.Realm == "" {
 		auth.Realm = UserAgent
 	}
@@ -205,7 +211,7 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 	if auth.Username == "" || auth.Password == "" {
 		log.Debugw("Skipping authentication - no credentials provided")
-		return true, false
+		return true, false, nil
 	}
 
 	if s.conf.HideInboundPort {
@@ -238,9 +244,13 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 		res := sip.NewResponseFromRequest(req, 407, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
+		sentStatus := &Result{
+			Code:   res.StatusCode,
+			Status: res.Reason,
+		}
 		_ = tx.Respond(res)
 		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
-		return false, true
+		return false, true, sentStatus
 	}
 
 	log.Debugw("Found Proxy-Authorization header, parsing credentials")
@@ -249,8 +259,13 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 		log.Warnw("Failed to parse Proxy-Authorization credentials", err,
 			"headerValue", h.Value(),
 		)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
-		return false, false
+		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
+		sentStatus := &Result{
+			Code:   res.StatusCode,
+			Status: res.Reason,
+		}
+		_ = tx.Respond(res)
+		return false, false, sentStatus
 	}
 
 	// Set credURI and credUsername in logger early to avoid repetitive logging
@@ -264,8 +279,13 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"expectedUsername", auth.Username,
 			"receivedUsername", cred.Username,
 		)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
-		return false, false
+		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
+		sentStatus := &Result{
+			Code:   res.StatusCode,
+			Status: res.Reason,
+		}
+		_ = tx.Respond(res)
+		return false, false, sentStatus
 	}
 
 	// Check if we have a valid challenge state
@@ -274,8 +294,13 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"sipCallID", sipCallID,
 			"expectedRealm", auth.Realm,
 		)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
-		return false, false
+		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
+		sentStatus := &Result{
+			Code:   res.StatusCode,
+			Status: res.Reason,
+		}
+		_ = tx.Respond(res)
+		return false, false, sentStatus
 	}
 
 	log.Debugw("Computing digest response",
@@ -293,8 +318,13 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 	if err != nil {
 		log.Warnw("Failed to compute digest response", err)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Bad credentials", nil))
-		return false, false
+		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
+		sentStatus := &Result{
+			Code:   res.StatusCode,
+			Status: res.Reason,
+		}
+		_ = tx.Respond(res)
+		return false, false, sentStatus
 	}
 
 	log.Debugw("Digest computation completed",
@@ -308,12 +338,17 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"expectedResponse", digCred.Response,
 			"receivedResponse", cred.Response,
 		)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 401, "Unauthorized", nil))
-		return false, false
+		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
+		sentStatus := &Result{
+			Code:   res.StatusCode,
+			Status: res.Reason,
+		}
+		_ = tx.Respond(res)
+		return false, false, sentStatus
 	}
 
 	log.Infow("SIP invite authentication successful")
-	return true, false
+	return true, false, nil
 }
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
@@ -585,7 +620,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		inviteState.authResolved.Store(true)
 
 		s.getCallInfo(cc.ID()).countInvite(log, req)
-		if ok, challenge := s.handleInviteAuth(tid, log, req, tx, from.User, r.Auth); !ok {
+		if ok, challenge, sentStatus := s.handleInviteAuth(tid, log, req, tx, from.User, r.Auth); !ok {
+			cc.setLastStatus(sentStatus.Code, sentStatus.Status)
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
 			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
@@ -594,7 +630,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			if challenge {
 				// 407 sent: defer finalization to the timer or the next INVITE,
 				// not the deferred handler at the top of processInvite.
-				inviteState.scheduleAuthChallengeTimeout(state, log)
+				inviteState.scheduleAuthChallengeTimeout(state, log, sentStatus)
 				state = nil
 			}
 			// handleInviteAuth will generate the SIP Response as needed
@@ -1102,6 +1138,7 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 		return err
 	} else if err != nil {
 		c.log().Errorw("Cannot accept the call", err)
+		c.cc.setLastStatus(sip.StatusInternalServerError, "accept-failed")
 		c.close(ctx, EndCall{
 			Status: callAcceptFailed,
 			Term:   stats.ServerError("accept-failed"),
@@ -1545,6 +1582,17 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			c.log().Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
 		}
 	}()
+
+	c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		// Report the last status to analytics
+		lastStatus := c.cc.lastCallStatus.Load()
+		if lastStatus != nil {
+			info.CallStatusCode = &livekit.SIPStatus{
+				Code:   lastStatus.Code,
+				Status: lastStatus.Status,
+			}
+		}
+	})
 
 	ctx = context.WithoutCancel(ctx)
 	if !c.done.CompareAndSwap(false, true) {
@@ -2020,6 +2068,7 @@ type sipInbound struct {
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
 	call            *inboundCall
+	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
 }
 
 func (c *sipInbound) SetCall(call *inboundCall) {
@@ -2073,6 +2122,7 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(c.contact)
 	}
 	c.addExtraHeaders(r)
+	c.setLastStatus(status, reason)
 	_ = c.inviteTx.Respond(r)
 }
 
@@ -2307,6 +2357,7 @@ retries:
 		retryAfter = min(retryAfter, inviteOkRetryIntervalMax)
 	}
 	// Other side likely thinks it's accepted, so update our state accordingly, even if no ACK follows.
+	c.setLastStatus(r.StatusCode, r.Reason)
 	c.accepted(r)
 	return acceptErr
 }
@@ -2429,6 +2480,7 @@ func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[
 	for k, v := range headers {
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
+	c.setLastStatus(r.StatusCode, r.Reason)
 	_ = c.inviteTx.Respond(r)
 	c.drop()
 }
@@ -2528,5 +2580,15 @@ func (c *sipInbound) CloseWithStatus(ctx context.Context, result Result, headers
 		c.sendStatus(ctx, result, headers)
 	} else {
 		c.drop()
+	}
+}
+
+func (c *sipInbound) setLastStatus(code sip.StatusCode, reason string) {
+	// Only record terminal statuses
+	if code >= 200 {
+		c.lastCallStatus.Store(&livekit.SIPStatus{
+			Code:   livekit.SIPStatusCode(code),
+			Status: reason,
+		})
 	}
 }
