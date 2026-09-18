@@ -631,7 +631,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 		s.getCallInfo(cc.ID()).countInvite(log, req)
 		if ok, challenge, sentStatus := s.handleInviteAuth(tid, log, req, tx, from.User, r.Auth); !ok {
-			cc.setLastStatus(sentStatus.Code, sentStatus.Status)
+			if sentStatus != nil {
+				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
+			}
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
 			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
