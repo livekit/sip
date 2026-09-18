@@ -206,7 +206,7 @@ type RoomInterface interface {
 	GetInboundAudioWriter() (msdk.PCM16Writer, error)
 	// GetInboundDTMFWriter returns a writer that, when written to, writes DTMF
 	// to the room.
-	GetInboundDTMFWriter() msdk.WriteCloser[string]
+	GetInboundDTMFWriter(rate int) msdk.WriteCloser[string]
 }
 
 type GetRoomFunc func(log logger.Logger, st *RoomStats) RoomInterface
@@ -267,7 +267,7 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 		outboundAudio: msdk.NewWriteCloserSwitch[msdk.PCM16Sample](RoomSampleRate),
 		outboundDTMF:  msdk.NewWriteCloserSwitch[string](0),
 	}
-	r.inboundDTMF = inboundDTMFWriter{r}
+	r.inboundDTMF = inboundDTMFWriter{r: r}
 
 	var err error
 	r.mix, err = mixer.NewMixer(r.outboundAudio, rtp.DefFrameDur, 1, mixer.WithStats(&st.Mixer), mixer.WithOutputChannel())
@@ -790,12 +790,16 @@ func (r *Room) GetInboundAudioWriter() (msdk.PCM16Writer, error) {
 	return r.NewParticipantTrack(RoomSampleRate)
 }
 
-func (r *Room) GetInboundDTMFWriter() msdk.WriteCloser[string] {
+func (r *Room) GetInboundDTMFWriter(rate int) msdk.WriteCloser[string] {
+	// The room doesn't have a DTMF rate, it just sends individual events.
+	// So adopt any rate that the caller uses.
+	r.inboundDTMF.rate.Store(uint32(rate))
 	return &r.inboundDTMF
 }
 
 type inboundDTMFWriter struct {
-	r *Room
+	r    *Room
+	rate atomic.Uint32
 }
 
 func (w *inboundDTMFWriter) String() string {
@@ -803,7 +807,7 @@ func (w *inboundDTMFWriter) String() string {
 }
 
 func (w *inboundDTMFWriter) SampleRate() int {
-	return dtmf.SampleRate
+	return int(w.rate.Load())
 }
 
 func (w *inboundDTMFWriter) Close() error {

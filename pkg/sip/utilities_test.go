@@ -194,7 +194,7 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 		outboundDTMF:  msdk.NewWriteCloserSwitch[string](0),
 		subscribe:     atomic.Bool{},
 	}
-	room.inboundDTMF = inboundDTMFWriter{room}
+	room.inboundDTMF = inboundDTMFWriter{r: room}
 
 	// Create mixer
 	var err error
@@ -289,8 +289,8 @@ func (r *testRoom) GetInboundAudioWriter() (msdk.PCM16Writer, error) {
 	return r.NewParticipantTrack(RoomSampleRate)
 }
 
-func (r *testRoom) GetInboundDTMFWriter() msdk.WriteCloser[string] {
-	return r.room.GetInboundDTMFWriter()
+func (r *testRoom) GetInboundDTMFWriter(rate int) msdk.WriteCloser[string] {
+	return r.room.GetInboundDTMFWriter(rate)
 }
 
 func (r *testRoom) Close() error {
