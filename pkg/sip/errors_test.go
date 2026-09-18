@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -215,6 +216,38 @@ func TestClassifyInviteError_ReturnErrWrap(t *testing.T) {
 			var psErr psrpc.Error
 			require.True(t, errors.As(res.returnErr, &psErr), "returnErr should be a psrpc.Error")
 			require.Equal(t, tc.wantCode, psErr.Code())
+		})
+	}
+}
+
+// The post-ACK abort check in sipSignal returns the context cause. A ringing
+// timeout landing there must classify like one that beats the 200 OK, and a
+// caller-side cancel must stay a cancel.
+func TestClassifyInviteError_AbortAfterAnswer(t *testing.T) {
+	timedOut, cancel := context.WithTimeoutCause(context.Background(), time.Nanosecond, ErrSIPRequestTimeout)
+	defer cancel()
+	<-timedOut.Done()
+	canceled, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+
+	cases := []struct {
+		name       string
+		ctx        context.Context
+		wantStatus CallStatus
+		wantTerm   stats.Termination
+	}{
+		{"ringing timeout", timedOut, callUnavailable, stats.ClientError("no-answer")},
+		{"caller cancel", canceled, callRejected, stats.ClientError("canceled")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := classifyInviteError(psrpc.NewError(psrpc.Canceled, context.Cause(tc.ctx))).afterInvite()
+			require.Equal(t, tc.wantStatus, res.Status)
+			require.Equal(t, tc.wantTerm, res.Term)
+			require.Nil(t, res.Report)
+			var psErr psrpc.Error
+			require.True(t, errors.As(res.returnErr, &psErr))
+			require.Equal(t, psrpc.Canceled, psErr.Code(), "must not downgrade to FailedPrecondition")
 		})
 	}
 }
