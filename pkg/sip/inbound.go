@@ -1576,6 +1576,15 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	}()
 	c.setStatus(end.Status)
 	c.mon.CallTerminate(end.Term)
+	// AcceptTime is set when acceptCall finishes trying to answer, so a zero
+	// value separates calls we never answered from the rest.
+	if !c.sigTs.InviteTime.IsZero() {
+		if c.sigTs.AcceptTime.IsZero() {
+			c.mon.SetupDur(stats.SetupAbandoned, time.Since(c.sigTs.InviteTime))
+		} else {
+			c.mon.SetupDur(stats.SetupAnswered, c.sigTs.AcceptTime.Sub(c.sigTs.InviteTime))
+		}
+	}
 	isWarn := end.Term.Result == stats.ResultServerError || end.Status == callHangupMedia
 	if isWarn {
 		log.Warnw("Closing inbound call with error", nil)

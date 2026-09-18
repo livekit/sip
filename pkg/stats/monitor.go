@@ -73,6 +73,7 @@ type Monitor struct {
 	durCall                  *prometheus.HistogramVec
 	durJoin                  *prometheus.HistogramVec
 	durCheck                 *prometheus.HistogramVec
+	durSetup                 *prometheus.HistogramVec
 	durStage                 *prometheus.HistogramVec
 	cpuLoad                  prometheus.Gauge
 	sdpSize                  *prometheus.HistogramVec
@@ -227,6 +228,15 @@ func (m *Monitor) Start(conf *config.Config) error {
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsOp,
 	}, []string{"dir"}))
+
+	m.durSetup = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "dur_setup_sec",
+		Help:        "Call setup duration: from INVITE to either 200 OK (outcome=answered) or to close without ever answering (outcome=abandoned).",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+		Buckets:     durBucketsOp,
+	}, []string{"dir", "outcome"}))
 
 	m.durStage = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -522,6 +532,25 @@ func (c *CallMonitor) JoinDur() func() time.Duration {
 		t2()
 		return t1()
 	}
+}
+
+type SetupOutcome string
+
+const (
+	// SetupAnswered means we got as far as answering the call. Almost always
+	// that means the 200 OK was sent; a few failure paths inside Accept() still
+	// land here.
+	SetupAnswered SetupOutcome = "answered"
+	// SetupAbandoned means the call closed before we ever tried to answer:
+	// caller CANCEL, a hangup while still ringing, or a setup failure.
+	SetupAbandoned SetupOutcome = "abandoned"
+)
+
+// SetupDur records how long call setup lasted, measured from the INVITE.
+func (c *CallMonitor) SetupDur(outcome SetupOutcome, dt time.Duration) {
+	c.m.durSetup.With(c.labelsShort(prometheus.Labels{
+		"outcome": string(outcome),
+	})).Observe(dt.Seconds())
 }
 
 func (c *CallMonitor) StageDur(stage string) prometheus.Observer {
