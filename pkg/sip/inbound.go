@@ -2123,8 +2123,9 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(c.contact)
 	}
 	c.addExtraHeaders(r)
-	c.setLastStatus(status, reason)
-	_ = c.inviteTx.Respond(r)
+	if err := c.inviteTx.Respond(r); err == nil {
+		c.setLastStatus(status, reason)
+	}
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -2481,8 +2482,10 @@ func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[
 	for k, v := range headers {
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
-	c.setLastStatus(r.StatusCode, r.Reason)
-	_ = c.inviteTx.Respond(r)
+
+	if err := c.inviteTx.Respond(r); err == nil {
+		c.setLastStatus(r.StatusCode, r.Reason)
+	}
 	c.drop()
 }
 
