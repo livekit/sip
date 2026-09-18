@@ -785,8 +785,11 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	if ctx.Err() != nil {
 		// Aborted while the callee answered: the 200 is ACKed, so error out to
 		// tear the dialog down with a BYE instead of leaking a zombie call.
-		// Report the cause, not ctx.Err(): a ringing timeout landing here is
-		// the same no-answer as one that beats the 200 OK in sipResponse.
+		//
+		// Report the cause, not ctx.Err(). The ringing timeout races the 200 OK:
+		// if it fires first, sipResponse returns ErrSIPRequestTimeout and the call
+		// is classified as no-answer; if the 200 OK wins by a hair, we end up here
+		// instead. Same timeout either way, so it has to classify the same way.
 		cause := context.Cause(ctx)
 		c.log.Infow("outbound call answered after abort; hanging up", "error", cause)
 		return psrpc.NewError(psrpc.Canceled, cause)
