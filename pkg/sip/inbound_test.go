@@ -1117,3 +1117,90 @@ func TestInboundCallStatusCodeOnWrongPin(t *testing.T) {
 	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
 	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
 }
+
+// failingRetransmitTx wraps an INVITE server transaction and fails every 2xx
+// response after the first one, standing in for a transport error that hits a
+// 200 OK retransmission while the server waits for the ACK. Provisional
+// responses and the teardown status still go out, as they would on a socket
+// that only broke for that one write.
+type failingRetransmitTx struct {
+	sip.ServerTransaction
+	sent atomic.Bool
+}
+
+func (t *failingRetransmitTx) Respond(res *sip.Response) error {
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return t.ServerTransaction.Respond(res)
+	}
+	if t.sent.CompareAndSwap(false, true) {
+		return t.ServerTransaction.Respond(res)
+	}
+	return errors.New("write udp: connection refused")
+}
+
+// TestInboundCallStatusCodeOnAnswerRetransmitError covers the SIP status
+// reported for a call whose 200 OK reached the caller and then failed to be
+// retransmitted before the ACK arrived. Over UDP the answer is sent repeatedly
+// until the ACK comes back, so a later write failing says nothing about what
+// the caller saw: it already has the 200 OK. The record must carry that answer,
+// not the internal failure that ended the call afterwards.
+func TestInboundCallStatusCodeOnAnswerRetransmitError(t *testing.T) {
+	states := &recordingStateHandler{}
+	// ringForever holds the call in waitSubscribe, so the accept happens only
+	// once this test has wrapped the INVITE transaction.
+	st := NewServiceTest(t, &serviceTestConfig{
+		GetRoom:         newTestRoomConfig(&testRoomConfig{ringForever: true}),
+		GetStateHandler: states.GetStateHandler(),
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	call := newTestCall(st.TestUA, false)
+	req, localSDP, err := call.Invite(nil)
+	require.NoError(t, err)
+	call.SetLocalSDP(localSDP)
+
+	tx, err := st.TestUA.Client.TransactionRequest(req)
+	require.NoError(t, err)
+	defer tx.Terminate()
+
+	res100 := getResponseOrFailTimeout(t, ctx, tx)
+	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
+	res180 := getResponseOrFailTimeout(t, ctx, tx)
+	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
+	remoteTag, ok := res180.To().Params.Get("tag")
+	require.True(t, ok, "remote tag should be present")
+	call.SetRemoteTag(LocalTag(remoteTag))
+
+	st.Server.cmu.Lock()
+	ic, ok := st.Server.byLocalTag[call.remoteTag]
+	st.Server.cmu.Unlock()
+	require.True(t, ok, "call should be registered")
+
+	// Let the answer reach the caller, then break the transport under the
+	// retransmission that follows while the server waits for the ACK.
+	ic.cc.mu.Lock()
+	ic.cc.inviteTx = &failingRetransmitTx{ServerTransaction: ic.cc.inviteTx}
+	ic.cc.mu.Unlock()
+
+	// Release the call into the accept path.
+	ic.lkRoom.(*testRoom).simulateSubscribed()
+
+	// The caller is answered, and never ACKs, so the server retransmits the
+	// 200 OK and that write is the one that fails.
+	res200 := getFinalResponseOrFail(t, ctx, tx)
+	require.Equal(t, sip.StatusCode(200), res200.StatusCode, "caller should receive the answer")
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.EndedAtNs != 0
+	}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+
+	require.False(t, ic.cc.GotACK(), "server received unexpected ACK")
+
+	ended := states.Last()
+	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code,
+		"the caller received the 200 OK, so that is the status the record must carry")
+}

@@ -2332,6 +2332,7 @@ retries:
 		if err := c.inviteTx.Respond(r); err != nil {
 			return err
 		}
+		c.setLastStatus(r.StatusCode, r.Reason)
 		if !waitForAck && c.legTr != TransportUDP {
 			// Reliable transport and we are not waiting for ACK - return immediately.
 			break retries
@@ -2358,7 +2359,6 @@ retries:
 		retryAfter = min(retryAfter, inviteOkRetryIntervalMax)
 	}
 	// Other side likely thinks it's accepted, so update our state accordingly, even if no ACK follows.
-	c.setLastStatus(r.StatusCode, r.Reason)
 	c.accepted(r)
 	return acceptErr
 }
@@ -2586,10 +2586,16 @@ func (c *sipInbound) CloseWithStatus(ctx context.Context, result Result, headers
 
 func (c *sipInbound) setLastStatus(code sip.StatusCode, reason string) {
 	// Only record terminal statuses
-	if code >= 200 {
-		c.lastCallStatus.Store(&livekit.SIPStatus{
-			Code:   livekit.SIPStatusCode(code),
-			Status: reason,
-		})
+	if code < 200 {
+		return
 	}
+	next := &livekit.SIPStatus{
+		Code:   livekit.SIPStatusCode(code),
+		Status: reason,
+	}
+	last := c.lastCallStatus.Load()
+	if last != nil && last.Code >= 200 && last.Code < 300 {
+		return // Don't overwrite success
+	}
+	c.lastCallStatus.CompareAndSwap(last, next)
 }
