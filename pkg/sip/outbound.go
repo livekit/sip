@@ -1155,6 +1155,23 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
+func (c *sipOutbound) ackInviteResponse(resp *sip.Response) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.invite == nil || c.inviteOk == nil {
+		return nil
+	}
+	callID, cseq, to := resp.CallID(), resp.CSeq(), resp.To()
+	if callID == nil || cseq == nil || to == nil {
+		return nil
+	}
+	remoteTag, ok := getTagFrom(to.Params)
+	if !ok || remoteTag != c.tag || callID.Value() != c.callID || cseq.SeqNo != c.invite.CSeq().SeqNo {
+		return nil
+	}
+	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, resp, nil))
+}
+
 func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
