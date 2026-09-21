@@ -1138,7 +1138,6 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 		return err
 	} else if err != nil {
 		c.log().Errorw("Cannot accept the call", err)
-		c.cc.setLastStatus(sip.StatusInternalServerError, "accept-failed")
 		c.close(ctx, EndCall{
 			Status: callAcceptFailed,
 			Term:   stats.ServerError("accept-failed"),

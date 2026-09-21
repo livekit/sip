@@ -856,7 +856,6 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("AcceptError", func(t *testing.T) {
-		// TODO: roomConfig
 		st, states := newStatusCodeTest(t, statusCodeTestConfig{
 			getRoomFunc: newTestRoomConfig(&testRoomConfig{ringForever: true}),
 		})
@@ -907,8 +906,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
 		require.Zero(t, ended.StartedAtNs, "call was never answered")
 		require.Contains(t, ended.Error, "call already rejected", "the accept failure must be reported")
-		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, ended.CallStatusCode.Code, "sip status code must be recorded")
+		require.Nil(t, ended.CallStatusCode, "CallStatusCode must not be set (call dropped without sending final status)")
 	})
 
 	t.Run("NoACK", func(t *testing.T) {
