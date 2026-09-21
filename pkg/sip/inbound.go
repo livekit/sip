@@ -1640,7 +1640,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	// Call the handler asynchronously to avoid blocking
 	if h := c.s.handler; h != nil {
 		if lastStatus := c.cc.lastCallStatus.Load(); lastStatus != nil {
-			c.state.Update(func(info *livekit.SIPCallInfo) {
+			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 				info.CallStatusCode = &livekit.SIPStatus{
 					Code:   lastStatus.Code,
 					Status: lastStatus.Status,
