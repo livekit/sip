@@ -1638,13 +1638,13 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
 
 	// Call the handler asynchronously to avoid blocking
-	if c.s.handler != nil {
+	if h := c.s.handler; h != nil {
 		state := c.state
 		go func(tid traceid.ID) {
 			ctx := context.WithoutCancel(ctx)
 			ctx, span := Tracer.Start(ctx, "sip.inbound.OnSessionEnd")
 			defer span.End()
-			c.s.handler.OnSessionEnd(ctx, &CallIdentifier{
+			h.OnSessionEnd(ctx, &CallIdentifier{
 				ProjectID: c.projectID,
 				CallID:    c.call.LkCallId,
 				SipCallID: c.call.SipCallId,
