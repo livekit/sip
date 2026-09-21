@@ -1075,3 +1075,23 @@ func MinimalInviteRequest() *sip.Request {
 	req.SetDestination(testSIPSource)
 	return req
 }
+
+// failingRetransmitTx wraps an INVITE server transaction and fails every 2xx
+// response after the first one, standing in for a transport error that hits a
+// 200 OK retransmission while the server waits for the ACK. Provisional
+// responses and the teardown status still go out, as they would on a socket
+// that only broke for that one write.
+type failingRetransmitTx struct {
+	sip.ServerTransaction
+	sent atomic.Bool
+}
+
+func (t *failingRetransmitTx) Respond(res *sip.Response) error {
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return t.ServerTransaction.Respond(res)
+	}
+	if t.sent.CompareAndSwap(false, true) {
+		return t.ServerTransaction.Respond(res)
+	}
+	return errors.New("write udp: connection refused")
+}

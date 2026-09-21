@@ -508,699 +508,608 @@ func TestInboundRoomIDReportedOnAnsweredCall(t *testing.T) {
 	require.True(t, joined, "room identity should have been reported at least once")
 }
 
-// TestInboundCallStatusCodeOnNormalHangup covers the reported SIP status of a
-// call that was answered and then completed normally: the caller sends BYE on an
-// established dialog, so the status recorded on the call must be the 200 OK the
-// INVITE was answered with, not one of the terminal rejection codes used for
-// calls that never got that far.
-func TestInboundCallStatusCodeOnNormalHangup(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-
-	call, ic := st.CreateInboundCall(t)
-	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
-
-	// The caller hangs up an established call.
-	resp := st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
-	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "BYE should be accepted")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
-	require.NotZero(t, ended.StartedAtNs, "call was answered")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-}
-
-// TestInboundCallStatusCodeOnDispatchDrop covers the SIP status reported for a
-// call that is dropped by DispatchNoRuleDrop: the caller is rung and then gets
-// no final response at all, but the call record must still carry the rejection
-// status so the drop is not reported as an unknown outcome.
-func TestInboundCallStatusCodeOnDispatchDrop(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		return CallDispatch{Result: DispatchNoRuleDrop}
+// TestInboundCallStatusCode checks the value of info.CallStatusCode for various call outcomes
+func TestInboundCallStatusCode(t *testing.T) {
+	type statusCodeTestConfig struct {
+		dispatchCallFunc func(ctx context.Context, info *CallInfo) CallDispatch
+		getRoomFunc      GetRoomFunc
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
-
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
-
-	// Dispatch is evaluated after ringing starts, so the caller sees the
-	// provisional responses and then silence: a dropped call gets no final
-	// response.
-	res100 := getResponseOrFailTimeout(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
-	res180 := getResponseOrFailTimeout(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
-	expectNoResponse(t, tx)
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.Nil(t, ended.CallStatusCode, "CallStatusCode must not be set")
-}
-
-// TestInboundCallStatusCodeOnRoomClosed covers the SIP status reported for an
-// answered call that is ended by the LiveKit room closing rather than by the SIP
-// peer. We tear the call down with a BYE on an established dialog, so the status
-// recorded must be the 200 OK the INVITE was answered with; the room close is
-// reported through DisconnectReason, not by rewriting the SIP status.
-func TestInboundCallStatusCodeOnRoomClosed(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-
-	call, ic := st.CreateInboundCall(t)
-	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
-
-	byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
-	defer st.TestUA.UnregisterSink(call.localTag, "BYE")
-
-	// The room goes away under an otherwise healthy call.
-	ic.lkRoom.(*testRoom).simulateRoomClosed(livekit.DisconnectReason_ROOM_CLOSED)
-
-	// The SIP leg is torn down from our side, so the caller gets a BYE.
-	select {
-	case msg := <-byeSink:
-		require.NotNil(t, msg)
-		require.Equal(t, sip.BYE, msg.req.Method)
-		require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
-	case <-time.After(5 * time.Second):
-		require.Fail(t, "timeout waiting for BYE")
+	newStatusCodeTest := func(t *testing.T, cfg statusCodeTestConfig) (*serviceTest, *recordingStateHandler) {
+		states := &recordingStateHandler{}
+		st := NewServiceTest(t, &serviceTestConfig{
+			GetRoom:         cfg.getRoomFunc,
+			GetStateHandler: states.GetStateHandler(),
+		})
+		st.Handler.(*TestHandler).DispatchCallFunc = cfg.dispatchCallFunc
+		return st, states
 	}
 
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
+	t.Run("NormalHangup", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
 
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
-	require.NotZero(t, ended.StartedAtNs, "call was answered")
-	require.Equal(t, livekit.DisconnectReason_ROOM_CLOSED, ended.DisconnectReason, "the room close must be reported as the disconnect reason")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-}
+		call, ic := st.CreateInboundCall(t)
+		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
 
-// TestInboundCallStatusCodeOnDispatchReject covers the SIP status reported for a
-// call rejected by DispatchNoRuleReject: the caller is told 404, so that is the
-// status the call record must carry. Recording anything else contradicts what
-// the peer was actually sent.
-func TestInboundCallStatusCodeOnDispatchReject(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		return CallDispatch{Result: DispatchNoRuleReject}
-	}
+		// The caller hangs up an established call.
+		resp := st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "BYE should be accepted")
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
 
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
-
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
-
-	res := getFinalResponseOrFail(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(404), res.StatusCode, "a call matching no dispatch rule should be rejected with 404")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-}
-
-// TestInboundCallStatusCodeOnDispatchUnavailable covers the SIP status reported
-// for a call rejected by DispatchServiceUnavailable, i.e. dispatch evaluation
-// itself failed. The caller is told 503, so that is the status the call record
-// must carry: a retryable server-side failure has to stay distinguishable from
-// the rejections that tell the caller not to retry.
-func TestInboundCallStatusCodeOnDispatchUnavailable(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		return CallDispatch{Result: DispatchServiceUnavailable}
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
-
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
-
-	res := getFinalResponseOrFail(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(503), res.StatusCode, "a call whose dispatch evaluation failed should be rejected with 503")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-}
-
-// TestInboundCallStatusCodeOnLateOfferDisabled covers the SIP status reported
-// for an offerless INVITE received while late offer is disabled: the SDP error
-// is rejected with 400 (TestInboundLateOfferDisabled covers the wire behaviour),
-// so 400 is what the call record must carry. The recorded status and the
-// response sent to the caller have to agree — if 488 Media Failed is the outcome
-// we want on record, then 488 is what the caller should be sent.
-func TestInboundCallStatusCodeOnLateOfferDisabled(t *testing.T) {
-	// No feature flags: late offer is off for the project.
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	c := inviteWithoutOffer(t, st)
-	res := getFinalResponseOrFail(t, ctx, c.tx)
-	require.Equal(t, sip.StatusBadRequest, res.StatusCode, "offerless INVITE should be rejected when late offer is disabled")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-}
-
-// TestInboundCallStatusCodeOnMediaConfigError covers the SIP status reported for
-// a call rejected because its media config could not be built, e.g. a trunk
-// configured to use only listed codecs but listing none. That is our own
-// misconfiguration rather than anything the caller did, so the caller is sent
-// 500 and the call record must say so: a server error has to stay
-// distinguishable from a rejection blamed on the caller.
-func TestInboundCallStatusCodeOnMediaConfigError(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		return CallDispatch{
-			Result: DispatchAccept,
-			Room:   RoomConfig{RoomName: testRoomName},
-			// newMediaConfig rejects this: no codecs are listed to select from.
-			MediaConfig: &livekit.SIPMediaConfig{OnlyListedCodecs: true},
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
-
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
-
-	res := getFinalResponseOrFail(t, ctx, tx)
-	require.Equal(t, sip.StatusInternalServerError, res.StatusCode, "a call we cannot build a media config for should be rejected with 500")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.Equal(t, "no codecs specified", ended.Error, "the config error must be reported")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-}
-
-// TestInboundCallStatusCodeOnUnexpectedDispatch covers the SIP status reported for
-// a call rejected because of an unexpected dispatch result
-func TestInboundCallStatusCodeOnUnexpectedDispatch(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		return CallDispatch{Result: DispatchResult(1337)}
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
-
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
-
-	res := getFinalResponseOrFail(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(501), res.StatusCode, "unknown dispatch result should result in 501")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-}
-
-// errTestPublishFailed stands in for whatever makes publishing our track fail:
-// the room handle being gone, or the LiveKit publish itself erroring.
-var errTestPublishFailed = errors.New("test: cannot publish track")
-
-// TestInboundCallStatusCodeOnPublishTrackError covers the SIP status reported
-// for a call that ends because publishTrack failed. The call is still ringing at
-// that point, so the rejection status is what actually goes on the wire, and the
-// record must agree with it.
-func TestInboundCallStatusCodeOnPublishTrackError(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{
-		GetRoom:         newTestRoomConfig(&testRoomConfig{inboundAudioErr: errTestPublishFailed}),
-		GetStateHandler: states.GetStateHandler(),
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
+		require.NotZero(t, ended.StartedAtNs, "call was answered")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	t.Run("DispatchDrop", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{Result: DispatchNoRuleDrop}
+			},
+		})
 
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
 
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
 
-	// The INVITE was never answered, so the call is torn down with a final
-	// response rather than a BYE.
-	res := getFinalResponseOrFail(t, ctx, tx)
-	require.Equal(t, sip.StatusBusyHere, res.StatusCode, "a call whose track could not be published should be rejected")
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
 
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+		// Dispatch is evaluated after ringing starts, so the caller sees the
+		// provisional responses and then silence: a dropped call gets no final
+		// response.
+		res100 := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
+		res180 := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
+		expectNoResponse(t, tx)
 
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.Contains(t, ended.Error, errTestPublishFailed.Error(), "the publish failure must be reported")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-}
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
 
-// TestInboundCallStatusCodeOnHangupDuringAccept covers the SIP status reported
-// for a call the caller hangs up inside acceptCallAndWaitForMedia: the INVITE
-// was answered with 200 OK, but the BYE arrives while we are still waiting for
-// the first RTP packet, so the call never reaches ACTIVE. The answer still
-// happened, so that is the status the record must carry.
-func TestInboundCallStatusCodeOnHangupDuringAccept(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-
-	// CreateInboundCall returns once the 200 OK is in, which leaves the call
-	// parked in waitMedia for up to audioBridgeMaxDelay: no RTP is ever sent.
-	call, ic := st.CreateInboundCall(t)
-
-	// The caller hangs up inside that window.
-	resp := st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
-	require.Equal(t, sip.StatusCode(200), resp.StatusCode, "BYE should be accepted")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
-
-	// Guard the window this test is about: had the BYE landed after media was
-	// bridged, the call would have gone active and this would be a plain hangup.
-	require.False(t, ic.started.IsBroken(), "call must not have gone active")
-	for i, u := range states.Updates() {
-		require.NotEqual(t, livekit.SIPCallStatus_SCS_ACTIVE, u.CallStatus, "update %d reported the call active", i)
-	}
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call never reached the active state")
-	require.Equal(t, livekit.DisconnectReason_CLIENT_INITIATED, ended.DisconnectReason, "the caller hung up")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "the INVITE was answered, so the recorded status must be the 200 OK")
-}
-
-// TestInboundCallStatusCodeOnAcceptError covers the SIP status reported for a
-// call that ends because c.cc.Accept failed: the INVITE transaction is gone by
-// the time we answer, which is the race AcceptBye and the other drop paths leave
-// behind. Nothing reaches the caller, so the record is the only account of the
-// outcome, and it must not blame the caller for our failure to answer a call we
-// had decided to accept.
-func TestInboundCallStatusCodeOnAcceptError(t *testing.T) {
-	states := &recordingStateHandler{}
-	// ringForever holds the call in waitSubscribe, so the accept happens only
-	// once this test releases it.
-	st := NewServiceTest(t, &serviceTestConfig{
-		GetRoom:         newTestRoomConfig(&testRoomConfig{ringForever: true}),
-		GetStateHandler: states.GetStateHandler(),
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.Nil(t, ended.CallStatusCode, "CallStatusCode must not be set")
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	t.Run("RoomClosed", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
 
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
+		call, ic := st.CreateInboundCall(t)
+		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
 
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
+		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
+		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
 
-	res100 := getResponseOrFailTimeout(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
-	res180 := getResponseOrFailTimeout(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
-	remoteTag, ok := res180.To().Params.Get("tag")
-	require.True(t, ok, "remote tag should be present")
-	call.SetRemoteTag(LocalTag(remoteTag))
+		// The room goes away under an otherwise healthy call.
+		ic.lkRoom.(*testRoom).simulateRoomClosed(livekit.DisconnectReason_ROOM_CLOSED)
 
-	st.Server.cmu.Lock()
-	ic, ok := st.Server.byLocalTag[call.remoteTag]
-	st.Server.cmu.Unlock()
-	require.True(t, ok, "call should be registered")
-
-	// Drop the INVITE transaction while the call is still ringing, as a BYE
-	// arriving at that moment would. Accept then has nothing left to answer on.
-	ic.cc.mu.Lock()
-	ic.cc.drop()
-	ic.cc.mu.Unlock()
-
-	// Release the call into the accept path.
-	ic.lkRoom.(*testRoom).simulateSubscribed()
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
-
-	// There is no transaction left to answer on, so the caller is told nothing.
-	expectNoResponse(t, tx)
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call was never answered")
-	require.Contains(t, ended.Error, "call already rejected", "the accept failure must be reported")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, ended.CallStatusCode.Code, "sip status code must be recorded")
-}
-
-// TestInboundCallStatusCodeOnNoACK covers the SIP status reported for a call
-// that ends because acceptCall got errNoACK: the 200 OK was sent and
-// retransmitted, and the caller never ACKed it. The answer did go out, so that
-// is the status the record must carry; the missing ACK is what CallStatus and
-// Error report. Takes ~10s: that is how long the UDP retransmissions run before
-// the server gives up.
-func TestInboundCallStatusCodeOnNoACK(t *testing.T) {
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	// Late offer makes the server wait for the ACK, which is what produces errNoACK.
-	st.Server.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
-
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-
-	c := inviteWithoutOffer(t, st)
-	c.expectOffer(t, ctx)
-
-	// Never ACK: absorb the retransmitted 200 OKs until the server gives up and
-	// tears the call down with a BYE.
-loop:
-	for {
+		// The SIP leg is torn down from our side, so the caller gets a BYE.
 		select {
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for the server to give up on the ACK: %v", ctx.Err())
-		case resp := <-c.tx.Responses():
-			c.requireRetransmit(t, resp)
-		case msg := <-c.byes:
-			c.answerBye(t, msg)
-			break loop
-		}
-	}
-	require.False(t, c.ic.cc.GotACK(), "server received unexpected ACK")
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call never reached the active state")
-	require.Contains(t, ended.Error, "no ACK received", "the missing ACK must be reported")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-}
-
-// TestInboundCallStatusCodeOnPinTooLong covers the SIP status reported for a
-// call dropped because the caller entered more pin digits than pinLimit. The
-// call was answered with 200 OK to play the pin prompt and is torn down with a
-// BYE, so that is the status the record must carry; the bad pin is what
-// CallStatus and Error report.
-func TestInboundCallStatusCodeOnPinTooLong(t *testing.T) {
-	// One digit past the pinLimit in pinPrompt, entered without ever sending '#'.
-	const tooManyDigits = 17
-
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
-	}
-
-	// The pin flow answers the call so the caller can hear the prompt.
-	call, ic := st.CreateInboundCall(t)
-
-	byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
-	defer st.TestUA.UnregisterSink(call.localTag, "BYE")
-
-	// Feed the digits the way the media port does once DTMF is connected.
-	for i := 0; i < tooManyDigits; i++ {
-		select {
-		case ic.dtmf <- dtmf.Event{Digit: '1', Code: 1}:
+		case msg := <-byeSink:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
 		case <-time.After(5 * time.Second):
-			require.Fail(t, "timed out entering the pin")
+			require.Fail(t, "timeout waiting for BYE")
 		}
-	}
 
-	// The call is established, so it is torn down with a BYE.
-	select {
-	case msg := <-byeSink:
-		require.NotNil(t, msg)
-		require.Equal(t, sip.BYE, msg.req.Method)
-		require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
-	case <-time.After(10 * time.Second):
-		require.Fail(t, "timeout waiting for BYE")
-	}
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
 
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call never got past the pin prompt")
-	require.Contains(t, ended.Error, "wrong pin", "the rejected pin must be reported")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-}
-
-// TestInboundCallStatusCodeOnWrongPin covers the SIP status reported for a call
-// dropped because the pin the caller entered matched no dispatch rule. As with
-// any pin prompt the call was answered with 200 OK and is torn down with a BYE,
-// so that is the status the record must carry; the rejected pin is what
-// CallStatus and Error report.
-func TestInboundCallStatusCodeOnWrongPin(t *testing.T) {
-	const wrongPin = "4321"
-
-	states := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: states.GetStateHandler()})
-	var gotPin atomic.Value
-	st.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-		if info.Pin == "" {
-			// First evaluation, before any digits: ask for a pin.
-			return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
-		}
-		// Second evaluation, once '#' ends the pin: it matches no rule.
-		gotPin.Store(info.Pin)
-		return CallDispatch{Result: DispatchNoRuleReject}
-	}
-
-	// The pin flow answers the call so the caller can hear the prompt.
-	call, ic := st.CreateInboundCall(t)
-
-	byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
-	defer st.TestUA.UnregisterSink(call.localTag, "BYE")
-
-	// Enter the pin, then '#' to submit it.
-	for _, digit := range wrongPin + "#" {
-		select {
-		case ic.dtmf <- dtmf.Event{Digit: byte(digit), Code: 1}:
-		case <-time.After(5 * time.Second):
-			require.Fail(t, "timed out entering the pin")
-		}
-	}
-
-	// The call is established, so it is torn down with a BYE.
-	select {
-	case msg := <-byeSink:
-		require.NotNil(t, msg)
-		require.Equal(t, sip.BYE, msg.req.Method)
-		require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
-	case <-time.After(10 * time.Second):
-		require.Fail(t, "timeout waiting for BYE")
-	}
-
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
-
-	// Guard the path: the call must have been dropped on the submitted pin.
-	require.Equal(t, wrongPin, gotPin.Load(), "the pin entered should have been dispatched on")
-
-	ended := states.Last()
-	require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-	require.Zero(t, ended.StartedAtNs, "call never got past the pin prompt")
-	require.Contains(t, ended.Error, "wrong pin", "the rejected pin must be reported")
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-}
-
-// failingRetransmitTx wraps an INVITE server transaction and fails every 2xx
-// response after the first one, standing in for a transport error that hits a
-// 200 OK retransmission while the server waits for the ACK. Provisional
-// responses and the teardown status still go out, as they would on a socket
-// that only broke for that one write.
-type failingRetransmitTx struct {
-	sip.ServerTransaction
-	sent atomic.Bool
-}
-
-func (t *failingRetransmitTx) Respond(res *sip.Response) error {
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return t.ServerTransaction.Respond(res)
-	}
-	if t.sent.CompareAndSwap(false, true) {
-		return t.ServerTransaction.Respond(res)
-	}
-	return errors.New("write udp: connection refused")
-}
-
-// TestInboundCallStatusCodeOnAnswerRetransmitError covers the SIP status
-// reported for a call whose 200 OK reached the caller and then failed to be
-// retransmitted before the ACK arrived. Over UDP the answer is sent repeatedly
-// until the ACK comes back, so a later write failing says nothing about what
-// the caller saw: it already has the 200 OK. The record must carry that answer,
-// not the internal failure that ended the call afterwards.
-func TestInboundCallStatusCodeOnAnswerRetransmitError(t *testing.T) {
-	states := &recordingStateHandler{}
-	// ringForever holds the call in waitSubscribe, so the accept happens only
-	// once this test has wrapped the INVITE transaction.
-	st := NewServiceTest(t, &serviceTestConfig{
-		GetRoom:         newTestRoomConfig(&testRoomConfig{ringForever: true}),
-		GetStateHandler: states.GetStateHandler(),
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
+		require.NotZero(t, ended.StartedAtNs, "call was answered")
+		require.Equal(t, livekit.DisconnectReason_ROOM_CLOSED, ended.DisconnectReason, "the room close must be reported as the disconnect reason")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
 	})
 
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	t.Run("DispatchReject", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{Result: DispatchNoRuleReject}
+			},
+		})
 
-	call := newTestCall(st.TestUA, false)
-	req, localSDP, err := call.Invite(nil)
-	require.NoError(t, err)
-	call.SetLocalSDP(localSDP)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
 
-	tx, err := st.TestUA.Client.TransactionRequest(req)
-	require.NoError(t, err)
-	defer tx.Terminate()
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
 
-	res100 := getResponseOrFailTimeout(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
-	res180 := getResponseOrFailTimeout(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
-	remoteTag, ok := res180.To().Params.Get("tag")
-	require.True(t, ok, "remote tag should be present")
-	call.SetRemoteTag(LocalTag(remoteTag))
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
 
-	st.Server.cmu.Lock()
-	ic, ok := st.Server.byLocalTag[call.remoteTag]
-	st.Server.cmu.Unlock()
-	require.True(t, ok, "call should be registered")
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(404), res.StatusCode, "a call matching no dispatch rule should be rejected with 404")
 
-	// Let the answer reach the caller, then break the transport under the
-	// retransmission that follows while the server waits for the ACK.
-	ic.cc.mu.Lock()
-	ic.cc.inviteTx = &failingRetransmitTx{ServerTransaction: ic.cc.inviteTx}
-	ic.cc.mu.Unlock()
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
 
-	// Release the call into the accept path.
-	ic.lkRoom.(*testRoom).simulateSubscribed()
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
 
-	// The caller is answered, and never ACKs, so the server retransmits the
-	// 200 OK and that write is the one that fails.
-	res200 := getFinalResponseOrFail(t, ctx, tx)
-	require.Equal(t, sip.StatusCode(200), res200.StatusCode, "caller should receive the answer")
+	t.Run("DispatchUnavailable", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{Result: DispatchServiceUnavailable}
+			},
+		})
 
-	require.Eventually(t, func() bool {
-		last := states.Last()
-		return last != nil && last.EndedAtNs != 0
-	}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
 
-	require.False(t, ic.cc.GotACK(), "server received unexpected ACK")
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
 
-	ended := states.Last()
-	require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-	require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code,
-		"the caller received the 200 OK, so that is the status the record must carry")
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(503), res.StatusCode, "a call whose dispatch evaluation failed should be rejected with 503")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
+
+	t.Run("LateOfferDisabled", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		c := inviteWithoutOffer(t, st)
+		res := getFinalResponseOrFail(t, ctx, c.tx)
+		require.Equal(t, sip.StatusBadRequest, res.StatusCode, "offerless INVITE should be rejected when late offer is disabled")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
+
+	t.Run("MediaConfigError", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{
+					Result: DispatchAccept,
+					Room:   RoomConfig{RoomName: testRoomName},
+					// newMediaConfig rejects this: no codecs are listed to select from.
+					MediaConfig: &livekit.SIPMediaConfig{OnlyListedCodecs: true},
+				}
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusInternalServerError, res.StatusCode, "a call we cannot build a media config for should be rejected with 500")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.Equal(t, "no codecs specified", ended.Error, "the config error must be reported")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
+
+	t.Run("UnexpectedDispatch", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{Result: DispatchResult(1337)}
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(501), res.StatusCode, "unknown dispatch result should result in 501")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
+
+	t.Run("PublishTrackError", func(t *testing.T) {
+		// errTestPublishFailed stands in for whatever makes publishing our track fail:
+		// the room handle being gone, or the LiveKit publish itself erroring.
+		var errTestPublishFailed = errors.New("test: cannot publish track")
+
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			getRoomFunc: newTestRoomConfig(&testRoomConfig{inboundAudioErr: errTestPublishFailed}),
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		// The INVITE was never answered, so the call is torn down with a final
+		// response rather than a BYE.
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusBusyHere, res.StatusCode, "a call whose track could not be published should be rejected")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.Contains(t, ended.Error, errTestPublishFailed.Error(), "the publish failure must be reported")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
+
+	t.Run("HangupDuringAccept", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+
+		// CreateInboundCall returns once the 200 OK is in, which leaves the call
+		// parked in waitMedia for up to audioBridgeMaxDelay: no RTP is ever sent.
+		call, ic := st.CreateInboundCall(t)
+
+		// The caller hangs up inside that window.
+		resp := st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
+		require.Equal(t, sip.StatusCode(200), resp.StatusCode, "BYE should be accepted")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
+
+		// Guard the window this test is about: had the BYE landed after media was
+		// bridged, the call would have gone active and this would be a plain hangup.
+		require.False(t, ic.started.IsBroken(), "call must not have gone active")
+		for i, u := range states.Updates() {
+			require.NotEqual(t, livekit.SIPCallStatus_SCS_ACTIVE, u.CallStatus, "update %d reported the call active", i)
+		}
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call never reached the active state")
+		require.Equal(t, livekit.DisconnectReason_CLIENT_INITIATED, ended.DisconnectReason, "the caller hung up")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "the INVITE was answered, so the recorded status must be the 200 OK")
+	})
+
+	t.Run("AcceptError", func(t *testing.T) {
+		// TODO: roomConfig
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			getRoomFunc: newTestRoomConfig(&testRoomConfig{ringForever: true}),
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		res100 := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
+		res180 := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
+		remoteTag, ok := res180.To().Params.Get("tag")
+		require.True(t, ok, "remote tag should be present")
+		call.SetRemoteTag(LocalTag(remoteTag))
+
+		st.Server.cmu.Lock()
+		ic, ok := st.Server.byLocalTag[call.remoteTag]
+		st.Server.cmu.Unlock()
+		require.True(t, ok, "call should be registered")
+
+		// Drop the INVITE transaction while the call is still ringing, as a BYE
+		// arriving at that moment would. Accept then has nothing left to answer on.
+		ic.cc.mu.Lock()
+		ic.cc.drop()
+		ic.cc.mu.Unlock()
+
+		// Release the call into the accept path.
+		ic.lkRoom.(*testRoom).simulateSubscribed()
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+
+		// There is no transaction left to answer on, so the caller is told nothing.
+		expectNoResponse(t, tx)
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.Contains(t, ended.Error, "call already rejected", "the accept failure must be reported")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_INTERNAL_SERVER_ERROR, ended.CallStatusCode.Code, "sip status code must be recorded")
+	})
+
+	t.Run("NoACK", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+
+		// Late offer makes the server wait for the ACK, which is what produces errNoACK.
+		st.Server.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+
+		c := inviteWithoutOffer(t, st)
+		c.expectOffer(t, ctx)
+
+		// Never ACK: absorb the retransmitted 200 OKs until the server gives up and
+		// tears the call down with a BYE.
+	loop:
+		for {
+			select {
+			case <-ctx.Done():
+				t.Fatalf("timed out waiting for the server to give up on the ACK: %v", ctx.Err())
+			case resp := <-c.tx.Responses():
+				c.requireRetransmit(t, resp)
+			case msg := <-c.byes:
+				c.answerBye(t, msg)
+				break loop
+			}
+		}
+		require.False(t, c.ic.cc.GotACK(), "server received unexpected ACK")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call never reached the active state")
+		require.Contains(t, ended.Error, "no ACK received", "the missing ACK must be reported")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
+	})
+
+	t.Run("PinTooLong", func(t *testing.T) {
+		const tooManyDigits = 17
+
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
+			},
+		})
+
+		// The pin flow answers the call so the caller can hear the prompt.
+		call, ic := st.CreateInboundCall(t)
+
+		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
+		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
+
+		// Feed the digits the way the media port does once DTMF is connected.
+		for i := 0; i < tooManyDigits; i++ {
+			select {
+			case ic.dtmf <- dtmf.Event{Digit: '1', Code: 1}:
+			case <-time.After(5 * time.Second):
+				require.Fail(t, "timed out entering the pin")
+			}
+		}
+
+		// The call is established, so it is torn down with a BYE.
+		select {
+		case msg := <-byeSink:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
+		case <-time.After(10 * time.Second):
+			require.Fail(t, "timeout waiting for BYE")
+		}
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call never got past the pin prompt")
+		require.Contains(t, ended.Error, "wrong pin", "the rejected pin must be reported")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
+	})
+
+	t.Run("WrongPin", func(t *testing.T) {
+		const wrongPin = "4321"
+		var gotPin atomic.Value
+
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				if info.Pin == "" {
+					// First evaluation, before any digits: ask for a pin.
+					return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
+				}
+				// Second evaluation, once '#' ends the pin: it matches no rule.
+				gotPin.Store(info.Pin)
+				return CallDispatch{Result: DispatchNoRuleReject}
+			},
+		})
+
+		// The pin flow answers the call so the caller can hear the prompt.
+		call, ic := st.CreateInboundCall(t)
+
+		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
+		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
+
+		// Enter the pin, then '#' to submit it.
+		for _, digit := range wrongPin + "#" {
+			select {
+			case ic.dtmf <- dtmf.Event{Digit: byte(digit), Code: 1}:
+			case <-time.After(5 * time.Second):
+				require.Fail(t, "timed out entering the pin")
+			}
+		}
+
+		// The call is established, so it is torn down with a BYE.
+		select {
+		case msg := <-byeSink:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
+		case <-time.After(10 * time.Second):
+			require.Fail(t, "timeout waiting for BYE")
+		}
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
+
+		// Guard the path: the call must have been dropped on the submitted pin.
+		require.Equal(t, wrongPin, gotPin.Load(), "the pin entered should have been dispatched on")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call never got past the pin prompt")
+		require.Contains(t, ended.Error, "wrong pin", "the rejected pin must be reported")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
+	})
+
+	t.Run("AnswerRetransmitError", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			getRoomFunc: newTestRoomConfig(&testRoomConfig{ringForever: true}),
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		res100 := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
+		res180 := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
+		remoteTag, ok := res180.To().Params.Get("tag")
+		require.True(t, ok, "remote tag should be present")
+		call.SetRemoteTag(LocalTag(remoteTag))
+
+		st.Server.cmu.Lock()
+		ic, ok := st.Server.byLocalTag[call.remoteTag]
+		st.Server.cmu.Unlock()
+		require.True(t, ok, "call should be registered")
+
+		// Let the answer reach the caller, then break the transport under the
+		// retransmission that follows while the server waits for the ACK.
+		ic.cc.mu.Lock()
+		ic.cc.inviteTx = &failingRetransmitTx{ServerTransaction: ic.cc.inviteTx}
+		ic.cc.mu.Unlock()
+
+		// Release the call into the accept path.
+		ic.lkRoom.(*testRoom).simulateSubscribed()
+
+		// The caller is answered, and never ACKs, so the server retransmits the
+		// 200 OK and that write is the one that fails.
+		res200 := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(200), res200.StatusCode, "caller should receive the answer")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
+
+		require.False(t, ic.cc.GotACK(), "server received unexpected ACK")
+
+		ended := states.Last()
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code,
+			"the caller received the 200 OK, so that is the status the record must carry")
+	})
 }
