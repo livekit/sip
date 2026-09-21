@@ -547,6 +547,41 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
 	})
 
+	t.Run("RoomClosed", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+
+		call, ic := st.CreateInboundCall(t)
+		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
+
+		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
+		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
+
+		// The room goes away under an otherwise healthy call.
+		ic.lkRoom.(*testRoom).simulateRoomClosed(livekit.DisconnectReason_ROOM_CLOSED)
+
+		// The SIP leg is torn down from our side, so the caller gets a BYE.
+		select {
+		case msg := <-byeSink:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.BYE, msg.req.Method)
+			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
+		case <-time.After(5 * time.Second):
+			require.Fail(t, "timeout waiting for BYE")
+		}
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
+		require.NotZero(t, ended.StartedAtNs, "call was answered")
+		require.Equal(t, livekit.DisconnectReason_ROOM_CLOSED, ended.DisconnectReason, "the room close must be reported as the disconnect reason")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
+	})
+
 	t.Run("DispatchDrop", func(t *testing.T) {
 		st, states := newStatusCodeTest(t, statusCodeTestConfig{
 			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
@@ -584,41 +619,6 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
 		require.Zero(t, ended.StartedAtNs, "call was never answered")
 		require.Nil(t, ended.CallStatusCode, "CallStatusCode must not be set")
-	})
-
-	t.Run("RoomClosed", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
-
-		call, ic := st.CreateInboundCall(t)
-		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
-
-		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
-		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
-
-		// The room goes away under an otherwise healthy call.
-		ic.lkRoom.(*testRoom).simulateRoomClosed(livekit.DisconnectReason_ROOM_CLOSED)
-
-		// The SIP leg is torn down from our side, so the caller gets a BYE.
-		select {
-		case msg := <-byeSink:
-			require.NotNil(t, msg)
-			require.Equal(t, sip.BYE, msg.req.Method)
-			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
-		case <-time.After(5 * time.Second):
-			require.Fail(t, "timeout waiting for BYE")
-		}
-
-		require.Eventually(t, func() bool {
-			last := states.Last()
-			return last != nil && last.EndedAtNs != 0
-		}, 5*time.Second, 10*time.Millisecond, "the ended call should be reported")
-
-		ended := states.Last()
-		require.Equal(t, livekit.SIPCallStatus_SCS_DISCONNECTED, ended.CallStatus)
-		require.NotZero(t, ended.StartedAtNs, "call was answered")
-		require.Equal(t, livekit.DisconnectReason_ROOM_CLOSED, ended.DisconnectReason, "the room close must be reported as the disconnect reason")
-		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
 	})
 
 	t.Run("DispatchReject", func(t *testing.T) {
@@ -676,6 +676,40 @@ func TestInboundCallStatusCode(t *testing.T) {
 
 		res := getFinalResponseOrFail(t, ctx, tx)
 		require.Equal(t, sip.StatusCode(503), res.StatusCode, "a call whose dispatch evaluation failed should be rejected with 503")
+
+		require.Eventually(t, func() bool {
+			last := states.Last()
+			return last != nil && last.EndedAtNs != 0
+		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
+
+		ended := states.Last()
+		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
+		require.Zero(t, ended.StartedAtNs, "call was never answered")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
+	})
+
+	t.Run("UnexpectedDispatch", func(t *testing.T) {
+		st, states := newStatusCodeTest(t, statusCodeTestConfig{
+			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{Result: DispatchResult(1337)}
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		call := newTestCall(st.TestUA, false)
+		req, localSDP, err := call.Invite(nil)
+		require.NoError(t, err)
+		call.SetLocalSDP(localSDP)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		defer tx.Terminate()
+
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(501), res.StatusCode, "unknown dispatch result should result in 501")
 
 		require.Eventually(t, func() bool {
 			last := states.Last()
@@ -747,40 +781,6 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
 		require.Zero(t, ended.StartedAtNs, "call was never answered")
 		require.Equal(t, "no codecs specified", ended.Error, "the config error must be reported")
-		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
-	})
-
-	t.Run("UnexpectedDispatch", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{Result: DispatchResult(1337)}
-			},
-		})
-
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		defer cancel()
-
-		call := newTestCall(st.TestUA, false)
-		req, localSDP, err := call.Invite(nil)
-		require.NoError(t, err)
-		call.SetLocalSDP(localSDP)
-
-		tx, err := st.TestUA.Client.TransactionRequest(req)
-		require.NoError(t, err)
-		defer tx.Terminate()
-
-		res := getFinalResponseOrFail(t, ctx, tx)
-		require.Equal(t, sip.StatusCode(501), res.StatusCode, "unknown dispatch result should result in 501")
-
-		require.Eventually(t, func() bool {
-			last := states.Last()
-			return last != nil && last.EndedAtNs != 0
-		}, 5*time.Second, 10*time.Millisecond, "the rejected call should be reported")
-
-		ended := states.Last()
-		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-		require.Zero(t, ended.StartedAtNs, "call was never answered")
 		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
 		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
 	})
