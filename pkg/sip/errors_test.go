@@ -73,9 +73,9 @@ func TestClassifyInviteError(t *testing.T) {
 		{"Twilio 32203 carrier block (wrapped)", fmt.Errorf("INVITE blocked by carrier: %w", carrierBlockedError{status: &livekit.SIPStatus{Code: 603, Status: "Decline"}, provider: "twilio", providerCode: 32203}), callRejected, stats.ClientError("carrier-blocked"), livekit.DisconnectReason_USER_REJECTED, true},
 
 		// SDP errors
-		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_MEDIA_FAILURE, true},
-		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_MEDIA_FAILURE, true},
-		{"SDP other", SDPError{Err: errors.New("bad sdp")}, callRejected, stats.ClientError("sdp-error"), livekit.DisconnectReason_MEDIA_FAILURE, true},
+		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_USER_REJECTED, true},
+		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_USER_REJECTED, true},
+		{"SDP other", SDPError{Err: errors.New("bad sdp")}, callRejected, stats.ClientError("sdp-error"), livekit.DisconnectReason_USER_REJECTED, true},
 
 		// Sentinel-based errors
 		{"SIP request timeout (no answer)", psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout), callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
