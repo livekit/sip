@@ -31,7 +31,6 @@ import (
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
-	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
@@ -535,17 +534,15 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					}
 					h := rtp.NewNopCloser(rh)
 					if conf.EnableJitterBuffer {
-						h = rtp.HandleJitter(h,
-							jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
-								r.stats.JitterBufferPacketsLost.Store(packetsLost)
-								r.stats.JitterBufferPacketsDropped.Store(packetsDropped)
-							}),
-							jitter.WithStatsHandler(func(st *jitter.BufferStats) {
-								r.stats.JitterBufferSSRCSwitches.Store(st.SSRCSwitches)
-								r.stats.JitterBufferPacketsReordered.Store(st.PacketsReordered)
-								r.stats.JitterBufferSequenceRestarts.Store(st.SequenceRestarts)
-							}),
-						)
+						// One buffer per subscribed track, all reporting into the
+						// room-level totals.
+						h = rtp.HandleJitter(h, newJitterStatsOptions(jitterStatsTargets{
+							Lost:             &r.stats.JitterBufferPacketsLost,
+							Dropped:          &r.stats.JitterBufferPacketsDropped,
+							SSRCSwitches:     &r.stats.JitterBufferSSRCSwitches,
+							Reordered:        &r.stats.JitterBufferPacketsReordered,
+							SequenceRestarts: &r.stats.JitterBufferSequenceRestarts,
+						})...)
 					}
 
 					h = newRTPStreamStats(h, &r.stats.rtpStats)

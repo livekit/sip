@@ -27,7 +27,6 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
-	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
@@ -209,17 +208,15 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 
 	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.conf.stats.MuxStats)
 	if p.conf.opts.EnableJitterBuffer {
-		hnd = rtp.HandleJitter(hnd,
-			jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
-				p.conf.stats.JitterBufferPacketsLost.Store(packetsLost)
-				p.conf.stats.JitterBufferPacketsDropped.Store(packetsDropped)
-			}),
-			jitter.WithStatsHandler(func(st *jitter.BufferStats) {
-				p.conf.stats.JitterBufferSSRCSwitches.Store(st.SSRCSwitches)
-				p.conf.stats.JitterBufferPacketsReordered.Store(st.PacketsReordered)
-				p.conf.stats.JitterBufferSequenceRestarts.Store(st.SequenceRestarts)
-			}),
-		)
+		// Renegotiation rebuilds the pipeline against the same stats, so a later
+		// buffer must add to the call totals rather than replace them.
+		hnd = rtp.HandleJitter(hnd, newJitterStatsOptions(jitterStatsTargets{
+			Lost:             &p.conf.stats.JitterBufferPacketsLost,
+			Dropped:          &p.conf.stats.JitterBufferPacketsDropped,
+			SSRCSwitches:     &p.conf.stats.JitterBufferSSRCSwitches,
+			Reordered:        &p.conf.stats.JitterBufferPacketsReordered,
+			SequenceRestarts: &p.conf.stats.JitterBufferSequenceRestarts,
+		})...)
 	}
 	hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
 

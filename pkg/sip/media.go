@@ -25,6 +25,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 
+	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/rtp"
 
 	"github.com/livekit/protocol/logger"
@@ -32,6 +33,61 @@ import (
 )
 
 var _ json.Marshaler = (*Stats)(nil)
+
+// jitterStatsTargets are the call-level totals a jitter buffer reports into.
+type jitterStatsTargets struct {
+	Lost             *atomic.Uint64
+	Dropped          *atomic.Uint64
+	SSRCSwitches     *atomic.Uint64
+	Reordered        *atomic.Uint64
+	SequenceRestarts *atomic.Uint64
+}
+
+// newJitterStatsOptions accumulates one buffer's counters into shared call-level
+// totals.
+//
+// A call can build more than one buffer: the room leg creates one per subscribed
+// track, and the SIP leg rebuilds its pipeline on renegotiation. Each buffer
+// counts from zero, so assigning its values absolutely lets a later buffer
+// overwrite the call total. Accumulate deltas instead.
+//
+// A buffer serializes its own callbacks under its lock, so the previous values
+// need no synchronization. Separate buffers get separate closures.
+func newJitterStatsOptions(t jitterStatsTargets) []jitter.Option {
+	a := &jitterStatsAccumulator{targets: t}
+	return []jitter.Option{
+		jitter.WithPacketLossHandler(a.onPacketLoss),
+		jitter.WithStatsHandler(a.onStats),
+	}
+}
+
+// jitterStatsAccumulator holds one buffer's last-reported values so the shared
+// totals can be advanced by the delta. One per buffer.
+type jitterStatsAccumulator struct {
+	targets jitterStatsTargets
+	prev    jitter.BufferStats
+}
+
+// add advances a shared total by this buffer's delta. Per-buffer counters are
+// monotonic, so a non-increasing report means nothing new to add.
+func (a *jitterStatsAccumulator) add(dst *atomic.Uint64, cur uint64, prev *uint64) {
+	if cur <= *prev {
+		return
+	}
+	dst.Add(cur - *prev)
+	*prev = cur
+}
+
+func (a *jitterStatsAccumulator) onPacketLoss(packetsLost, packetsDropped uint64) {
+	a.add(a.targets.Lost, packetsLost, &a.prev.PacketsLost)
+	a.add(a.targets.Dropped, packetsDropped, &a.prev.PacketsDropped)
+}
+
+func (a *jitterStatsAccumulator) onStats(st *jitter.BufferStats) {
+	a.add(a.targets.SSRCSwitches, st.SSRCSwitches, &a.prev.SSRCSwitches)
+	a.add(a.targets.Reordered, st.PacketsReordered, &a.prev.PacketsReordered)
+	a.add(a.targets.SequenceRestarts, st.SequenceRestarts, &a.prev.SequenceRestarts)
+}
 
 type Stats struct {
 	Port   PortStats
