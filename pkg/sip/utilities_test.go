@@ -155,6 +155,12 @@ func (h *recordingStateHandler) Last() *livekit.SIPCallInfo {
 	return h.updates[len(h.updates)-1]
 }
 
+func (h *recordingStateHandler) Reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.updates = nil
+}
+
 const (
 	// Room identity reported by the testRoom fake.
 	testRoomName = "test-room"

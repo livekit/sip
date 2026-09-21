@@ -27,6 +27,7 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sipgo/sip"
 )
@@ -510,23 +511,50 @@ func TestInboundRoomIDReportedOnAnsweredCall(t *testing.T) {
 
 // TestInboundCallStatusCode checks the value of info.CallStatusCode for various call outcomes
 func TestInboundCallStatusCode(t *testing.T) {
-	type statusCodeTestConfig struct {
-		dispatchCallFunc func(ctx context.Context, info *CallInfo) CallDispatch
-		getRoomFunc      GetRoomFunc
+	type statusCodeTest struct {
+		*serviceTest
+		roomFunc GetRoomFunc
+		states   *recordingStateHandler
 	}
 
-	newStatusCodeTest := func(t *testing.T, cfg statusCodeTestConfig) (*serviceTest, *recordingStateHandler) {
-		states := &recordingStateHandler{}
+	newStatusCodeTest := func(t *testing.T) (*statusCodeTest, *recordingStateHandler, func(t *testing.T, roomFunc GetRoomFunc)) {
+		sct := &statusCodeTest{
+			states: &recordingStateHandler{},
+		}
+
+		defaultRoomFunc := newTestRoomConfig(nil)
 		st := NewServiceTest(t, &serviceTestConfig{
-			GetRoom:         cfg.getRoomFunc,
-			GetStateHandler: states.GetStateHandler(),
+			GetRoom: func(log logger.Logger, st *RoomStats) RoomInterface {
+				if sct.roomFunc == nil {
+					return defaultRoomFunc(log, st)
+				}
+				return sct.roomFunc(log, st)
+			},
+			GetStateHandler: sct.states.GetStateHandler(),
 		})
-		st.Handler.(*TestHandler).DispatchCallFunc = cfg.dispatchCallFunc
-		return st, states
+
+		sct.serviceTest = st
+
+		initTest := func(t *testing.T, roomFunc GetRoomFunc) {
+			sct.roomFunc = roomFunc
+
+			t.Cleanup(func() {
+				sct.states.Reset()
+				sct.roomFunc = nil
+				handler := &TestHandler{}
+				sct.serviceTest.Handler = handler
+				sct.serviceTest.Server.handler = handler
+				sct.serviceTest.Client.handler = handler
+			})
+		}
+
+		return sct, sct.states, initTest
 	}
+
+	st, states, initTest := newStatusCodeTest(t)
 
 	t.Run("NormalHangup", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+		initTest(t, nil)
 
 		call, ic := st.CreateInboundCall(t)
 		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
@@ -548,7 +576,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("RoomClosed", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+		initTest(t, nil)
 
 		call, ic := st.CreateInboundCall(t)
 		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active")
@@ -583,11 +611,10 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("DispatchDrop", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{Result: DispatchNoRuleDrop}
-			},
-		})
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{Result: DispatchNoRuleDrop}
+		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -622,11 +649,10 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("DispatchReject", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{Result: DispatchNoRuleReject}
-			},
-		})
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{Result: DispatchNoRuleReject}
+		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -656,11 +682,10 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("DispatchUnavailable", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{Result: DispatchServiceUnavailable}
-			},
-		})
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{Result: DispatchServiceUnavailable}
+		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -690,11 +715,10 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("UnexpectedDispatch", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{Result: DispatchResult(1337)}
-			},
-		})
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{Result: DispatchResult(1337)}
+		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -724,12 +748,12 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("LateOfferDisabled", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+		initTest(t, nil)
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
 
-		c := inviteWithoutOffer(t, st)
+		c := inviteWithoutOffer(t, st.serviceTest)
 		res := getFinalResponseOrFail(t, ctx, c.tx)
 		require.Equal(t, sip.StatusBadRequest, res.StatusCode, "offerless INVITE should be rejected when late offer is disabled")
 
@@ -746,16 +770,15 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("MediaConfigError", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{
-					Result: DispatchAccept,
-					Room:   RoomConfig{RoomName: testRoomName},
-					// newMediaConfig rejects this: no codecs are listed to select from.
-					MediaConfig: &livekit.SIPMediaConfig{OnlyListedCodecs: true},
-				}
-			},
-		})
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{
+				Result: DispatchAccept,
+				Room:   RoomConfig{RoomName: testRoomName},
+				// newMediaConfig rejects this: no codecs are listed to select from.
+				MediaConfig: &livekit.SIPMediaConfig{OnlyListedCodecs: true},
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -790,9 +813,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 		// the room handle being gone, or the LiveKit publish itself erroring.
 		var errTestPublishFailed = errors.New("test: cannot publish track")
 
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			getRoomFunc: newTestRoomConfig(&testRoomConfig{inboundAudioErr: errTestPublishFailed}),
-		})
+		initTest(t, newTestRoomConfig(&testRoomConfig{inboundAudioErr: errTestPublishFailed}))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -825,7 +846,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("HangupDuringAccept", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+		initTest(t, nil)
 
 		// CreateInboundCall returns once the 200 OK is in, which leaves the call
 		// parked in waitMedia for up to audioBridgeMaxDelay: no RTP is ever sent.
@@ -856,9 +877,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("AcceptError", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			getRoomFunc: newTestRoomConfig(&testRoomConfig{ringForever: true}),
-		})
+		initTest(t, newTestRoomConfig(&testRoomConfig{ringForever: true}))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
@@ -910,7 +929,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("NoACK", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{})
+		initTest(t, nil)
 
 		// Late offer makes the server wait for the ACK, which is what produces errNoACK.
 		st.Server.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
@@ -918,7 +937,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
 
-		c := inviteWithoutOffer(t, st)
+		c := inviteWithoutOffer(t, st.serviceTest)
 		c.expectOffer(t, ctx)
 
 		// Never ACK: absorb the retransmitted 200 OKs until the server gives up and
@@ -951,13 +970,12 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("PinTooLong", func(t *testing.T) {
-		const tooManyDigits = 17
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
+		}
 
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
-			},
-		})
+		const tooManyDigits = 17
 
 		// The pin flow answers the call so the caller can hear the prompt.
 		call, ic := st.CreateInboundCall(t)
@@ -1001,17 +1019,16 @@ func TestInboundCallStatusCode(t *testing.T) {
 		const wrongPin = "4321"
 		var gotPin atomic.Value
 
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			dispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
-				if info.Pin == "" {
-					// First evaluation, before any digits: ask for a pin.
-					return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
-				}
-				// Second evaluation, once '#' ends the pin: it matches no rule.
-				gotPin.Store(info.Pin)
-				return CallDispatch{Result: DispatchNoRuleReject}
-			},
-		})
+		initTest(t, nil)
+		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+			if info.Pin == "" {
+				// First evaluation, before any digits: ask for a pin.
+				return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
+			}
+			// Second evaluation, once '#' ends the pin: it matches no rule.
+			gotPin.Store(info.Pin)
+			return CallDispatch{Result: DispatchNoRuleReject}
+		}
 
 		// The pin flow answers the call so the caller can hear the prompt.
 		call, ic := st.CreateInboundCall(t)
@@ -1055,9 +1072,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 	})
 
 	t.Run("AnswerRetransmitError", func(t *testing.T) {
-		st, states := newStatusCodeTest(t, statusCodeTestConfig{
-			getRoomFunc: newTestRoomConfig(&testRoomConfig{ringForever: true}),
-		})
+		initTest(t, newTestRoomConfig(&testRoomConfig{ringForever: true}))
 
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
