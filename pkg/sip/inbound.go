@@ -244,13 +244,11 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 
 		res := sip.NewResponseFromRequest(req, 407, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
-		sentStatus := &Result{
-			Code:   res.StatusCode,
-			Status: res.Reason,
-		}
-		_ = tx.Respond(res)
 		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
-		return false, true, sentStatus
+		if err := tx.Respond(res); err != nil {
+			return false, true, nil
+		}
+		return false, true, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
 	log.Debugw("Found Proxy-Authorization header, parsing credentials")
@@ -260,12 +258,10 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"headerValue", h.Value(),
 		)
 		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
-		sentStatus := &Result{
-			Code:   res.StatusCode,
-			Status: res.Reason,
+		if err := tx.Respond(res); err != nil {
+			return false, false, nil
 		}
-		_ = tx.Respond(res)
-		return false, false, sentStatus
+		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
 	// Set credURI and credUsername in logger early to avoid repetitive logging
@@ -280,12 +276,10 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"receivedUsername", cred.Username,
 		)
 		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
-		sentStatus := &Result{
-			Code:   res.StatusCode,
-			Status: res.Reason,
+		if err := tx.Respond(res); err != nil {
+			return false, false, nil
 		}
-		_ = tx.Respond(res)
-		return false, false, sentStatus
+		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
 	// Check if we have a valid challenge state
@@ -295,12 +289,10 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"expectedRealm", auth.Realm,
 		)
 		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
-		sentStatus := &Result{
-			Code:   res.StatusCode,
-			Status: res.Reason,
+		if err := tx.Respond(res); err != nil {
+			return false, false, nil
 		}
-		_ = tx.Respond(res)
-		return false, false, sentStatus
+		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
 	log.Debugw("Computing digest response",
@@ -319,12 +311,10 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 	if err != nil {
 		log.Warnw("Failed to compute digest response", err)
 		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
-		sentStatus := &Result{
-			Code:   res.StatusCode,
-			Status: res.Reason,
+		if err := tx.Respond(res); err != nil {
+			return false, false, nil
 		}
-		_ = tx.Respond(res)
-		return false, false, sentStatus
+		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
 	log.Debugw("Digest computation completed",
@@ -339,12 +329,10 @@ func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Re
 			"receivedResponse", cred.Response,
 		)
 		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
-		sentStatus := &Result{
-			Code:   res.StatusCode,
-			Status: res.Reason,
+		if err := tx.Respond(res); err != nil {
+			return false, false, nil
 		}
-		_ = tx.Respond(res)
-		return false, false, sentStatus
+		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
 	log.Infow("SIP invite authentication successful")
