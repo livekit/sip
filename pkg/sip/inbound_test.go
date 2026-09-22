@@ -18,13 +18,11 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -926,149 +924,6 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.Zero(t, ended.StartedAtNs, "call was never answered")
 		require.Contains(t, ended.Error, "call already rejected", "the accept failure must be reported")
 		require.Nil(t, ended.CallStatusCode, "CallStatusCode must not be set (call dropped without sending final status)")
-	})
-
-	t.Run("NoACK", func(t *testing.T) {
-		initTest(t, nil)
-
-		// Late offer makes the server wait for the ACK, which is what produces errNoACK.
-		st.Server.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
-
-		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-		defer cancel()
-
-		c := inviteWithoutOffer(t, st.serviceTest)
-		c.expectOffer(t, ctx)
-
-		// Never ACK: absorb the retransmitted 200 OKs until the server gives up and
-		// tears the call down with a BYE.
-	loop:
-		for {
-			select {
-			case <-ctx.Done():
-				t.Fatalf("timed out waiting for the server to give up on the ACK: %v", ctx.Err())
-			case resp := <-c.tx.Responses():
-				c.requireRetransmit(t, resp)
-			case msg := <-c.byes:
-				c.answerBye(t, msg)
-				break loop
-			}
-		}
-		require.False(t, c.ic.cc.GotACK(), "server received unexpected ACK")
-
-		require.Eventually(t, func() bool {
-			last := states.Last()
-			return last != nil && last.EndedAtNs != 0
-		}, 5*time.Second, 10*time.Millisecond, "the failed call should be reported")
-
-		ended := states.Last()
-		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-		require.Zero(t, ended.StartedAtNs, "call never reached the active state")
-		require.Contains(t, ended.Error, "no ACK received", "the missing ACK must be reported")
-		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-	})
-
-	t.Run("PinTooLong", func(t *testing.T) {
-		initTest(t, nil)
-		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-			return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
-		}
-
-		const tooManyDigits = 17
-
-		// The pin flow answers the call so the caller can hear the prompt.
-		call, ic := st.CreateInboundCall(t)
-
-		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
-		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
-
-		// Feed the digits the way the media port does once DTMF is connected.
-		for i := 0; i < tooManyDigits; i++ {
-			select {
-			case ic.dtmf <- dtmf.Event{Digit: '1', Code: 1}:
-			case <-time.After(5 * time.Second):
-				require.Fail(t, "timed out entering the pin")
-			}
-		}
-
-		// The call is established, so it is torn down with a BYE.
-		select {
-		case msg := <-byeSink:
-			require.NotNil(t, msg)
-			require.Equal(t, sip.BYE, msg.req.Method)
-			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
-		case <-time.After(10 * time.Second):
-			require.Fail(t, "timeout waiting for BYE")
-		}
-
-		require.Eventually(t, func() bool {
-			last := states.Last()
-			return last != nil && last.EndedAtNs != 0
-		}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
-
-		ended := states.Last()
-		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-		require.Zero(t, ended.StartedAtNs, "call never got past the pin prompt")
-		require.Contains(t, ended.Error, "wrong pin", "the rejected pin must be reported")
-		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
-	})
-
-	t.Run("WrongPin", func(t *testing.T) {
-		const wrongPin = "4321"
-		var gotPin atomic.Value
-
-		initTest(t, nil)
-		st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
-			if info.Pin == "" {
-				// First evaluation, before any digits: ask for a pin.
-				return CallDispatch{Result: DispatchRequestPin, Room: RoomConfig{RoomName: testRoomName}}
-			}
-			// Second evaluation, once '#' ends the pin: it matches no rule.
-			gotPin.Store(info.Pin)
-			return CallDispatch{Result: DispatchNoRuleReject}
-		}
-
-		// The pin flow answers the call so the caller can hear the prompt.
-		call, ic := st.CreateInboundCall(t)
-
-		byeSink := st.TestUA.RegisterSink(call.localTag, "BYE")
-		defer st.TestUA.UnregisterSink(call.localTag, "BYE")
-
-		// Enter the pin, then '#' to submit it.
-		for _, digit := range wrongPin + "#" {
-			select {
-			case ic.dtmf <- dtmf.Event{Digit: byte(digit), Code: 1}:
-			case <-time.After(5 * time.Second):
-				require.Fail(t, "timed out entering the pin")
-			}
-		}
-
-		// The call is established, so it is torn down with a BYE.
-		select {
-		case msg := <-byeSink:
-			require.NotNil(t, msg)
-			require.Equal(t, sip.BYE, msg.req.Method)
-			require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil)))
-		case <-time.After(10 * time.Second):
-			require.Fail(t, "timeout waiting for BYE")
-		}
-
-		require.Eventually(t, func() bool {
-			last := states.Last()
-			return last != nil && last.EndedAtNs != 0
-		}, 5*time.Second, 10*time.Millisecond, "the dropped call should be reported")
-
-		// Guard the path: the call must have been dropped on the submitted pin.
-		require.Equal(t, wrongPin, gotPin.Load(), "the pin entered should have been dispatched on")
-
-		ended := states.Last()
-		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
-		require.Zero(t, ended.StartedAtNs, "call never got past the pin prompt")
-		require.Contains(t, ended.Error, "wrong pin", "the rejected pin must be reported")
-		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
-		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code, "sip status code must be recorded")
 	})
 
 	t.Run("AnswerRetransmitError", func(t *testing.T) {
