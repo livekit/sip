@@ -120,6 +120,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
 		call.cc.routeHeaders = conf.OutboundRouteHeaders
 	}
+	call.cc.preferSRV = featureFlagEnabled(sipConf.featureFlags, outboundPreferSRVFeatureFlag)
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	var err error
@@ -898,6 +899,8 @@ type sipOutbound struct {
 	to           *sip.ToHeader
 	contact      *sip.ContactHeader
 	routeHeaders []string
+	preferSRV    bool
+	dest         string
 
 	mu         sync.RWMutex
 	tag        RemoteTag
@@ -1009,6 +1012,9 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 			sipHeaders = append(sipHeaders, sip.NewHeader(key, headers[key]))
 		}
 	}
+
+	c.resolveDest(ctx, headers)
+
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
@@ -1155,10 +1161,62 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
+// resolveDest resolves the request URI up front so the INVITE carries an
+// address rather than a hostname. Only calls whose project enables SRV go
+// through this; everyone else leaves c.dest empty and the transport layer
+// resolves as it always has.
+//
+// Resolution has to happen here rather than in the transport layer because the
+// SRV choice is per project, and the layer is shared by every call in the
+// process.
+func (c *sipOutbound) resolveDest(ctx context.Context, headers map[string]string) {
+	if !c.preferSRV {
+		return
+	}
+	// With a Route header the request goes to the proxy, not to the request URI,
+	// so resolving the request URI picks the wrong host.
+	if len(c.routeHeaders) != 0 {
+		return
+	}
+	for k := range headers {
+		if strings.EqualFold(k, "Route") {
+			return
+		}
+	}
+
+	addr, err := c.c.sipCli.ResolveAddrPreferSRV(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
+	if err != nil {
+		// Leave c.dest empty and let the transport layer try its own way.
+		c.log.Warnw("could not resolve destination, falling back to transport resolution", err,
+			"host", c.uri.Host, "port", c.uri.Port)
+		return
+	}
+	c.dest = addr.String()
+}
+
+// uriTransport returns the transport a request to uri will use, matching how
+// sipgo derives it from the request.
+func uriTransport(uri *sip.Uri) string {
+	if uri.UriParams != nil {
+		if v, ok := uri.UriParams.Get("transport"); ok && v != "" {
+			return strings.ToLower(v)
+		}
+	}
+	if strings.EqualFold(uri.Scheme, "sips") {
+		return "tls"
+	}
+	return "udp"
+}
+
 func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, *c.uri)
+	if c.dest != "" {
+		// Send to the address we resolved, keeping the request URI as configured.
+		// The port belongs to this address and must not come from anywhere else.
+		req.SetDestination(c.dest)
+	}
 	c.setCSeq(req)
 	req.RemoveHeader("Call-ID")
 	req.AppendHeader(&callID)

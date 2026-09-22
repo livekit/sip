@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -421,12 +422,38 @@ type testSIPClient struct {
 	log      logger.Logger
 	sequence atomic.Uint64
 
+	// resolveFn answers ResolveAddrPreferSRV. Resolution itself belongs to
+	// sipgo, so tests here only pin what the outbound code does with the answer.
+	resolveFn func(network, host string, port int, sipScheme string) (netip.AddrPort, error)
+
 	mu                     sync.Mutex
+	resolveCalls           []resolveCall
 	transactionByCallID    map[string][]*transactionRequest
 	transactionBySipCallID map[string][]*transactionRequest
 	requestByCallID        map[string][]*sipRequest
 	requestBySipCallID     map[string][]*sipRequest
 	wakeup                 chan struct{}
+}
+
+// resolveCall is one ResolveAddrPreferSRV call, kept so a test can assert both
+// that resolution happened and what it was asked to resolve.
+type resolveCall struct {
+	network   string
+	host      string
+	port      int
+	sipScheme string
+}
+
+func (w *testSIPClient) ResolveAddrPreferSRV(ctx context.Context, network, host string, port int, sipScheme string) (netip.AddrPort, error) {
+	w.mu.Lock()
+	w.resolveCalls = append(w.resolveCalls, resolveCall{network, host, port, sipScheme})
+	fn := w.resolveFn
+	w.mu.Unlock()
+
+	if fn == nil {
+		return netip.AddrPort{}, errors.New("this test resolves nothing")
+	}
+	return fn(network, host, port, sipScheme)
 }
 
 func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
@@ -792,6 +819,8 @@ type TestSIPConfig struct {
 	GetIOClient GetStateHandler // MockIOInfoClient if nil
 	GetRoom     GetRoomFunc     // newTestRoom if nil
 	Handler     Handler         // empty TestHandler if nil
+	// ResolveAddr answers ResolveAddrPreferSRV. Resolution fails if nil.
+	ResolveAddr func(network, host string, port int, sipScheme string) (netip.AddrPort, error)
 }
 
 // testSIPHarness is a sipgo-less test fixture
@@ -871,6 +900,13 @@ func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		h.Server.OnNoRoute(log, req, tx)
 	}
+}
+
+// ResolveCalls returns the ResolveAddrPreferSRV calls made so far.
+func (h *testSIPHarness) ResolveCalls() []resolveCall {
+	h.client.mu.Lock()
+	defer h.client.mu.Unlock()
+	return slices.Clone(h.client.resolveCalls)
 }
 
 func (h *testSIPHarness) newClient(ua *sipgo.UserAgent, options ...sipgo.ClientOption) (SIPClient, error) {
@@ -958,6 +994,7 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 			transactionByCallID:    make(map[string][]*transactionRequest),
 			transactionBySipCallID: make(map[string][]*transactionRequest),
 			wakeup:                 make(chan struct{}),
+			resolveFn:              cfg.ResolveAddr,
 		},
 	}
 
