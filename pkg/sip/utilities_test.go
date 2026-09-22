@@ -155,6 +155,12 @@ func (h *recordingStateHandler) Last() *livekit.SIPCallInfo {
 	return h.updates[len(h.updates)-1]
 }
 
+func (h *recordingStateHandler) Reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.updates = nil
+}
+
 const (
 	// Room identity reported by the testRoom fake.
 	testRoomName = "test-room"
@@ -164,12 +170,16 @@ const (
 // testRoom is a mock Room implementation that skips actual LiveKit connection
 type testRoom struct {
 	room *Room
+	cfg  *testRoomConfig
 }
 
 var _ RoomInterface = (*testRoom)(nil)
 
 type testRoomConfig struct {
 	ringForever bool
+	// inboundAudioErr, when set, is returned by GetInboundAudioWriter, standing
+	// in for a failure to publish our own track into the room.
+	inboundAudioErr error
 }
 
 func newTestRoomConfig(cfg *testRoomConfig) GetRoomFunc {
@@ -240,7 +250,7 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 		Name:     "Test Participant",
 	})
 
-	return &testRoom{room: room}
+	return &testRoom{room: room, cfg: cfg}
 }
 
 // Connect overrides Room.Connect to skip actual LiveKit connection
@@ -286,11 +296,32 @@ func (r *testRoom) WriteOutboundDTMFTo(w msdk.WriteCloser[string]) msdk.WriteClo
 }
 
 func (r *testRoom) GetInboundAudioWriter() (msdk.PCM16Writer, error) {
+	if err := r.cfg.inboundAudioErr; err != nil {
+		return nil, err
+	}
 	return r.NewParticipantTrack(RoomSampleRate)
 }
 
 func (r *testRoom) GetInboundDTMFWriter(rate int) msdk.WriteCloser[string] {
 	return r.room.GetInboundDTMFWriter(rate)
+}
+
+// simulateRoomClosed simulates the LiveKit room going away on the server side,
+// as opposed to us closing it: the SDK records the disconnect reason and the
+// Closed() fuse fires. On a live connection the SDK's OnDisconnected callback
+// does both; the fake room is never connected, so break the fuse directly.
+func (r *testRoom) simulateRoomClosed(reason livekit.DisconnectReason) {
+	if room := r.room.room.Load(); room != nil {
+		room.OnDisconnected(reason)
+	}
+	r.room.stopped.Break()
+}
+
+// simulateSubscribed simulates the room reporting its first track subscription,
+// which is what releases a ringing call into the accept path. Used together with
+// testRoomConfig.ringForever to control when that happens.
+func (r *testRoom) simulateSubscribed() {
+	r.room.subscribed.Break()
 }
 
 func (r *testRoom) Close() error {
@@ -1049,4 +1080,24 @@ func MinimalInviteRequest() *sip.Request {
 	req.SetSource(testSIPSource)
 	req.SetDestination(testSIPSource)
 	return req
+}
+
+// failingRetransmitTx wraps an INVITE server transaction and fails every 2xx
+// response after the first one, standing in for a transport error that hits a
+// 200 OK retransmission while the server waits for the ACK. Provisional
+// responses and the teardown status still go out, as they would on a socket
+// that only broke for that one write.
+type failingRetransmitTx struct {
+	sip.ServerTransaction
+	sent atomic.Bool
+}
+
+func (t *failingRetransmitTx) Respond(res *sip.Response) error {
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return t.ServerTransaction.Respond(res)
+	}
+	if t.sent.CompareAndSwap(false, true) {
+		return t.ServerTransaction.Respond(res)
+	}
+	return errors.New("write udp: connection refused")
 }
