@@ -6,6 +6,7 @@ const (
 	signalLoggingFeatureFlag        = "sip.signal_logging"
 	outboundRouteHeadersFeatureFlag = "sip.outbound_route_headers"
 	lateOfferFeatureFlag            = "sip.late_offer"
+	outboundPreferSRVFeatureFlag    = "sip.outbound_prefer_srv"
 )
 
 // featureFlagEnabled reports whether a boolean feature flag is set to true.
