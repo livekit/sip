@@ -127,20 +127,6 @@ func (v CallStatus) Attribute() string {
 	}
 }
 
-func (v CallStatus) DisconnectReason() livekit.DisconnectReason {
-	switch v {
-	default:
-		return livekit.DisconnectReason_UNKNOWN_REASON
-	case CallHangup, callHangupMedia, CallCancelled:
-		// It's the default that LK sets, but map it here explicitly to show the assumption.
-		return livekit.DisconnectReason_CLIENT_INITIATED
-	case callUnavailable:
-		return livekit.DisconnectReason_USER_UNAVAILABLE
-	case callRejected:
-		return livekit.DisconnectReason_USER_REJECTED
-	}
-}
-
 const (
 	callDropped = CallStatus(iota)
 	callFlood
