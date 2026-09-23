@@ -865,6 +865,13 @@ func (c *inboundCall) mediaTimeout(ctx context.Context) error {
 	return nil // logged as a warning in close
 }
 
+func (c *inboundCall) dispatchAttributes() map[string]string {
+	if c.sigTs.InviteTime.IsZero() {
+		return nil
+	}
+	return lksip.InviteTimeAttributes(c.sigTs.InviteTime)
+}
+
 func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip.Request, trunkID string, conf *config.Config) error {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.handleInvite")
 	defer span.End()
@@ -884,10 +891,11 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	tdisp := c.mon.StageDurTimer("eval-dispatch")
 	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
-		TrunkID: trunkID,
-		Call:    c.call,
-		Pin:     "",
-		NoPin:   false,
+		TrunkID:         trunkID,
+		Call:            c.call,
+		Pin:             "",
+		NoPin:           false,
+		ExtraAttributes: c.dispatchAttributes(),
 	})
 	tdisp()
 	if disp.MediaConfig == nil {
@@ -1501,10 +1509,11 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 
 				c.log().Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
 				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
-					TrunkID: trunkID,
-					Call:    c.call,
-					Pin:     pin,
-					NoPin:   noPin,
+					TrunkID:         trunkID,
+					Call:            c.call,
+					Pin:             pin,
+					NoPin:           noPin,
+					ExtraAttributes: c.dispatchAttributes(),
 				})
 				if disp.ProjectID != "" {
 					c.appendLogValues("projectID", disp.ProjectID)

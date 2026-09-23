@@ -60,10 +60,11 @@ var (
 )
 
 type CallInfo struct {
-	TrunkID string
-	Call    *rpc.SIPCall
-	Pin     string
-	NoPin   bool
+	TrunkID         string
+	Call            *rpc.SIPCall
+	Pin             string
+	NoPin           bool
+	ExtraAttributes map[string]string
 }
 
 type AuthResult int
