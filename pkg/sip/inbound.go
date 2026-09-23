@@ -364,6 +364,42 @@ func providerLabel(p *livekit.ProviderInfo) string {
 	}
 }
 
+// reinviteOfferDropsNegotiatedAudio reports whether a re-INVITE offer removes
+// the audio codec/payload currently negotiated on the call's media port.
+//
+// An empty body (session refresh), un-negotiated media, or an unparsable offer
+// returns false — the normal SDP update path handles those. When it returns
+// true, the caller must reject the re-INVITE with 488 without changing the
+// media path: answering 200 with the cached local SDP would advertise a codec
+// that was not in the offer (see livekit/sip#766 / RFC 3264 §6.1).
+func reinviteOfferDropsNegotiatedAudio(mp MediaPort, codecs *msdk.CodecSet, log logger.Logger, body []byte) bool {
+	if len(body) == 0 || mp == nil || codecs == nil {
+		return false
+	}
+	negotiated := mp.NegotiatedAudio()
+	if negotiated == nil {
+		return false
+	}
+	offer, err := sdp.ParseOfferWith(codecs, body)
+	if err != nil {
+		// Let the normal update path parse/report this failure.
+		return false
+	}
+	for _, c := range offer.MediaDesc.Audio {
+		if c.Type != negotiated.Type {
+			continue
+		}
+		if c.Info.SDPFullName() == negotiated.Info.SDPFullName() {
+			return false
+		}
+	}
+	log.Infow("rejecting re-INVITE that removes negotiated audio codec",
+		"negotiatedType", negotiated.Type,
+		"negotiatedCodec", negotiated.Info.SDPFullName(),
+	)
+	return true
+}
+
 func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
 	_ = s.processInvite(req, tx)
@@ -448,7 +484,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			return nil
 		}
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		if err := existing.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+		body := sdpBodyFromRequest(req)
+		if existing.reinviteOfferDropsAudio(body) {
+			cc.RejectAsKeepAlive(sip.StatusNotAcceptableHere, "Not Acceptable Here")
+			return nil
+		}
+		if err := existing.updateRemoteFromSDP(body); err != nil {
 			log.Errorw("failed to update inbound call SDP", err)
 			if ok := errors.As(err, &SDPError{}); ok {
 				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
@@ -468,11 +509,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 		// TODO(alexfish): Reply with an error if the new sequence number is
 		// strictly less than the existing one.
-		if oc != nil && oc.cc.InviteCSeq() < newCSeq {
+		if oc != nil && oc.cc != nil && oc.cc.InviteCSeq() < newCSeq {
 			localSDP, err := oc.media.GetLocalSDP()
 			if err != nil || len(localSDP) == 0 {
 				oc.log.Errorw("outbound call does not have an SDP", err)
 				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
+				return nil
+			}
+			if body := sdpBodyFromRequest(req); oc.reinviteOfferDropsAudio(body) {
+				oc.log.Infow("rejecting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+				cc.RejectAsKeepAlive(sip.StatusNotAcceptableHere, "Not Acceptable Here")
 				return nil
 			}
 			oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
@@ -1775,6 +1821,20 @@ func (c *inboundCall) updateRemoteFromSDP(body []byte) error {
 	return err
 }
 
+// reinviteOfferDropsAudio reports whether a re-INVITE offer removes the audio
+// codec currently negotiated for this call (see
+// reinviteOfferDropsNegotiatedAudio). When true the caller must reject the
+// re-INVITE with 488 without changing the media path.
+func (c *inboundCall) reinviteOfferDropsAudio(body []byte) bool {
+	var mp MediaPort
+
+	c.mmu.Lock()
+	mp = c.media
+	c.mmu.Unlock()
+
+	return reinviteOfferDropsNegotiatedAudio(mp, c.mediaCodecs, c.log(), body)
+}
+
 func (c *inboundCall) closeMedia() {
 	c.lkRoom.Close()
 	c.mmu.Lock()
@@ -2288,6 +2348,10 @@ func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
 	c.respondWithData(sip.StatusOK, "OK", "application/sdp", sdp)
 }
 
+// RejectAsKeepAlive rejects an in-dialog re-INVITE without tearing down the
+// established dialog. Unlike RespondAndDrop it does not cache the response in
+// rejectedInvites (which is keyed by Call-ID + From-tag and would poison later
+// in-dialog requests) and does not clear dialog state on the established call.
 func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
 	c.respond(status, reason)
 }
