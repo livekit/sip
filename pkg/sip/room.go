@@ -31,7 +31,6 @@ import (
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
-	"github.com/livekit/media-sdk/jitter"
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
@@ -66,8 +65,11 @@ type RoomStatsSnapshot struct {
 	PublishedSamples uint64  `json:"published_samples"`
 	PublishTX        float64 `json:"publish_tx"`
 
-	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
-	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
+	JitterBufferPacketsLost      uint64 `json:"jitter_buffer_packets_lost"`
+	JitterBufferPacketsDropped   uint64 `json:"jitter_buffer_packets_dropped"`
+	JitterBufferSSRCSwitches     uint64 `json:"jitter_buffer_ssrc_switches"`
+	JitterBufferPacketsReordered uint64 `json:"jitter_buffer_packets_reordered"`
+	JitterBufferSequenceRestarts uint64 `json:"jitter_buffer_sequence_restarts"`
 
 	TrackSubscribes uint64 `json:"track_subscribes"`
 	Resumes         uint64 `json:"resumes"`
@@ -106,8 +108,11 @@ type RoomStats struct {
 	// this is false.
 	Recovering atomic.Bool
 
-	JitterBufferPacketsLost    atomic.Uint64
-	JitterBufferPacketsDropped atomic.Uint64
+	JitterBufferPacketsLost      atomic.Uint64
+	JitterBufferPacketsDropped   atomic.Uint64
+	JitterBufferSSRCSwitches     atomic.Uint64
+	JitterBufferPacketsReordered atomic.Uint64
+	JitterBufferSequenceRestarts atomic.Uint64
 
 	LatencyOutRecv LatencyStats // measures track recv → opus decode → mixer input.
 
@@ -124,19 +129,22 @@ type RoomStats struct {
 
 func (s *RoomStats) Load() RoomStatsSnapshot {
 	return RoomStatsSnapshot{
-		InputPackets:               s.rtpStats.packets.Load(),
-		InputBytes:                 s.rtpStats.bytes.Load(),
-		Resets:                     s.rtpStats.resets.Load(),
-		Gaps:                       s.rtpStats.gaps.Load(),
-		GapsSum:                    s.rtpStats.gapsSum.Load(),
-		Late:                       s.rtpStats.late.Load(),
-		LateSum:                    s.rtpStats.lateSum.Load(),
-		DelayedPackets:             s.rtpStats.delayedPackets.Load(),
-		DelayedSum:                 s.rtpStats.delayedSum.Load(),
-		RapidPackets:               s.rtpStats.rapidPackets.Load(),
-		DataPackets:                s.dataPackets.Load(),
-		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
-		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
+		InputPackets:                 s.rtpStats.packets.Load(),
+		InputBytes:                   s.rtpStats.bytes.Load(),
+		Resets:                       s.rtpStats.resets.Load(),
+		Gaps:                         s.rtpStats.gaps.Load(),
+		GapsSum:                      s.rtpStats.gapsSum.Load(),
+		Late:                         s.rtpStats.late.Load(),
+		LateSum:                      s.rtpStats.lateSum.Load(),
+		DelayedPackets:               s.rtpStats.delayedPackets.Load(),
+		DelayedSum:                   s.rtpStats.delayedSum.Load(),
+		RapidPackets:                 s.rtpStats.rapidPackets.Load(),
+		DataPackets:                  s.dataPackets.Load(),
+		JitterBufferPacketsLost:      s.JitterBufferPacketsLost.Load(),
+		JitterBufferPacketsDropped:   s.JitterBufferPacketsDropped.Load(),
+		JitterBufferSSRCSwitches:     s.JitterBufferSSRCSwitches.Load(),
+		JitterBufferPacketsReordered: s.JitterBufferPacketsReordered.Load(),
+		JitterBufferSequenceRestarts: s.JitterBufferSequenceRestarts.Load(),
 
 		TrackSubscribes: s.TrackSubscribes.Load(),
 		Resumes:         s.Resumes.Load(),
@@ -526,10 +534,15 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					}
 					h := rtp.NewNopCloser(rh)
 					if conf.EnableJitterBuffer {
-						h = rtp.HandleJitter(h, jitter.WithPacketLossHandler(func(packetsLost, packetsDropped uint64) {
-							r.stats.JitterBufferPacketsLost.Store(packetsLost)
-							r.stats.JitterBufferPacketsDropped.Store(packetsDropped)
-						}))
+						// One buffer per subscribed track, all reporting into the
+						// room-level totals.
+						h = rtp.HandleJitter(h, newJitterStatsOptions(jitterStatsTargets{
+							Lost:             &r.stats.JitterBufferPacketsLost,
+							Dropped:          &r.stats.JitterBufferPacketsDropped,
+							SSRCSwitches:     &r.stats.JitterBufferSSRCSwitches,
+							Reordered:        &r.stats.JitterBufferPacketsReordered,
+							SequenceRestarts: &r.stats.JitterBufferSequenceRestarts,
+						})...)
 					}
 
 					h = newRTPStreamStats(h, &r.stats.rtpStats)

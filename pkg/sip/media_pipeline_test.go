@@ -32,6 +32,7 @@ import (
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
+	"github.com/livekit/media-sdk/jitter"
 	msrtp "github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/logger"
@@ -772,4 +773,31 @@ func TestMediaPortDTMFSameTimestamp(t *testing.T) {
 		require.NoError(t, p.handleEventRTP(h, encoded[:n]))
 	}
 	require.Equal(t, digits, got.String())
+}
+
+// A call can build several jitter buffers - one per subscribed room track, and a
+// fresh one when renegotiation rebuilds the SIP pipeline - each counting from
+// zero against shared call totals. Assigning those counts rather than adding
+// them lets a later buffer replace, and even lower, the total.
+func TestJitterStatsAccumulateAcrossBuffers(t *testing.T) {
+	var lost, dropped, reordered atomic.Uint64
+	targets := jitterStatsTargets{
+		Lost:      &lost,
+		Dropped:   &dropped,
+		Reordered: &reordered,
+	}
+
+	first := &jitterStatsAccumulator{targets: targets}
+	first.onPacketLoss(50, 4)
+	first.onStats(&jitter.BufferStats{PacketsReordered: 7})
+	first.onPacketLoss(60, 5) // same buffer reporting its running total again
+
+	// A second buffer starts from zero and reports smaller numbers.
+	second := &jitterStatsAccumulator{targets: targets}
+	second.onPacketLoss(3, 1)
+	second.onStats(&jitter.BufferStats{PacketsReordered: 2})
+
+	require.Equal(t, uint64(63), lost.Load(), "totals must sum across buffers, not be replaced")
+	require.Equal(t, uint64(6), dropped.Load())
+	require.Equal(t, uint64(9), reordered.Load())
 }
