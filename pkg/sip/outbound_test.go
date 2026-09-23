@@ -246,7 +246,7 @@ func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, err := sipResponse(ctx, tx, nil, nil)
+	res, err := sipResponse(ctx, tx, nil, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, res)
 	require.Len(t, tx.cancels, 1, "CANCEL should be sent")
@@ -287,7 +287,7 @@ func TestWatchCancelledInvite(t *testing.T) {
 				tx.responses <- r
 			}
 			cli := &recordingSIPClient{}
-			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
+			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx, nil)
 			require.Equal(t, tt.want, cli.methods())
 		})
 	}
@@ -297,7 +297,7 @@ func TestWatchCancelledInvite(t *testing.T) {
 		cancelResponseGrace = 10 * time.Millisecond
 		tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response), done: make(chan struct{})}
 		cli := &recordingSIPClient{}
-		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
+		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx, nil)
 		require.Empty(t, cli.methods())
 	})
 }
@@ -649,4 +649,120 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			expectErr(t, req, "invalid To header: to user override should be a phone number or SIP user, not a full SIP URI")
 		}
 	})
+}
+
+// sipResponse uses the onCancel hook when set, instead of tx.Cancel.
+func TestSIPResponseCancelUsesHook(t *testing.T) {
+	tx := &testSIPClientTransaction{
+		log:       logger.NewTestLogger(t),
+		responses: make(chan *sip.Response),
+		cancels:   make(chan struct{}, 1),
+		done:      make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	hooked := 0
+	res, err := sipResponse(ctx, tx, nil, nil, func() { hooked++ })
+	require.Error(t, err)
+	require.Nil(t, res)
+	require.Equal(t, 1, hooked)
+	require.Empty(t, tx.cancels, "tx.Cancel should not be called when a hook is set")
+}
+
+// buildCancelTestInvite returns a minimal INVITE for CANCEL construction.
+func buildCancelTestInvite() *sip.Request {
+	req := sip.NewRequest(sip.INVITE, sip.Uri{User: "callee", Host: "sip.example.com"})
+	from := &sip.FromHeader{Address: sip.Uri{User: "caller", Host: "lk"}, Params: sip.NewParams()}
+	from.Params.Add("tag", "caller-tag")
+	req.AppendHeader(from)
+	req.AppendHeader(&sip.ToHeader{Address: sip.Uri{User: "callee", Host: "sip.example.com"}, Params: sip.NewParams()})
+	cid := sip.CallIDHeader("cancel-test-call")
+	req.AppendHeader(&cid)
+	req.AppendHeader(&sip.CSeqHeader{MethodName: sip.INVITE, SeqNo: 7})
+	via := &sip.ViaHeader{ProtocolName: "SIP", ProtocolVersion: "2.0", Transport: "UDP", Host: "lk", Port: 5060, Params: sip.NewParams()}
+	via.Params.Add("branch", "z9hG4bK.cancel-test")
+	req.AppendHeader(via)
+	return req
+}
+
+// Closing a still-ringing outbound call must send a CANCEL that carries
+// attributes_to_headers and the caller-supplied headers.
+// See: https://github.com/livekit/sip/issues/846
+func TestOutboundCloseWhileRingingSendsCancelWithHeaders(t *testing.T) {
+	cli := &recordingSIPClient{}
+	c := &sipOutbound{
+		log: logger.NewTestLogger(t),
+		c:   &Client{log: logger.NewTestLogger(t), sipCli: cli},
+		getHeaders: func(map[string]string) map[string]string {
+			return map[string]string{"X-From-Attrs": "mapped"}
+		},
+	}
+	c.invite = buildCancelTestInvite()
+	invCSeq := c.invite.CSeq().SeqNo
+
+	c.Close(context.Background(), map[string]string{"Reason": `SIP;cause=200;text="Call completed elsewhere"`})
+
+	require.Len(t, cli.reqs, 1)
+	cancelReq := cli.reqs[0]
+	require.Equal(t, sip.CANCEL, cancelReq.Method)
+
+	h := cancelReq.GetHeader("Reason")
+	require.NotNil(t, h, "caller-supplied headers must be present on CANCEL")
+	require.Equal(t, `SIP;cause=200;text="Call completed elsewhere"`, h.Value())
+	h = cancelReq.GetHeader("X-From-Attrs")
+	require.NotNil(t, h, "attributes_to_headers must be present on CANCEL")
+	require.Equal(t, "mapped", h.Value())
+
+	// The CANCEL must share the INVITE's CSeq number (RFC 3261 §9.1).
+	require.NotNil(t, cancelReq.CSeq())
+	require.Equal(t, invCSeq, cancelReq.CSeq().SeqNo)
+	require.NotNil(t, cancelReq.Via(), "CANCEL must carry the INVITE's Via")
+
+	// The call state is dropped after the cancel.
+	c.mu.Lock()
+	invite := c.invite
+	c.mu.Unlock()
+	require.Nil(t, invite)
+}
+
+// Cancelling CreateSIPParticipant while the call is still ringing must put a
+// CANCEL on the wire. See: https://github.com/livekit/sip/issues/846
+func TestOutboundCancelWhileRinging(t *testing.T) {
+	h := NewTestSIP(t, TestSIPConfig{})
+	req := MinimalCreateSIPParticipantRequest()
+	req.WaitUntilAnswered = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := h.Client.CreateSIPParticipant(ctx, req); err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant error: %v", err)
+		}
+	}()
+
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
+	require.NotNil(t, tr)
+	require.Equal(t, sip.INVITE, tr.req.Method)
+
+	// Ring for a bit, then give up while nobody answers.
+	ringing := sip.NewResponseFromRequest(tr.req, sip.StatusRinging, "Ringing", nil)
+	tr.transaction.SendResponse(ringing)
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	sipReq := h.WaitRequest(t, time.Second, req.SipCallId, "")
+	require.NotNil(t, sipReq)
+	require.Equal(t, sip.CANCEL, sipReq.req.Method)
+	ua := sipReq.req.GetHeader("User-Agent")
+	require.NotNil(t, ua)
+	require.Equal(t, "LiveKit", ua.Value())
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateSIPParticipant did not return after cancel")
+	}
 }
