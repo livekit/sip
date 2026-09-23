@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -985,11 +986,11 @@ func TestTransfer(t *testing.T) {
 		return expected
 	}
 
-	handleRefer := func(t *testing.T, ctx context.Context, refChan <-chan *sipUARequest, call *sipUADialogTest, referStatus int, validateHeaders []sip.Header) error {
+	handleRefer := func(t *testing.T, ctx context.Context, refChan <-chan *sipUARequest, call *sipUADialogTest, referStatus int, validateHeaders []sip.Header) (*sip.Request, error) {
 		t.Helper()
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("test aborted without receiving a REFER request: %v", ctx.Err())
+			return nil, fmt.Errorf("test aborted without receiving a REFER request: %v", ctx.Err())
 		case msg := <-refChan:
 			require.NotNil(t, msg)
 			require.Equal(t, sip.REFER, msg.req.Method)
@@ -1007,7 +1008,7 @@ func TestTransfer(t *testing.T) {
 			}
 			t.Logf("Received REFER request, responding REFER-%d %s", referStatus, sipStatus(referStatus))
 			resp := sip.NewResponseFromRequest(msg.req, referStatus, sipStatus(referStatus), nil)
-			return msg.tx.Respond(resp)
+			return msg.req, msg.tx.Respond(resp)
 		}
 	}
 
@@ -1159,7 +1160,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180, 200})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1187,7 +1188,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransferFull(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180, 200})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1224,7 +1225,7 @@ func TestTransfer(t *testing.T) {
 					startTransfer(t, ctx, st, call, referTo, nil, false),
 				}
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180, 200})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1255,7 +1256,7 @@ func TestTransfer(t *testing.T) {
 				}
 				transferRes := startTransfer(t, ctx, st, call, referTo, headers, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180, 200})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1284,7 +1285,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180, finalNotifyStatus})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1330,7 +1331,7 @@ func TestTransfer(t *testing.T) {
 					startTransfer(t, ctx, st, call, referTo, nil, false),
 				}
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180, finalNotifyStatus})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1380,7 +1381,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, true)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				require.Eventually(t, func() bool { return roomOut.Get() == nil },
 					time.Second, 10*time.Millisecond, "room audio should be muted while the dial tone plays")
@@ -1418,7 +1419,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, true)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				require.Eventually(t, func() bool { return sipOut.toneSamples() > 0 },
 					time.Second, 10*time.Millisecond, "dial tone should reach the SIP leg even with no room audio attached")
@@ -1451,7 +1452,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, referStatus, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, referStatus, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 
 				select {
@@ -1482,7 +1483,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 
 				select {
@@ -1516,7 +1517,7 @@ func TestTransfer(t *testing.T) {
 				}
 				transferRes := startTransferFull(t, ctx, st, call, referTo, headers, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, headers))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendBye(t, call)
 				require.NoError(t, err, "Failed to send BYE request")
@@ -1553,7 +1554,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 
 				// Both requests are built before either is sent: the NOTIFY is
@@ -1597,7 +1598,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1637,7 +1638,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1669,7 +1670,7 @@ func TestTransfer(t *testing.T) {
 
 				transferRes := startTransfer(t, ctx, st, call, referTo, nil, false)
 
-				err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				_, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
 				require.NoError(t, err, "Failed to process REFER request")
 				err = sendNotify(t, ctx, call, []int{100, 180})
 				require.NoError(t, err, "Failed to send NOTIFY requests")
@@ -1686,6 +1687,75 @@ func TestTransfer(t *testing.T) {
 			})
 		})
 	}
+
+	// handleReferNotify receives the NOTIFY we send when we give up on a
+	// transfer and answers it 200.
+	handleReferNotify := func(t *testing.T, ctx context.Context, reqChan <-chan *sipUARequest, call *sipUADialogTest, referReq *sip.Request, status int) error {
+		t.Helper()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("test aborted without receiving a NOTIFY request: %v", ctx.Err())
+		case msg := <-reqChan:
+			require.NotNil(t, msg)
+			require.Equal(t, sip.NOTIFY, msg.req.Method)
+			require.Equal(t, call.localTag, msg.req.To().Params.GetOr("tag", ""))
+			event := msg.req.GetHeader("Event")
+			require.NotNil(t, event, "NOTIFY should carry an Event header")
+			require.Equal(t, fmt.Sprintf("refer;id=%d", referReq.CSeq().SeqNo), event.Value())
+			state := msg.req.GetHeader("Subscription-State")
+			require.NotNil(t, state, "NOTIFY should carry a Subscription-State header")
+			require.Equal(t, "active", state.Value())
+			ctype := msg.req.ContentType()
+			require.NotNil(t, ctype, "NOTIFY should carry a Content-Type header")
+			require.True(t, strings.HasPrefix(ctype.Value(), "message/sipfrag"), "unexpected Content-Type %q", ctype.Value())
+			require.True(t, strings.HasPrefix(string(msg.req.Body()), fmt.Sprintf("SIP/2.0 %d", status)), "unexpected body %q", msg.req.Body())
+			t.Logf("Received NOTIFY-%d from the bridge, responding 200", status)
+			return msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, sipStatus(200), nil))
+		}
+	}
+
+	for direction, setupCall := range directions {
+		t.Run(direction+"_timeout", func(t *testing.T) {
+			t.Parallel()
+			t.Run("ringing_timeout_notify", func(t *testing.T) {
+				// The ringing timeout expires while the peer still reports a
+				// provisional status. We tell the peer we gave up and keep
+				// the call.
+				t.Parallel()
+				call := setupCall(t, st)
+
+				reqChan := call.RegisterRequestChannel("")
+				defer call.UnregisterRequestChannel("")
+
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				tctx, tcancel := context.WithTimeout(ctx, 700*time.Millisecond)
+				defer tcancel()
+
+				transferRes := startTransfer(t, tctx, st, call, referTo, nil, false)
+
+				referReq, err := handleRefer(t, ctx, reqChan, call, 202, expectHeaders(referTo, nil))
+				require.NoError(t, err, "Failed to process REFER request")
+				err = sendNotify(t, ctx, call, []int{100})
+				require.NoError(t, err, "Failed to send NOTIFY requests")
+
+				err = handleReferNotify(t, ctx, reqChan, call, referReq, 487)
+				require.NoError(t, err, "Failed to process NOTIFY request")
+
+				select {
+				case err := <-transferRes:
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err(), "timeout waiting for the transfer to fail")
+				}
+
+				// The call itself is still up.
+				err = sendBye(t, call)
+				require.NoError(t, err, "Failed to send BYE request")
+			})
+		})
+	}
+
 }
 
 func TestRouteSet(t *testing.T) {

@@ -255,16 +255,16 @@ func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Reque
 	}
 }
 
-func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
-	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
+// newInDialogRequest builds a request on the dialog established by the INVITE
+// and its 2xx response, with a fresh Via branch. Callers set the final CSeq.
+func newInDialogRequest(method sip.RequestMethod, inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader) *sip.Request {
+	req := sip.NewRequest(method, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
 	sip.CopyHeaders("Via", inviteRequest, req)
-	// if inviteResponse.IsSuccess() {
 	// update branch, 2xx ACK is separate Tx
 	viaHop := req.Via()
 	viaHop.Params.Add("branch", sip.GenerateBranch())
-	// }
 
 	if len(inviteRequest.GetHeaders("Route")) > 0 {
 		sip.CopyHeaders("Route", inviteRequest, req)
@@ -304,24 +304,63 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 
 	cseq := req.CSeq()
 	cseq.SeqNo = cseq.SeqNo + 1
-	cseq.MethodName = sip.REFER
-
-	// Set Refer-To header
-	referTo := sip.NewHeader("Refer-To", referToUrl)
-	req.AppendHeader(referTo)
-	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+	cseq.MethodName = method
 
 	req.SetTransport(inviteRequest.Transport())
 	req.SetSource(inviteRequest.Source())
 	req.SetDestination(inviteRequest.Destination())
 
+	req.SetBody(nil)
+
+	return req
+}
+
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
+	req := newInDialogRequest(sip.REFER, inviteRequest, inviteResponse, contactHeader)
+
+	referTo := sip.NewHeader("Refer-To", referToUrl)
+	req.AppendHeader(referTo)
+	req.AppendHeader(sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE"))
+
 	for k, v := range headers {
 		req.AppendHeader(sip.NewHeader(k, v))
 	}
 
-	req.SetBody(nil)
-
 	return req
+}
+
+// newReferNotify reports a final status for the REFER with the given CSeq.
+// RFC 3515 has the REFER recipient send these, not us. Twilio support says a
+// 487 from the referrer cancels the transfer.
+func newReferNotify(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referCseq uint32, status sip.StatusCode) *sip.Request {
+	req := newInDialogRequest(sip.NOTIFY, inviteRequest, inviteResponse, contactHeader)
+	req.AppendHeader(sip.NewHeader("Event", fmt.Sprintf("refer;id=%d", referCseq)))
+	// Required in every NOTIFY (RFC 6665). The carrier owns the subscription, so
+	// we do not claim to end it.
+	req.AppendHeader(sip.NewHeader("Subscription-State", "active"))
+	req.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag;version=2.0"))
+	req.SetBody([]byte(fmt.Sprintf("SIP/2.0 %d %s\r\n", status, sipStatus(status))))
+	return req
+}
+
+// sendReferNotify returns as soon as the NOTIFY is on its way. The response is
+// only logged.
+func sendReferNotify(log logger.Logger, c Signaling, req *sip.Request) {
+	tx, err := c.Transaction(req)
+	if err != nil {
+		log.Infow("cannot send refer NOTIFY", "error", err)
+		return
+	}
+	log.Infow("refer NOTIFY sent")
+	go func() {
+		defer tx.Terminate()
+		resp, err := sipResponse(context.Background(), tx, nil, nil)
+		if err != nil {
+			log.Infow("no response to refer NOTIFY", "error", err)
+			return
+		}
+		log.Infow("refer NOTIFY response", "status", resp.StatusCode, "reason", resp.Reason)
+	}()
 }
 
 func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {

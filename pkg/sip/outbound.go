@@ -1329,7 +1329,24 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		return err
 	}
 
-	return waitReferResult(ctx, c.log, callDone, c.referDone)
+	err = waitReferResult(ctx, c.log, callDone, c.referDone)
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.notifyReferStatus(sip.StatusRequestTerminated)
+	}
+	return err
+}
+
+// notifyReferStatus tells the peer that we gave up on the transfer.
+func (c *sipOutbound) notifyReferStatus(status sip.StatusCode) {
+	c.mu.Lock()
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return
+	}
+	req := newReferNotify(c.invite, c.inviteOk, c.contact, c.referCseq, status)
+	c.setCSeq(req)
+	c.mu.Unlock()
+	sendReferNotify(c.log, c, req)
 }
 
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
