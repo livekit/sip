@@ -330,8 +330,8 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 }
 
 // newReferNotify reports a final status for the REFER with the given CSeq.
-// RFC 3515 has the REFER recipient send these, not us. Twilio support says a
-// 487 from the referrer cancels the transfer.
+// RFC 3515 has the REFER recipient send these, but some providers take a 487
+// from the referrer as a request to cancel the transfer.
 func newReferNotify(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referCseq uint32, status sip.StatusCode) *sip.Request {
 	req := newInDialogRequest(sip.NOTIFY, inviteRequest, inviteResponse, contactHeader)
 	req.AppendHeader(sip.NewHeader("Event", fmt.Sprintf("refer;id=%d", referCseq)))
