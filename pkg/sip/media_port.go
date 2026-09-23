@@ -530,7 +530,7 @@ type mediaPort struct {
 	mu         sync.RWMutex
 	pipeline   *mediaPortPipeline
 	localSDP   []byte
-	offer      *sdp.Offer
+	offer      *sdp.Offer // Pending offer
 	negotiated *sdp.MediaConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
@@ -769,7 +769,7 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.offer != nil {
-		return p.offer.SDP.Marshal()
+		return nil, fmt.Errorf("pending offer in progress")
 	}
 
 	offer, err := sdp.NewOfferWith(p.codecs, p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
@@ -791,8 +791,14 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	}
 	p.mu.RLock()
 	isReinvite := p.negotiated != nil
+	pendingOffer := p.offer
 	p.mu.RUnlock()
 	p.reportPeerCodecs(offer.MediaDesc, isReinvite)
+
+	if pendingOffer != nil {
+		return nil, fmt.Errorf("pending offer in progress") // TODO: Return 491
+	}
+
 	answer, mc, err := offer.Answer(p.externalIP, p.Port(), p.encryption, sdp.WithLocalProfiles(p.localCrypto))
 	if err != nil {
 		return nil, SDPError{Err: err}
@@ -922,40 +928,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 	dtmfToPort := p.dtmfOut.Swap(nil) // either nil or no-op closer
 	defer func() { p.dtmfOut.Swap(dtmfToPort) }()
 
-	hold := false
-
-	if changeSetSummary.includes(changeSetRemoteAddr) {
-		if c.Remote.Addr().IsUnspecified() {
-			// Older hold semantics: c=0.0.0.0
-			hold = true
-		} else {
-			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
-			p.negotiated.Remote = c.Remote
-		}
-	}
-	if changeSetSummary.includes(changeSetPeerDirection) {
-		// Newer hold semantics: a=sendonly
-		// TODO: Support a=recvonly/inactive; requires toggling media timeout;
-		//		maybe gate these on timers being active on the session to prevent dud calls
-		hold = c.PeerDirection == psdp.DirectionSendOnly
-	}
-	if holdEnabled && hold {
-		audioToPort = nil
-		dtmfToPort = nil
-		zero := netip.IPv4Unspecified()
-		if !c.Remote.Addr().Is4() {
-			zero = netip.IPv6Unspecified()
-		}
-		p.port.SetDst(netip.AddrPortFrom(zero, c.Remote.Port()))
-		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
-	}
 	if changeSetSummary.shouldReconfigure() {
-		if changeSetSummary != changeSetNew {
-			// Explicitly disable renegotiation for now
-			// Compatibility to today's behavior: return 200 OK, but don't reconfigure the pipeline
-			return nil
-		}
-
 		p.closePipelineLocked()
 		audioToPort = nil
 		dtmfToPort = nil
@@ -984,9 +957,35 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 		audioToPort, dtmfToPort = newPipeline.GetConnectors() // These are not propagating Close()
 		p.pipeline = newPipeline
-
-		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
+	} else { // Pipeline not rebuilt, modify existing pipeline
+		hold := false
+		if changeSetSummary.includes(changeSetRemoteAddr) {
+			if c.Remote.Addr().IsUnspecified() {
+				// Older hold semantics: c=0.0.0.0
+				hold = true
+			} else {
+				p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
+				p.negotiated.Remote = c.Remote
+			}
+		}
+		if changeSetSummary.includes(changeSetPeerDirection) {
+			// Newer hold semantics: a=sendonly
+			// TODO: Support a=recvonly/inactive; requires toggling media timeout;
+			//		maybe gate these on timers being active on the session to prevent dud calls
+			hold = c.PeerDirection == psdp.DirectionSendOnly
+		}
+		if holdEnabled && hold {
+			audioToPort = nil
+			dtmfToPort = nil
+			zero := netip.IPv4Unspecified()
+			if !c.Remote.Addr().Is4() {
+				zero = netip.IPv6Unspecified()
+			}
+			p.port.SetDst(netip.AddrPortFrom(zero, c.Remote.Port()))
+			p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
+		}
 	}
+	p.localSDP = localSDP
 	p.negotiated = c
 	return nil
 }

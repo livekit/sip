@@ -187,8 +187,6 @@ func TestMediaPortCodecSet(t *testing.T) {
 }
 
 func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
-	t.Skip("renegotiation is disabled: GenerateAnswer returns the prior answer when one already exists")
-	// TODO: change this test to confirm renegotiation when it's enabled
 	m := newTestPort(t, logger.NewTestLogger(t), newTestConn(1), &MediaOptions{
 		IP:     newIP("127.0.0.1"),
 		Codecs: testCodecSet(g711.ULawSDPNameOnly, g722.SDPNameOnly),
@@ -215,7 +213,6 @@ func TestMediaPortRejectsDifferentCodecOffer(t *testing.T) {
 // Renegotiation rebuilds the pipeline under the same port and keeps audio flowing,
 // including across a codec change that moves the encoder's sample rate.
 func TestMediaPortRenegotiation(t *testing.T) {
-	t.Skip("renegotiation is disabled: GenerateAnswer returns the prior answer when one already exists")
 	t.Run("repeated", func(t *testing.T) {
 		m1, m2 := newMediaPair(t, nil, nil, "", RoomSampleRate)
 
@@ -271,7 +268,7 @@ func TestMediaPortRenegotiation(t *testing.T) {
 // A peer that will not receive (RFC 3264 a=sendonly, or the legacy c=0.0.0.0) stops our
 // media without stopping theirs, and resumes on the next offer.
 func TestMediaPortHold(t *testing.T) {
-	t.Skip("hold requires renegotiation: configure returns without rebuilding when a pipeline already exists")
+	t.Skip("hold disabled")
 	cases := []struct {
 		name string
 		hold func(t *testing.T, offer string) string

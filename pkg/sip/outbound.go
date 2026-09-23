@@ -525,7 +525,7 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 	return nil
 }
 
-func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
+func (c *outboundCall) updateRemoteFromSDP(body []byte, lateAnswerEnabled bool) ([]byte, error) {
 	var mp MediaPort
 
 	c.mu.Lock()
@@ -533,10 +533,23 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 	c.mu.Unlock()
 
 	if mp == nil {
-		return nil
+		return nil, fmt.Errorf("media port not found")
 	}
-	_, err := mp.GenerateAnswer(body)
-	return err
+	if len(body) == 0 {
+		if !lateAnswerEnabled {
+			return nil, SDPError{Err: fmt.Errorf("empty SDP")}
+		}
+		sdp, err := mp.GenerateOffer()
+		if err != nil {
+			return nil, err
+		}
+		old := c.lateAnswerPending.Swap(true)
+		if old {
+			return nil, fmt.Errorf("late answer already pending")
+		}
+		return sdp, nil
+	}
+	return mp.GenerateAnswer(body)
 }
 
 func (c *outboundCall) connectMedia() {

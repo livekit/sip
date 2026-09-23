@@ -448,7 +448,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			return nil
 		}
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-		if err := existing.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+		incomingSDP := sdpBodyFromRequest(req)
+		sdp, err := existing.updateRemoteFromSDP(incomingSDP)
+		if err != nil {
 			log.Errorw("failed to update inbound call SDP", err)
 			if ok := errors.As(err, &SDPError{}); ok {
 				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
@@ -457,8 +459,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			}
 			return nil
 		}
-		// TODO(alexfish): Reply with the new SDP.
-		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
+		cc.AcceptAsKeepAlive(sdp)
 		return nil
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
@@ -1387,12 +1388,6 @@ func (c *inboundCall) negotiateMediaForLateAnswer(answerData []byte) error {
 	if err := c.media.ProcessAnswer(answerData); err != nil {
 		return err
 	}
-	localSDP, err := c.media.GetLocalSDP()
-	if err != nil {
-		return err
-	}
-	c.cc.SetOwnSDP(localSDP)
-
 	return c.updateCallStateAudioLocked()
 }
 
@@ -1761,7 +1756,7 @@ func (c *inboundCall) Shutdown(ctx context.Context) {
 	c.closeWithTerm(ctx, stats.ServerError("shutdown"))
 }
 
-func (c *inboundCall) updateRemoteFromSDP(body []byte) error {
+func (c *inboundCall) updateRemoteFromSDP(body []byte, lateAnswerEnabled bool) ([]byte, error) {
 	var mp MediaPort
 
 	c.mmu.Lock()
@@ -1769,10 +1764,15 @@ func (c *inboundCall) updateRemoteFromSDP(body []byte) error {
 	c.mmu.Unlock()
 
 	if mp == nil {
-		return nil
+		return nil, fmt.Errorf("media port not found")
 	}
-	_, err := mp.GenerateAnswer(body)
-	return err
+	if len(body) == 0 {
+		if !lateAnswerEnabled {
+			return nil, SDPError{Err: fmt.Errorf("empty SDP")}
+		}
+		return mp.GenerateOffer()
+	}
+	return mp.GenerateAnswer(body)
 }
 
 func (c *inboundCall) closeMedia() {
@@ -2290,20 +2290,6 @@ func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
 
 func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
 	c.respond(status, reason)
-}
-
-// TODO(alexfish): Remove this function in favor once re-invites are
-// consistently responded to with the MediaPort's local SDP.
-func (c *sipInbound) OwnSDP() []byte {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.lastSDP
-}
-
-func (c *sipInbound) SetOwnSDP(sdpData []byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lastSDP = sdpData
 }
 
 func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[string]string, waitForAck bool) error {
