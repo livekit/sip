@@ -82,8 +82,11 @@ type PortStatsSnapshot struct {
 	DTMFPackets uint64 `json:"dtmf_packets"`
 	DTMFBytes   uint64 `json:"dtmf_bytes"`
 
-	JitterBufferPacketsLost    uint64 `json:"jitter_buffer_packets_lost"`
-	JitterBufferPacketsDropped uint64 `json:"jitter_buffer_packets_dropped"`
+	JitterBufferPacketsLost      uint64 `json:"jitter_buffer_packets_lost"`
+	JitterBufferPacketsDropped   uint64 `json:"jitter_buffer_packets_dropped"`
+	JitterBufferSSRCSwitches     uint64 `json:"jitter_buffer_ssrc_switches"`
+	JitterBufferPacketsReordered uint64 `json:"jitter_buffer_packets_reordered"`
+	JitterBufferSequenceRestarts uint64 `json:"jitter_buffer_sequence_restarts"`
 
 	LatencyInE2E LatencyStatsSnapshot `json:"latency_in_e2e"`
 	LatencyOut   LatencyStatsSnapshot `json:"latency_out"`
@@ -114,8 +117,11 @@ type PortStats struct {
 	DTMFPackets atomic.Uint64
 	DTMFBytes   atomic.Uint64
 
-	JitterBufferPacketsLost    atomic.Uint64
-	JitterBufferPacketsDropped atomic.Uint64
+	JitterBufferPacketsLost      atomic.Uint64
+	JitterBufferPacketsDropped   atomic.Uint64
+	JitterBufferSSRCSwitches     atomic.Uint64
+	JitterBufferPacketsReordered atomic.Uint64
+	JitterBufferSequenceRestarts atomic.Uint64
 
 	LatencyInE2E LatencyStats
 	LatencyOut   LatencyStats
@@ -132,36 +138,39 @@ type PortStats struct {
 
 func (s *PortStats) Load() PortStatsSnapshot {
 	return PortStatsSnapshot{
-		Streams:                    s.Streams.Load(),
-		Packets:                    s.Packets.Load(),
-		IgnoredPackets:             s.IgnoredPackets.Load(),
-		InputPackets:               s.InputPackets.Load(),
-		FailedPackets:              s.FailedPackets.Load(),
-		MuxPackets:                 s.MuxStats.packets.Load(),
-		MuxBytes:                   s.MuxStats.bytes.Load(),
-		MuxResets:                  s.MuxStats.resets.Load(),
-		MuxGaps:                    s.MuxStats.gaps.Load(),
-		MuxGapsSum:                 s.MuxStats.gapsSum.Load(),
-		MuxLate:                    s.MuxStats.late.Load(),
-		MuxLateSum:                 s.MuxStats.lateSum.Load(),
-		MuxRapidPackets:            s.MuxStats.rapidPackets.Load(),
-		MuxDelayedPackets:          s.MuxStats.delayedPackets.Load(),
-		MuxDelayedSum:              s.MuxStats.delayedSum.Load(),
-		AudioPackets:               s.AudioPackets.Load(),
-		AudioBytes:                 s.AudioBytes.Load(),
-		AudioInFrames:              s.AudioInFrames.Load(),
-		AudioInSamples:             s.AudioInSamples.Load(),
-		AudioOutFrames:             s.AudioOutFrames.Load(),
-		AudioOutSamples:            s.AudioOutSamples.Load(),
-		AudioRX:                    math.Float64frombits(s.AudioRX.Load()),
-		AudioTX:                    math.Float64frombits(s.AudioTX.Load()),
-		DTMFPackets:                s.DTMFPackets.Load(),
-		DTMFBytes:                  s.DTMFBytes.Load(),
-		JitterBufferPacketsLost:    s.JitterBufferPacketsLost.Load(),
-		JitterBufferPacketsDropped: s.JitterBufferPacketsDropped.Load(),
-		LatencyInE2E:               s.LatencyInE2E.Load(),
-		LatencyOut:                 s.LatencyOut.Load(),
-		Closed:                     s.Closed.Load(),
+		Streams:                      s.Streams.Load(),
+		Packets:                      s.Packets.Load(),
+		IgnoredPackets:               s.IgnoredPackets.Load(),
+		InputPackets:                 s.InputPackets.Load(),
+		FailedPackets:                s.FailedPackets.Load(),
+		MuxPackets:                   s.MuxStats.packets.Load(),
+		MuxBytes:                     s.MuxStats.bytes.Load(),
+		MuxResets:                    s.MuxStats.resets.Load(),
+		MuxGaps:                      s.MuxStats.gaps.Load(),
+		MuxGapsSum:                   s.MuxStats.gapsSum.Load(),
+		MuxLate:                      s.MuxStats.late.Load(),
+		MuxLateSum:                   s.MuxStats.lateSum.Load(),
+		MuxRapidPackets:              s.MuxStats.rapidPackets.Load(),
+		MuxDelayedPackets:            s.MuxStats.delayedPackets.Load(),
+		MuxDelayedSum:                s.MuxStats.delayedSum.Load(),
+		AudioPackets:                 s.AudioPackets.Load(),
+		AudioBytes:                   s.AudioBytes.Load(),
+		AudioInFrames:                s.AudioInFrames.Load(),
+		AudioInSamples:               s.AudioInSamples.Load(),
+		AudioOutFrames:               s.AudioOutFrames.Load(),
+		AudioOutSamples:              s.AudioOutSamples.Load(),
+		AudioRX:                      math.Float64frombits(s.AudioRX.Load()),
+		AudioTX:                      math.Float64frombits(s.AudioTX.Load()),
+		DTMFPackets:                  s.DTMFPackets.Load(),
+		DTMFBytes:                    s.DTMFBytes.Load(),
+		JitterBufferPacketsLost:      s.JitterBufferPacketsLost.Load(),
+		JitterBufferPacketsDropped:   s.JitterBufferPacketsDropped.Load(),
+		JitterBufferSSRCSwitches:     s.JitterBufferSSRCSwitches.Load(),
+		JitterBufferPacketsReordered: s.JitterBufferPacketsReordered.Load(),
+		JitterBufferSequenceRestarts: s.JitterBufferSequenceRestarts.Load(),
+		LatencyInE2E:                 s.LatencyInE2E.Load(),
+		LatencyOut:                   s.LatencyOut.Load(),
+		Closed:                       s.Closed.Load(),
 	}
 }
 
