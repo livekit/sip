@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
@@ -131,4 +132,36 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 	}
 
 	return netip.Addr{}, fmt.Errorf("no local interface found")
+}
+
+// resolveMediaBindIP chooses an explicit local address for RTP sockets.
+//
+// Binding is opt-in: only media_listen_ip or a specific listen_ip pin the socket.
+// Otherwise RTP keeps listening on 0.0.0.0 so multi-interface deployments are unchanged.
+// Do not infer from SignalingIPLocal — with nat_1_to_1_ip that value may be a public
+// announce address not assigned locally, and even when local it may be an arbitrary
+// first NIC from getLocalIP (e.g. docker0).
+func resolveMediaBindIP(conf *config.Config) netip.Addr {
+	if conf == nil {
+		return netip.Addr{}
+	}
+	if ip, ok := parseSpecificListenIP(conf.MediaListenIP); ok {
+		return ip
+	}
+	if ip, ok := parseSpecificListenIP(conf.ListenIP); ok {
+		return ip
+	}
+	return netip.Addr{}
+}
+
+func parseSpecificListenIP(s string) (netip.Addr, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	ip, err := netip.ParseAddr(s)
+	if err != nil || !ip.IsValid() || ip.IsUnspecified() {
+		return netip.Addr{}, false
+	}
+	return ip, true
 }
