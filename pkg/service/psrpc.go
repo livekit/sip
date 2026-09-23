@@ -111,6 +111,8 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, log logg
 		CalledNumber:  info.Call.To.User,
 		CalledHost:    info.Call.To.Host,
 		SrcAddress:    info.Call.SourceIp,
+
+		ExtraAttributes: info.ExtraAttributes,
 	})
 
 	if err != nil {
