@@ -1933,7 +1933,6 @@ func TestRetransmission(t *testing.T) {
 
 	// Resend invite-200, expect client-side retransmission of ACK
 	t.Run("ACK", func(t *testing.T) {
-		t.Skip("TODO: Known gap at this time")
 		t.Parallel()
 
 		call := newTestCall(st.TestUA, true)
@@ -1984,8 +1983,8 @@ func TestRetransmission(t *testing.T) {
 		call.SetRouteSet(resp, false)
 		reqSink := st.TestUA.RegisterSink(call.localTag, "")
 
-		// Now we want to send 3x 200 responses
-		for range 3 {
+		requireACK := func(resp *sip.Response) {
+			t.Helper()
 			err = msg.tx.Respond(resp)
 			require.NoError(t, err)
 
@@ -1998,6 +1997,35 @@ func TestRetransmission(t *testing.T) {
 			case <-ctx.Done():
 				require.Fail(t, "timeout waiting for ACK retransmission")
 			}
+		}
+
+		// The initial response and all of its retransmissions must be ACKed.
+		for range 3 {
+			requireACK(resp)
+		}
+
+		// A response for another dialog must not be ACKed, even if its local tag
+		// happens to match an active call.
+		for name, mutate := range map[string]func(*sip.Response){
+			"Call-ID": func(res *sip.Response) {
+				callID := sip.CallIDHeader("another-call")
+				res.RemoveHeader("Call-ID")
+				res.AppendHeader(&callID)
+			},
+			"CSeq":   func(res *sip.Response) { res.CSeq().SeqNo++ },
+			"To tag": func(res *sip.Response) { res.To().Params.Add("tag", "another-tag") },
+		} {
+			t.Run("ignore mismatched "+name, func(t *testing.T) {
+				unmatched := sip.CopyResponse(resp)
+				mutate(unmatched)
+				err = msg.tx.Respond(unmatched)
+				require.NoError(t, err)
+				select {
+				case ack := <-reqSink:
+					require.Fail(t, "unexpected ACK for unmatched response", "%v", ack.req)
+				case <-time.After(100 * time.Millisecond):
+				}
+			})
 		}
 		t.Cleanup(func() {
 			bye := call.NewRequest(sip.BYE)
