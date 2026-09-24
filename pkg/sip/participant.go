@@ -98,6 +98,7 @@ var headerToLog = map[string]string{
 var headerToAttr = map[string]string{
 	"X-Twilio-AccountSid":            livekit.AttrSIPPrefix + "twilio.accountSid",
 	"X-Twilio-CallSid":               livekit.AttrSIPPrefix + "twilio.callSid",
+	"X-Twilio-CallToken":             livekit.AttrSIPPrefix + "twilio.callToken",
 	"X-call_leg_id":                  livekit.AttrSIPPrefix + "telnyx.callLegID",
 	"X-call_session_id":              livekit.AttrSIPPrefix + "telnyx.callSessionID",
 	"X-Amzn-ConnectContactId":        livekit.AttrSIPPrefix + "amazon.contactId",
