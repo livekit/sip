@@ -980,4 +980,50 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.Equal(t, livekit.SIPStatusCode_SIP_STATUS_OK, ended.CallStatusCode.Code,
 			"the caller received the 200 OK, so that is the status the record must carry")
 	})
+
+	for _, tc := range []struct {
+		name     string
+		override livekit.SIPStatusCode
+		exp      sip.StatusCode
+	}{
+		{"RingingTimeoutDefault", livekit.SIPStatusCode_SIP_STATUS_UNKNOWN, sip.StatusBusyHere},
+		{"RingingTimeoutOverride", livekit.SIPStatusCode_SIP_STATUS_TEMPORARILY_UNAVAILABLE, sip.StatusTemporarilyUnavailable},
+		{"RingingTimeoutOverride1xx", livekit.SIPStatusCode_SIP_STATUS_RINGING, sip.StatusBusyHere},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTest(t, newTestRoomConfig(&testRoomConfig{ringForever: true}))
+			st.serviceTest.Handler.(*TestHandler).DispatchCallFunc = func(ctx context.Context, info *CallInfo) CallDispatch {
+				return CallDispatch{
+					Result:               DispatchAccept,
+					Room:                 RoomConfig{RoomName: testRoomName},
+					RingingTimeout:       100 * time.Millisecond,
+					RingingTimeoutStatus: tc.override,
+				}
+			}
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			call := newTestCall(st.TestUA, false)
+			req, localSDP, err := call.Invite(nil)
+			require.NoError(t, err)
+			call.SetLocalSDP(localSDP)
+
+			tx, err := st.TestUA.Client.TransactionRequest(req)
+			require.NoError(t, err)
+			defer tx.Terminate()
+
+			res := getFinalResponseOrFail(t, ctx, tx)
+			require.Equal(t, tc.exp, res.StatusCode)
+
+			require.Eventually(t, func() bool {
+				last := states.Last()
+				return last != nil && last.EndedAtNs != 0
+			}, 5*time.Second, 10*time.Millisecond, "the timed out call should be reported")
+
+			ended := states.Last()
+			require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+			require.EqualValues(t, tc.exp, ended.CallStatusCode.Code)
+		})
+	}
 }
