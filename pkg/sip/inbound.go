@@ -1065,6 +1065,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 	if disp.RingingTimeout <= 0 {
 		disp.RingingTimeout = defaultRingingTimeout
 	}
+	timeoutStatus := sip.StatusBusyHere
+	if disp.RingingTimeoutStatus != livekit.SIPStatusCode_SIP_STATUS_UNKNOWN {
+		timeoutStatus = sip.StatusCode(disp.RingingTimeoutStatus)
+	}
 	disp.Room.JitterBuf = c.jitterBuf
 	disp.Room.LogSignalChanges, _ = strconv.ParseBool(disp.FeatureFlags[signalLoggingFeatureFlag])
 	ctx, cancel := context.WithTimeout(ctx, disp.MaxCallDuration)
@@ -1102,7 +1106,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		c.log().Infow("Waiting for track subscription(s)")
 		// For dispatches without pin, we first wait for LK participant to become available,
 		// and also for at least one track subscription. In the meantime we keep ringing.
-		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout); !ok {
+		if ok, err := c.waitSubscribe(ctx, disp.RingingTimeout, timeoutStatus); !ok {
 			return err // already sent a response. Could be success if caller hung up
 		}
 		if ok, ackTimeout, err = c.acceptCallAndWaitForMedia(ctx, disp, sdpBody, mconf.MediaTimeout, expectingLateAnswer); !ok {
@@ -1440,7 +1444,7 @@ func (c *inboundCall) waitMedia(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) (bool, error) {
+func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration, timeoutStatus sip.StatusCode) (bool, error) {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.waitSubscribe")
 	defer span.End()
 	defer c.mon.StageDurTimer("wait-subscribe")()
@@ -1462,7 +1466,11 @@ func (c *inboundCall) waitSubscribe(ctx context.Context, timeout time.Duration) 
 		c.close(ctx, end)
 		return false, psrpc.NewErrorf(psrpc.Canceled, "rpc terminated the call")
 	case <-timer.C:
-		c.closeWithTerm(ctx, stats.ServerError("cannot-subscribe"))
+		c.close(ctx, EndCall{
+			Status: callDropped,
+			Term:   stats.ServerError("cannot-subscribe"),
+			Code:   timeoutStatus,
+		})
 		return false, psrpc.NewErrorf(psrpc.DeadlineExceeded, "room subscription timed out")
 	case <-c.lkRoom.Subscribed():
 		return true, nil
@@ -1612,6 +1620,9 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			Code:   sip.StatusRequestTerminated,
 			Status: "Request Terminated",
 		}
+	}
+	if end.Code >= 200 { // Only allow final status codes
+		result.Code = end.Code
 	}
 	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Term.Reason)
 	defer func() {
