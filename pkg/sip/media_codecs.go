@@ -29,6 +29,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 )
 
 var defaultCodecs = msdk.NewCodecSet()
@@ -39,6 +40,7 @@ func init() {
 		g711.ALawSDPNameOnly: true,
 		g711.ULawSDPNameOnly: true,
 		g722.SDPNameOnly:     true,
+		opusSDPNameOnly:      true,
 		amrwb.SDPNameOnly:    false, // optional
 	})
 }
@@ -47,10 +49,36 @@ func DefaultCodecs() *msdk.CodecSet {
 	return defaultCodecs
 }
 
+// CheckCodecAvailability logs warnings for codecs that are enabled in the
+// default set but whose backing media-sdk CodecType is not registered —
+// most commonly because a CGo codec (opus, amrwb) was skipped in a
+// CGO_ENABLED=0 build.
+//
+// We check specific known CGo-dependent codec names rather than iterating
+// ListEnabled(), because ListEnabled() only returns registered codecs —
+// an enabled-but-missing codec would never appear in its output.
+func CheckCodecAvailability(log logger.Logger) {
+	cgoCodecs := []string{opusSDPNameOnly, amrwb.SDPNameOnly}
+	for _, name := range cgoCodecs {
+		if defaultCodecs.IsEnabledByName(name) && sdp.CodecByNameWith(defaultCodecs, name) == nil {
+			log.Warnw("codec enabled but not registered (missing CGo dependency?)",
+				nil, "codec", name,
+			)
+		}
+	}
+}
+
 // Metric label used for advertised codecs that are not part of the internal
 // codec set, since their name is dropped during SDP parsing and to keep the
 // label bounded
 const codecOther = "other"
+
+// opusSDPNameOnly is the bare Opus SDP name (RFC 7587 §6.1: the clock rate is
+// always 48000 Hz and stereo is expressed via channels=2). Referenced as a
+// literal because the media-sdk opus package is CGo-only; the codec itself is
+// registered by media-sdk's all package on CGo builds and stays missing on
+// CGO_ENABLED=0 builds, where CheckCodecAvailability warns about it.
+const opusSDPNameOnly = "opus"
 
 func peerCodecNames(d sdp.MediaDesc) []string {
 	names := make([]string, 0, len(d.Audio)+len(d.Data)+len(d.Unknown))
