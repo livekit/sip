@@ -1623,6 +1623,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	}
 	if end.Code >= 200 { // Only allow final status codes
 		result.Code = end.Code
+		result.Status = sipStatusOr(end.Code, result.Status)
 	}
 	log := c.log().WithValues("status", result.Code, "result", string(end.Term.Result), "reason", end.Term.Reason)
 	defer func() {

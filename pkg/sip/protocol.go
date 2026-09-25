@@ -73,6 +73,7 @@ type EndCall struct {
 	Code    sip.StatusCode           // overrides the SIP status derived from Status
 }
 
+// See https://www.iana.org/assignments/sip-parameters#sip-parameters-7
 var statusNamesMap = map[int]string{
 	100: "Trying",
 	180: "Ringing",
@@ -98,13 +99,30 @@ var statusNamesMap = map[int]string{
 	408: "Request Timeout",
 	409: "Conflict",
 	410: "Gone",
+	411: "Length Required",
+	412: "Conditional Request Failed",
 	413: "Request Entity Too Large",
 	414: "Request URI Too Long",
 	415: "Unsupported Media Type",
 	416: "Requested Range Not Satisfiable",
+	417: "Unknown Resource-Priority",
 	420: "Bad Extension",
 	421: "Extension Required",
+	422: "Session Interval Too Small",
 	423: "Interval Too Brief",
+	424: "Bad Location Information",
+	425: "Bad Alert Message",
+	428: "Use Identity Header",
+	429: "Provide Referrer Identity",
+	430: "Flow Failed",
+	433: "Anonymity Disallowed",
+	436: "Bad Identity Info",
+	437: "Unsupported Credential",
+	438: "Invalid Identity Header",
+	439: "First Hop Lacks Outbound Support",
+	440: "Max-Breadth Exceeded",
+	469: "Bad Info Package",
+	470: "Consent Needed",
 	480: "Temporarily Unavailable",
 	481: "Call Transaction Does Not Exists",
 	482: "Loop Detected",
@@ -114,6 +132,10 @@ var statusNamesMap = map[int]string{
 	486: "Busy Here",
 	487: "Request Terminated",
 	488: "Not Acceptable Here",
+	489: "Bad Event",
+	491: "Request Pending",
+	493: "Undecipherable",
+	494: "Security Agreement Required",
 
 	500: "Internal Server Error",
 	501: "Not Implemented",
@@ -123,10 +145,12 @@ var statusNamesMap = map[int]string{
 	505: "Version Not Supported",
 	513: "Message Too Large",
 
-	600: "Global Busy Everywhere",
-	603: "Global Decline",
-	604: "Global Does Not Exist Anywhere",
-	606: "Global Not Acceptable",
+	600: "Busy Everywhere",
+	603: "Decline",
+	604: "Does Not Exist Anywhere",
+	606: "Not Acceptable Anywhere",
+	607: "Unwanted",
+	608: "Rejected",
 }
 
 func sipStatus(code sip.StatusCode) string {
@@ -134,6 +158,13 @@ func sipStatus(code sip.StatusCode) string {
 		return name
 	}
 	return fmt.Sprintf("Status %d", int(code))
+}
+
+func sipStatusOr(code sip.StatusCode, defaultStatus string) string {
+	if name := statusNamesMap[int(code)]; name != "" {
+		return name
+	}
+	return defaultStatus
 }
 
 func statusName(status int) string {
