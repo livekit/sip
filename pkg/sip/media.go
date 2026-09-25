@@ -43,6 +43,12 @@ type jitterStatsTargets struct {
 	SequenceRestarts *atomic.Uint64
 }
 
+// newJitterOptions returns the options for every SIP jitter buffer. Both legs
+// carry audio, where sequence-restart detection is safe.
+func newJitterOptions(t jitterStatsTargets) []jitter.Option {
+	return append(newJitterStatsOptions(t), jitter.WithSequenceRestartDetection())
+}
+
 // newJitterStatsOptions accumulates one buffer's counters into shared call-level
 // totals.
 //

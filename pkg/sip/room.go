@@ -536,7 +536,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					if conf.EnableJitterBuffer {
 						// One buffer per subscribed track, all reporting into the
 						// room-level totals.
-						h = rtp.HandleJitter(h, newJitterStatsOptions(jitterStatsTargets{
+						h = rtp.HandleJitter(h, newJitterOptions(jitterStatsTargets{
 							Lost:             &r.stats.JitterBufferPacketsLost,
 							Dropped:          &r.stats.JitterBufferPacketsDropped,
 							SSRCSwitches:     &r.stats.JitterBufferSSRCSwitches,
