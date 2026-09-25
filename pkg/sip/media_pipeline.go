@@ -210,7 +210,7 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	if p.conf.opts.EnableJitterBuffer {
 		// Renegotiation rebuilds the pipeline against the same stats, so a later
 		// buffer must add to the call totals rather than replace them.
-		hnd = rtp.HandleJitter(hnd, newJitterStatsOptions(jitterStatsTargets{
+		hnd = rtp.HandleJitter(hnd, newJitterOptions(jitterStatsTargets{
 			Lost:             &p.conf.stats.JitterBufferPacketsLost,
 			Dropped:          &p.conf.stats.JitterBufferPacketsDropped,
 			SSRCSwitches:     &p.conf.stats.JitterBufferSSRCSwitches,
