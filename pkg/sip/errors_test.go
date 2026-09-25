@@ -44,7 +44,7 @@ func TestClassifyInviteError(t *testing.T) {
 		{"401 Unauthorized", sipStatusErr(401), callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"403 Forbidden", sipStatusErr(403), callRejected, stats.ClientError("forbidden"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"404 Not Found", sipStatusErr(404), callUnavailable, stats.ClientError("not-found"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
-		{"407 Proxy Auth Required", sipStatusErr(407), callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED, false},
+		{"407 Proxy Authentication Required", sipStatusErr(407), callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"408 Request Timeout", sipStatusErr(408), callUnavailable, stats.ClientError("request-timeout"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 		{"480 Temporarily Unavailable", sipStatusErr(480), callUnavailable, stats.ClientError("unavailable"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 		{"486 Busy Here", sipStatusErr(486), callRejected, stats.ClientError("busy"), livekit.DisconnectReason_USER_REJECTED, false},
@@ -55,7 +55,7 @@ func TestClassifyInviteError(t *testing.T) {
 		{"487 Request Terminated (4xx catch-all)", sipStatusErr(487), callRejected, stats.ClientError("client-error-487"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 
 		// 5xx upstream server error
-		{"500 Internal Server Error", sipStatusErr(500), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"500 Server Internal Error", sipStatusErr(500), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 		{"503 Service Unavailable", sipStatusErr(503), callDropped, stats.UpstreamError("upstream-server-error-503"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// 5xx with a trunk rate-limit body: customer-side, reclassified as client_error
@@ -65,8 +65,8 @@ func TestClassifyInviteError(t *testing.T) {
 		{"500 generic body is not a rate limit", sipStatusBodyErr(500, "Service Unavailable"), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// 6xx global decline
-		{"600 Global Busy Everywhere", sipStatusErr(600), callRejected, stats.ClientError("global-decline-600"), livekit.DisconnectReason_USER_REJECTED, false},
-		{"603 Global Decline", sipStatusErr(603), callRejected, stats.ClientError("global-decline-603"), livekit.DisconnectReason_USER_REJECTED, false},
+		{"600 Busy Everywhere", sipStatusErr(600), callRejected, stats.ClientError("global-decline-600"), livekit.DisconnectReason_USER_REJECTED, false},
+		{"603 Decline", sipStatusErr(603), callRejected, stats.ClientError("global-decline-603"), livekit.DisconnectReason_USER_REJECTED, false},
 
 		// Carrier permanent block (Twilio 32203) — distinct from a normal 603 decline
 		{"Twilio 32203 carrier block", carrierBlockedError{status: &livekit.SIPStatus{Code: 603, Status: "Decline"}, provider: "twilio", providerCode: 32203}, callRejected, stats.ClientError("carrier-blocked"), livekit.DisconnectReason_USER_REJECTED, true},

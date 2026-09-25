@@ -110,20 +110,21 @@ const (
 )
 
 type CallDispatch struct {
-	Result              DispatchResult
-	Room                RoomConfig
-	ProjectID           string
-	TrunkID             string
-	DispatchRuleID      string
-	Headers             map[string]string
-	HeadersToAttributes map[string]string
-	IncludeHeaders      livekit.SIPHeaderOptions
-	AttributesToHeaders map[string]string
-	EnabledFeatures     []livekit.SIPFeature
-	FeatureFlags        map[string]string
-	RingingTimeout      time.Duration
-	MaxCallDuration     time.Duration
-	MediaConfig         *livekit.SIPMediaConfig
+	Result               DispatchResult
+	Room                 RoomConfig
+	ProjectID            string
+	TrunkID              string
+	DispatchRuleID       string
+	Headers              map[string]string
+	HeadersToAttributes  map[string]string
+	IncludeHeaders       livekit.SIPHeaderOptions
+	AttributesToHeaders  map[string]string
+	EnabledFeatures      []livekit.SIPFeature
+	FeatureFlags         map[string]string
+	RingingTimeout       time.Duration
+	RingingTimeoutStatus livekit.SIPStatusCode
+	MaxCallDuration      time.Duration
+	MediaConfig          *livekit.SIPMediaConfig
 }
 
 type CallIdentifier struct {
