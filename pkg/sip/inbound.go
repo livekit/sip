@@ -1621,7 +1621,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			Status: "Request Terminated",
 		}
 	}
-	if end.Code >= 200 { // Only allow final status codes
+	if end.Code >= 300 { // Only pick up final errors
 		result.Code = end.Code
 		result.Status = sipStatusOr(end.Code, result.Status)
 	}
