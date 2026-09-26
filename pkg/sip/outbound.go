@@ -577,7 +577,13 @@ func (c *outboundCall) connectMedia() {
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {
+// provisionalRespFunc is invoked for each 1xx provisional response that carries
+// an SDP body (e.g. 183 Session Progress with early-media SDP). It lets the
+// caller connect the RTP pipeline ahead of the final 200 OK so early-media
+// audio (ringback, IVR announcements) reaches the LiveKit room during ringing.
+type provisionalRespFunc func(res *sip.Response)
+
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc, onProvisional provisionalRespFunc) (*sip.Response, error) {
 	cnt := 0
 	for {
 		select {
@@ -599,11 +605,14 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			if setState != nil {
 				setState(res.StatusCode, res.Headers())
 			}
-			if status/100 != 1 { // != 1xx
-				return res, nil
+			if status/100 == 1 { // 1xx provisional
+				if onProvisional != nil && len(res.Body()) > 0 {
+					onProvisional(res)
+				}
+				cnt++
+				continue
 			}
-			// continue
-			cnt++
+			return res, nil
 		}
 	}
 }
@@ -730,6 +739,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	c.sigTs.InviteTime = time.Now()
 
 	ringing := false
+	earlyMediaEnabled := featureFlagEnabled(c.sipConf.featureFlags, earlyMediaFeatureFlag)
 	sdpResp, err := c.cc.Invite(ctx, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
 		if code == sip.StatusOK {
 			return // is set separately
@@ -743,6 +753,20 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 			c.setStatus(CallRinging)
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
+	}, func(res *sip.Response) {
+		// Early media: a provisional response (e.g. 183 Session Progress)
+		// carries an SDP body. Connect the RTP pipeline now so ringback / IVR
+		// audio reaches the room before the final 200 OK.
+		if !earlyMediaEnabled {
+			return
+		}
+		if ct := res.GetHeader("Content-Type"); ct == nil || !strings.HasPrefix(ct.Value(), "application/sdp") {
+			return
+		}
+		if err := c.media.ProcessEarlyAnswer(res.Body()); err != nil {
+			c.log.Warnw("early media: failed to process provisional SDP", err,
+				"status", res.StatusCode)
+		}
 	})
 	// Update SIPCallInfo with the SIP Call-ID after Invite
 	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
@@ -991,7 +1015,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc, onProvisional provisionalRespFunc) ([]byte, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Invite")
 	defer span.End()
 	c.mu.Lock()
@@ -1016,7 +1040,7 @@ authLoop:
 		if try >= 5 {
 			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
 		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState, onProvisional)
 		if err != nil {
 			return nil, err
 		}
@@ -1157,7 +1181,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc, onProvisional provisionalRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, *c.uri)
@@ -1213,7 +1237,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		}
 	}
 
-	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
+	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState, onProvisional)
 	if err != nil && resp == nil && (ctx.Err() != nil || c.c.closing.IsBroken()) {
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
