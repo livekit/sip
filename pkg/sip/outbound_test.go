@@ -31,6 +31,7 @@ import (
 	"github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 // recordingSIPClient is a SIPClient that records the requests written to it.
@@ -427,6 +428,32 @@ func TestOutboundHangupDrainsMediaBeforeBYE(t *testing.T) {
 	case <-time.After(time.Second):
 		require.Fail(t, "EndCall did not return after BYE was answered")
 	}
+}
+
+func TestOutboundPreConnectHangupSkipsDrain(t *testing.T) {
+	// A local hangup before media is bridged (CANCEL during ringing) must not
+	// wait for the drain window: there is nothing in flight to drain, and the
+	// extra delay only extends the caller's ringing time.
+	const drain = time.Second
+
+	call := &outboundCall{
+		log: logger.NewTestLogger(t),
+		c:    &Client{conf: &config.Config{HangupDrainTime: drain}},
+	}
+
+	end := EndCall{
+		Status: CallHangup,
+		Term:   stats.Success("rpc"),
+		Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+	}
+
+	// Unbroken started fuse = media never bridged.
+	require.Zero(t, call.drainOnHangup(end), "pre-connect hangup must skip the drain")
+
+	// Once media is bridged the same hangup drains, so the gate is the fuse
+	// and not the reason set.
+	call.started.Break()
+	require.Equal(t, drain, call.drainOnHangup(end))
 }
 
 func TestBuildOutboundHeaders(t *testing.T) {

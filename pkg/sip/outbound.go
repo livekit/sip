@@ -355,6 +355,12 @@ func (c *outboundCall) drainOnHangup(end EndCall) time.Duration {
 	if end.Term.Result != stats.ResultSuccess {
 		return 0
 	}
+	if !c.started.IsBroken() {
+		// Media was never bridged (CANCEL during ringing, pre-connect
+		// failures) — there is nothing in flight to drain, so don't delay
+		// teardown (same gate as the inbound path).
+		return 0
+	}
 	switch end.Term.Reason {
 	case "hangup", "rpc", "removed":
 		// agent end-call, EndCall RPC, participant removed from room
