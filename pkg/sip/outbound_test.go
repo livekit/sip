@@ -23,11 +23,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
+
+	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/stats"
 )
 
 // recordingSIPClient is a SIPClient that records the requests written to it.
@@ -355,6 +359,101 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 		})
 	}
 
+}
+
+func TestOutboundHangupDrainsMediaBeforeBYE(t *testing.T) {
+	// A locally-initiated hangup (agent end-call, EndCall RPC, participant
+	// removed) must keep feeding media to the SIP peer for the configured
+	// drain window before sending BYE, so the in-flight tail of the last
+	// utterance reaches the callee (issue #4737). Remote BYE and error paths
+	// must not be delayed.
+	const drain = 500 * time.Millisecond
+
+	conf := &config.Config{
+		NodeID:            "test-node",
+		SIPPort:           5060,
+		SIPPortListen:     5060,
+		RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
+		MaxCpuUtilization: 0.99,
+		WsUrl:             "ws://localhost:7880",
+		ApiKey:            "test-api-key",
+		ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
+		HangupDrainTime:   drain,
+	}
+	h := NewTestSIP(t, TestSIPConfig{Config: conf})
+	client := h.Client
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	req := MinimalCreateSIPParticipantRequest()
+	go func() {
+		_, err := client.CreateSIPParticipant(ctx, req)
+		if err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant error: %v", err)
+			t.Fail()
+		}
+	}()
+
+	tr := h.WaitTransaction(t, 500*time.Millisecond, req.SipCallId, "")
+	t.Cleanup(func() { tr.transaction.Terminate() })
+	require.Equal(t, sip.INVITE, tr.req.Method)
+
+	// Fake 200 OK + ACK so the call is established.
+	resp := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
+	require.NoError(t, tr.transaction.SendResponse(resp))
+
+	ackReq := h.WaitRequest(t, 500*time.Millisecond, req.SipCallId, "")
+	require.Equal(t, sip.ACK, ackReq.req.Method)
+
+	// Local hangup path: the BYE must arrive only after the drain window.
+	call := client.getActiveCall(LocalTag(req.SipCallId))
+	require.NotNil(t, call)
+
+	start := time.Now()
+	endCallDone := make(chan error, 1)
+	go func() {
+		endCallDone <- call.EndCall(ctx, nil)
+	}()
+
+	byeTx, byeErr := h.client.WaitTransactionTimeout(drain+3*time.Second, req.SipCallId, "")
+	require.NoError(t, byeErr, "expected BYE after the drain window")
+	require.Equal(t, sip.BYE, byeTx.req.Method)
+	require.GreaterOrEqual(t, time.Since(start), drain, "BYE sent before the media drain window elapsed")
+	resp200 := sip.NewResponseFromRequest(byeTx.req, 200, "OK", nil)
+	require.NoError(t, byeTx.transaction.SendResponse(resp200))
+
+	select {
+	case err := <-endCallDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		require.Fail(t, "EndCall did not return after BYE was answered")
+	}
+}
+
+func TestOutboundPreConnectHangupSkipsDrain(t *testing.T) {
+	// A local hangup before media is bridged (CANCEL during ringing) must not
+	// wait for the drain window: there is nothing in flight to drain, and the
+	// extra delay only extends the caller's ringing time.
+	const drain = time.Second
+
+	call := &outboundCall{
+		log: logger.NewTestLogger(t),
+		c:    &Client{conf: &config.Config{HangupDrainTime: drain}},
+	}
+
+	end := EndCall{
+		Status: CallHangup,
+		Term:   stats.Success("rpc"),
+		Reason: livekit.DisconnectReason_CLIENT_INITIATED,
+	}
+
+	// Unbroken started fuse = media never bridged.
+	require.Zero(t, call.drainOnHangup(end), "pre-connect hangup must skip the drain")
+
+	// Once media is bridged the same hangup drains, so the gate is the fuse
+	// and not the reason set.
+	call.started.Break()
+	require.Equal(t, drain, call.drainOnHangup(end))
 }
 
 func TestBuildOutboundHeaders(t *testing.T) {
