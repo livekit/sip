@@ -2419,11 +2419,25 @@ func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
 	c.drop() // mark as closed
 }
 
+func (c *sipInbound) inviteConnOpen() bool {
+	if c.legTr == TransportUDP {
+		return false
+	}
+	conn, err := c.s.sipSrv.TransportLayer().GetConnection(string(c.legTr), c.inviteOk.Destination())
+	if err != nil || conn == nil {
+		return false
+	}
+	_, _ = conn.TryClose()
+	return true
+}
+
 func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	dest := c.inviteOk.Destination()
 	if contact := c.invite.Contact(); contact != nil {
 		req.Recipient = contact.Address
-		dest = ConvertURI(&contact.Address).GetDest()
+		if !c.inviteConnOpen() {
+			dest = ConvertURI(&contact.Address).GetDest()
+		}
 	} else {
 		req.Recipient = c.from.Address
 	}
