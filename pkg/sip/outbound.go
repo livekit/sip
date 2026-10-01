@@ -694,6 +694,30 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 	}
 }
 
+// setStatusCodeAttrs publishes the SIP response the call ended on as participant attributes.
+// DisconnectReason folds several codes into one value (403, 486 and 488 all become
+// USER_REJECTED), so the code itself is not otherwise readable from the room.
+func (c *outboundCall) setStatusCodeAttrs(status *livekit.SIPStatus) {
+	if status == nil || status.Code == 0 {
+		return
+	}
+	attrs := map[string]string{
+		livekit.AttrSIPCallStatusCode: strconv.Itoa(int(status.Code)),
+	}
+	if text := status.GetStatus(); text != "" {
+		attrs[livekit.AttrSIPCallStatusText] = text
+	}
+	if c.lkRoom == nil {
+		return
+	}
+	room := c.lkRoom.Room()
+	if room == nil {
+		c.log.Warnw("could not set status code attributes on nil room", nil, "attrs", attrs)
+		return
+	}
+	room.LocalParticipant.SetAttributes(attrs)
+}
+
 func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.sipSignal")
 	defer span.End()
@@ -760,6 +784,7 @@ func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
 		var e *livekit.SIPStatus
 		if errors.As(err, &e) {
 			c.mon.InviteError(statusName(int(e.Code)))
+			c.setStatusCodeAttrs(e)
 			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 				info.CallStatusCode = e
 			})
