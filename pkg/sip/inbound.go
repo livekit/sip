@@ -946,7 +946,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip
 		return psrpc.NewError(psrpc.Unimplemented, err)
 	case DispatchNoRuleDrop:
 		c.log().Debugw("Rejecting inbound flood")
-		c.cc.Drop()
+		c.cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service Unavailable")
 		c.close(ctx, EndCall{
 			Status: callFlood,
 			Term:   stats.ClientError("flood"),

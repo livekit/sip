@@ -626,14 +626,16 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.NoError(t, err)
 		defer tx.Terminate()
 
-		// Dispatch is evaluated after ringing starts, so the caller sees the
-		// provisional responses and then silence: a dropped call gets no final
-		// response.
+		// Dispatch is evaluated after ringing starts, so the caller has already
+		// seen the provisional responses. A dropped call then gets a final 503
+		// rather than silence, which would leave the carrier ringing until the
+		// caller hangs up.
 		res100 := getResponseOrFailTimeout(t, ctx, tx)
 		require.Equal(t, sip.StatusCode(100), res100.StatusCode, "should receive 100 Trying")
 		res180 := getResponseOrFailTimeout(t, ctx, tx)
 		require.Equal(t, sip.StatusCode(180), res180.StatusCode, "should receive 180 Ringing")
-		expectNoResponse(t, tx)
+		res := getFinalResponseOrFail(t, ctx, tx)
+		require.Equal(t, sip.StatusServiceUnavailable, res.StatusCode, "should receive 503 Service Unavailable")
 
 		require.Eventually(t, func() bool {
 			last := states.Last()
@@ -643,7 +645,8 @@ func TestInboundCallStatusCode(t *testing.T) {
 		ended := states.Last()
 		require.Equal(t, livekit.SIPCallStatus_SCS_ERROR, ended.CallStatus)
 		require.Zero(t, ended.StartedAtNs, "call was never answered")
-		require.Nil(t, ended.CallStatusCode, "CallStatusCode must not be set")
+		require.NotNil(t, ended.CallStatusCode, "CallStatusCode must be set")
+		require.EqualValues(t, res.StatusCode, ended.CallStatusCode.Code, "the recorded status must be the one sent to the caller")
 	})
 
 	t.Run("DispatchReject", func(t *testing.T) {
