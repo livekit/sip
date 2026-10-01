@@ -1,0 +1,143 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+    networks:
+      - siptest
+
+  livekit:
+    image: livekit/livekit-server:master
+    command:
+      - --dev
+      - --bind=0.0.0.0
+      - --redis-host=redis:6379
+      - --node-ip=livekit
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+    networks:
+      - siptest
+
+  livekit-sip:
+    build:
+      context: ../..
+      dockerfile: build/sip/Dockerfile
+    environment:
+      - LIVEKIT_URL=http://livekit:7880
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret
+      - REDIS_HOST=redis:6379
+    command:
+      - --dev
+      - --bind=0.0.0.0
+      - --redis-host=redis:6379
+      - --node-ip=livekit-sip
+      - --sip-port=5060
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "20000-20010:20000-20010/udp"
+    networks:
+      - siptest
+
+  # ── SIPp UAC: Opus INVITE correctness test ──
+  sipp-opus-uac:
+    image: cticasoft/sipp
+    entrypoint:
+      - sipp
+      - livekit-sip:5060
+      - -sf
+      - /scenarios/opus_uac.xml
+      - -s
+      - "+000000000"
+      - -m
+      - "1"
+      - -trace_msg
+      - -trace_screen
+      - -trace_err
+      - -trace_logs
+    volumes:
+      - ./opus_uac.xml:/scenarios/opus_uac.xml:ro
+    depends_on:
+      - livekit-sip
+    networks:
+      - siptest
+    profiles:
+      - correctness
+
+  # ── SIPp UAC: concurrent Opus stress test ──
+  sipp-opus-stress:
+    image: cticasoft/sipp
+    entrypoint:
+      - sipp
+      - livekit-sip:5060
+      - -sf
+      - /scenarios/opus_stress.xml
+      - -s
+      - "+000000000"
+      - -r
+      - "10"           # 10 calls per second
+      - -rp
+      - "2000"         # rate period 2s → 5 CPS steady
+      - -m
+      - "100"          # total calls
+      - -l
+      - "30"           # max simultaneous
+      - -trace_err
+      - -fd
+      - "5"            # 5s call duration
+    volumes:
+      - ./opus_stress.xml:/scenarios/opus_stress.xml:ro
+    depends_on:
+      - livekit-sip
+    networks:
+      - siptest
+    profiles:
+      - stress
+
+  # ── SIPp G.711 baseline stress test ──
+  sipp-g711-stress:
+    image: cticasoft/sipp
+    entrypoint:
+      - sipp
+      - livekit-sip:5060
+      - -sf
+      - /scenarios/g711_stress.xml
+      - -s
+      - "+000000000"
+      - -r
+      - "10"
+      - -rp
+      - "2000"
+      - -m
+      - "100"
+      - -l
+      - "30"
+      - -trace_err
+      - -fd
+      - "5"
+    volumes:
+      - ./g711_stress.xml:/scenarios/g711_stress.xml:ro
+    depends_on:
+      - livekit-sip
+    networks:
+      - siptest
+    profiles:
+      - stress
+
+networks:
+  siptest:
+    driver: bridge

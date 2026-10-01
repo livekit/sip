@@ -414,6 +414,8 @@ type codecConfig struct {
 var codecConfigMap = map[string]codecConfig{
 	"G722":   {rampUpFrames: 1, offsetSamples: 22},
 	"AMR-WB": {rampUpFrames: 1, offsetSamples: 14 + 16},
+	// Opus adds its standard 6.5ms lookahead delay (~310 samples at 48kHz).
+	"opus": {rampUpFrames: 0, offsetSamples: 311},
 }
 
 func TestMediaPortAudioRoundTrip(t *testing.T) {
@@ -428,9 +430,6 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 
 	for _, codec := range allAudioCodecs() {
 		info := codec.Info()
-		if info.SDPName() == "opus" {
-			continue // TODO: validate opus
-		}
 		t.Run(info.SDPName(), func(t *testing.T) {
 			for _, resample := range []bool{true, false} {
 				t.Run(fmt.Sprintf("resample=%t", resample), func(t *testing.T) {
@@ -565,9 +564,6 @@ func TestPipelineChains(t *testing.T) {
 	for _, codec := range enabledAudioCodecs() {
 		t.Run(codec.SDPName(), func(t *testing.T) {
 			codecName := codec.SDPName()
-			if codecName == "opus" {
-				t.Skip() // TODO: validate opus
-			}
 			// Create new test media port
 			// Process offer with a specific codec + dtmf
 			codecs := testCodecSet(codecName)
@@ -595,10 +591,24 @@ func TestPipelineChains(t *testing.T) {
 			if !info.RTPIsStatic {
 				payloadType = 101
 			}
-			audioOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> LatencyEntry -> Resample(%d->%d) -> %s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> RTPWriteStream(:0)",
-				RoomSampleRate, RoomSampleRate, sampleRate, codecName, sampleRate, codecName, clockRate)
-			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->%d) -> LatencyExit -> WriteCloserSwitch(nil)",
-				codecName, clockRate, payloadType, codecName, sampleRate, RoomSampleRate)
+			// media-sdk's opus encode/decode writers identify themselves as
+			// "OPUS" regardless of the SDP name casing.
+			chainName := codecName
+			if codecName == "opus" {
+				chainName = "OPUS"
+			}
+			// The pipeline only inserts resamplers when the codec rate
+			// differs from the room rate; opus at 48 kHz is a
+			// zero-resample path.
+			resampleOut, resampleIn := "", ""
+			if sampleRate != RoomSampleRate {
+				resampleOut = fmt.Sprintf("Resample(%d->%d) -> ", RoomSampleRate, sampleRate)
+				resampleIn = fmt.Sprintf(" -> Resample(%d->%d)", sampleRate, RoomSampleRate)
+			}
+			audioOutChain := fmt.Sprintf("WriteCloserSwitch(%d) -> LatencyEntry -> %s%s(encode) -> ByteEncoder(%d) -> StatsWriter(%s/%d) -> LatencyExit -> RTPWriteStream(:0)",
+				RoomSampleRate, resampleOut, chainName, sampleRate, codecName, clockRate)
+			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode)%s -> LatencyExit -> WriteCloserSwitch(nil)",
+				codecName, clockRate, payloadType, chainName, resampleIn)
 			dtmfOutChain := "WriteCloserSwitch(-1) -> dtmfOutWriter(dtmfAudio: false)"
 			dtmfInChain := fmt.Sprintf("StatsHandler(telephone-event/%d) -> HandlerFunc", clockRate)
 			assert.Equal(t, audioOutChain, mp.GetOutboundAudioWriter().String(), "out audio chain mismatch")
