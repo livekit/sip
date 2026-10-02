@@ -860,8 +860,8 @@ func TestReinvite(t *testing.T) {
 			req, _, err := call.Invite(incompatibleCodecOffer(t, updatedRemote, ic.media))
 			require.NoError(t, err)
 			resp := st.TestUA.TransactionRequest(t, req, true)
-			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "incompatible re-INVITE should get 200 OK")
-			require.Equal(t, updatedRemote, getMediaPortRemoteAddr(t, ic.media), "incompatible re-INVITE must still change RTP destination")
+			require.Equal(t, sip.StatusNotAcceptableHere, resp.StatusCode, "incompatible re-INVITE should be rejected with 488")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, ic.media), "rejected codec-changing re-INVITE must not change RTP destination")
 			require.Equal(t, initialCodec, ic.media.NegotiatedAudio().Info.SDPFullName(), "Codec must not be updated")
 
 			// Re-INVITE with original codec
@@ -874,6 +874,7 @@ func TestReinvite(t *testing.T) {
 			require.Equal(t, initialCodec, ic.media.NegotiatedAudio().Info.SDPFullName(), "Codec must not be updated")
 
 		})
+
 	})
 	t.Run("outbound", func(t *testing.T) {
 		t.Parallel()
@@ -957,8 +958,8 @@ func TestReinvite(t *testing.T) {
 			req, _, err := call.Invite(incompatibleCodecOffer(t, updatedRemote, oc.media))
 			require.NoError(t, err)
 			resp := st.TestUA.TransactionRequest(t, req, true)
-			require.Equal(t, sip.StatusCode(200), resp.StatusCode, "incompatible re-INVITE should get 200 OK")
-			require.Equal(t, updatedRemote, getMediaPortRemoteAddr(t, oc.media), "incompatible re-INVITE must still change RTP destination")
+			require.Equal(t, sip.StatusNotAcceptableHere, resp.StatusCode, "incompatible re-INVITE should be rejected with 488")
+			require.Equal(t, initialRemote, getMediaPortRemoteAddr(t, oc.media), "rejected codec-changing re-INVITE must not change RTP destination")
 			require.Equal(t, initialCodec, oc.media.NegotiatedAudio().Info.SDPFullName(), "Codec must not be updated")
 
 			// Re-INVITE with original codec
