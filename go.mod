@@ -3,7 +3,7 @@ module github.com/livekit/sip
 go 1.26.3
 
 require (
-	github.com/at-wat/ebml-go v0.19.2
+	github.com/at-wat/ebml-go v0.19.3
 	github.com/frostbyte73/core v0.1.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/icholy/digest v1.2.0
@@ -61,7 +61,7 @@ require (
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/emiago/sipgo v1.5.0
-	github.com/felixge/httpsnoop v1.0.4 // indirect
+	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gammazero/deque v1.2.1 // indirect
 	github.com/go-logr/logr v1.4.4
@@ -114,7 +114,7 @@ require (
 	github.com/puzpuzpuz/xsync/v4 v4.5.0 // indirect
 	github.com/redis/go-redis/v9 v9.22.0 // indirect
 	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
-	github.com/urfave/cli/v3 v3.12.0
+	github.com/urfave/cli/v3 v3.13.0
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
@@ -138,7 +138,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.83.2
+	google.golang.org/genproto/googleapis/api v0.0.0-20260706201446-f0a921348800 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
+	google.golang.org/grpc v1.84.0
 )
