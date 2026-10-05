@@ -117,6 +117,8 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 		s.SetEnabled(name, true)
 		_ = rate // TODO: we only support fixed rate codecs so far; add whitelist for codec configs later
 	}
+	// TODO: AMR-WB is temporarily blocked.
+	s.SetEnabled(amrwb.SDPNameOnly, false)
 	s.SetEnabled(dtmf.SDPNameOnly, true)
 	return s, nil
 }
