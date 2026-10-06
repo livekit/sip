@@ -68,7 +68,7 @@ func (e SDPError) ClassifyInvite() inviteFailure {
 	res := inviteFailure{
 		EndCall: EndCall{
 			Status: callRejected,
-			Reason: livekit.DisconnectReason_MEDIA_FAILURE,
+			Reason: livekit.DisconnectReason_USER_REJECTED,
 			Report: e.Err,
 		},
 		returnErr: e,

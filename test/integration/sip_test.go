@@ -28,7 +28,7 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils"
-	"github.com/livekit/psrpc"
+	"github.com/livekit/psrpc/pkg/bus/redisbus"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	sipgo "github.com/livekit/sipgo/sip"
 
@@ -85,7 +85,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		jaeger.Configure(t.Context(), conf.JaegerURL, conf.ServiceName)
 	}
 
-	bus := psrpc.NewRedisMessageBus(rc, conf.PSRPC.BusOptions()...)
+	bus := redisbus.New(rc, conf.PSRPC.BusOptions()...)
 	psrpcCli, err := rpc.NewIOInfoClient(bus,
 		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
 	)

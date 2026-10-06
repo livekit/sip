@@ -146,6 +146,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 			Report: fmt.Errorf("media failed: %w", err),
 			Status: callDropped,
 			Term:   stats.ServerError("media-failed"),
+			Reason: livekit.DisconnectReason_MEDIA_FAILURE,
 		})
 		return nil, err
 	}
@@ -154,6 +155,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 			Report: fmt.Errorf("room join failed: %w", err),
 			Status: callDropped,
 			Term:   stats.ServerError("join-failed"),
+			Reason: livekit.DisconnectReason_JOIN_FAILURE,
 		})
 		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
@@ -323,7 +325,7 @@ func (c *outboundCall) closeWithTimeout(ctx context.Context) {
 		Report: psrpc.NewErrorf(psrpc.DeadlineExceeded, "media-timeout"),
 		Status: callDropped,
 		Term:   stats.Indeterminate("media-timeout"),
-		Reason: livekit.DisconnectReason_UNKNOWN_REASON,
+		Reason: livekit.DisconnectReason_MEDIA_FAILURE,
 	})
 }
 
@@ -382,7 +384,7 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		}
 
 		if r := c.lkRoom; r != nil {
-			_ = r.CloseWithReason(end.Status.DisconnectReason())
+			_ = r.CloseWithReason(end.Reason)
 		}
 
 		if c.lkRoomIn != nil {

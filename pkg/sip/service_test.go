@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -296,6 +297,32 @@ func TestService_DispatchUnavailable(t *testing.T) {
 		res = getResponseOrFail(t, tx)
 		require.Equal(t, sip.StatusCode(503), res.StatusCode)
 	})
+}
+
+func TestService_DispatchInviteTime(t *testing.T) {
+	var attrs map[string]string
+	h := &TestHandler{
+		DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+			attrs = info.ExtraAttributes
+			return CallDispatch{Result: DispatchServiceUnavailable}
+		},
+	}
+	before := time.Now().UnixMilli()
+	testInvite(t, h, false, "foo", "bar", func(tx sip.ClientTransaction) {
+		for {
+			res := getResponseOrFail(t, tx)
+			if res.StatusCode >= 200 {
+				require.Equal(t, sip.StatusCode(503), res.StatusCode)
+				break
+			}
+		}
+	})
+	after := time.Now().UnixMilli()
+
+	inviteTime, err := strconv.ParseInt(attrs[livekit.AttrSIPInviteTime], 10, 64)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, inviteTime, before)
+	require.LessOrEqual(t, inviteTime, after)
 }
 
 func TestService_AuthDrop(t *testing.T) {

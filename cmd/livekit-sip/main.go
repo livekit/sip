@@ -28,7 +28,7 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer/jaeger"
-	"github.com/livekit/psrpc"
+	"github.com/livekit/psrpc/pkg/bus/redisbus"
 	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 
 	"github.com/livekit/sip/pkg/config"
@@ -80,7 +80,7 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	bus := psrpc.NewRedisMessageBus(rc, conf.PSRPC.BusOptions()...)
+	bus := redisbus.New(rc, conf.PSRPC.BusOptions()...)
 	psrpcClient, err := rpc.NewIOInfoClient(bus,
 		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
 	)
@@ -99,7 +99,9 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcClient) })
+	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+		return sip.NewRPCStateHandler(psrpcClient)
+	})
 	if err != nil {
 		return err
 	}

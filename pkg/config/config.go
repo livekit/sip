@@ -27,6 +27,7 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/logger/medialogutils"
+	"github.com/livekit/protocol/logger/zaputil"
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils/guid"
@@ -147,6 +148,9 @@ type Config struct {
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten
 	JaegerURL   string `yaml:"jaeger_url"` // for tracing
+	// LoggerTee duplicates the log stream InitLogger builds. Set it before
+	// Init; the zero value is a no-op.
+	LoggerTee zaputil.Tee `yaml:"-"`
 
 	// Experimental, these option might go away without notice.
 	Experimental struct {
@@ -229,7 +233,7 @@ func (c *Config) Init() error {
 }
 
 func (c *Config) InitLogger(values ...interface{}) error {
-	zl, err := logger.NewZapLogger(&c.Logging)
+	zl, err := logger.NewZapLogger(&c.Logging, logger.WithTee(c.LoggerTee))
 	if err != nil {
 		return err
 	}

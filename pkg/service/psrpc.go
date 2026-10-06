@@ -111,6 +111,8 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, log logg
 		CalledNumber:  info.Call.To.User,
 		CalledHost:    info.Call.To.Host,
 		SrcAddress:    info.Call.SourceIp,
+
+		ExtraAttributes: info.ExtraAttributes,
 	})
 
 	if err != nil {
@@ -153,16 +155,17 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, log logg
 				RoomPreset: resp.RoomPreset,
 				RoomConfig: resp.RoomConfig,
 			},
-			TrunkID:             resp.SipTrunkId,
-			DispatchRuleID:      resp.SipDispatchRuleId,
-			Headers:             resp.Headers,
-			IncludeHeaders:      resp.IncludeHeaders,
-			HeadersToAttributes: resp.HeadersToAttributes,
-			AttributesToHeaders: resp.AttributesToHeaders,
-			EnabledFeatures:     resp.EnabledFeatures,
-			RingingTimeout:      resp.RingingTimeout.AsDuration(),
-			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
-			MediaConfig:         resp.Media,
+			TrunkID:              resp.SipTrunkId,
+			DispatchRuleID:       resp.SipDispatchRuleId,
+			Headers:              resp.Headers,
+			IncludeHeaders:       resp.IncludeHeaders,
+			HeadersToAttributes:  resp.HeadersToAttributes,
+			AttributesToHeaders:  resp.AttributesToHeaders,
+			EnabledFeatures:      resp.EnabledFeatures,
+			RingingTimeout:       resp.RingingTimeout.AsDuration(),
+			RingingTimeoutStatus: resp.RingingTimeoutStatus,
+			MaxCallDuration:      resp.MaxCallDuration.AsDuration(),
+			MediaConfig:          resp.Media,
 		}
 	case rpc.SIPDispatchResult_ACCEPT:
 		return sip.CallDispatch{
@@ -181,17 +184,18 @@ func DispatchCall(ctx context.Context, psrpcClient rpc.IOInfoSIPClient, log logg
 				RoomPreset: resp.RoomPreset,
 				RoomConfig: resp.RoomConfig,
 			},
-			TrunkID:             resp.SipTrunkId,
-			DispatchRuleID:      resp.SipDispatchRuleId,
-			Headers:             resp.Headers,
-			IncludeHeaders:      resp.IncludeHeaders,
-			HeadersToAttributes: resp.HeadersToAttributes,
-			AttributesToHeaders: resp.AttributesToHeaders,
-			EnabledFeatures:     resp.EnabledFeatures,
-			FeatureFlags:        resp.FeatureFlags,
-			RingingTimeout:      resp.RingingTimeout.AsDuration(),
-			MaxCallDuration:     resp.MaxCallDuration.AsDuration(),
-			MediaConfig:         resp.Media,
+			TrunkID:              resp.SipTrunkId,
+			DispatchRuleID:       resp.SipDispatchRuleId,
+			Headers:              resp.Headers,
+			IncludeHeaders:       resp.IncludeHeaders,
+			HeadersToAttributes:  resp.HeadersToAttributes,
+			AttributesToHeaders:  resp.AttributesToHeaders,
+			EnabledFeatures:      resp.EnabledFeatures,
+			FeatureFlags:         resp.FeatureFlags,
+			RingingTimeout:       resp.RingingTimeout.AsDuration(),
+			RingingTimeoutStatus: resp.RingingTimeoutStatus,
+			MaxCallDuration:      resp.MaxCallDuration.AsDuration(),
+			MediaConfig:          resp.Media,
 		}
 	case rpc.SIPDispatchResult_REQUEST_PIN:
 		return sip.CallDispatch{
