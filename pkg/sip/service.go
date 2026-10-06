@@ -286,26 +286,8 @@ func (s *Service) Start() error {
 			KeyLogWriter: keyLog,
 		}
 
-		if len(tconf.CipherSuites) > 0 {
-			suits, err := parseCipherSuites(s.log, tconf.CipherSuites)
-			if err != nil {
-				return err
-			}
-			tlsConf.CipherSuites = suits
-		}
-		if tconf.MinVersion != "" {
-			minVer, err := parseTLSVersion(tconf.MinVersion)
-			if err != nil {
-				return err
-			}
-			tlsConf.MinVersion = minVer
-		}
-		if tconf.MaxVersion != "" {
-			maxVer, err := parseTLSVersion(tconf.MaxVersion)
-			if err != nil {
-				return err
-			}
-			tlsConf.MaxVersion = maxVer
+		if err := tconf.ApplyPolicy(s.log, tlsConf); err != nil {
+			return err
 		}
 
 		ConfigureTLS(tlsConf)
