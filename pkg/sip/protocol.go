@@ -273,6 +273,8 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 	}
 }
 
+var byeRetryGrace = 5 * time.Second
+
 // sendBye sends a BYE and waits for its final response. BYE is a non-INVITE
 // transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.
 func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) bool {
