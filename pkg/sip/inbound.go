@@ -2519,7 +2519,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	r.SetDestination(fallback)
 	r.Via().Params.Add("branch", sip.GenerateBranchN(16))
 	r.CSeq().SeqNo++
-	sendBye(ctx, c.log, c, r)
+	go sendBye(ctx, c.log, c, r)
 }
 
 func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[string]string) {
