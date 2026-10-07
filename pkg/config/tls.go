@@ -49,6 +49,10 @@ func (conf *TLSConfig) ApplyPolicy(log logger.Logger, c *tls.Config) error {
 		return nil
 	}
 	c.VerifyConnection = func(cs tls.ConnectionState) error {
+		// NOTE: In warn-only mode, the cipher is negotiated based on Go's
+		// default list of cipher suites, and so it's possible for us to log
+		// false positve warning messages if the list of cipher suites from the
+		// config contains policies that aren't in the default list.
 		if !tlsPolicyAllows(cs, suites, minVer, maxVer) {
 			log.Warnw("TLS connection outside of the configured policy", nil,
 				"serverName", cs.ServerName,
