@@ -275,16 +275,23 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 
 // sendBye sends a BYE and waits for its final response. BYE is a non-INVITE
 // transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.
-func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) {
+func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) bool {
 	tx, err := c.Transaction(req)
 	if err != nil {
 		log.Infow("cannot send BYE", "error", err)
-		return
+		return false
 	}
 	defer tx.Terminate()
-	if _, err := sipResponse(ctx, tx, nil, nil); err != nil {
+	res, err := sipResponse(ctx, tx, nil, nil)
+	if err != nil {
 		log.Infow("no response to BYE", "error", err)
+		return false
 	}
+	if res.StatusCode/100 != 2 {
+		log.Infow("BYE rejected", "status", res.StatusCode)
+		return false
+	}
+	return true
 }
 
 func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {

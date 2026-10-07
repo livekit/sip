@@ -2431,18 +2431,22 @@ func (c *sipInbound) inviteConnOpen() bool {
 	return true
 }
 
-func (c *sipInbound) swapSrcDst(req *sip.Request) {
+func (c *sipInbound) swapSrcDst(req *sip.Request) (fallback string) {
 	dest := c.inviteOk.Destination()
 	if contact := c.invite.Contact(); contact != nil {
 		req.Recipient = contact.Address
-		if !c.inviteConnOpen() {
-			dest = ConvertURI(&contact.Address).GetDest()
+		contactDest := ConvertURI(&contact.Address).GetDest()
+		if c.inviteConnOpen() {
+			fallback = contactDest
+		} else {
+			dest = contactDest
 		}
 	} else {
 		req.Recipient = c.from.Address
 	}
 	if route := c.invite.RecordRoute(); route != nil {
 		dest = ConvertURI(&route.Address).GetDest()
+		fallback = ""
 	}
 	req.SetSource(c.inviteOk.Source())
 	req.SetDestination(dest)
@@ -2462,6 +2466,7 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	// Remove all Record-Route headers
 	for req.RemoveHeader("Record-Route") {
 	}
+	return fallback
 }
 
 func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
@@ -2505,8 +2510,15 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	}
 
 	c.setCSeq(r)
-	c.swapSrcDst(r)
+	fallback := c.swapSrcDst(r)
 	c.drop()
+	if sendBye(ctx, c.log, c, r) || fallback == "" {
+		return
+	}
+	c.log.Infow("retrying BYE via Contact", "dest", fallback)
+	r.SetDestination(fallback)
+	r.Via().Params.Add("branch", sip.GenerateBranchN(16))
+	r.CSeq().SeqNo++
 	sendBye(ctx, c.log, c, r)
 }
 
