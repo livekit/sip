@@ -72,6 +72,11 @@ type TLSConfig struct {
 	// Note: Only applies to TLS 1.0-1.2; TLS 1.3 cipher suites are not configurable.
 	CipherSuites []string `yaml:"cipher_suites"`
 
+	// WarnOnly disables enforcement of MinVersion, MaxVersion and CipherSuites.
+	// Instead, a warning is logged for each handshake that negotiates a version or cipher suite outside of them.
+	// Useful to check which connections would be affected before enforcing a stricter policy.
+	WarnOnly bool `yaml:"warn_only"`
+
 	// ALPNProtocols is an optional list of ALPN protocol names for TLS negotiation.
 	// If not provided, defaults to ["sip"]. Set to an empty list to disable ALPN.
 	// Some providers (e.g. Meta) reject the "sip" ALPN and require it to be disabled.
