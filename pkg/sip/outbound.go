@@ -212,7 +212,7 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 	c.mon.CallStart()
 	defer c.mon.CallEnd()
 
-	err := c.connectSIP(ctx, c.tid)
+	err := c.connectSIP(ctx)
 	if err != nil {
 		c.ensureClosed(ctx)
 		return err // connectSIP updates the error code on the callInfo
@@ -234,9 +234,9 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 func (c *outboundCall) WaitClose(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.WaitClose")
 	defer span.End()
-	return c.waitClose(ctx, c.tid)
+	return c.waitClose(ctx)
 }
-func (c *outboundCall) waitClose(ctx context.Context, tid traceid.ID) error {
+func (c *outboundCall) waitClose(ctx context.Context) error {
 	defer c.ensureClosed(ctx)
 
 	ticker := time.NewTicker(stateUpdateTick)
@@ -425,12 +425,12 @@ func (c *outboundCall) Participant() ParticipantInfo {
 	return c.lkRoom.Participant()
 }
 
-func (c *outboundCall) connectSIP(ctx context.Context, tid traceid.ID) error {
+func (c *outboundCall) connectSIP(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.connectSIP")
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.dialSIP(ctx, tid); err != nil {
+	if err := c.dialSIP(ctx); err != nil {
 		c.log.Infow("SIP call failed", "error", err)
 		res := classifyInviteError(err)
 		if !c.sigTs.InviteTime.IsZero() {
@@ -485,7 +485,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	return nil
 }
 
-func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
+func (c *outboundCall) dialSIP(ctx context.Context) error {
 	if c.sipConf.dialtone {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
@@ -494,7 +494,7 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 		dst := c.lkRoomIn // already under mutex
 
 		// Play dialtone to the room while participant connects
-		go func(tid traceid.ID) {
+		go func() {
 			rctx, span := Tracer.Start(rctx, "tones.Play")
 			defer span.End()
 
@@ -506,9 +506,9 @@ func (c *outboundCall) dialSIP(ctx context.Context, tid traceid.ID) error {
 			if err != nil && !errors.Is(err, context.Canceled) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
-		}(tid)
+		}()
 	}
-	err := c.sipSignal(ctx, tid)
+	err := c.sipSignal(ctx)
 	if err != nil {
 		return err
 	}
@@ -694,7 +694,7 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 	}
 }
 
-func (c *outboundCall) sipSignal(ctx context.Context, tid traceid.ID) error {
+func (c *outboundCall) sipSignal(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.sipSignal")
 	defer span.End()
 

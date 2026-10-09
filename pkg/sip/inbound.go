@@ -196,7 +196,7 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 // client to retry) from a hard auth failure. Callers should treat
 // (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
 // a finalized error state.
-func (s *Server) handleInviteAuth(tid traceid.ID, log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
+func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
 	if auth.Realm == "" {
 		auth.Realm = UserAgent
 	}
@@ -422,7 +422,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		return psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invite validation failed: %w", err))
 	}
 	tid := traceid.FromGUID(string(cc.ID()))
-	log := cc.log.WithValues("transport", tr, "tid", tid.String())
+	log := cc.log.WithValues("transport", tr, "traceID", tid.String())
 	cc.log = log
 
 	// Replay cached final rejection for retries reusing the same Call-ID +
@@ -618,7 +618,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		inviteState.authResolved.Store(true)
 
 		s.getCallInfo(cc.ID()).countInvite(log, req)
-		if ok, challenge, sentStatus := s.handleInviteAuth(tid, log, req, tx, from.User, r.Auth); !ok {
+		if ok, challenge, sentStatus := s.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
 			if sentStatus != nil {
 				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
 			}
@@ -647,7 +647,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	call.joinDur = joinDur
 	call.sigTs.InviteTime = start
 	call.sigTs.TryingTime = tryingTime
-	return call.handleInvite(call.ctx, tid, req, r.TrunkID, s.conf)
+	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
 }
 
 func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
@@ -872,7 +872,7 @@ func (c *inboundCall) dispatchAttributes() map[string]string {
 	return lksip.InviteTimeAttributes(c.sigTs.InviteTime)
 }
 
-func (c *inboundCall) handleInvite(ctx context.Context, tid traceid.ID, req *sip.Request, trunkID string, conf *config.Config) error {
+func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkID string, conf *config.Config) error {
 	ctx, span := Tracer.Start(ctx, "sip.inbound.handleInvite")
 	defer span.End()
 	c.mon.InviteAccept()
@@ -1690,6 +1690,7 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 			ctx, span := Tracer.Start(ctx, "sip.inbound.OnSessionEnd")
 			defer span.End()
 			h.OnSessionEnd(ctx, &CallIdentifier{
+				TraceID:   tid,
 				ProjectID: c.projectID,
 				CallID:    c.call.LkCallId,
 				SipCallID: c.call.SipCallId,
@@ -2039,7 +2040,6 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	contact := s.ContactURI(legTr)
 	log := s.log.WithValues(
 		"callID", toTag,
-		"traceID", traceid.FromGUID(toTag),
 		"sipCallID", sipCallID,
 		"fromIP", src.Addr().String(),
 		"toIP", invite.Destination(),
