@@ -1617,3 +1617,74 @@ func TestTransferErrorDetails(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateCallProvider(t *testing.T) {
+	internal := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
+	internalNoTransfer := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL, PreventTransfer: true}
+	external := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_EXTERNAL}
+
+	cases := []struct {
+		name       string
+		provider   *livekit.ProviderInfo
+		transferTo string
+		code       psrpc.ErrorCode
+	}{
+		{"no provider info", nil, "<sip:911@example.com>", ""},
+		{"external to emergency", external, "<sip:911@example.com>", ""},
+		{"internal to regular number", internal, "<sip:+14155559110@example.com>", ""},
+		{"internal to emergency sip", internal, "<sip:911@example.com>", psrpc.InvalidArgument},
+		{"internal to emergency tel", internal, "tel:+1911", psrpc.InvalidArgument},
+		{"internal transfers disabled", internalNoTransfer, "<sip:+14155559110@example.com>", psrpc.Unimplemented},
+		{"internal transfers disabled to emergency", internalNoTransfer, "<sip:911@example.com>", psrpc.Unimplemented},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var state *CallState
+			if c.provider != nil {
+				state = NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: c.provider})
+			}
+			s := &Service{}
+			err := s.validateCallProvider(state, c.transferTo)
+			if c.code == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			code, _ := psrpc.GetErrorCode(err)
+			require.Equal(t, c.code, code)
+		})
+	}
+}
+
+// TestTransferToEmergencyNumber checks that a transfer to 911 on a LiveKit
+// phone number fails before any REFER is sent, for inbound and outbound calls.
+func TestTransferToEmergencyNumber(t *testing.T) {
+	internal := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
+	newService := func() *Service {
+		s := newServiceForAffinity(&config.Config{})
+		s.log = logger.GetLogger()
+		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+		s.srv.byLocalTag["inbound"] = &inboundCall{
+			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal}),
+		}
+		s.cli.activeCalls["outbound"] = &outboundCall{
+			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal}),
+		}
+		return s
+	}
+	for _, callID := range []string{"inbound", "outbound"} {
+		t.Run(callID, func(t *testing.T) {
+			s := newService()
+			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
+				SipCallId:  callID,
+				TransferTo: "<sip:911@carrier.example.com>",
+			})
+			require.Error(t, err)
+			require.Nil(t, resp)
+			code, _ := psrpc.GetErrorCode(err)
+			require.Equal(t, psrpc.InvalidArgument, code)
+			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
+			require.Empty(t, s.pendingTransfers)
+		})
+	}
+}
