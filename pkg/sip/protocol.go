@@ -36,6 +36,7 @@ import (
 const (
 	notifyAckTimeout = 5 * time.Second
 	referByeTimeout  = time.Second
+	byeRetryGrace    = 5 * time.Second
 	// referResultGrace is how long a REFER result is still accepted after the
 	// original call ended. Once the transfer target answers, our peer reports it
 	// in the final NOTIFY and then BYEs the original leg, which is no longer
@@ -272,8 +273,6 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 		Transport: t,
 	}
 }
-
-var byeRetryGrace = 5 * time.Second
 
 // sendBye sends a BYE and waits for its final response. BYE is a non-INVITE
 // transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.

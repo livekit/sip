@@ -2424,7 +2424,7 @@ func (c *sipInbound) inviteConnOpen() bool {
 		return false
 	}
 	conn, err := c.s.sipSrv.TransportLayer().GetConnection(string(c.legTr), c.inviteOk.Destination())
-	if err != nil || conn == nil {
+	if err != nil {
 		return false
 	}
 	_, _ = conn.TryClose()
@@ -2515,7 +2515,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	if sendBye(ctx, c.log, c, r) || fallback == "" {
 		return
 	}
-	c.log.Infow("retrying BYE via Contact", "dest", fallback)
+	c.log.Infow("retrying BYE via Contact", "addr", fallback)
 	r.SetDestination(fallback)
 	r.Via().Params.Add("branch", sip.GenerateBranchN(16))
 	r.CSeq().SeqNo++
