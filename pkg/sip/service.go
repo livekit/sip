@@ -330,19 +330,14 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 
 func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
 	out := s.transferSIPParticipant(ctx, req)
-	if errors.Is(out.Err, errTransferCallEnded) {
-		// Temporary: the call ended before the transfer completed, so the
-		// transfer did not succeed. This should be a failure, but for backward
-		// compatibility reasons, keeping this as a success for the time being,
-		// i.e. no error, but more details in the response.
-		s.log.Infow("transfer: call ended before it completed, reporting it in the response",
-			"callID", req.SipCallId, "transferTo", req.TransferTo, "transferID", out.TransferID)
-		return transferResponse(out), nil
-	}
 	if out.Err != nil {
 		return nil, transferError(out)
 	}
-	return transferResponse(out), nil
+	return &rpc.InternalTransferSIPParticipantResponse{
+		TransferId: out.TransferID,
+		Status:     livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL,
+		Reason:     livekit.SIPTransferReason_STR_COMPLETED,
+	}, nil
 }
 
 // transferError reports the outcome of a failed transfer on the error.
@@ -453,22 +448,6 @@ func transferReason(err error) (livekit.SIPTransferReason, *livekit.SIPStatus) {
 		return livekit.SIPTransferReason_STR_RINGING_TIMEOUT, nil
 	}
 	return livekit.SIPTransferReason_STR_UNSPECIFIED, nil
-}
-
-// transferResponse reports the outcome of a transfer in the response. Only
-// STR_CALL_ENDED still needs it, and it goes away once that becomes an error.
-func transferResponse(out transferOutcome) *rpc.InternalTransferSIPParticipantResponse {
-	reason, sipStatus := transferReason(out.Err)
-	status := livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL
-	if out.Err != nil {
-		status = livekit.SIPTransferStatus_STS_TRANSFER_FAILED
-	}
-	return &rpc.InternalTransferSIPParticipantResponse{
-		TransferId: out.TransferID,
-		Status:     status,
-		Reason:     reason,
-		SipStatus:  sipStatus,
-	}
 }
 
 func (s *Service) getOrCreatePendingTransfer(callID string, transferTo string) (*PendingTransfer, bool) {
