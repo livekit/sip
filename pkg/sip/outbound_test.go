@@ -650,3 +650,29 @@ func TestBuildOutboundHeaders(t *testing.T) {
 		}
 	})
 }
+
+func TestSetStatusCodeAttrs(t *testing.T) {
+	// Runs on the INVITE failure path, so none of these may panic.
+	for _, tc := range []struct {
+		name   string
+		status *livekit.SIPStatus
+		room   RoomInterface
+	}{
+		{name: "nil status"},
+		{name: "zero code", status: &livekit.SIPStatus{}},
+		{
+			name:   "nil room",
+			status: &livekit.SIPStatus{Code: livekit.SIPStatusCode(sip.StatusBusyHere), Status: "Busy Here"},
+		},
+		{
+			name:   "room not connected",
+			status: &livekit.SIPStatus{Code: livekit.SIPStatusCode(sip.StatusBusyHere), Status: "Busy Here"},
+			room:   newTestRoomWithConfig(logger.GetLogger(), nil, nil),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &outboundCall{log: logger.GetLogger(), lkRoom: tc.room}
+			require.NotPanics(t, func() { c.setStatusCodeAttrs(tc.status) })
+		})
+	}
+}
