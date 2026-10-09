@@ -2419,16 +2419,34 @@ func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
 	c.drop() // mark as closed
 }
 
-func (c *sipInbound) swapSrcDst(req *sip.Request) {
+func (c *sipInbound) inviteConnOpen() bool {
+	if c.legTr == TransportUDP {
+		return false
+	}
+	conn, err := c.s.sipSrv.TransportLayer().GetConnection(string(c.legTr), c.inviteOk.Destination())
+	if err != nil {
+		return false
+	}
+	_, _ = conn.TryClose()
+	return true
+}
+
+func (c *sipInbound) swapSrcDst(req *sip.Request) (fallback string) {
 	dest := c.inviteOk.Destination()
 	if contact := c.invite.Contact(); contact != nil {
 		req.Recipient = contact.Address
-		dest = ConvertURI(&contact.Address).GetDest()
+		contactDest := ConvertURI(&contact.Address).GetDest()
+		if c.inviteConnOpen() {
+			fallback = contactDest
+		} else {
+			dest = contactDest
+		}
 	} else {
 		req.Recipient = c.from.Address
 	}
 	if route := c.invite.RecordRoute(); route != nil {
 		dest = ConvertURI(&route.Address).GetDest()
+		fallback = ""
 	}
 	req.SetSource(c.inviteOk.Source())
 	req.SetDestination(dest)
@@ -2448,6 +2466,7 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	// Remove all Record-Route headers
 	for req.RemoveHeader("Record-Route") {
 	}
+	return fallback
 }
 
 func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
@@ -2491,9 +2510,24 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	}
 
 	c.setCSeq(r)
-	c.swapSrcDst(r)
+	fallback := c.swapSrcDst(r)
 	c.drop()
-	sendBye(ctx, c.log, c, r)
+	if sendBye(ctx, c.log, c, r) || fallback == "" {
+		return
+	}
+	c.log.Infow("retrying BYE via Contact", "addr", fallback)
+	r.SetDestination(fallback)
+	r.Via().Params.Add("branch", sip.GenerateBranchN(16))
+	r.CSeq().SeqNo++
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sendBye(ctx, c.log, c, r)
+	}()
+	select {
+	case <-done:
+	case <-time.After(byeRetryGrace):
+	}
 }
 
 func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[string]string) {

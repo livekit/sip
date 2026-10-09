@@ -17,6 +17,7 @@ package sip
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -1026,4 +1027,78 @@ func TestInboundCallStatusCode(t *testing.T) {
 			require.EqualValues(t, tc.exp, ended.CallStatusCode.Code)
 		})
 	}
+}
+
+func overTCP(req *sip.Request, _ *sip.Response) {
+	req.SetTransport("TCP")
+}
+
+func withContact(u sip.Uri) createCallTestOption {
+	return func(req *sip.Request, _ *sip.Response) {
+		req.RemoveHeader("Contact")
+		req.AppendHeader(&sip.ContactHeader{Address: u})
+	}
+}
+
+func inviteConnOpen(ic *inboundCall) bool {
+	ic.cc.mu.RLock()
+	defer ic.cc.mu.RUnlock()
+	return ic.cc.inviteConnOpen()
+}
+
+func expectBye(t *testing.T, byes <-chan *sipUARequest, status sip.StatusCode, reason string) *sip.Request {
+	t.Helper()
+	select {
+	case msg := <-byes:
+		require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, status, reason, nil)))
+		return msg.req
+	case <-time.After(5 * time.Second):
+		t.Fatal("no BYE from server")
+		return nil
+	}
+}
+
+func closeAndExpectBye(t *testing.T, call *sipUADialogTest, ic *inboundCall) {
+	t.Helper()
+	byes := call.RegisterRequestChannel("BYE")
+	require.NoError(t, ic.Close())
+	expectBye(t, byes, 200, "OK")
+}
+
+func TestInboundByeOverInviteConnection(t *testing.T) {
+	st := NewServiceTest(t, nil)
+
+	t.Run("unreachable Contact", func(t *testing.T) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		contact := sip.Uri{Scheme: "sip", Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port}
+		require.NoError(t, l.Close())
+
+		call, ic := st.CreateInboundCall(t, overTCP, withContact(contact))
+		closeAndExpectBye(t, call, ic)
+	})
+
+	t.Run("peer closed the INVITE connection", func(t *testing.T) {
+		call, ic := st.CreateInboundCall(t, overTCP)
+		conn, err := st.TestUA.UA.TransportLayer().GetConnection("tcp", st.Address())
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+		require.Eventually(t, func() bool { return !inviteConnOpen(ic) }, 2*time.Second, 10*time.Millisecond)
+		closeAndExpectBye(t, call, ic)
+	})
+
+	t.Run("rejected on the INVITE connection", func(t *testing.T) {
+		call, ic := st.CreateInboundCall(t, overTCP)
+		byes := call.RegisterRequestChannel("BYE")
+		require.NoError(t, ic.Close())
+		first := expectBye(t, byes, 404, "Not Found")
+		second := expectBye(t, byes, 200, "OK")
+		require.NotEqual(t, first.Source(), second.Source())
+		require.Greater(t, second.CSeq().SeqNo, first.CSeq().SeqNo)
+	})
+
+	t.Run("UDP", func(t *testing.T) {
+		_, ic := st.CreateInboundCall(t)
+		require.False(t, inviteConnOpen(ic))
+	})
 }
