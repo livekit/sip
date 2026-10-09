@@ -37,6 +37,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 
@@ -378,7 +379,7 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	// Check if provider is internal and config is set before allowing transfer
-	if err := s.checkInternalProviderRequest(ctx, req.SipCallId); err != nil {
+	if err := s.checkInternalProviderRequest(ctx, req.SipCallId, req.TransferTo); err != nil {
 		return transferOutcome{Err: err}
 	}
 
@@ -527,14 +528,14 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	return transferOutcome{Err: err}
 }
 
-func (s *Service) checkInternalProviderRequest(ctx context.Context, callID string) error {
+func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
 	out := s.cli.activeCalls[LocalTag(callID)]
 	s.cli.cmu.Unlock()
 
 	if out != nil {
-		return s.validateCallProvider(out.state)
+		return s.validateCallProvider(out.state, transferTo)
 	}
 
 	s.srv.cmu.Lock()
@@ -542,23 +543,28 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID strin
 	s.srv.cmu.Unlock()
 
 	if in != nil {
-		return s.validateCallProvider(in.state)
+		return s.validateCallProvider(in.state, transferTo)
 	}
 
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 }
 
-func (s *Service) validateCallProvider(state *CallState) error {
+func (s *Service) validateCallProvider(state *CallState, transferTo string) error {
 	info := state.Info()
 	if state == nil || info == nil || info.ProviderInfo == nil {
 		return nil // No provider info to validate
 	}
 
-	// Check if provider is internal and prevent transfer is enabled
-	if info.ProviderInfo.Type == livekit.ProviderType_PROVIDER_TYPE_INTERNAL && info.ProviderInfo.PreventTransfer {
+	// Validation below is only for internal providers
+	if info.ProviderInfo.Type != livekit.ProviderType_PROVIDER_TYPE_INTERNAL {
+		return nil
+	}
+	if info.ProviderInfo.PreventTransfer {
 		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
 	}
-
+	if lksip.IsEmergencyNumber(lksip.URIUser(transferTo)) {
+		return psrpc.NewErrorf(psrpc.InvalidArgument, "transfers to an emergency number are not supported from LiveKit phone numbers")
+	}
 	return nil
 }
 

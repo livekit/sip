@@ -514,6 +514,7 @@ func (c *Client) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.T
 		CreatedAtNs:           time.Now().UnixNano(),
 		MediaEncryption:       req.MediaEncryption.String(),
 		EnabledFeatures:       req.EnabledFeatures,
+		ProviderInfo:          req.ProviderInfo,
 	}
 
 	return callInfo
