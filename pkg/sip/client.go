@@ -186,6 +186,25 @@ func setUriTransport(p *sip.Uri, tr livekit.SIPTransport) {
 	}
 }
 
+// setURIUserPhone adds the RFC 3261/3966 ;user=phone URI parameter.
+// Idempotent if the parameter is already present.
+func setURIUserPhone(p *sip.Uri) {
+	if p == nil {
+		return
+	}
+	p.UriParams.Add("user", "phone")
+}
+
+func wantURIUserPhone(req *rpc.InternalCreateSIPParticipantRequest, confEnabled bool) bool {
+	if confEnabled {
+		return true
+	}
+	if req == nil || req.FeatureFlags == nil {
+		return false
+	}
+	return req.FeatureFlags[uriUserPhoneFeatureFlag] == "true"
+}
+
 func buildLegacyURI(user, addr string, tr livekit.SIPTransport) (*sip.Uri, error) {
 	if user == "" {
 		return nil, fmt.Errorf("number must be set")
@@ -352,7 +371,7 @@ func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr
 	return h, nil
 }
 
-func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultHost string) (*sip.Uri, *sip.FromHeader, *sip.ToHeader, error) {
+func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultHost string, uriUserPhone bool) (*sip.Uri, *sip.FromHeader, *sip.ToHeader, error) {
 	uri, err := buildRequestURI(req.SipRequestUri, req.CallTo, req.Address, req.Transport)
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid request URI: %w", err))
@@ -368,6 +387,12 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 	from, err := buildFromHeader(req.SipFromHeader, req.DisplayName, req.Number, fromHost, req.Transport)
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid From header: %w", err))
+	}
+	if wantURIUserPhone(req, uriUserPhone) {
+		// Some carriers (e.g. Airtel) require ;user=phone on telephone URIs (#615).
+		setURIUserPhone(uri)
+		setURIUserPhone(&from.Address)
+		setURIUserPhone(&to.Address)
 	}
 	return uri, from, to, nil
 }
@@ -392,7 +417,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	if err != nil {
 		return nil, err
 	}
-	uri, from, to, err := buildOutboundHeaders(req, defaultHost)
+	uri, from, to, err := buildOutboundHeaders(req, defaultHost, c.conf.URIUserPhone)
 	if err != nil {
 		return nil, err
 	}
