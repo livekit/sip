@@ -732,7 +732,7 @@ func ParseReasonHeader(header string) (ReasonHeader, error) {
 		if i < 0 {
 			continue
 		}
-		key := strings.TrimSpace(line[:i])
+		key := strings.ToLower(strings.TrimSpace(line[:i]))
 		val := strings.TrimSpace(line[i+1:])
 		switch key {
 		case "cause":
