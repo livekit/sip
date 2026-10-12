@@ -187,6 +187,12 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 				}
 			}
 		})
+		statusCode := 0
+		if sentStatus != nil {
+			statusCode = int(sentStatus.Code)
+		}
+		// Same termination the challenge was counted under in processInvite.
+		st.EmitSignalingEvent(callEndedEvent(challengedAt, stats.ClientError("unauthorized"), statusCode))
 	})
 }
 
@@ -377,9 +383,16 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	var state *CallState
 	var cc *sipInbound
+	var call *inboundCall
+	var term stats.Termination // why the INVITE was rejected before a call was set up
 	defer func() {
 		if state == nil {
 			return
+		}
+		if call == nil {
+			// No call was set up: the INVITE was rejected or dropped here.
+			// Calls that were set up report their own end in inboundCall.close.
+			state.EmitSignalingEvent(callEndedEvent(time.Now(), term, cc.lastStatusCode()))
 		}
 		state.Update(func(info *livekit.SIPCallInfo) {
 			if err := retErr; err != nil && info.Error == "" {
@@ -496,6 +509,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	from, to := cc.From(), cc.To()
 
 	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
+	rejectInvite := func(t stats.Termination) {
+		term = t
+		cmon.InviteErrorShort(t)
+	}
 	cmon.InviteReq()
 	defer cmon.SessionDur()()
 	var checkDurOnce sync.Once
@@ -535,14 +552,49 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 	}
 
+	// newState creates the call state from the auth result. The state's handler
+	// is chosen by project, so it can't exist before the auth lookup answers.
+	newState := func(r AuthInfo) *CallState {
+		initial := &livekit.SIPCallInfo{
+			CallId:        string(cc.ID()),
+			Region:        s.region,
+			FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
+			ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
+			CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
+			CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
+			CreatedAtNs:   time.Now().UnixNano(),
+			TrunkId:       r.TrunkID,
+			ProviderInfo:  r.ProviderInfo,
+			SipCallId:     cc.SIPCallID(),
+		}
+		st := NewCallState(s.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+		// The INVITE and the 100 Trying happened before the call state existed;
+		// report them now with their original times.
+		st.EmitSignalingEvent(SignalingEvent{
+			Type:      EventInviteReceived,
+			Time:      start,
+			SIPMethod: string(sip.INVITE),
+			CSeq:      cc.InviteCSeq(),
+			Transport: tr,
+		})
+		// tryingTime is zero (event dropped) if 100 Trying was not sent yet.
+		st.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
+		return st
+	}
+
 	tauth := cmon.StageDurTimer("get-auth")
 	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
 	tauth()
 	checked()
 	if err != nil {
-		cmon.InviteErrorShort(stats.ServerError("auth-error"))
+		rejectInvite(stats.ServerError("auth-error"))
 		log.Warnw("Rejecting inbound, auth check failed", err)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
+		// The project is unknown, but report the INVITE and its rejection anyway:
+		// a failing auth lookup is our outage, not the caller's. Only events are
+		// sent. The state is not kept, so no call info is flushed upstream.
+		st := newState(AuthInfo{})
+		st.EmitSignalingEvent(callEndedEvent(time.Now(), term, cc.lastStatusCode()))
 		return psrpc.NewError(psrpc.PermissionDenied, fmt.Errorf("rejecting inbound, auth check failed: %w", err))
 	}
 	if r.ProjectID != "" {
@@ -553,53 +605,41 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 	cmon.SetProvider(providerLabel(r.ProviderInfo))
 
-	initial := &livekit.SIPCallInfo{
-		CallId:        string(cc.ID()),
-		Region:        s.region,
-		FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
-		ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
-		CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
-		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
-		CreatedAtNs:   time.Now().UnixNano(),
-		TrunkId:       r.TrunkID,
-		ProviderInfo:  r.ProviderInfo,
-		SipCallId:     cc.SIPCallID(),
-	}
-	state = NewCallState(s.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+	state = newState(r)
 	state.Flush()
 
 	switch r.Result {
 	case AuthDrop:
-		cmon.InviteErrorShort(stats.ClientError("flood"))
+		rejectInvite(stats.ClientError("flood"))
 		log.Debugw("Dropping inbound flood")
 		cc.Drop()
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was not authorized by trunk configuration")
 	case AuthNotFound:
-		cmon.InviteErrorShort(stats.ClientError("no-rule"))
+		rejectInvite(stats.ClientError("no-rule"))
 		log.Warnw("Rejecting inbound, doesn't match any Trunks", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "Does not match any SIP Trunks")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk configuration for call")
 	case AuthQuotaExceeded:
-		cmon.InviteErrorShort(stats.ClientError("quota-exceeded"))
+		rejectInvite(stats.ClientError("quota-exceeded"))
 		log.Warnw("Rejecting inbound, quota exceeded", nil)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service temporarily unavailable")
 		return psrpc.NewErrorf(psrpc.ResourceExhausted, "quota limit exceeded")
 	case AuthNoTrunkFound:
-		cmon.InviteErrorShort(stats.ClientError("no-trunk"))
+		rejectInvite(stats.ClientError("no-trunk"))
 		log.Warnw("Rejecting inbound, no trunk found", nil)
 		cc.RespondAndDrop(sip.StatusNotFound, "No trunk found")
 		return psrpc.NewErrorf(psrpc.NotFound, "no trunk found for call")
 	case AuthRouteNotAllowed:
-		cmon.InviteErrorShort(stats.ClientError("route-not-allowed"))
+		rejectInvite(stats.ClientError("route-not-allowed"))
 		log.Warnw("Rejecting inbound, route not allowed", nil)
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Service temporarily unavailable")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "route not allowed")
 	case AuthFailureOther:
-		cmon.InviteErrorShort(stats.ClientError("auth-other"))
+		rejectInvite(stats.ClientError("auth-other"))
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "auth failure")
 	case AuthRejectedAsError:
-		cmon.InviteErrorShort(stats.ClientError("auth-rejected-as-error"))
+		rejectInvite(stats.ClientError("auth-rejected-as-error"))
 		log.Warnw("Rejecting inbound, auth service returned a rejection as an error", nil)
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was rejected by the auth service")
@@ -608,6 +648,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			// We will send password request anyway, so might as well signal that the progress is made.
 			cc.Processing()
 			tryingTime = time.Now()
+			state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
 		}
 		sipCallID := ""
 		if h := req.CallID(); h != nil {
@@ -626,7 +667,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			s.cmu.Lock()
 			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
 			s.cmu.Unlock()
-			cmon.InviteErrorShort(stats.ClientError("unauthorized"))
+			rejectInvite(stats.ClientError("unauthorized"))
 			if challenge {
 				// 407 sent: defer finalization to the timer or the next INVITE,
 				// not the deferred handler at the top of processInvite.
@@ -642,7 +683,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		// ok
 	}
 
-	call := s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
+	call = s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
 	cc.SetCall(call)
 	call.joinDur = joinDur
 	call.sigTs.InviteTime = start
@@ -887,6 +928,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 
 	c.cc.StartRinging()
 	c.sigTs.RingingTime = time.Now()
+	c.state.EmitSignalingEvent(inviteResponseEvent(EventRingingSent, c.sigTs.RingingTime, int(sip.StatusRinging), c.cc.InviteCSeq()))
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	tdisp := c.mon.StageDurTimer("eval-dispatch")
@@ -1091,6 +1133,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			c.log().Warnw("could not set RoomId: room is nil", nil)
 		}
 	})
+	c.state.EmitSignalingEvent(SignalingEvent{Type: EventRoomJoined, Time: c.sigTs.JoinRoomTime})
 
 	// Publish our own track.
 	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {
@@ -1144,6 +1187,9 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 	err := c.cc.Accept(ctx, sdpData, headers, waitForAck)
 	taccept()
 	c.sigTs.AcceptTime = time.Now()
+	// Accept returns only after the ACK (or after giving up on it), so use the
+	// time the first 200 OK went out. Zero (dropped) if it was never sent.
+	c.state.EmitSignalingEvent(inviteResponseEvent(EventAnsweredSent, c.cc.OKSentAt(), int(sip.StatusOK), c.cc.InviteCSeq()))
 	if errors.Is(err, errNoACK) {
 		c.log().Errorw("Call accepted, but no ACK received", err)
 		c.closeWithNoACK(ctx)
@@ -1662,7 +1708,12 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	// This ensures participant attributes are still available for
 	// attributes_to_headers mapping in the setHeaders callback.
 	// See: https://github.com/livekit/sip/issues/404
+	// Take the end time before sending BYE: CloseWithStatus waits for the BYE
+	// transaction, which can take seconds if the remote side doesn't answer.
+	endedAt := time.Now()
 	c.cc.CloseWithStatus(ctx, result, end.Headers)
+	// Emitted after CloseWithStatus so the status includes the final response it may send.
+	c.state.EmitSignalingEvent(callEndedEvent(endedAt, end.Term, c.cc.lastStatusCode()))
 	c.closeMedia()
 	if callDurFn := c.callDur; callDurFn != nil {
 		callDurFn()
@@ -2100,8 +2151,24 @@ type sipInbound struct {
 	ringing         chan struct{}
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
+	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
 	call            *inboundCall
 	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
+}
+
+// lastStatusCode returns the final status sent for the INVITE, or 0 if none was sent.
+func (c *sipInbound) lastStatusCode() int {
+	if st := c.lastCallStatus.Load(); st != nil {
+		return int(st.Code)
+	}
+	return 0
+}
+
+// OKSentAt returns when the first 200 OK for the INVITE was sent, or zero.
+func (c *sipInbound) OKSentAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.okSentAt
 }
 
 func (c *sipInbound) SetCall(call *inboundCall) {
@@ -2364,6 +2431,9 @@ retries:
 	for try := 1; ; try++ {
 		if err := c.inviteTx.Respond(r); err != nil {
 			return err
+		}
+		if try == 1 {
+			c.okSentAt = time.Now()
 		}
 		c.setLastStatus(r.StatusCode, r.Reason)
 		if !waitForAck && c.legTr != TransportUDP {

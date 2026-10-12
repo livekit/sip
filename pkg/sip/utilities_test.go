@@ -116,9 +116,13 @@ func (m *MockIOInfoClient) Close() {
 type recordingStateHandler struct {
 	mu      sync.Mutex
 	updates []*livekit.SIPCallInfo
+	events  []SignalingEvent
 }
 
-var _ StateHandler = (*recordingStateHandler)(nil)
+var (
+	_ StateHandler          = (*recordingStateHandler)(nil)
+	_ SignalingEventHandler = (*recordingStateHandler)(nil)
+)
 
 // GetStateHandler returns this recorder for every call in the test.
 func (h *recordingStateHandler) GetStateHandler() GetStateHandler {
@@ -155,10 +159,35 @@ func (h *recordingStateHandler) Last() *livekit.SIPCallInfo {
 	return h.updates[len(h.updates)-1]
 }
 
+func (h *recordingStateHandler) HandleSignalingEvent(ev SignalingEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.events = append(h.events, ev)
+}
+
+// Events returns the signaling events emitted so far, oldest first.
+func (h *recordingStateHandler) Events() []SignalingEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.events)
+}
+
+// EventTypes returns the types of the signaling events emitted so far, oldest first.
+func (h *recordingStateHandler) EventTypes() []SignalingEventType {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	types := make([]SignalingEventType, len(h.events))
+	for i, ev := range h.events {
+		types[i] = ev.Type
+	}
+	return types
+}
+
 func (h *recordingStateHandler) Reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.updates = nil
+	h.events = nil
 }
 
 const (
