@@ -123,6 +123,7 @@ func (p *mediaPortPipeline) init(
 	}
 	p.conf.log.Infow("using codecs",
 		"audio-codec", mc.Audio.Info.SDPFullName(), "audio-rtp", mc.Audio.Type,
+		"audio-codec-params", mc.Audio.Info.Params,
 		"dtmf-codec", dtmfInfo.Info.SDPFullName(), "dtmf-rtp", dtmfInfo.Type,
 		"srtp", crypto,
 	)
