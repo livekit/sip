@@ -2441,15 +2441,27 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) {
 	}
 	req.PrependHeader(c.generateViaHeader(req))
 
-	// Convert the Record-Route set to a Route set, preserving order. The set was
-	// already reversed for this (UAS) direction when the request was built, so
-	// appending here keeps it intact; prepending would reverse it a second time
-	// and leave our own Record-Route as the target of the proxy hop, which
-	// multi-hop proxies (e.g. Avaya Session Manager) then bounce back to us
-	// instead of routing the dialog request to the peer.
-	rrHdrs := req.GetHeaders("Record-Route")
-	for _, hdr := range rrHdrs {
-		req.AppendHeader(&sip.RouteHeader{Address: hdr.(*sip.RecordRouteHeader).Address})
+	// The request builder derived this Record-Route set by reversing the dialog
+	// responses' Record-Route. With AddRecordRoute enabled that set carries our
+	// own Record-Route as its first entry, so converting it to Route headers
+	// sends the request back through us: the proxy strips its hop and the
+	// request loops back to LiveKit-SIP, which rejects it with 405 (observed as
+	// failed transfers behind multi-hop proxies, e.g. Avaya Session Manager).
+	// RFC 3261 §12.1.1 sets the UAS route set from the original INVITE's
+	// Record-Route list in wire order — which can never contain our own entry.
+	// Replace the response-derived set with it. When the INVITE itself carried
+	// Route headers, the builder copied those and added no Record-Route; leave
+	// that request untouched.
+	if len(req.GetHeaders("Record-Route")) > 0 {
+		for req.RemoveHeader("Record-Route") {
+		}
+		for _, hdr := range c.invite.GetHeaders("Record-Route") {
+			rr, ok := hdr.(*sip.RecordRouteHeader)
+			if !ok {
+				continue
+			}
+			req.AppendHeader(&sip.RouteHeader{Address: rr.Address})
+		}
 	}
 	// Remove all Record-Route headers
 	for req.RemoveHeader("Record-Route") {
