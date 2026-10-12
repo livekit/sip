@@ -1709,8 +1709,9 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	// This ensures participant attributes are still available for
 	// attributes_to_headers mapping in the setHeaders callback.
 	// See: https://github.com/livekit/sip/issues/404
-	// Take the end time before sending BYE: CloseWithStatus waits for the BYE
-	// transaction, which can take seconds if the remote side doesn't answer.
+	// Take the end time before CloseWithStatus. For an answered call it sends
+	// BYE and blocks until the remote side responds to it, or until the BYE
+	// transaction times out if the remote side is unreachable.
 	endedAt := time.Now()
 	c.cc.CloseWithStatus(ctx, result, end.Headers)
 	// Emitted after CloseWithStatus so the status includes the final response it may send.
