@@ -525,9 +525,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	defer checked()
 	joinDur := cmon.JoinDur()
 
-	var tryingTime time.Time
-	if !s.conf.HideInboundPort {
-		cc.Processing()
+	var tryingTime time.Time // zero unless 100 Trying was actually sent
+	if !s.conf.HideInboundPort && cc.Processing() {
 		tryingTime = time.Now()
 	}
 
@@ -646,9 +645,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	case AuthPassword:
 		if s.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
-			cc.Processing()
-			tryingTime = time.Now()
-			state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
+			if cc.Processing() {
+				tryingTime = time.Now()
+				state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
+			}
 		}
 		sipCallID := ""
 		if h := req.CallID(); h != nil {
@@ -926,9 +926,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		c.call.SipCallId = h.Value()
 	}
 
-	c.cc.StartRinging()
-	c.sigTs.RingingTime = time.Now()
-	c.state.EmitSignalingEvent(inviteResponseEvent(EventRingingSent, c.sigTs.RingingTime, int(sip.StatusRinging), c.cc.InviteCSeq()))
+	if c.cc.StartRinging() {
+		c.sigTs.RingingTime = time.Now()
+		c.state.EmitSignalingEvent(inviteResponseEvent(EventRingingSent, c.sigTs.RingingTime, int(sip.StatusRinging), c.cc.InviteCSeq()))
+	}
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	tdisp := c.mon.StageDurTimer("eval-dispatch")
@@ -2203,13 +2204,14 @@ func (c *sipInbound) drop() {
 	c.nextRequestCSeq = 0
 }
 
-func (c *sipInbound) respond(status sip.StatusCode, reason string) {
-	c.respondWithData(status, reason, "", nil)
+// respond sends a response to the INVITE and reports whether it was sent.
+func (c *sipInbound) respond(status sip.StatusCode, reason string) bool {
+	return c.respondWithData(status, reason, "", nil)
 }
 
-func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, contentType string, body []byte) {
+func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, contentType string, body []byte) bool {
 	if c.inviteTx == nil {
-		return
+		return false
 	}
 
 	r := sip.NewResponseFromRequest(c.invite, status, reason, body)
@@ -2222,9 +2224,11 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(c.contact)
 	}
 	c.addExtraHeaders(r)
-	if err := c.inviteTx.Respond(r); err == nil {
-		c.setLastStatus(status, reason)
+	if err := c.inviteTx.Respond(r); err != nil {
+		return false
 	}
+	c.setLastStatus(status, reason)
+	return true
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -2290,14 +2294,15 @@ func (c *sipInbound) RemoteHeaders() Headers {
 	return c.invite.Headers()
 }
 
-func (c *sipInbound) Processing() {
+// Processing sends 100 Trying and reports whether it was sent.
+func (c *sipInbound) Processing() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.respond(sip.StatusTrying, "Processing")
+	return c.respond(sip.StatusTrying, "Processing")
 }
 
-func (c *sipInbound) sendRinging() {
-	c.respond(sip.StatusRinging, "Ringing")
+func (c *sipInbound) sendRinging() bool {
+	return c.respond(sip.StatusRinging, "Ringing")
 }
 
 func (c *sipInbound) attachTag() {
@@ -2305,11 +2310,13 @@ func (c *sipInbound) attachTag() {
 	c.to.Params.Add("tag", string(c.id))
 }
 
-func (c *sipInbound) StartRinging() {
+// StartRinging sends 180 Ringing, repeats it until the call is answered or
+// cancelled, and reports whether the first 180 was sent.
+func (c *sipInbound) StartRinging() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.attachTag()
-	c.sendRinging()
+	sent := c.sendRinging()
 	stop := make(chan struct{})
 	c.ringing = stop
 	tx := c.inviteTx
@@ -2332,6 +2339,7 @@ func (c *sipInbound) StartRinging() {
 			c.mu.Unlock()
 		}
 	}()
+	return sent
 }
 
 func (c *sipInbound) stopRinging() {
