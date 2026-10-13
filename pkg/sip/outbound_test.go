@@ -304,6 +304,101 @@ func TestWatchCancelledInvite(t *testing.T) {
 	})
 }
 
+// scriptedSIPClient answers each INVITE attempt with the next scripted
+// response and records which transactions were retired.
+type scriptedSIPClient struct {
+	t       *testing.T
+	resps   []func(req *sip.Request) *sip.Response
+	invites []*sip.Request
+	txs     []*testSIPClientTransaction
+	retired []sip.ClientTransaction
+}
+
+func (c *scriptedSIPClient) TransactionRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
+	i := len(c.invites)
+	require.Less(c.t, i, len(c.resps), "more INVITE attempts than scripted responses")
+	c.invites = append(c.invites, req)
+	tx := &testSIPClientTransaction{
+		log:       logger.NewTestLogger(c.t),
+		responses: make(chan *sip.Response, 1),
+		done:      make(chan struct{}),
+	}
+	tx.responses <- c.resps[i](req)
+	c.txs = append(c.txs, tx)
+	return tx, nil
+}
+
+func (c *scriptedSIPClient) WriteRequest(*sip.Request, ...sipgo.ClientRequestOption) error {
+	return nil
+}
+
+func (c *scriptedSIPClient) RetireConnection(tx sip.ClientTransaction) {
+	c.retired = append(c.retired, tx)
+}
+
+func (c *scriptedSIPClient) Close() error { return nil }
+
+func TestOutboundInviteProxyDraining(t *testing.T) {
+	drainingResponse := func(req *sip.Request) *sip.Response {
+		r := sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
+		r.AppendHeader(sip.NewHeader(proxyDrainingHeader, "1"))
+		return r
+	}
+	regular503Response := func(req *sip.Request) *sip.Response {
+		return sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
+	}
+	answeredResponse := func(req *sip.Request) *sip.Response {
+		r := sip.NewSDPResponseFromRequest(req, []byte(testMinimalSDP))
+		r.To().Params.Add("tag", "callee-tag")
+		return r
+	}
+
+	newOutbound := func(t *testing.T, cli *scriptedSIPClient) *sipOutbound {
+		from := &sip.FromHeader{Address: sip.Uri{User: "caller", Host: "lk"}, Params: sip.NewParams()}
+		from.Params.Add("tag", "caller-tag")
+		return &sipOutbound{
+			log:          logger.NewTestLogger(t),
+			c:            &Client{log: logger.NewTestLogger(t), sipCli: cli},
+			id:           "caller-tag",
+			uri:          &sip.Uri{User: "callee", Host: "sip.example.com"},
+			from:         from,
+			to:           &sip.ToHeader{Address: sip.Uri{User: "callee", Host: "sip.example.com"}, Params: sip.NewParams()},
+			contact:      &sip.ContactHeader{Address: sip.Uri{User: "lk", Host: "10.0.0.5", Port: 5060}},
+			callID:       "call-123",
+			nextCSeq:     1,
+			routeHeaders: []string{"<sip:sipfe.internal:5060;transport=tcp;lr>"},
+		}
+	}
+
+	t.Run("draining 503 retires connection and retries", func(t *testing.T) {
+		cli := &scriptedSIPClient{t: t, resps: []func(*sip.Request) *sip.Response{drainingResponse, answeredResponse}}
+		out := newOutbound(t, cli)
+
+		_, err := out.Invite(context.Background(), "", "", nil, []byte(testMinimalSDP), nil)
+		require.NoError(t, err)
+
+		require.Len(t, cli.invites, 2)
+		require.Equal(t, []sip.ClientTransaction{cli.txs[0]}, cli.retired, "only the transaction that got the draining 503 is retired")
+		// Same call, new transaction.
+		require.Equal(t, cli.invites[0].CallID().Value(), cli.invites[1].CallID().Value())
+		require.Greater(t, cli.invites[1].CSeq().SeqNo, cli.invites[0].CSeq().SeqNo)
+		require.NotSame(t, cli.invites[0], cli.invites[1], "retry must be a fresh request, not a resend")
+	})
+
+	t.Run("503 without the header fails without retiring connection", func(t *testing.T) {
+		cli := &scriptedSIPClient{t: t, resps: []func(*sip.Request) *sip.Response{regular503Response}}
+		out := newOutbound(t, cli)
+
+		_, err := out.Invite(context.Background(), "", "", nil, []byte(testMinimalSDP), nil)
+		var st *livekit.SIPStatus
+		require.ErrorAs(t, err, &st)
+		require.Equal(t, livekit.SIPStatusCode(sip.StatusServiceUnavailable), st.Code)
+
+		require.Len(t, cli.invites, 1)
+		require.Empty(t, cli.retired)
+	})
+}
+
 func TestOutboundMaxCallDuration(t *testing.T) {
 	const maxCallDuration = time.Second
 	const waitSlack = time.Second
