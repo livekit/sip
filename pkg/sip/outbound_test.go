@@ -44,6 +44,8 @@ func (c *recordingSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientReq
 	return nil
 }
 
+func (c *recordingSIPClient) RetireConnection(sip.ClientTransaction) {}
+
 func (c *recordingSIPClient) Close() error { return nil }
 
 func (c *recordingSIPClient) methods() []sip.RequestMethod {
