@@ -562,10 +562,19 @@ func (s *Service) validateCallProvider(state *CallState, transferTo string) erro
 	if info.ProviderInfo.PreventTransfer {
 		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
 	}
-	if lksip.IsEmergencyNumber(lksip.URIUser(transferTo)) {
+	if lksip.IsEmergencyNumber(lksip.URIUser(transferTo), transferOriginNumber(info)) {
 		return psrpc.NewErrorf(psrpc.InvalidArgument, "transfers to an emergency number are not supported from LiveKit phone numbers")
 	}
 	return nil
+}
+
+// transferOriginNumber returns the number whose carrier dials the transfer
+// target. Its region decides which short codes count as emergency numbers.
+func transferOriginNumber(info *livekit.SIPCallInfo) string {
+	if info.CallDirection == livekit.SIPCallDirection_SCD_INBOUND {
+		return info.ToUri.GetUser()
+	}
+	return info.FromUri.GetUser()
 }
 
 // extractTransferErrorReason extracts a user-friendly reason string from an error

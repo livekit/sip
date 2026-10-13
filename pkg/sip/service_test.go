@@ -1622,26 +1622,36 @@ func TestValidateCallProvider(t *testing.T) {
 	internal := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
 	internalNoTransfer := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL, PreventTransfer: true}
 	external := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_EXTERNAL}
+	const (
+		usNumber = "+14155550123"
+		ukNumber = "+442071234567"
+	)
 
 	cases := []struct {
 		name       string
 		provider   *livekit.ProviderInfo
+		direction  livekit.SIPCallDirection
+		number     string
 		transferTo string
 		code       psrpc.ErrorCode
 	}{
-		{"no provider info", nil, "<sip:911@example.com>", ""},
-		{"external to emergency", external, "<sip:911@example.com>", ""},
-		{"internal to regular number", internal, "<sip:+14155559110@example.com>", ""},
-		{"internal to emergency sip", internal, "<sip:911@example.com>", psrpc.InvalidArgument},
-		{"internal to emergency tel", internal, "tel:+1911", psrpc.InvalidArgument},
-		{"internal transfers disabled", internalNoTransfer, "<sip:+14155559110@example.com>", psrpc.Unimplemented},
-		{"internal transfers disabled to emergency", internalNoTransfer, "<sip:911@example.com>", psrpc.Unimplemented},
+		{"no provider info", nil, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "<sip:911@example.com>", ""},
+		{"external to emergency", external, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "<sip:911@example.com>", ""},
+		{"internal to regular number", internal, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "<sip:+14155559110@example.com>", ""},
+		{"internal outbound to emergency sip", internal, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "<sip:911@example.com>", psrpc.InvalidArgument},
+		{"internal outbound to emergency tel", internal, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "tel:+1911", psrpc.InvalidArgument},
+		{"internal inbound to emergency", internal, livekit.SIPCallDirection_SCD_INBOUND, usNumber, "<sip:112@example.com>", psrpc.InvalidArgument},
+		{"internal uk number to uk emergency", internal, livekit.SIPCallDirection_SCD_OUTBOUND, ukNumber, "<sip:999@example.com>", psrpc.InvalidArgument},
+		{"internal uk number to us short code", internal, livekit.SIPCallDirection_SCD_OUTBOUND, ukNumber, "<sip:911@example.com>", ""},
+		{"internal uk number to us international", internal, livekit.SIPCallDirection_SCD_OUTBOUND, ukNumber, "<sip:+1911@example.com>", psrpc.InvalidArgument},
+		{"internal transfers disabled", internalNoTransfer, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "<sip:+14155559110@example.com>", psrpc.Unimplemented},
+		{"internal transfers disabled to emergency", internalNoTransfer, livekit.SIPCallDirection_SCD_OUTBOUND, usNumber, "<sip:911@example.com>", psrpc.Unimplemented},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var state *CallState
 			if c.provider != nil {
-				state = NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: c.provider})
+				state = NewCallState(nil, internalCallInfo(c.provider, c.direction, c.number))
 			}
 			s := &Service{}
 			err := s.validateCallProvider(state, c.transferTo)
@@ -1656,6 +1666,18 @@ func TestValidateCallProvider(t *testing.T) {
 	}
 }
 
+// internalCallInfo builds call info for a call on a LiveKit phone number. The
+// number is the callee for inbound calls and the caller for outbound ones.
+func internalCallInfo(provider *livekit.ProviderInfo, dir livekit.SIPCallDirection, number string) *livekit.SIPCallInfo {
+	info := &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: dir}
+	if dir == livekit.SIPCallDirection_SCD_INBOUND {
+		info.ToUri = &livekit.SIPUri{User: number}
+	} else {
+		info.FromUri = &livekit.SIPUri{User: number}
+	}
+	return info
+}
+
 // TestTransferToEmergencyNumber checks that a transfer to 911 on a LiveKit
 // phone number fails before any REFER is sent, for inbound and outbound calls.
 func TestTransferToEmergencyNumber(t *testing.T) {
@@ -1665,10 +1687,10 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 		s.log = logger.GetLogger()
 		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
 		s.srv.byLocalTag["inbound"] = &inboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal}),
+			state: NewCallState(nil, internalCallInfo(internal, livekit.SIPCallDirection_SCD_INBOUND, "+14155550123")),
 		}
 		s.cli.activeCalls["outbound"] = &outboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal}),
+			state: NewCallState(nil, internalCallInfo(internal, livekit.SIPCallDirection_SCD_OUTBOUND, "+14155550123")),
 		}
 		return s
 	}
