@@ -54,6 +54,17 @@ type StateHandler interface {
 	HandleCallContextRecorded(info *livekit.SIPCallInfo)
 }
 
+// SignalingEventHandler is an optional extension of StateHandler. When the
+// handler returned by GetStateHandler implements it, CallState forwards
+// signaling lifecycle events to it.
+//
+// Like the StateHandler methods, it is called while CallState holds its
+// internal mutex: implementations must not block and must not call back into
+// the same CallState.
+type SignalingEventHandler interface {
+	HandleSignalingEvent(ev SignalingEvent)
+}
+
 // NewRPCStateHandler returns a StateHandler that forwards updates to a
 // StateUpdater. nil cli yields a no-op handler — useful for tests that don't
 // care about the upstream sink.
@@ -206,4 +217,25 @@ func (s *CallState) ForceFlush() {
 func (s *CallState) flushLocked() {
 	s.handler.HandleUpdate(s.callInfo)
 	s.dirty = false
+}
+
+// EmitSignalingEvent stamps ev with the call's identifiers and passes it to
+// the handler, if the handler accepts signaling events. Events with a zero
+// Time are dropped. Safe to call on a nil CallState.
+func (s *CallState) EmitSignalingEvent(ev SignalingEvent) {
+	if s == nil || ev.Time.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h, ok := s.handler.(SignalingEventHandler)
+	if !ok {
+		return
+	}
+	ev.CallID = s.callInfo.CallId
+	ev.SIPCallID = s.callInfo.SipCallId
+	ev.Direction = s.callInfo.CallDirection
+	ev.TrunkID = s.callInfo.TrunkId
+	ev.RoomID = s.callInfo.RoomId
+	h.HandleSignalingEvent(ev)
 }
