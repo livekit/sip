@@ -45,10 +45,14 @@ func TestCallStateEmitSignalingEvent(t *testing.T) {
 	require.Equal(t, "ST_test", evs[0].TrunkID)
 	require.Empty(t, evs[0].RoomID, "room is unknown before it is joined")
 	require.Equal(t, "RM_test", evs[1].RoomID)
+}
 
-	// Handlers without event support and nil states are ignored.
-	NewCallState(NewRPCStateHandler(nil), nil).EmitSignalingEvent(SignalingEvent{Type: EventCallEnded, Time: t0})
-	(*CallState)(nil).EmitSignalingEvent(SignalingEvent{Type: EventCallEnded, Time: t0})
+func TestCallStateEmitSignalingEventIgnored(t *testing.T) {
+	ev := SignalingEvent{Type: EventCallEnded, Time: time.Now()}
+	require.NotPanics(t, func() {
+		NewCallState(NewRPCStateHandler(nil), nil).EmitSignalingEvent(ev) // handler without event support
+		(*CallState)(nil).EmitSignalingEvent(ev)
+	})
 }
 
 // waitCallEnded waits for EventCallEnded and returns all events, checking they
