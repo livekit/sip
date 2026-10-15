@@ -44,6 +44,8 @@ import (
 	"github.com/livekit/sip/pkg/stats"
 )
 
+const proxyDrainingHeader = "X-LK-Proxy-Draining"
+
 type sipOutboundConfig struct {
 	transport       livekit.SIPTransport
 	uri             *sip.Uri
@@ -1004,6 +1006,7 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 		req                *sip.Request
 		resp               *sip.Response
 		err                error
+		drainRetries       int
 	)
 	if keys := maps.Keys(headers); len(keys) != 0 {
 		sort.Strings(keys)
@@ -1019,6 +1022,12 @@ authLoop:
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
+		}
+		if isProxyDraining(resp) {
+			// attemptInvite already retired the connection this 503 came back
+			// on, so the next attempt misses the pool and dials a new one.
+			c.log.Infow("proxy draining, retrying INVITE on a new connection", "retry", drainRetries)
+			continue
 		}
 		var authHeaderName string
 		switch resp.StatusCode {
@@ -1047,6 +1056,7 @@ authLoop:
 			authHeaderName = "Proxy-Authenticate"
 			authHeaderRespName = "Proxy-Authorization"
 		}
+
 		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
@@ -1196,6 +1206,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 						if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok && tcpAddr != nil {
 							c.log.Debugw("TCP connection using port on cloud-sip side", "port", tcpAddr.Port)
 						}
+						_, _ = conn.TryClose()
 					}
 				}
 			}
@@ -1208,7 +1219,20 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		handedOff = true
 		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
 	}
+	if isProxyDraining(resp) {
+		// The frontend this INVITE reached is shutting down. Retire the
+		// connection it went out on, so the retry and every later request to
+		// that address dial a new one. Calls already using it are not cut off:
+		// transactions in flight on it finish, and the last one closes it.
+		c.c.sipCli.RetireConnection(tx)
+		c.log.Infow("proxy draining, retired its connection")
+	}
+
 	return req, resp, err
+}
+
+func isProxyDraining(resp *sip.Response) bool {
+	return resp != nil && resp.StatusCode == sip.StatusServiceUnavailable && resp.GetHeader(proxyDrainingHeader) != nil
 }
 
 func (c *sipOutbound) WriteRequest(req *sip.Request) error {

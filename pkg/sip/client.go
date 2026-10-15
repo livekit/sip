@@ -50,6 +50,9 @@ import (
 type SIPClient interface {
 	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)
 	WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error
+	// RetireConnection removes the connection associated with tx from the
+	// transport pool so that subsequent requests use a new connection.
+	RetireConnection(tx sip.ClientTransaction)
 	Close() error
 }
 

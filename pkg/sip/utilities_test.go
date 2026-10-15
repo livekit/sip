@@ -575,6 +575,8 @@ func (w *testSIPClient) deliverReq(req *sipRequest) {
 
 }
 
+func (w *testSIPClient) RetireConnection(sip.ClientTransaction) {}
+
 func (w *testSIPClient) TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
 	if len(options) > 0 {
 		panic("options not supported for testSIPClient")
