@@ -167,7 +167,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "calls_active",
 		Help:        "Number of currently active SIP calls",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to"}))
+	}, []string{"dir", "to", "provider"}))
 
 	m.callsTerminated = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -175,7 +175,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "calls_terminated",
 		Help:        "Number of calls terminated by SIP bridge, labeled with result classification (success | server_error | client_error)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "result", "reason"}))
+	}, []string{"dir", "to", "provider", "result", "reason"}))
 
 	m.callsTerminationFailures = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -227,7 +227,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SIP room join duration (from INVITE to mixed room audio)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsOp,
-	}, []string{"dir"}))
+	}, []string{"dir", "provider"}))
 
 	m.durSetup = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -448,9 +448,10 @@ func (c *CallMonitor) InviteAccept() {
 func (c *CallMonitor) InviteErrorShort(t Termination) {
 	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": t.Reason, "to": "unknown"})).Inc()
 	c.m.callsTerminated.With(c.labelsShort(prometheus.Labels{
-		"to":     "unknown",
-		"result": string(t.Result),
-		"reason": t.Reason,
+		"to":       "unknown",
+		"provider": c.providerLabel(),
+		"result":   string(t.Result),
+		"reason":   t.Reason,
 	})).Inc()
 }
 
@@ -465,14 +466,14 @@ func (c *CallMonitor) CallStart() {
 	if !c.started.CompareAndSwap(false, true) {
 		return
 	}
-	c.m.callsActive.With(c.labels(nil)).Inc()
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": c.providerLabel()})).Inc()
 }
 
 func (c *CallMonitor) CallEnd() {
 	if !c.started.CompareAndSwap(true, false) {
 		return
 	}
-	c.m.callsActive.With(c.labels(nil)).Dec()
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": c.providerLabel()})).Dec()
 }
 
 func (c *CallMonitor) CallTerminate(t Termination) {
@@ -480,8 +481,9 @@ func (c *CallMonitor) CallTerminate(t Termination) {
 		return
 	}
 	c.m.callsTerminated.With(c.labels(prometheus.Labels{
-		"result": string(t.Result),
-		"reason": t.Reason,
+		"provider": c.providerLabel(),
+		"result":   string(t.Result),
+		"reason":   t.Reason,
 	})).Inc()
 }
 
@@ -526,11 +528,14 @@ func (c *CallMonitor) CheckDur() func(dt time.Duration) {
 }
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
-	t1 := prometheus.NewTimer(c.m.durJoin.With(c.labelsShort(nil))).ObserveDuration
+	start := time.Now()
 	t2 := c.StageDurTimer("invite-to-dispatch")
 	return func() time.Duration {
 		t2()
-		return t1()
+		dt := time.Since(start)
+		// Inbound calls set the provider after the timer starts, so read it here.
+		c.m.durJoin.With(c.labelsShort(prometheus.Labels{"provider": c.providerLabel()})).Observe(dt.Seconds())
+		return dt
 	}
 }
 

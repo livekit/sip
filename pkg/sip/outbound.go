@@ -122,6 +122,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
+	call.mon.SetProvider(providerLabel(state.Info().GetProviderInfo()))
 	var err error
 
 	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
