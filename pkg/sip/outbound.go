@@ -1025,10 +1025,7 @@ authLoop:
 		case sip.StatusOK:
 			break authLoop
 		default:
-			st := &livekit.SIPStatus{
-				Code:   livekit.SIPStatusCode(resp.StatusCode),
-				Status: resp.Reason,
-			}
+			st := sipStatusFromResponse(resp)
 			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
 				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
 			}
@@ -1038,15 +1035,7 @@ authLoop:
 			sip.StatusTemporarilyUnavailable,
 			sip.StatusNotAcceptableHere,
 			sip.StatusBusyHere:
-			st := &livekit.SIPStatus{
-				Code:   livekit.SIPStatusCode(resp.StatusCode),
-				Status: resp.Reason,
-			}
-			if body := resp.Body(); len(body) != 0 {
-				st.Status = string(body)
-			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
-				st.Status = s.Value()
-			}
+			st := sipStatusFromResponse(resp)
 			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
 				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
 			}
