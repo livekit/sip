@@ -1014,7 +1014,7 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
+			return nil, authError(ErrAuthMaxRetry, resp)
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
@@ -1050,11 +1050,11 @@ authLoop:
 		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds)
+			return nil, authError(ErrAuthMissingCreds, resp)
 		}
 		headerVal := resp.GetHeader(authHeaderName)
 		if headerVal == nil {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthNoHeader)
+			return nil, authError(ErrAuthNoHeader, resp)
 		}
 		challengeStr := headerVal.Value()
 		challenge, err := digest.ParseChallenge(challengeStr)

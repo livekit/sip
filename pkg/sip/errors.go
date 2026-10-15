@@ -184,6 +184,18 @@ func sipStatusFromResponse(resp *sip.Response) *livekit.SIPStatus {
 	return st
 }
 
+// authError wraps an auth sentinel with the last 401/407 response's detail
+// (body or X-Twilio-Error, see sipStatusFromResponse). The sentinel stays in
+// the chain so classifyInviteError still buckets it as "auth-failed"; no
+// SIPStatus is wrapped, which would re-bucket it by status code instead.
+func authError(sentinel error, resp *sip.Response) error {
+	if resp == nil {
+		return psrpc.NewError(psrpc.FailedPrecondition, sentinel)
+	}
+	st := sipStatusFromResponse(resp)
+	return psrpc.NewError(psrpc.FailedPrecondition, fmt.Errorf("%w (last response %d: %s)", sentinel, int(st.Code), st.Status))
+}
+
 // carrierBlockFromResponse returns a carrierBlockedError if resp carries a
 // provider error code known to be a permanent carrier block, else nil. st is
 // the SIPStatus already built for resp and is retained on the returned error.
