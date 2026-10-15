@@ -1014,7 +1014,7 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMaxRetry)
+			return nil, authError(ErrAuthMaxRetry, resp)
 		}
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
@@ -1025,10 +1025,7 @@ authLoop:
 		case sip.StatusOK:
 			break authLoop
 		default:
-			st := &livekit.SIPStatus{
-				Code:   livekit.SIPStatusCode(resp.StatusCode),
-				Status: resp.Reason,
-			}
+			st := sipStatusFromResponse(resp)
 			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
 				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
 			}
@@ -1038,15 +1035,7 @@ authLoop:
 			sip.StatusTemporarilyUnavailable,
 			sip.StatusNotAcceptableHere,
 			sip.StatusBusyHere:
-			st := &livekit.SIPStatus{
-				Code:   livekit.SIPStatusCode(resp.StatusCode),
-				Status: resp.Reason,
-			}
-			if body := resp.Body(); len(body) != 0 {
-				st.Status = string(body)
-			} else if s := resp.GetHeader("X-Twilio-Error"); s != nil {
-				st.Status = s.Value()
-			}
+			st := sipStatusFromResponse(resp)
 			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
 				return nil, fmt.Errorf("INVITE blocked by carrier: %w", blocked)
 			}
@@ -1061,11 +1050,11 @@ authLoop:
 		c.log.Infow("auth requested", "status", resp.StatusCode, "body", string(resp.Body()))
 		// auth required
 		if user == "" || pass == "" {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthMissingCreds)
+			return nil, authError(ErrAuthMissingCreds, resp)
 		}
 		headerVal := resp.GetHeader(authHeaderName)
 		if headerVal == nil {
-			return nil, psrpc.NewError(psrpc.FailedPrecondition, ErrAuthNoHeader)
+			return nil, authError(ErrAuthNoHeader, resp)
 		}
 		challengeStr := headerVal.Value()
 		challenge, err := digest.ParseChallenge(challengeStr)

@@ -166,6 +166,57 @@ func TestCarrierBlockFromResponse(t *testing.T) {
 	require.Nil(t, carrierBlockFromResponse(resp, st))
 }
 
+func TestSIPStatusFromResponse(t *testing.T) {
+	// No body or provider header -> reason phrase.
+	st := sipStatusFromResponse(sip.NewResponse(403, "Forbidden"))
+	require.Equal(t, livekit.SIPStatusCode(403), st.Code)
+	require.Equal(t, "Forbidden", st.Status)
+
+	// X-Twilio-Error replaces the generic reason on any final status, e.g. a 403
+	// for bad trunk credentials.
+	resp := sip.NewResponse(403, "Forbidden")
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32202 Authentication failure - bad user credentials"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, livekit.SIPStatusCode(403), st.Code)
+	require.Equal(t, "32202 Authentication failure - bad user credentials", st.Status)
+	res := classifyInviteError(fmt.Errorf("unexpected status from INVITE response: %w", st))
+	require.Equal(t, stats.ClientError("forbidden"), res.Term)
+
+	// A body wins over the header, and a 5xx body now reaches the CPS matching.
+	resp = sip.NewResponse(503, "Service Unavailable")
+	resp.SetBody([]byte("CPS limit exceeded"))
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32011 Error forwarding call"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, "CPS limit exceeded", st.Status)
+	res = classifyInviteError(fmt.Errorf("unexpected status from INVITE response: %w", st))
+	require.Equal(t, stats.ClientError("cps-limit-exceeded"), res.Term)
+}
+
+func TestAuthError(t *testing.T) {
+	resp := sip.NewResponse(407, "Proxy Authentication Required")
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32202 Authentication failure - bad user credentials"))
+	for _, sentinel := range []error{ErrAuthMaxRetry, ErrAuthMissingCreds, ErrAuthNoHeader} {
+		err := authError(sentinel, resp)
+		require.ErrorIs(t, err, sentinel)
+		require.Contains(t, err.Error(), "407")
+		require.Contains(t, err.Error(), "32202 Authentication failure")
+		code, ok := psrpc.GetErrorCode(err)
+		require.True(t, ok)
+		require.Equal(t, psrpc.FailedPrecondition, code)
+		// Classification is unchanged: still an auth failure, not a 407 SIPStatus bucket.
+		_, isStatus := errors.AsType[*livekit.SIPStatus](err)
+		require.False(t, isStatus)
+		res := classifyInviteError(err)
+		require.Equal(t, stats.ClientError("auth-failed"), res.Term)
+		require.Equal(t, livekit.DisconnectReason_USER_REJECTED, res.Reason)
+	}
+
+	// No response yet -> bare sentinel.
+	err := authError(ErrAuthMaxRetry, nil)
+	require.ErrorIs(t, err, ErrAuthMaxRetry)
+	require.Equal(t, stats.ClientError("auth-failed"), classifyInviteError(err).Term)
+}
+
 func TestInviteFailure_AfterInvite(t *testing.T) {
 	// Post-INVITE: server-side failures downgrade to a non-retryable code;
 	// client/upstream errors are left as-is. Term is always preserved.
