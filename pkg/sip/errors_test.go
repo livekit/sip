@@ -182,10 +182,18 @@ func TestSIPStatusFromResponse(t *testing.T) {
 	res := classifyInviteError(fmt.Errorf("unexpected status from INVITE response: %w", st))
 	require.Equal(t, stats.ClientError("forbidden"), res.Term)
 
-	// A body wins over the header, and a 5xx body now reaches the CPS matching.
+	// The body is ignored, with or without the header.
 	resp = sip.NewResponse(503, "Service Unavailable")
-	resp.SetBody([]byte("CPS limit exceeded"))
+	resp.SetBody([]byte("some carrier body"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, "Service Unavailable", st.Status)
 	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32011 Error forwarding call"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, "32011 Error forwarding call", st.Status)
+
+	// A 5xx reason phrase reaches the CPS matching.
+	resp = sip.NewResponse(503, "CPS limit exceeded")
+	resp.SetBody([]byte("some carrier body"))
 	st = sipStatusFromResponse(resp)
 	require.Equal(t, "CPS limit exceeded", st.Status)
 	res = classifyInviteError(fmt.Errorf("unexpected status from INVITE response: %w", st))

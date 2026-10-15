@@ -166,26 +166,23 @@ func (e carrierBlockedError) ClassifyInvite() inviteFailure {
 }
 
 // sipStatusFromResponse builds the SIPStatus for a non-2xx final INVITE
-// response. The reason phrase is often generic ("Forbidden", "Decline"), so a
-// response body or the X-Twilio-Error header replaces it when present: that is
-// the only place carriers put the actionable cause (e.g. Twilio 32202 bad
-// trunk credentials on a 403), and the 5xx CPS/concurrency matching in
+// response. The reason phrase is often generic ("Forbidden", "Decline"), so the
+// X-Twilio-Error header replaces it when present (e.g. Twilio 32202 bad trunk
+// credentials on a 403). The 5xx CPS/concurrency matching in
 // classifyInviteError reads it from Status.
 func sipStatusFromResponse(resp *sip.Response) *livekit.SIPStatus {
 	st := &livekit.SIPStatus{
 		Code:   livekit.SIPStatusCode(resp.StatusCode),
 		Status: resp.Reason,
 	}
-	if body := resp.Body(); len(body) != 0 {
-		st.Status = string(body)
-	} else if h := resp.GetHeader("X-Twilio-Error"); h != nil {
+	if h := resp.GetHeader("X-Twilio-Error"); h != nil {
 		st.Status = h.Value()
 	}
 	return st
 }
 
 // authError wraps an auth sentinel with the last 401/407 response's detail
-// (body or X-Twilio-Error, see sipStatusFromResponse). The sentinel stays in
+// (see sipStatusFromResponse). The sentinel stays in
 // the chain so classifyInviteError still buckets it as "auth-failed"; no
 // SIPStatus is wrapped, which would re-bucket it by status code instead.
 func authError(sentinel error, resp *sip.Response) error {
