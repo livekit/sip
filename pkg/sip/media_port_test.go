@@ -282,6 +282,45 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.Equal(t, addr, mp.RemoteAddr(), "re-INVITE offer should update RemoteAddr")
 }
 
+// Symmetric RTP must not undo a hold set after Read loaded the destination.
+func TestUDPConnLearnDstAfterHold(t *testing.T) {
+	c1, _ := newUDPPipe()
+	c := newUDPConn(logger.NewTestLogger(t), c1, true)
+	c.SetDst(netip.MustParseAddrPort("2.2.2.2:20000"))
+
+	prev := c.dst.Load() // Read loaded the destination...
+	held := netip.AddrPortFrom(netip.IPv4Unspecified(), 20000)
+	c.SetDst(held)                                             // ...then a re-INVITE put the call on hold...
+	c.learnDst(prev, netip.MustParseAddrPort("2.2.2.2:30000")) // ...then Read learned a new source.
+	require.Equal(t, held, *c.dst.Load(), "learned source cancelled the hold")
+
+	learned := netip.MustParseAddrPort("3.3.3.3:30000")
+	c.learnDst(c.dst.Load(), learned)
+	require.Equal(t, learned, *c.dst.Load(), "learning from the current destination should apply")
+}
+
+// A hold re-INVITE that also re-keys SRTP skips reconfiguration; resuming at the
+// original address must still restore the destination.
+func TestMediaPortHoldZeroRekey(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP:         netip.MustParseAddr("127.0.0.1"),
+		Encryption: sdp.EncryptionRequire,
+	}, RoomSampleRate)
+
+	addr := netip.MustParseAddrPort("9.8.7.6:12345")
+	_, err := mp.GenerateAnswer(offerAtEnc(t, addr, sdp.EncryptionRequire))
+	require.NoError(t, err)
+
+	_, err = mp.GenerateAnswer(offerAtEnc(t, netip.AddrPortFrom(netip.IPv4Unspecified(), addr.Port()), sdp.EncryptionRequire))
+	require.NoError(t, err)
+	require.True(t, mp.RemoteAddr().Addr().IsUnspecified(), "re-keyed hold offer should put the call on hold")
+
+	_, err = mp.GenerateAnswer(offerAtEnc(t, addr, sdp.EncryptionRequire))
+	require.NoError(t, err)
+	require.Equal(t, addr, mp.RemoteAddr(), "resume at the original address should restore it")
+}
+
 // Re-INVITE with the original offer SDP and crypto material must result in
 // re-use of already-negotiated keys.
 func TestMediaPortReinviteSameCrypto(t *testing.T) {
