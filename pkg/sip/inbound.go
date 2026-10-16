@@ -73,6 +73,8 @@ var allowHeader = sip.NewHeader("Allow", "INVITE, ACK, CANCEL, BYE, NOTIFY, REFE
 
 var errNoACK = errors.New("no ACK received for 200 OK")
 
+var errLateOfferDisabled = errors.New("received INVITE without offer, late offer disabled")
+
 // RFC 3261 §21.4.27 / §14.2 — glare: INVITE received while an INVITE we sent is in progress.
 const statusRequestPending sip.StatusCode = 491
 
@@ -1028,25 +1030,28 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	rejectMedia := func(err error) error {
-		sipReason := sip.StatusInternalServerError
+		sipReason, reasonPhrase := sip.StatusInternalServerError, ""
 		log := log.WithValues("sdp", string(sdpOffer))
 		status, term := callDropped, stats.ServerError("media-failed")
 		if errors.Is(err, sdp.ErrNoCommonMedia) {
 			status, term = callMediaFailed, stats.ClientError("no-common-codec")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusBadRequest, "No common codec"
 		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
 			status, term = callMediaFailed, stats.ClientError("no-common-crypto")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusBadRequest, "No common encryption"
 		} else if e := (SDPError{}); errors.As(err, &e) {
 			status, term = callMediaFailed, stats.ClientError("sdp-error")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusBadRequest, "Invalid SDP"
+			if errors.Is(err, errLateOfferDisabled) {
+				reasonPhrase = "Late offer not supported"
+			}
 		}
 		if sipReason >= 500 {
 			log.Errorw("Cannot start media", err)
 		} else {
 			log.Warnw("Cannot start media", err)
 		}
-		c.cc.RespondAndDrop(sipReason, "")
+		c.cc.RespondAndDrop(sipReason, reasonPhrase)
 		c.close(ctx, EndCall{
 			Status: status,
 			Term:   term,
@@ -1069,7 +1074,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	var expectingLateAnswer bool
 	if len(sdpOffer) == 0 {
 		if !featureFlagEnabled(disp.FeatureFlags, lateOfferFeatureFlag) {
-			err := SDPError{Err: fmt.Errorf("received INVITE without offer, late offer disabled")}
+			err := SDPError{Err: errLateOfferDisabled}
 			return rejectMedia(err)
 		}
 		log.Infow("later offer enabled")

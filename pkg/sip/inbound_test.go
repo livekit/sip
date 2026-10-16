@@ -268,6 +268,7 @@ func TestInboundLateOfferDisabled(t *testing.T) {
 	resp := getFinalResponseOrFail(t, ctx, c.tx)
 	// Same rejection as before late offer support: negotiating an empty offer fails.
 	require.Equal(t, sip.StatusBadRequest, resp.StatusCode, "offerless INVITE should be rejected when late offer is disabled")
+	require.Equal(t, "Late offer not supported", resp.Reason, "rejection should name the cause")
 	require.Empty(t, resp.Body(), "rejection must not carry an offer")
 
 	// The response is sent before the call is deregistered.
