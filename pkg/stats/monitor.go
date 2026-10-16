@@ -396,10 +396,10 @@ type CallMonitor struct {
 	fromHost string
 	toHost   string
 	provider atomic.Pointer[string]
-	// Provider used by CallStart, so CallEnd decrements the same series.
-	activeProvider atomic.Pointer[string]
-	started        atomic.Bool
-	terminated     atomic.Bool
+	// CallEnd decrements the same calls_active series that CallStart incremented.
+	providerRecordedAtCallStart atomic.Pointer[string]
+	started                     atomic.Bool
+	terminated                  atomic.Bool
 }
 
 // ProviderUnknown is used when there is no provider information
@@ -469,7 +469,7 @@ func (c *CallMonitor) CallStart() {
 		return
 	}
 	p := c.providerLabel()
-	c.activeProvider.Store(&p)
+	c.providerRecordedAtCallStart.Store(&p)
 	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": p})).Inc()
 }
 
@@ -477,7 +477,7 @@ func (c *CallMonitor) CallEnd() {
 	if !c.started.CompareAndSwap(true, false) {
 		return
 	}
-	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": *c.activeProvider.Load()})).Dec()
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": *c.providerRecordedAtCallStart.Load()})).Dec()
 }
 
 func (c *CallMonitor) CallTerminate(t Termination) {
