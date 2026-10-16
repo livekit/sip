@@ -504,6 +504,30 @@ type resolveCall struct {
 	sipScheme string
 }
 
+func newTestSIPClient(log logger.Logger, resolveFn func(network, host string, port int, sipScheme string) (netip.AddrPort, error)) *testSIPClient {
+	return &testSIPClient{
+		log:                    log,
+		resolveFn:              resolveFn,
+		requestByCallID:        make(map[string][]*sipRequest),
+		requestBySipCallID:     make(map[string][]*sipRequest),
+		transactionByCallID:    make(map[string][]*transactionRequest),
+		transactionBySipCallID: make(map[string][]*transactionRequest),
+		wakeup:                 make(chan struct{}),
+	}
+}
+
+// requestMethods returns the methods of the requests written for sipCallID, in
+// order, without consuming them.
+func (w *testSIPClient) requestMethods(sipCallID string) []sip.RequestMethod {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var m []sip.RequestMethod
+	for _, r := range w.requestBySipCallID[sipCallID] {
+		m = append(m, r.req.Method)
+	}
+	return m
+}
+
 func (w *testSIPClient) ResolveAddrPreferSRV(ctx context.Context, network, host string, port int, sipScheme string) (netip.AddrPort, error) {
 	w.mu.Lock()
 	w.resolveCalls = append(w.resolveCalls, resolveCall{network, host, port, sipScheme})
@@ -1046,16 +1070,8 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 	}
 
 	h := &testSIPHarness{
-		log: log,
-		client: &testSIPClient{
-			log:                    log,
-			requestByCallID:        make(map[string][]*sipRequest),
-			requestBySipCallID:     make(map[string][]*sipRequest),
-			transactionByCallID:    make(map[string][]*transactionRequest),
-			transactionBySipCallID: make(map[string][]*transactionRequest),
-			wakeup:                 make(chan struct{}),
-			resolveFn:              cfg.ResolveAddr,
-		},
+		log:    log,
+		client: newTestSIPClient(log, cfg.ResolveAddr),
 	}
 
 	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(h.newClient), WithGetRoomClient(cfg.GetRoom))
