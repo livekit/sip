@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -29,37 +28,8 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 )
-
-// recordingSIPClient is a SIPClient that records the requests written to it.
-type recordingSIPClient struct {
-	reqs []*sip.Request
-}
-
-func (c *recordingSIPClient) TransactionRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
-	return nil, nil
-}
-
-func (c *recordingSIPClient) ResolveAddrPreferSRV(_ context.Context, _, _ string, _ int, _ string) (netip.AddrPort, error) {
-	return netip.AddrPort{}, errors.New("this test resolves nothing")
-}
-
-func (c *recordingSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) error {
-	c.reqs = append(c.reqs, req)
-	return nil
-}
-
-func (c *recordingSIPClient) Close() error { return nil }
-
-func (c *recordingSIPClient) methods() []sip.RequestMethod {
-	var m []sip.RequestMethod
-	for _, r := range c.reqs {
-		m = append(m, r.Method)
-	}
-	return m
-}
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	// Make sure the ACK doesn't carry over initial Route header.
@@ -308,9 +278,9 @@ func TestWatchCancelledInvite(t *testing.T) {
 			for _, r := range tt.resps {
 				tx.responses <- r
 			}
-			cli := &recordingSIPClient{}
+			cli := newTestSIPClient(logger.NewTestLogger(t), nil)
 			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
-			require.Equal(t, tt.want, cli.methods())
+			require.Equal(t, tt.want, cli.requestMethods("call-123"))
 		})
 	}
 
@@ -318,9 +288,9 @@ func TestWatchCancelledInvite(t *testing.T) {
 		defer func(d time.Duration) { cancelResponseGrace = d }(cancelResponseGrace)
 		cancelResponseGrace = 10 * time.Millisecond
 		tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response), done: make(chan struct{})}
-		cli := &recordingSIPClient{}
+		cli := newTestSIPClient(logger.NewTestLogger(t), nil)
 		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
-		require.Empty(t, cli.methods())
+		require.Empty(t, cli.requestMethods("call-123"))
 	})
 }
 
@@ -677,14 +647,9 @@ func TestBuildOutboundHeaders(t *testing.T) {
 // the client sent. Resolution itself is sipgo's contract and is tested there.
 // These tests pin the wiring: when we ask sipgo to resolve, and what we do with
 // the answer.
-func startInvite(t *testing.T, cfg TestSIPConfig, mutate func(*rpc.InternalCreateSIPParticipantRequest)) (*testSIPHarness, *transactionRequest) {
+func startInvite(t *testing.T, cfg TestSIPConfig, req *rpc.InternalCreateSIPParticipantRequest) (*testSIPHarness, *transactionRequest) {
 	t.Helper()
 	h := NewTestSIP(t, cfg)
-
-	req := MinimalCreateSIPParticipantRequest()
-	if mutate != nil {
-		mutate(req)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -701,108 +666,107 @@ func startInvite(t *testing.T, cfg TestSIPConfig, mutate func(*rpc.InternalCreat
 	return h, tr
 }
 
-func preferSRVOn() map[string]string {
-	return map[string]string{outboundPreferSRVFeatureFlag: "true"}
+const testResolvedAddr = "198.51.100.11:5006"
+
+func resolveToTestAddr(_, _ string, _ int, _ string) (netip.AddrPort, error) {
+	return netip.MustParseAddrPort(testResolvedAddr), nil
 }
 
-// With the flag on we ask sipgo to resolve the request URI, and the address it
-// returns becomes the INVITE's destination.
-func TestOutboundPreferSRVSetsDestination(t *testing.T) {
-	const resolved = "198.51.100.11:5006"
-	h, tr := startInvite(t, TestSIPConfig{
-		ResolveAddr: func(network, host string, port int, sipScheme string) (netip.AddrPort, error) {
-			return netip.MustParseAddrPort(resolved), nil
-		},
-	}, func(r *rpc.InternalCreateSIPParticipantRequest) {
-		r.Address = "trunk.example.com"
-		r.FeatureFlags = preferSRVOn()
-	})
-
-	calls := h.ResolveCalls()
-	require.Len(t, calls, 1)
-	require.Equal(t, resolveCall{network: "udp", host: "trunk.example.com", port: 0, sipScheme: "sip"}, calls[0])
-	require.Equal(t, resolved, tr.req.Destination())
-	// The request URI keeps the configured hostname, only the address changes.
-	require.Equal(t, "trunk.example.com", tr.req.Recipient.Host)
+func resolveFails(_, _ string, _ int, _ string) (netip.AddrPort, error) {
+	return netip.AddrPort{}, errors.New("no such host")
 }
 
-// A port on the trunk address reaches sipgo, which is where the rule that it
-// suppresses SRV lives.
-func TestOutboundPreferSRVPassesConfiguredPort(t *testing.T) {
-	h, _ := startInvite(t, TestSIPConfig{
-		ResolveAddr: func(network, host string, port int, sipScheme string) (netip.AddrPort, error) {
-			return netip.MustParseAddrPort("198.51.100.11:5006"), nil
-		},
-	}, func(r *rpc.InternalCreateSIPParticipantRequest) {
-		r.Address = "trunk.example.com:5006"
-		r.FeatureFlags = preferSRVOn()
-	})
+var testProxyRoute = sip.RouteHeader{Address: sip.Uri{Host: "proxy.example.com", UriParams: sip.HeaderParams{{"lr", ""}}}}
 
-	calls := h.ResolveCalls()
-	require.Len(t, calls, 1)
-	require.Equal(t, 5006, calls[0].port)
+func TestOutboundPreferSRV(t *testing.T) {
+	cases := []struct {
+		name      string
+		address   string
+		preferSRV bool
+		route     bool
+		resolve   func(network, host string, port int, sipScheme string) (netip.AddrPort, error)
+		// wantResolve is nil when the call must not resolve at all.
+		wantResolve *resolveCall
+		wantDest    string
+	}{
+		{
+			name:        "flag on uses the resolved address",
+			address:     "trunk.example.com",
+			preferSRV:   true,
+			resolve:     resolveToTestAddr,
+			wantResolve: &resolveCall{network: "udp", host: "trunk.example.com", port: 0, sipScheme: "sip"},
+			wantDest:    testResolvedAddr,
+		},
+		{
+			// sipgo suppresses SRV when a port is set, so the port must reach it.
+			name:        "flag on passes the configured port",
+			address:     "trunk.example.com:5007",
+			preferSRV:   true,
+			resolve:     resolveToTestAddr,
+			wantResolve: &resolveCall{network: "udp", host: "trunk.example.com", port: 5007, sipScheme: "sip"},
+			wantDest:    testResolvedAddr,
+		},
+		{
+			name:        "resolution failure leaves the hostname",
+			address:     "trunk.example.com",
+			preferSRV:   true,
+			resolve:     resolveFails,
+			wantResolve: &resolveCall{network: "udp", host: "trunk.example.com", port: 0, sipScheme: "sip"},
+			wantDest:    "trunk.example.com:5060",
+		},
+		{
+			name:     "flag off does not resolve",
+			address:  "trunk.example.com",
+			resolve:  resolveToTestAddr,
+			wantDest: "trunk.example.com:5060",
+		},
+		{
+			// The request goes to the proxy, so resolving the request URI would
+			// pin the wrong address.
+			name:      "route header skips resolution",
+			address:   "trunk.example.com",
+			preferSRV: true,
+			route:     true,
+			resolve:   resolveToTestAddr,
+			wantDest:  "proxy.example.com:5060",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := MinimalCreateSIPParticipantRequest()
+			req.Address = tc.address
+			if tc.preferSRV {
+				req.FeatureFlags = map[string]string{outboundPreferSRVFeatureFlag: "true"}
+			}
+			if tc.route {
+				req.Headers = map[string]string{"Route": testProxyRoute.Value()}
+			}
+
+			h, tr := startInvite(t, TestSIPConfig{ResolveAddr: tc.resolve}, req)
+
+			calls := h.ResolveCalls()
+			if tc.wantResolve == nil {
+				require.Empty(t, calls)
+			} else {
+				require.Equal(t, []resolveCall{*tc.wantResolve}, calls)
+			}
+			require.Equal(t, tc.wantDest, tr.req.Destination())
+			// The request URI keeps the configured hostname, only the address changes.
+			require.Equal(t, "trunk.example.com", tr.req.Recipient.Host)
+		})
+	}
 }
 
-// When resolution fails the call still goes out, with the hostname left for the
-// transport layer to resolve as it always has.
-func TestOutboundPreferSRVFailureLeavesDestinationUnset(t *testing.T) {
-	h, tr := startInvite(t, TestSIPConfig{
-		ResolveAddr: func(network, host string, port int, sipScheme string) (netip.AddrPort, error) {
-			return netip.AddrPort{}, errors.New("no such host")
-		},
-	}, func(r *rpc.InternalCreateSIPParticipantRequest) {
-		r.Address = "trunk.example.com"
-		r.FeatureFlags = preferSRVOn()
-	})
-
-	require.Len(t, h.ResolveCalls(), 1)
-	host, _, err := net.SplitHostPort(tr.req.Destination())
-	require.NoError(t, err)
-	require.Equal(t, "trunk.example.com", host)
-}
-
-// With the flag off we must not resolve at all, so behaviour is unchanged.
-func TestOutboundPreferSRVOffDoesNotResolve(t *testing.T) {
-	h, tr := startInvite(t, TestSIPConfig{
-		ResolveAddr: func(network, host string, port int, sipScheme string) (netip.AddrPort, error) {
-			return netip.MustParseAddrPort("198.51.100.11:5006"), nil
-		},
-	}, func(r *rpc.InternalCreateSIPParticipantRequest) {
-		r.Address = "trunk.example.com"
-	})
-
-	require.Empty(t, h.ResolveCalls())
-	host, _, err := net.SplitHostPort(tr.req.Destination())
-	require.NoError(t, err)
-	require.Equal(t, "trunk.example.com", host)
-}
-
-// A Route header sends the request to the proxy, not to the request URI, so
-// resolving the request URI here would pin the wrong address.
-func TestOutboundPreferSRVSkippedWithRouteHeader(t *testing.T) {
-	route := sip.RouteHeader{Address: sip.Uri{Host: "proxy.example.com", UriParams: sip.HeaderParams{{"lr", ""}}}}
-	h, _ := startInvite(t, TestSIPConfig{
-		ResolveAddr: func(network, host string, port int, sipScheme string) (netip.AddrPort, error) {
-			return netip.MustParseAddrPort("198.51.100.11:5006"), nil
-		},
-	}, func(r *rpc.InternalCreateSIPParticipantRequest) {
-		r.Address = "trunk.example.com"
-		r.FeatureFlags = preferSRVOn()
-		r.Headers = map[string]string{"Route": route.Value()}
-	})
-
-	require.Empty(t, h.ResolveCalls())
+func uriWithParams(kv ...string) *sip.Uri {
+	u := &sip.Uri{Scheme: "sip", Host: "h.example.com", UriParams: sip.NewParams()}
+	for i := 0; i < len(kv); i += 2 {
+		u.UriParams.Add(kv[i], kv[i+1])
+	}
+	return u
 }
 
 func TestURITransport(t *testing.T) {
-	withParams := func(kv ...string) *sip.Uri {
-		u := &sip.Uri{Scheme: "sip", Host: "h.example.com", UriParams: sip.NewParams()}
-		for i := 0; i < len(kv); i += 2 {
-			u.UriParams.Add(kv[i], kv[i+1])
-		}
-		return u
-	}
-	for _, tc := range []struct {
+	cases := []struct {
 		name string
 		uri  *sip.Uri
 		want string
@@ -810,11 +774,12 @@ func TestURITransport(t *testing.T) {
 		{"defaults to udp", &sip.Uri{Scheme: "sip", Host: "h.example.com"}, "udp"},
 		{"sips means tls", &sip.Uri{Scheme: "sips", Host: "h.example.com"}, "tls"},
 		{"sips is matched case insensitively", &sip.Uri{Scheme: "SIPS", Host: "h.example.com"}, "tls"},
-		{"transport param wins", withParams("transport", "tcp"), "tcp"},
-		{"transport param is lowercased", withParams("transport", "TCP"), "tcp"},
+		{"transport param wins", uriWithParams("transport", "tcp"), "tcp"},
+		{"transport param is lowercased", uriWithParams("transport", "TCP"), "tcp"},
 		{"transport param beats sips", &sip.Uri{Scheme: "sips", Host: "h.example.com", UriParams: sip.HeaderParams{{"transport", "tcp"}}}, "tcp"},
-		{"empty transport param falls through", withParams("transport", ""), "udp"},
-	} {
+		{"empty transport param falls through", uriWithParams("transport", ""), "udp"},
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, uriTransport(tc.uri))
 		})

@@ -903,7 +903,6 @@ type sipOutbound struct {
 	contact      *sip.ContactHeader
 	routeHeaders []string
 	preferSRV    bool
-	dest         string
 
 	mu         sync.RWMutex
 	tag        RemoteTag
@@ -1016,14 +1015,14 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 		}
 	}
 
-	c.resolveDest(ctx, headers)
+	dest := c.resolveDest(ctx, headers)
 
 authLoop:
 	for try := 0; ; try++ {
 		if try >= 5 {
 			return nil, authError(ErrAuthMaxRetry, resp)
 		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
 		}
@@ -1155,35 +1154,35 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 
 // resolveDest resolves the request URI up front so the INVITE carries an
 // address rather than a hostname. Only calls whose project enables SRV go
-// through this; everyone else leaves c.dest empty and the transport layer
+// through this; everyone else gets an empty address and the transport layer
 // resolves as it always has.
 //
 // Resolution has to happen here rather than in the transport layer because the
 // SRV choice is per project, and the layer is shared by every call in the
 // process.
-func (c *sipOutbound) resolveDest(ctx context.Context, headers map[string]string) {
+func (c *sipOutbound) resolveDest(ctx context.Context, headers map[string]string) string {
 	if !c.preferSRV {
-		return
+		return ""
 	}
 	// With a Route header the request goes to the proxy, not to the request URI,
 	// so resolving the request URI picks the wrong host.
 	if len(c.routeHeaders) != 0 {
-		return
+		return ""
 	}
 	for k := range headers {
 		if strings.EqualFold(k, "Route") {
-			return
+			return ""
 		}
 	}
 
 	addr, err := c.c.sipCli.ResolveAddrPreferSRV(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
 	if err != nil {
-		// Leave c.dest empty and let the transport layer try its own way.
+		// Leave the address empty and let the transport layer try its own way.
 		c.log.Warnw("could not resolve destination, falling back to transport resolution", err,
 			"host", c.uri.Host, "port", c.uri.Port)
-		return
+		return ""
 	}
-	c.dest = addr.String()
+	return addr.String()
 }
 
 // uriTransport returns the transport a request to uri will use, matching how
@@ -1200,14 +1199,14 @@ func uriTransport(uri *sip.Uri) string {
 	return "udp"
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, *c.uri)
-	if c.dest != "" {
+	if dest != "" {
 		// Send to the address we resolved, keeping the request URI as configured.
 		// The port belongs to this address and must not come from anywhere else.
-		req.SetDestination(c.dest)
+		req.SetDestination(dest)
 	}
 	c.setCSeq(req)
 	req.RemoveHeader("Call-ID")
