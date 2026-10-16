@@ -391,13 +391,15 @@ func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 }
 
 type CallMonitor struct {
-	m          *Monitor
-	dir        string
-	fromHost   string
-	toHost     string
-	provider   atomic.Pointer[string]
-	started    atomic.Bool
-	terminated atomic.Bool
+	m        *Monitor
+	dir      string
+	fromHost string
+	toHost   string
+	provider atomic.Pointer[string]
+	// Provider used by CallStart, so CallEnd decrements the same series.
+	activeProvider atomic.Pointer[string]
+	started        atomic.Bool
+	terminated     atomic.Bool
 }
 
 // ProviderUnknown is used when there is no provider information
@@ -466,14 +468,16 @@ func (c *CallMonitor) CallStart() {
 	if !c.started.CompareAndSwap(false, true) {
 		return
 	}
-	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": c.providerLabel()})).Inc()
+	p := c.providerLabel()
+	c.activeProvider.Store(&p)
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": p})).Inc()
 }
 
 func (c *CallMonitor) CallEnd() {
 	if !c.started.CompareAndSwap(true, false) {
 		return
 	}
-	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": c.providerLabel()})).Dec()
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": *c.activeProvider.Load()})).Dec()
 }
 
 func (c *CallMonitor) CallTerminate(t Termination) {
