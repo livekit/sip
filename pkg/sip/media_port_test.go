@@ -28,7 +28,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -857,35 +856,6 @@ func TestSymmetricRTP(t *testing.T) {
 		require.NotNil(t, curDstPtr)
 		require.Equal(t, newAddr.String(), curDstPtr.String())
 	})
-}
-
-// Test util for incrementing prometheus counter metrics.
-func gatherCounter(t testing.TB, name string, labels map[string]string) float64 {
-	t.Helper()
-	families, err := prometheus.DefaultGatherer.Gather()
-	require.NoError(t, err)
-	var total float64
-	for _, f := range families {
-		// Matching metric
-		if f.GetName() != name {
-			continue
-		}
-	metrics:
-		for _, m := range f.GetMetric() {
-			got := make(map[string]string, len(m.GetLabel()))
-			for _, l := range m.GetLabel() {
-				got[l.GetName()] = l.GetValue()
-			}
-			// Matching labels
-			for k, v := range labels {
-				if got[k] != v {
-					continue metrics
-				}
-			}
-			total += m.GetCounter().GetValue()
-		}
-	}
-	return total
 }
 
 // Report codecs offered during SDP even when the offer fails to match any codecs

@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -1166,4 +1168,60 @@ func (t *failingRetransmitTx) Respond(res *sip.Response) error {
 		return t.ServerTransaction.Respond(res)
 	}
 	return errors.New("write udp: connection refused")
+}
+
+// Test util for incrementing prometheus counter metrics.
+func gatherCounter(t testing.TB, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	var total float64
+	for _, f := range families {
+		// Matching metric
+		if f.GetName() != name {
+			continue
+		}
+	metrics:
+		for _, m := range f.GetMetric() {
+			got := make(map[string]string, len(m.GetLabel()))
+			for _, l := range m.GetLabel() {
+				got[l.GetName()] = l.GetValue()
+			}
+			// Matching labels
+			for k, v := range labels {
+				if got[k] != v {
+					continue metrics
+				}
+			}
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// gatherHistogramCount sums the sample counts of the histogram series that match labels.
+func gatherHistogramCount(t testing.TB, name string, labels map[string]string) uint64 {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	var total uint64
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+	metrics:
+		for _, m := range f.GetMetric() {
+			got := make(map[string]string, len(m.GetLabel()))
+			for _, l := range m.GetLabel() {
+				got[l.GetName()] = l.GetValue()
+			}
+			for k, v := range labels {
+				if got[k] != v {
+					continue metrics
+				}
+			}
+			total += m.GetHistogram().GetSampleCount()
+		}
+	}
+	return total
 }

@@ -241,6 +241,21 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 	})
 }
 
+func TestOutboundProviderLabel(t *testing.T) {
+	joinMetric := "livekit_sip_dur_join_sec"
+	labels := map[string]string{"dir": "out", "provider": "internal/xyz_carrier"}
+	before := gatherHistogramCount(t, joinMetric, labels)
+
+	req := MinimalCreateSIPParticipantRequest()
+	req.ProviderInfo = &livekit.ProviderInfo{Name: "xyz_carrier", Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
+	waitOutboundINVITEAndACK(t, TestSIPConfig{}, req, func(*transactionRequest, *sip.Response) {})
+
+	// The join duration is recorded after the ACK is sent.
+	require.Eventually(t, func() bool {
+		return gatherHistogramCount(t, joinMetric, labels) == before+1
+	}, time.Second, 10*time.Millisecond)
+}
+
 // sipResponse returns immediately on a cancelled context, sending a CANCEL.
 func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	tx := &testSIPClientTransaction{

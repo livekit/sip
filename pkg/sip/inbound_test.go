@@ -1027,3 +1027,17 @@ func TestInboundCallStatusCode(t *testing.T) {
 		})
 	}
 }
+
+// Inbound calls set the provider after the join timer starts.
+func TestInboundProviderLabel(t *testing.T) {
+	joinMetric := "livekit_sip_dur_join_sec"
+	labels := map[string]string{"dir": "in", "provider": "internal/xyz_carrier"}
+	before := gatherHistogramCount(t, joinMetric, labels)
+
+	mon := newTestCallMonitor(t)
+	done := mon.JoinDur()
+	mon.SetProvider("internal/xyz_carrier")
+	done()
+
+	require.Equal(t, before+1, gatherHistogramCount(t, joinMetric, labels))
+}
