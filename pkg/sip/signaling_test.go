@@ -1523,15 +1523,16 @@ func TestTransfer(t *testing.T) {
 
 				select {
 				case res := <-transferRes:
-					// No error: callers branch on that today and this case has
-					// always reached them as a success. The response is where the
-					// transfer says it did not complete.
-					require.NoError(t, res.err)
-					require.NotNil(t, res.resp)
-					require.Equal(t, livekit.SIPTransferStatus_STS_TRANSFER_FAILED, res.resp.Status)
-					require.Equal(t, livekit.SIPTransferReason_STR_CALL_ENDED, res.resp.Reason)
-					require.Nil(t, res.resp.SipStatus, "no SIP status was reported for this transfer")
-					require.NotEmpty(t, res.resp.TransferId)
+					require.Error(t, res.err)
+					require.Nil(t, res.resp)
+					code, ok := psrpc.GetErrorCode(res.err)
+					require.True(t, ok)
+					require.Equal(t, psrpc.Aborted, code)
+					transferErr := livekit.SIPTransferErrorFrom(res.err)
+					require.NotNil(t, transferErr)
+					require.Equal(t, livekit.SIPTransferReason_STR_CALL_ENDED, transferErr.Reason)
+					require.Nil(t, transferErr.SipStatus, "no SIP status was reported for this transfer")
+					require.NotEmpty(t, transferErr.TransferId)
 				case <-ctx.Done():
 					require.NoError(t, ctx.Err(), "timeout waiting for the transfer result")
 				}
