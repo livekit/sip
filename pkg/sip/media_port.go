@@ -935,8 +935,10 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 	if changeSetSummary.includes(changeSetRemoteAddr) {
 		if c.Remote.Addr().IsUnspecified() {
-			// Older hold semantics: c=0.0.0.0
+			// Older hold semantics: c=0.0.0.0. RFC 3264 §8.4: send neither RTP nor RTCP.
+			// Writes to an unspecified destination are dropped; the next address resumes.
 			hold = true
+			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
 		} else {
 			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
 			p.negotiated.Remote = c.Remote

@@ -270,10 +270,10 @@ func TestMediaPortUpdateRemote(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, addr, mp.RemoteAddr(), "empty offer should not change RemoteAddr")
 
-	// Hold form c=0.0.0.0 must not clobber dest once media is established.
+	// Hold form c=0.0.0.0 (RFC 3264 §8.4): stop sending until the next offer with an address.
 	_, err = mp.GenerateAnswer(offerAt(t, netip.MustParseAddrPort("0.0.0.0:12345")))
 	require.NoError(t, err)
-	require.Equal(t, addr, mp.RemoteAddr(), "offer with unspecified addr should not change RemoteAddr")
+	require.True(t, mp.RemoteAddr().Addr().IsUnspecified(), "offer with unspecified addr should put the call on hold")
 
 	// successful re-INVITE update
 	addr = netip.MustParseAddrPort("10.10.10.10:54321")
