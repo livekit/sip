@@ -50,6 +50,10 @@ import (
 type SIPClient interface {
 	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)
 	WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error
+	// ResolveAddrPreferSRV resolves a request URI to one address, trying SRV
+	// before a plain host lookup. port is the port from the URI, or 0 when it
+	// carries none. A port given there suppresses SRV.
+	ResolveAddrPreferSRV(ctx context.Context, network, host string, port int, sipScheme string) (netip.AddrPort, error)
 	Close() error
 }
 
