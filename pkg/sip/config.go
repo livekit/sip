@@ -69,7 +69,7 @@ func getPublicIP() (netip.Addr, error) {
 	var err error
 	for i := 0; i < 3; i++ {
 		var ip string
-		ip, err = rtcconfig.GetExternalIP(context.Background(), rtcconfig.DefaultStunServers, nil)
+		ip, err = rtcconfig.GetExternalIPv4(context.Background(), rtcconfig.DefaultStunServers, nil)
 		if err == nil {
 			return netip.ParseAddr(ip)
 		} else {
