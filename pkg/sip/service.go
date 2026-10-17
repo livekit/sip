@@ -228,6 +228,7 @@ func (s *Service) Start() error {
 		}
 	}
 	DefaultCodecs().SetEnabledMap(s.conf.Codecs)
+	CheckCodecAvailability(s.log)
 
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
