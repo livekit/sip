@@ -430,6 +430,9 @@ type serviceTestConfig struct {
 	// GetStateHandler overrides where CallState flushes go. Defaults to the
 	// no-op RPC handler.
 	GetStateHandler GetStateHandler
+	// AddRecordRoute mirrors config.Config.AddRecordRoute, for in-dialog
+	// route-set tests that exercise the server's own Record-Route insertion.
+	AddRecordRoute bool
 }
 
 // NewServiceTest builds a test harness that fakes a remote SIP peer and liveKit
@@ -464,6 +467,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		SIPPortListen:      sipPort,
 		RTPPort:            rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 		SIPRingingInterval: time.Second,
+		AddRecordRoute:     options.AddRecordRoute,
 		// wsUrl:              "ws://localhost:7880",
 		// ApiKey:             "test",
 		// ApiSecret:          strings.Repeat("k", 32),
@@ -1802,6 +1806,46 @@ func TestRouteSet(t *testing.T) {
 			// The call ended before any NOTIFY reported the transfer outcome.
 			err := <-transferRes
 			require.ErrorIs(t, err, errTransferCallEnded)
+		})
+
+		// AddRecordRoute makes the server insert its own Record-Route into the
+		// responses. The UAS route set must still be the original INVITE's
+		// Record-Route in wire order — our own entry has to be excluded, or the
+		// proxy routes in-dialog requests back at us instead of at the peer
+		// (issue #771: Avaya Session Manager transfer 405 loop).
+		t.Run("BYE with AddRecordRoute", func(t *testing.T) {
+			// No t.Parallel: this spins its own service; run it after the
+			// shared-service subtests above to keep parallel service count
+			// identical to before this test existed.
+			ownSt := NewServiceTest(t, &serviceTestConfig{AddRecordRoute: true})
+			rrHeaders, expectUAS, _ := makeRouteSetHeaders(t, ownSt)
+			call, ic := ownSt.CreateInboundCall(t, withTestHeaders(rrHeaders...))
+
+			byeSink := ownSt.TestUA.RegisterSink(call.localTag, "BYE")
+			defer ownSt.TestUA.UnregisterSink(call.localTag, "BYE")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+
+			closed := make(chan error, 1)
+			go func() {
+				defer close(closed)
+				closed <- ic.Close()
+			}()
+
+			select {
+			case msg := <-byeSink:
+				require.NotNil(t, msg)
+				require.Equal(t, sip.BYE, msg.req.Method)
+				// Route set = INVITE's Record-Route in wire order. Our own
+				// Record-Route (prepended into the 200 OK) must not appear.
+				assertRouteHeaders(t, msg.req, expectUAS)
+				_ = msg.tx.Respond(sip.NewResponseFromRequest(msg.req, 200, "OK", nil))
+			case <-ctx.Done():
+				require.Fail(t, "timeout waiting for BYE")
+			}
+			err := <-closed
+			require.NoError(t, err)
 		})
 	})
 
