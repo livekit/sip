@@ -1615,6 +1615,7 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 		t.Run(callID, func(t *testing.T) {
 			s := newTransferRefusalService(t, internal)
 			dir := map[string]string{"inbound": "in", "outbound": "out"}[callID]
+			totalBefore := gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir})
 			failedBefore := gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"})
 			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
 				SipCallId:  callID,
@@ -1626,12 +1627,16 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 			require.Equal(t, psrpc.InvalidArgument, code)
 			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
 			require.Empty(t, s.pendingTransfers)
+			require.Equal(t, totalBefore+1, gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir}))
 			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"}))
 		})
 	}
 }
 
-const transfersFailedMetric = "livekit_sip_transfers_failed_total"
+const (
+	transfersTotalMetric  = "livekit_sip_transfers_total"
+	transfersFailedMetric = "livekit_sip_transfers_failed_total"
+)
 
 // newTransferRefusalService returns a Service holding one inbound and one
 // outbound call on the given provider, with a started monitor.
@@ -1664,6 +1669,7 @@ func TestTransferWhenTransfersDisabled(t *testing.T) {
 		t.Run(callID, func(t *testing.T) {
 			s := newTransferRefusalService(t, noTransfer)
 			dir := map[string]string{"inbound": "in", "outbound": "out"}[callID]
+			totalBefore := gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir})
 			failedBefore := gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "permission_denied"})
 			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
 				SipCallId:  callID,
@@ -1675,6 +1681,7 @@ func TestTransferWhenTransfersDisabled(t *testing.T) {
 			require.Equal(t, psrpc.PermissionDenied, code)
 			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
 			require.Empty(t, s.pendingTransfers)
+			require.Equal(t, totalBefore+1, gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir}))
 			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "permission_denied"}))
 		})
 	}

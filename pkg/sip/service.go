@@ -528,11 +528,12 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, tran
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
 }
 
-// rejectTransfer counts a transfer refused before it started. It was never
-// counted as active, so the active gauge is left alone.
+// rejectTransfer counts a transfer refused before it started as an attempt
+// that failed, so failures never outnumber attempts.
 func (s *Service) rejectTransfer(dir stats.CallDir, err error) error {
 	if err != nil {
-		s.mon.TransferFailed(dir, extractTransferErrorReason(err), false)
+		s.mon.TransferStarted(dir)
+		s.mon.TransferFailed(dir, extractTransferErrorReason(err), true)
 	}
 	return err
 }
