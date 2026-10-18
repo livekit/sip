@@ -1611,21 +1611,11 @@ func TestValidateCallProvider(t *testing.T) {
 // phone number fails before any REFER is sent, for inbound and outbound calls.
 func TestTransferToEmergencyNumber(t *testing.T) {
 	internal := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
-	newService := func() *Service {
-		s := newServiceForAffinity(&config.Config{})
-		s.log = logger.GetLogger()
-		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
-		s.srv.byLocalTag["inbound"] = &inboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
-		}
-		s.cli.activeCalls["outbound"] = &outboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal, CallDirection: livekit.SIPCallDirection_SCD_OUTBOUND}),
-		}
-		return s
-	}
 	for _, callID := range []string{"inbound", "outbound"} {
 		t.Run(callID, func(t *testing.T) {
-			s := newService()
+			s := newTransferRefusalService(t, internal)
+			dir := map[string]string{"inbound": "in", "outbound": "out"}[callID]
+			failedBefore := gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"})
 			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
 				SipCallId:  callID,
 				TransferTo: "<sip:911@carrier.example.com>",
@@ -1636,8 +1626,33 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 			require.Equal(t, psrpc.InvalidArgument, code)
 			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
 			require.Empty(t, s.pendingTransfers)
+			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"}))
 		})
 	}
+}
+
+const transfersFailedMetric = "livekit_sip_transfers_failed_total"
+
+// newTransferRefusalService returns a Service holding one inbound and one
+// outbound call on the given provider, with a started monitor.
+func newTransferRefusalService(t *testing.T, provider *livekit.ProviderInfo) *Service {
+	t.Helper()
+	mon, err := stats.NewMonitor(&config.Config{})
+	require.NoError(t, err)
+	require.NoError(t, mon.Start(&config.Config{}))
+	t.Cleanup(mon.Stop)
+
+	s := newServiceForAffinity(&config.Config{})
+	s.log = logger.GetLogger()
+	s.mon = mon
+	s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+	s.srv.byLocalTag["inbound"] = &inboundCall{
+		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
+	}
+	s.cli.activeCalls["outbound"] = &outboundCall{
+		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_OUTBOUND}),
+	}
+	return s
 }
 
 // TestTransferWhenTransfersDisabled checks that a transfer on a LiveKit phone
@@ -1645,21 +1660,11 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 // is sent, for inbound and outbound calls.
 func TestTransferWhenTransfersDisabled(t *testing.T) {
 	noTransfer := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL, PreventTransfer: true}
-	newService := func() *Service {
-		s := newServiceForAffinity(&config.Config{})
-		s.log = logger.GetLogger()
-		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
-		s.srv.byLocalTag["inbound"] = &inboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: noTransfer, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
-		}
-		s.cli.activeCalls["outbound"] = &outboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: noTransfer, CallDirection: livekit.SIPCallDirection_SCD_OUTBOUND}),
-		}
-		return s
-	}
 	for _, callID := range []string{"inbound", "outbound"} {
 		t.Run(callID, func(t *testing.T) {
-			s := newService()
+			s := newTransferRefusalService(t, noTransfer)
+			dir := map[string]string{"inbound": "in", "outbound": "out"}[callID]
+			failedBefore := gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "permission_denied"})
 			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
 				SipCallId:  callID,
 				TransferTo: "<sip:+14155559110@carrier.example.com>",
@@ -1670,6 +1675,7 @@ func TestTransferWhenTransfersDisabled(t *testing.T) {
 			require.Equal(t, psrpc.PermissionDenied, code)
 			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
 			require.Empty(t, s.pendingTransfers)
+			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "permission_denied"}))
 		})
 	}
 }

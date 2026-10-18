@@ -514,7 +514,7 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, tran
 	s.cli.cmu.Unlock()
 
 	if out != nil {
-		return s.validateCallProvider(out.state, transferTo)
+		return s.rejectTransfer(stats.Outbound, s.validateCallProvider(out.state, transferTo))
 	}
 
 	s.srv.cmu.Lock()
@@ -522,10 +522,19 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, tran
 	s.srv.cmu.Unlock()
 
 	if in != nil {
-		return s.validateCallProvider(in.state, transferTo)
+		return s.rejectTransfer(stats.Inbound, s.validateCallProvider(in.state, transferTo))
 	}
 
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
+}
+
+// rejectTransfer counts a transfer refused before it started. It was never
+// counted as active, so the active gauge is left alone.
+func (s *Service) rejectTransfer(dir stats.CallDir, err error) error {
+	if err != nil {
+		s.mon.TransferFailed(dir, extractTransferErrorReason(err), false)
+	}
+	return err
 }
 
 func (s *Service) validateCallProvider(state *CallState, transferTo string) error {
