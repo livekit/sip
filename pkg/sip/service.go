@@ -539,7 +539,7 @@ func (s *Service) validateCallProvider(state *CallState, transferTo string) erro
 		return nil
 	}
 	if info.ProviderInfo.PreventTransfer {
-		return psrpc.NewErrorf(psrpc.Unimplemented, "we don't yet support transfers for this phone number type")
+		return psrpc.NewErrorf(psrpc.PermissionDenied, "transfers are not supported for this phone number type")
 	}
 	if lksip.IsEmergencyNumber(lksip.URIUser(transferTo)) {
 		return psrpc.NewErrorf(psrpc.InvalidArgument, "transfers to an emergency number are not supported from LiveKit phone numbers")
@@ -582,6 +582,8 @@ func extractTransferErrorReason(err error) string {
 			return "timeout"
 		case psrpc.InvalidArgument:
 			return "invalid_argument"
+		case psrpc.PermissionDenied:
+			return "permission_denied"
 		case psrpc.Internal:
 			return "internal_error"
 		default:
