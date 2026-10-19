@@ -1585,8 +1585,8 @@ func TestValidateCallProvider(t *testing.T) {
 		{"internal to emergency tel", internal, "tel:911", psrpc.InvalidArgument},
 		{"internal to emergency 112", internal, "<sip:112@example.com>", psrpc.InvalidArgument},
 		{"internal to emergency 999", internal, "<sip:999@example.com>", psrpc.InvalidArgument},
-		{"internal transfers disabled", internalNoTransfer, "<sip:+14155559110@example.com>", psrpc.Unimplemented},
-		{"internal transfers disabled to emergency", internalNoTransfer, "<sip:911@example.com>", psrpc.Unimplemented},
+		{"internal transfers disabled", internalNoTransfer, "<sip:+14155559110@example.com>", psrpc.PermissionDenied},
+		{"internal transfers disabled to emergency", internalNoTransfer, "<sip:911@example.com>", psrpc.PermissionDenied},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1611,21 +1611,12 @@ func TestValidateCallProvider(t *testing.T) {
 // phone number fails before any REFER is sent, for inbound and outbound calls.
 func TestTransferToEmergencyNumber(t *testing.T) {
 	internal := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
-	newService := func() *Service {
-		s := newServiceForAffinity(&config.Config{})
-		s.log = logger.GetLogger()
-		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
-		s.srv.byLocalTag["inbound"] = &inboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
-		}
-		s.cli.activeCalls["outbound"] = &outboundCall{
-			state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: internal, CallDirection: livekit.SIPCallDirection_SCD_OUTBOUND}),
-		}
-		return s
-	}
 	for _, callID := range []string{"inbound", "outbound"} {
 		t.Run(callID, func(t *testing.T) {
-			s := newService()
+			s := newTransferRefusalService(t, internal)
+			dir := map[string]string{"inbound": "in", "outbound": "out"}[callID]
+			totalBefore := gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir})
+			failedBefore := gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"})
 			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
 				SipCallId:  callID,
 				TransferTo: "<sip:911@carrier.example.com>",
@@ -1636,6 +1627,35 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 			require.Equal(t, psrpc.InvalidArgument, code)
 			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
 			require.Empty(t, s.pendingTransfers)
+			require.Equal(t, totalBefore+1, gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir}))
+			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"}))
 		})
 	}
+}
+
+const (
+	transfersTotalMetric  = "livekit_sip_transfers_total"
+	transfersFailedMetric = "livekit_sip_transfers_failed_total"
+)
+
+// newTransferRefusalService returns a Service holding one inbound and one
+// outbound call on the given provider, with a started monitor.
+func newTransferRefusalService(t *testing.T, provider *livekit.ProviderInfo) *Service {
+	t.Helper()
+	mon, err := stats.NewMonitor(&config.Config{})
+	require.NoError(t, err)
+	require.NoError(t, mon.Start(&config.Config{}))
+	t.Cleanup(mon.Stop)
+
+	s := newServiceForAffinity(&config.Config{})
+	s.log = logger.GetLogger()
+	s.mon = mon
+	s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+	s.srv.byLocalTag["inbound"] = &inboundCall{
+		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
+	}
+	s.cli.activeCalls["outbound"] = &outboundCall{
+		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_OUTBOUND}),
+	}
+	return s
 }
