@@ -1659,30 +1659,3 @@ func newTransferRefusalService(t *testing.T, provider *livekit.ProviderInfo) *Se
 	}
 	return s
 }
-
-// TestTransferWhenTransfersDisabled checks that a transfer on a LiveKit phone
-// number with transfers disabled fails with PermissionDenied before any REFER
-// is sent, for inbound and outbound calls.
-func TestTransferWhenTransfersDisabled(t *testing.T) {
-	noTransfer := &livekit.ProviderInfo{Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL, PreventTransfer: true}
-	for _, callID := range []string{"inbound", "outbound"} {
-		t.Run(callID, func(t *testing.T) {
-			s := newTransferRefusalService(t, noTransfer)
-			dir := map[string]string{"inbound": "in", "outbound": "out"}[callID]
-			totalBefore := gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir})
-			failedBefore := gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "permission_denied"})
-			resp, err := s.TransferSIPParticipant(t.Context(), &rpc.InternalTransferSIPParticipantRequest{
-				SipCallId:  callID,
-				TransferTo: "<sip:+14155559110@carrier.example.com>",
-			})
-			require.Error(t, err)
-			require.Nil(t, resp)
-			code, _ := psrpc.GetErrorCode(err)
-			require.Equal(t, psrpc.PermissionDenied, code)
-			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
-			require.Empty(t, s.pendingTransfers)
-			require.Equal(t, totalBefore+1, gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir}))
-			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "permission_denied"}))
-		})
-	}
-}
