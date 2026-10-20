@@ -151,7 +151,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_accepted",
 		Help:        "Number of accepted SIP INVITE requests (that matched a trunk and passed auth)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to"}))
+	}, []string{"dir", "to", "provider"}))
 
 	m.inviteErr = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -159,7 +159,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_error",
 		Help:        "Number of rejected SIP INVITE requests",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "reason"}))
+	}, []string{"dir", "to", "provider", "reason"}))
 
 	m.callsActive = mustRegister(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -440,7 +440,7 @@ func (c *CallMonitor) InviteReq() {
 }
 
 func (c *CallMonitor) InviteAccept() {
-	c.m.inviteAccept.With(c.labels(nil)).Inc()
+	c.m.inviteAccept.With(c.labels(prometheus.Labels{"provider": c.providerLabel()})).Inc()
 }
 
 // InviteErrorShort records a SIP INVITE rejection that occurred before a call
@@ -448,7 +448,7 @@ func (c *CallMonitor) InviteAccept() {
 // counter (kept for back-compat) and routes through CallTerminate so the
 // unified calls_terminated counter has consistent classification.
 func (c *CallMonitor) InviteErrorShort(t Termination) {
-	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": t.Reason, "to": "unknown"})).Inc()
+	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": t.Reason, "to": "unknown", "provider": c.providerLabel()})).Inc()
 	c.m.callsTerminated.With(c.labelsShort(prometheus.Labels{
 		"to":       "unknown",
 		"provider": c.providerLabel(),
@@ -461,7 +461,7 @@ func (c *CallMonitor) InviteErrorShort(t Termination) {
 // by outbound INVITE failure paths where CallTerminate also fires for the same
 // call, so this only writes to the legacy invite_error counter.
 func (c *CallMonitor) InviteError(reason string) {
-	c.m.inviteErr.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
+	c.m.inviteErr.With(c.labels(prometheus.Labels{"reason": reason, "provider": c.providerLabel()})).Inc()
 }
 
 func (c *CallMonitor) CallStart() {
