@@ -1126,15 +1126,17 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	// Ensure RoomId is set, even if the caller hangs up before the call is answered
+	var participantID string
 	c.state.Update(func(info *livekit.SIPCallInfo) {
 		if r := c.lkRoom.Room(); r != nil {
 			info.RoomId = r.SID()
 			info.RoomName = r.Name()
+			participantID = r.LocalParticipant.SID()
 		} else {
 			c.log().Warnw("could not set RoomId: room is nil", nil)
 		}
 	})
-	c.state.EmitSignalingEvent(SignalingEvent{Type: EventRoomJoined, Time: c.sigTs.JoinRoomTime})
+	c.state.EmitSignalingEvent(SignalingEvent{Type: EventRoomJoined, Time: c.sigTs.JoinRoomTime, ParticipantID: participantID})
 
 	// Publish our own track.
 	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {

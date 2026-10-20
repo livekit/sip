@@ -96,6 +96,7 @@ func TestInboundSignalingEventsAnswered(t *testing.T) {
 	}, h.EventTypes())
 	require.Equal(t, ic.sigTs.InviteTime, evs[0].Time, "INVITE keeps its arrival time")
 	require.Equal(t, testRoomSID, evs[3].RoomID)
+	require.Equal(t, "test-participant-id", evs[3].ParticipantID)
 	require.False(t, evs[4].Time.After(ic.sigTs.AcceptTime), "200 OK is sent before Accept returns")
 	require.Equal(t, string(stats.ResultSuccess), evs[5].Result)
 	require.Equal(t, "hangup", evs[5].Reason)
