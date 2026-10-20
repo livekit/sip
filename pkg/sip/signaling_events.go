@@ -67,6 +67,9 @@ type SignalingEvent struct {
 	Direction livekit.SIPCallDirection
 	TrunkID   string
 	RoomID    string
+	// ParticipantID is the SID of the SIP participant in the room. It is set on
+	// EventRoomJoined, so the call joins the room's participant events.
+	ParticipantID string
 
 	// SIP message details, set when the event corresponds to a SIP message.
 	SIPMethod string
