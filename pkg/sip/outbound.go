@@ -80,11 +80,13 @@ type outboundCall struct {
 	jitterBuf bool
 	projectID string
 
-	mu       sync.RWMutex
-	mon      *stats.CallMonitor
-	lkRoom   RoomInterface
-	lkRoomIn msdk.PCM16Writer // output to room; OPUS at 48k
-	sipConf  sipOutboundConfig
+	mu         sync.RWMutex
+	mon        *stats.CallMonitor
+	sessionDur func() time.Duration
+	callDur    func() time.Duration // set once the call is answered
+	lkRoom     RoomInterface
+	lkRoomIn   msdk.PCM16Writer // output to room; OPUS at 48k
+	sipConf    sipOutboundConfig
 }
 
 func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
@@ -124,6 +126,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	call.mon.SetProvider(providerLabel(state.Info().GetProviderInfo()))
+	call.sessionDur = call.mon.SessionDur()
 	var err error
 
 	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
@@ -191,7 +194,9 @@ func (c *outboundCall) ensureClosed(ctx context.Context) {
 				info.ParticipantAttributes = p.Attributes() // clones
 			}
 		}
-		info.EndedAtNs = time.Now().UnixNano()
+		if info.EndedAtNs == 0 {
+			info.EndedAtNs = time.Now().UnixNano()
+		}
 	})
 }
 
@@ -205,14 +210,21 @@ func (c *outboundCall) setErrStatus(ctx context.Context, err error) {
 		}
 		info.Error = err.Error()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+		if info.EndedAtNs == 0 {
+			info.EndedAtNs = time.Now().UnixNano()
+		}
 	})
 }
 
 func (c *outboundCall) Dial(ctx context.Context) error {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Dial")
 	defer span.End()
-	c.mon.CallStart()
-	defer c.mon.CallEnd()
+	// close() ends the call; skip CallStart if it already ran, or the gauge leaks.
+	c.mu.Lock()
+	if !c.stopped.IsBroken() {
+		c.mon.CallStart()
+	}
+	c.mu.Unlock()
 
 	err := c.connectSIP(ctx)
 	if err != nil {
@@ -221,6 +233,9 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 	}
 
 	c.state.Update(func(info *livekit.SIPCallInfo) {
+		if info.EndedAtNs != 0 {
+			return // closed since connectSIP; don't report a start after the end
+		}
 		lkroom := c.lkRoom.Room()
 		if lkroom == nil {
 			c.log.Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
@@ -367,13 +382,23 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		} else {
 			log.Infow("Closing outbound call")
 		}
+		// Before stopSIP: an answered call's BYE can block until the transaction times out.
+		endedAt := time.Now()
 		c.state.Update(func(info *livekit.SIPCallInfo) {
 			if err := end.Report; err != nil && info.Error == "" {
 				info.Error = err.Error()
 				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
 			}
 			info.DisconnectReason = end.Reason
+			if info.EndedAtNs == 0 {
+				info.EndedAtNs = endedAt.UnixNano()
+			}
 		})
+		c.mon.CallEnd()
+		if c.callDur != nil {
+			c.callDur()
+		}
+		c.sessionDur()
 
 		// Send BYE _before_ closing media/room connection.
 		// This ensures participant attributes are still available for
@@ -804,6 +829,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		c.log.Infow("outbound call answered after abort; hanging up", "error", cause)
 		return psrpc.NewError(psrpc.Canceled, cause)
 	}
+	c.callDur = c.mon.CallDur()
 
 	c.setExtraAttrs(c.sipConf.headersToAttrs, c.sipConf.includeHeaders, c.cc, nil)
 	audio := c.media.NegotiatedAudio()
