@@ -126,7 +126,6 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 
 	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	call.mon.SetProvider(providerLabel(state.Info().GetProviderInfo()))
-	call.sessionDur = call.mon.SessionDur()
 	var err error
 
 	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
@@ -387,7 +386,11 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		c.state.Update(func(info *livekit.SIPCallInfo) {
 			if err := end.Report; err != nil && info.Error == "" {
 				info.Error = err.Error()
+			}
+			if info.Error != "" {
 				info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+			} else {
+				info.CallStatus = livekit.SIPCallStatus_SCS_DISCONNECTED
 			}
 			info.DisconnectReason = end.Reason
 			if info.EndedAtNs == 0 {
@@ -398,7 +401,9 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		if c.callDur != nil {
 			c.callDur()
 		}
-		c.sessionDur()
+		if c.sessionDur != nil {
+			c.sessionDur()
+		}
 
 		// Send BYE _before_ closing media/room connection.
 		// This ensures participant attributes are still available for
@@ -755,6 +760,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	c.mon.InviteReq()
 	c.sigTs.InviteTime = time.Now()
+	c.sessionDur = c.mon.SessionDur()
 
 	ringing := false
 	sdpResp, err := c.cc.Invite(ctx, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
