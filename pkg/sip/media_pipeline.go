@@ -207,7 +207,7 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 		mux.Register(d.Type, dtmfType)
 	}
 
-	var hnd rtp.HandlerCloser = rtp.NewNopCloser(mux)
+	hnd := rtp.NewNopCloser(mux)
 	if p.conf.opts.EnableJitterBuffer {
 		// Renegotiation rebuilds the pipeline against the same stats, so a later
 		// buffer must add to the call totals rather than replace them.
