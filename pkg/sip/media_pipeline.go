@@ -207,7 +207,7 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 		mux.Register(d.Type, dtmfType)
 	}
 
-	var hnd rtp.HandlerCloser = newRTPStreamStats(mux, &p.conf.stats.MuxStats)
+	var hnd rtp.HandlerCloser = rtp.NewNopCloser(mux)
 	if p.conf.opts.EnableJitterBuffer {
 		// Renegotiation rebuilds the pipeline against the same stats, so a later
 		// buffer must add to the call totals rather than replace them.
@@ -219,6 +219,9 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 			SequenceRestarts: &p.conf.stats.JitterBufferSequenceRestarts,
 		})...)
 	}
+	// Stream stats go before the jitter buffer, so they see the network arrival
+	// order and timing, not the buffer's reordered and paced output.
+	hnd = newRTPStreamStats(hnd, &p.conf.stats.MuxStats)
 	hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
 
 	p.muxToRoom.Store(&hnd)
