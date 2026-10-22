@@ -470,6 +470,9 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		opts = &MediaOptions{}
 	}
 	opts.ApplyDefaults()
+	if !opts.IP.Is4() {
+		return nil, fmt.Errorf("media IP must be IPv4, got %q", opts.IP)
+	}
 	if conn == nil {
 		// use an even RTP port (RFC 3550); some gateways misroute media when offered an odd one
 		c, err := rtp.ListenUDPEvenPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))

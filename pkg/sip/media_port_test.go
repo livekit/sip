@@ -251,6 +251,13 @@ func offerAtEnc(t testing.TB, addr netip.AddrPort, enc sdp.Encryption) []byte {
 	return data
 }
 
+func TestMediaPortRejectsNonIPv4(t *testing.T) {
+	for _, ip := range []netip.Addr{{}, newIP("::1"), newIP("::ffff:1.1.1.1")} {
+		_, err := NewMediaPortWith(logger.NewTestLogger(t), newTestCallMonitor(t), newTestConn(1), &MediaOptions{IP: ip}, RoomSampleRate)
+		require.Error(t, err, "ip=%v", ip)
+	}
+}
+
 func TestMediaPortUpdateRemote(t *testing.T) {
 	c1, _ := newUDPPipe()
 	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
