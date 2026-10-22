@@ -2593,21 +2593,20 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	c.setCSeq(r)
 	fallback := c.swapSrcDst(r)
 	c.drop()
-	if sendBye(ctx, c.log, c, r) || fallback == "" {
-		return
-	}
-	c.log.Infow("retrying BYE via Contact", "addr", fallback)
-	r.SetDestination(fallback)
-	r.Via().Params.Add("branch", sip.GenerateBranchN(16))
-	r.CSeq().SeqNo++
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sendBye(ctx, c.log, c, r)
-	}()
-	select {
-	case <-done:
-	case <-time.After(byeRetryGrace):
+	if !sendBye(ctx, c.log, c, r) && fallback != "" {
+		c.log.Infow("retrying BYE via Contact", "addr", fallback)
+		r.SetDestination(fallback)
+		r.Via().Params.Add("branch", sip.GenerateBranchN(16))
+		r.CSeq().SeqNo++
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			sendBye(ctx, c.log, c, r)
+		}()
+		select {
+		case <-done:
+		case <-time.After(byeRetryGrace):
+		}
 	}
 }
 

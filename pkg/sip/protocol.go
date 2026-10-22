@@ -288,7 +288,7 @@ func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Reque
 		log.Infow("no response to BYE", "error", err)
 		return false
 	}
-	if res.StatusCode/100 != 2 {
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		log.Infow("BYE rejected", "status", res.StatusCode)
 		return false
 	}
