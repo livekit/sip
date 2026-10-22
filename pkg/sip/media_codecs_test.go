@@ -17,9 +17,25 @@ package sip
 import (
 	"testing"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/amrwb"
+	"github.com/livekit/media-sdk/g722"
 	"github.com/livekit/protocol/logger"
 	"github.com/stretchr/testify/require"
 )
+
+// unregisteredEnabledCodecs must flag enabled codecs with no backing
+// implementation, and stay quiet for registered or disabled ones, in any
+// build configuration.
+func TestUnregisteredEnabledCodecs(t *testing.T) {
+	set := msdk.NewCodecSet()
+	set.SetEnabled("notacodec", true)        // enabled, never registered
+	set.SetEnabled(g722.SDPNameOnly, true)   // enabled, pure Go -> always registered
+	set.SetEnabled(amrwb.SDPNameOnly, false) // disabled -> never reported
+
+	got := unregisteredEnabledCodecs(set, []string{"notacodec", g722.SDPNameOnly, amrwb.SDPNameOnly})
+	require.Equal(t, []string{"notacodec"}, got)
+}
 
 // sdpWithMedia builds a minimal SDP body with the given m= line and attributes.
 func sdpWithMedia(media string, attrs ...string) []byte {
