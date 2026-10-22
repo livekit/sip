@@ -27,4 +27,4 @@
 - 🔴: crash, deadlock, dropped or stuck call, one-way or no audio, wrong billing or call status,
   security or secret exposure.
 - 🟡: wrong metrics or logs, degraded behavior in an edge case, missing test for a changed path.
-- Do not use 🔴 for pre-existing behavior or for a known non-goal.
+- Do not use 🔴 for pre-existing behavior.
