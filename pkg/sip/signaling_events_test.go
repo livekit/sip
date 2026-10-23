@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/media-sdk/dtmf"
@@ -59,15 +60,34 @@ func TestCallStateEmitSignalingEventIgnored(t *testing.T) {
 	})
 }
 
-// waitCallEnded waits for EventCallEnded, which is always emitted last, and
-// returns all events ordered by Time, the order consumers use. Emission order
-// differs: some events are emitted after they happen.
+// waitCallEnded waits for EventCallEnded and returns all events ordered by
+// Time, the order consumers use. Emission order differs: some events are
+// emitted after they happen, and some after EventCallEnded (e.g. a CANCEL is
+// reported only once the call goroutine was signalled).
 func waitCallEnded(t *testing.T, h *recordingStateHandler) []SignalingEvent {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		types := h.EventTypes()
-		return len(types) > 0 && types[len(types)-1] == EventCallEnded
+		return slices.Contains(h.EventTypes(), EventCallEnded)
 	}, 5*time.Second, 10*time.Millisecond, "call end should be reported")
+	return eventsByTime(h)
+}
+
+// waitEventTypes waits until the call's events, ordered by Time, have exactly
+// the types in want, and returns them.
+func waitEventTypes(t *testing.T, h *recordingStateHandler, want []SignalingEventType) []SignalingEvent {
+	t.Helper()
+	var got []SignalingEventType
+	if !assert.Eventually(t, func() bool {
+		got = eventTypes(eventsByTime(h))
+		return slices.Equal(got, want)
+	}, 5*time.Second, 10*time.Millisecond) {
+		require.Equal(t, want, got, "events by time")
+	}
+	return eventsByTime(h)
+}
+
+// eventsByTime returns the recorded events ordered by Time.
+func eventsByTime(h *recordingStateHandler) []SignalingEvent {
 	evs := h.Events()
 	slices.SortStableFunc(evs, func(a, b SignalingEvent) int { return a.Time.Compare(b.Time) })
 	return evs
@@ -110,11 +130,10 @@ func TestInboundSignalingEventsAnswered(t *testing.T) {
 	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond)
 	st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
 
-	evs := waitCallEnded(t, h)
-	require.Equal(t, []SignalingEventType{
+	evs := waitEventTypes(t, h, []SignalingEventType{
 		EventInviteReceived, EventTryingSent, EventInviteAuthorized, EventRingingSent, EventCallDispatched,
 		EventRoomJoined, EventAnsweredSent, EventAckReceived, EventByeReceived, EventCallEnded,
-	}, eventTypes(evs))
+	})
 	require.Equal(t, ic.sigTs.InviteTime, evs[0].Time, "INVITE keeps its arrival time")
 
 	auth := eventOf(t, evs, EventInviteAuthorized)
@@ -172,11 +191,10 @@ func TestInboundSignalingEventsCancelledWhileRinging(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, tx.Cancel())
 
-	evs := waitCallEnded(t, h)
-	require.Equal(t, []SignalingEventType{
+	evs := waitEventTypes(t, h, []SignalingEventType{
 		EventInviteReceived, EventTryingSent, EventInviteAuthorized, EventRingingSent, EventCallDispatched,
 		EventRoomJoined, EventCancelReceived, EventCallEnded, EventRejected,
-	}, eventTypes(evs))
+	})
 	require.Equal(t, 487, eventOf(t, evs, EventRejected).StatusCode)
 	ended := eventOf(t, evs, EventCallEnded)
 	require.Equal(t, 487, ended.StatusCode)
@@ -218,10 +236,9 @@ func TestInboundSignalingEventsRejected(t *testing.T) {
 			st.Handler.(*TestHandler).GetAuthCredentialsFunc = tc.auth
 			sendInvite(t, st)
 
-			evs := waitCallEnded(t, h)
-			require.Equal(t, []SignalingEventType{
+			evs := waitEventTypes(t, h, []SignalingEventType{
 				EventInviteReceived, EventTryingSent, EventInviteAuthorized, EventRejected, EventCallEnded,
-			}, eventTypes(evs))
+			})
 			auth := eventOf(t, evs, EventInviteAuthorized)
 			require.Equal(t, tc.authResult, auth.Result)
 			require.NotZero(t, auth.Duration)
@@ -346,24 +363,28 @@ func TestInboundSignalingEventsBadCredentials(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(tx.Terminate)
 
-	evs := waitCallEnded(t, h)
-	require.Equal(t, []SignalingEventType{
+	evs := waitEventTypes(t, h, []SignalingEventType{
 		EventInviteReceived, EventTryingSent, EventInviteAuthorized, EventRejected, EventCallEnded,
-	}, eventTypes(evs))
+	})
 	require.Equal(t, "password", eventOf(t, evs, EventInviteAuthorized).Result)
 	require.Equal(t, 401, eventOf(t, evs, EventRejected).StatusCode)
 }
 
 func TestSIPInboundAckEvent(t *testing.T) {
-	h := &recordingStateHandler{}
-	c := &sipInbound{log: logger.GetLogger(), inviteCSeq: 1}
-	c.state.Store(NewCallState(h, &livekit.SIPCallInfo{CallId: "SCL_test"}))
 	ack := func(cseq uint32) *sip.Request {
 		req := sip.NewRequest(sip.ACK, sip.Uri{Host: "example.com"})
 		req.AppendHeader(&sip.CSeqHeader{SeqNo: cseq, MethodName: sip.ACK})
 		return req
 	}
+	newLeg := func(okSent bool) (*sipInbound, *recordingStateHandler) {
+		h := &recordingStateHandler{}
+		c := &sipInbound{log: logger.GetLogger(), inviteCSeq: 1}
+		c.state.Store(NewCallState(h, &livekit.SIPCallInfo{CallId: "SCL_test"}))
+		c.okSent.Store(okSent)
+		return c, h
+	}
 
+	c, h := newLeg(true)
 	c.AcceptAck(ack(2), nil) // for another INVITE
 	require.Empty(t, h.Events())
 	require.False(t, c.GotACK())
@@ -373,6 +394,11 @@ func TestSIPInboundAckEvent(t *testing.T) {
 	require.Equal(t, []SignalingEventType{EventAckReceived}, h.EventTypes())
 	require.Equal(t, uint32(1), h.Events()[0].CSeq)
 	require.True(t, c.GotACK())
+
+	// The ACK for an error response (e.g. the 487 after a CANCEL) is not reported.
+	c, h = newLeg(false)
+	c.AcceptAck(ack(1), nil)
+	require.Empty(t, h.Events())
 }
 
 // A peer that sends a second BYE (a new transaction, not a retransmission)
