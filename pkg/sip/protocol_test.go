@@ -368,6 +368,25 @@ func TestParseReason(t *testing.T) {
 			Normal: true,
 		},
 		{
+			Name:   "Q.850 capitalized parameter names",
+			Header: `Q.850;Cause=16;Text="Terminated"`,
+			Reason: ReasonHeader{
+				Type:  "q.850",
+				Cause: 16,
+				Text:  "Terminated",
+			},
+			Normal: true,
+		},
+		{
+			Name:   "X.int capitalized reason code",
+			Header: `X.int;ReasonCode=0x0000032D;add-info=05CC.0001.0004`,
+			Reason: ReasonHeader{
+				Type:  "x.int",
+				Cause: 0x32D,
+			},
+			Normal: false,
+		},
+		{
 			Name:   "X.int",
 			Header: `X.int;text="0x00000000";add-info=05CC.0001.0001`,
 			Reason: ReasonHeader{
