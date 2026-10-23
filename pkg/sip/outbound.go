@@ -1135,7 +1135,7 @@ func applyInviteResponse(req *sip.Request, resp *sip.Response) {
 }
 
 func (c *sipOutbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	_ = tx.Respond(newResponse(req, 200, "", nil))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.drop() // mark as closed

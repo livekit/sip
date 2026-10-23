@@ -572,7 +572,7 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 
 		code, msg := sipCodeAndMessageFromError(err)
 
-		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
+		tx.Respond(newResponse(req, code, msg, nil))
 	}()
 	return true
 }
