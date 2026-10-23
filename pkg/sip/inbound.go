@@ -742,11 +742,15 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 				c.log().Warnw("cannot parse reason header", err, "reason-raw", rawReason)
 			}
 		}
-		ev := SignalingEvent{Type: EventByeReceived, Time: receivedAt, SIPMethod: string(sip.BYE), Reason: reasonCause(reason)}
-		if cseq := req.CSeq(); cseq != nil {
-			ev.CSeq = cseq.SeqNo
+		// sipgo answers a retransmitted BYE itself, but a peer can send a new BYE
+		// before close removes the call. It hung up once, so report it once.
+		if c.byeReceived.CompareAndSwap(false, true) {
+			ev := SignalingEvent{Type: EventByeReceived, Time: receivedAt, SIPMethod: string(sip.BYE), Reason: reasonCause(reason)}
+			if cseq := req.CSeq(); cseq != nil {
+				ev.CSeq = cseq.SeqNo
+			}
+			c.state.EmitSignalingEvent(ev)
 		}
-		c.state.EmitSignalingEvent(ev)
 		c.log().Infow("BYE from remote",
 			"reason-type", reason.Type,
 			"reason-cause", reason.Cause,
@@ -833,6 +837,7 @@ type inboundCall struct {
 	ctx               context.Context
 	cancel            func()
 	closeReason       atomic.Pointer[ReasonHeader]
+	byeReceived       atomic.Bool // the remote side's first BYE was reported
 	call              *rpc.SIPCall
 	mmu               sync.Mutex
 	media             MediaPort

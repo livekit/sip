@@ -262,46 +262,70 @@ func TestReasonCause(t *testing.T) {
 }
 
 // A PIN call is dispatched twice: once to learn a PIN is needed, and again
-// with the PIN the caller entered.
+// with the PIN the caller entered. Each dispatch event reports its own rule.
 func TestInboundSignalingEventsPIN(t *testing.T) {
-	h := &recordingStateHandler{}
-	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
-	st.Handler.(*TestHandler).DispatchCallFunc = func(_ context.Context, info *CallInfo) CallDispatch {
-		if info.Pin == "" {
-			return CallDispatch{Result: DispatchRequestPin, DispatchRuleID: "SDR_pin"}
-		}
-		identity := "test-participant-" + info.Call.SipCallId
-		return CallDispatch{
-			Result:         DispatchAccept,
-			DispatchRuleID: "SDR_pin",
-			Room: RoomConfig{
-				RoomName:    "test-room",
-				Participant: ParticipantConfig{Identity: identity, Name: identity},
-			},
-		}
-	}
-	call, ic := st.CreateInboundCall(t) // the 200 OK comes before the PIN prompt
-	for _, d := range []byte{'1', '2', '#'} {
-		ic.dtmf <- dtmf.Event{Digit: d}
-	}
-	require.Eventually(t, ic.started.IsBroken, 10*time.Second, 10*time.Millisecond)
-	st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
+	for _, tc := range []struct {
+		name     string
+		accept   bool   // the PIN is right
+		wantRule string // rule of the second dispatch event
+	}{
+		{name: "right PIN", accept: true, wantRule: "SDR_pin"},
+		{name: "wrong PIN", accept: false, wantRule: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &recordingStateHandler{}
+			st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
+			st.Handler.(*TestHandler).DispatchCallFunc = func(_ context.Context, info *CallInfo) CallDispatch {
+				if info.Pin == "" {
+					return CallDispatch{Result: DispatchRequestPin, DispatchRuleID: "SDR_pin"}
+				}
+				if !tc.accept {
+					return CallDispatch{Result: DispatchNoRuleReject}
+				}
+				identity := "test-participant-" + info.Call.SipCallId
+				return CallDispatch{
+					Result:         DispatchAccept,
+					DispatchRuleID: "SDR_pin",
+					Room: RoomConfig{
+						RoomName:    "test-room",
+						Participant: ParticipantConfig{Identity: identity, Name: identity},
+					},
+				}
+			}
+			call, ic := st.CreateInboundCall(t) // the 200 OK comes before the PIN prompt
+			byes := call.RegisterRequestChannel(string(sip.BYE))
+			t.Cleanup(func() { call.UnregisterRequestChannel(string(sip.BYE)) })
+			for _, d := range []byte{'1', '2', '#'} {
+				ic.dtmf <- dtmf.Event{Digit: d}
+			}
+			if tc.accept {
+				require.Eventually(t, ic.started.IsBroken, 10*time.Second, 10*time.Millisecond)
+				st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
+			} else {
+				// The call was answered for the prompt, so the server hangs up with a BYE.
+				select {
+				case msg := <-byes:
+					require.NoError(t, msg.tx.Respond(sip.NewResponseFromRequest(msg.req, sip.StatusOK, "OK", nil)))
+				case <-time.After(10 * time.Second):
+					t.Fatal("no BYE from the server")
+				}
+			}
 
-	evs := waitCallEnded(t, h)
-	var disps []SignalingEvent
-	for _, ev := range evs {
-		if ev.Type == EventCallDispatched {
-			disps = append(disps, ev)
-		}
-	}
-	require.Len(t, disps, 2)
-	require.Equal(t, "request-pin", disps[0].Result)
-	require.False(t, disps[0].WithPIN)
-	require.Equal(t, "accept", disps[1].Result)
-	require.True(t, disps[1].WithPIN)
-	require.NotZero(t, disps[1].Duration)
-	for _, ev := range disps {
-		require.Equal(t, "SDR_pin", ev.DispatchRuleID)
+			evs := waitCallEnded(t, h)
+			var disps []SignalingEvent
+			for _, ev := range evs {
+				if ev.Type == EventCallDispatched {
+					disps = append(disps, ev)
+				}
+			}
+			require.Len(t, disps, 2)
+			require.Equal(t, "request-pin", disps[0].Result)
+			require.False(t, disps[0].WithPIN)
+			require.Equal(t, "SDR_pin", disps[0].DispatchRuleID)
+			require.True(t, disps[1].WithPIN)
+			require.NotZero(t, disps[1].Duration)
+			require.Equal(t, tc.wantRule, disps[1].DispatchRuleID, "the first lookup's rule must not be inherited")
+		})
 	}
 }
 
@@ -349,4 +373,31 @@ func TestSIPInboundAckEvent(t *testing.T) {
 	require.Equal(t, []SignalingEventType{EventAckReceived}, h.EventTypes())
 	require.Equal(t, uint32(1), h.Events()[0].CSeq)
 	require.True(t, c.GotACK())
+}
+
+// A peer that sends a second BYE (a new transaction, not a retransmission)
+// before the call is closed still hung up only once.
+func TestInboundSignalingEventsSecondBye(t *testing.T) {
+	h := &recordingStateHandler{}
+	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
+	call, ic := st.CreateInboundCall(t)
+	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond)
+	for range 2 {
+		bye := call.NewRequest(sip.BYE)
+		st.Server.onBye(nil, bye, &testSIPServerTransaction{
+			log:       logger.GetLogger(),
+			req:       bye,
+			responses: make(chan *sip.Response, 1),
+			done:      make(chan struct{}),
+		})
+	}
+
+	evs := waitCallEnded(t, h)
+	n := 0
+	for _, ev := range evs {
+		if ev.Type == EventByeReceived {
+			n++
+		}
+	}
+	require.Equal(t, 1, n)
 }
