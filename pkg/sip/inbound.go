@@ -223,7 +223,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	if s.conf.HideInboundPort {
 		// We will send password request anyway, so might as well signal that the progress is made.
 		log.Debugw("Sending processing response due to HideInboundPort config")
-		_ = tx.Respond(sip.NewResponseFromRequest(req, 100, "Processing", nil))
+		_ = tx.Respond(newResponse(req, 100, "", nil))
 	}
 
 	// Extract SIP Call ID for tracking in-progress invites
@@ -248,7 +248,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 			"algorithm", inviteState.challenge.Algorithm,
 		)
 
-		res := sip.NewResponseFromRequest(req, 407, "Unauthorized", nil)
+		res := newResponse(req, 407, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
 		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
 		if err := tx.Respond(res); err != nil {
@@ -263,7 +263,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		log.Warnw("Failed to parse Proxy-Authorization credentials", err,
 			"headerValue", h.Value(),
 		)
-		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
+		res := newResponse(req, 401, "Bad credentials", nil)
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
@@ -281,7 +281,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 			"expectedUsername", auth.Username,
 			"receivedUsername", cred.Username,
 		)
-		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
+		res := newResponse(req, 401, "Unauthorized", nil)
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
@@ -294,7 +294,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 			"sipCallID", sipCallID,
 			"expectedRealm", auth.Realm,
 		)
-		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
+		res := newResponse(req, 401, "Bad credentials", nil)
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
@@ -316,7 +316,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 
 	if err != nil {
 		log.Warnw("Failed to compute digest response", err)
-		res := sip.NewResponseFromRequest(req, 401, "Bad credentials", nil)
+		res := newResponse(req, 401, "Bad credentials", nil)
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
@@ -334,7 +334,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 			"expectedResponse", digCred.Response,
 			"receivedResponse", cred.Response,
 		)
-		res := sip.NewResponseFromRequest(req, 401, "Unauthorized", nil)
+		res := newResponse(req, 401, "Unauthorized", nil)
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
@@ -427,7 +427,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	if err != nil {
 		s.log.Errorw("invalid invite", err)
 		if !s.conf.HideInboundPort {
-			r := sip.NewResponseFromRequest(req, sip.StatusBadRequest, "Bad request", nil)
+			r := newResponse(req, sip.StatusBadRequest, "", nil)
 			r.AppendHeader(sip.HeaderClone(allowHeader))
 			_ = tx.Respond(r)
 		}
@@ -692,7 +692,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 }
 
 func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
+	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
 func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
@@ -713,7 +713,7 @@ func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
+		_ = tx.Respond(newResponse(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
@@ -748,7 +748,7 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	}
 	if !ok {
 		s.log.Infow("BYE for non-existent call", "callID", tag)
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
+		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
 }
 
@@ -773,13 +773,13 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 		"callID", toTag,
 		"from", from,
 		"to", to)
-	tx.Respond(sip.NewResponseFromRequest(req, 405, "Method Not Allowed", nil))
+	tx.Respond(newResponse(req, 405, "", nil))
 }
 
 func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusBadRequest, "", nil))
+		_ = tx.Respond(newResponse(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
@@ -792,7 +792,7 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 
 		code, msg := sipCodeAndMessageFromError(err)
 
-		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
+		tx.Respond(newResponse(req, code, msg, nil))
 
 		return
 	}
@@ -802,7 +802,7 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 	}
 	if !ok {
 		s.log.Infow("NOTIFY for non-existent call")
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call does not exist", nil))
+		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
 }
 
@@ -1028,25 +1028,25 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	rejectMedia := func(err error) error {
-		sipReason := sip.StatusInternalServerError
+		sipReason, reasonPhrase := sip.StatusInternalServerError, ""
 		log := log.WithValues("sdp", string(sdpOffer))
 		status, term := callDropped, stats.ServerError("media-failed")
 		if errors.Is(err, sdp.ErrNoCommonMedia) {
 			status, term = callMediaFailed, stats.ClientError("no-common-codec")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusNotAcceptableHere, "No Acceptable Codec"
 		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
 			status, term = callMediaFailed, stats.ClientError("no-common-crypto")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusNotAcceptableHere, "No Acceptable Encryption Profile"
 		} else if e := (SDPError{}); errors.As(err, &e) {
 			status, term = callMediaFailed, stats.ClientError("sdp-error")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusNotAcceptableHere, "Invalid SDP"
 		}
 		if sipReason >= 500 {
 			log.Errorw("Cannot start media", err)
 		} else {
 			log.Warnw("Cannot start media", err)
 		}
-		c.cc.RespondAndDrop(sipReason, "")
+		c.cc.RespondAndDrop(sipReason, reasonPhrase)
 		c.close(ctx, EndCall{
 			Status: status,
 			Term:   term,
@@ -2217,7 +2217,11 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		return false
 	}
 
-	r := sip.NewResponseFromRequest(c.invite, status, reason, body)
+	if reason == "" { // Propagate default into setLastStatus too
+		reason = sipStatus(status)
+	}
+
+	r := newResponse(c.invite, status, reason, body)
 	if typ := sip.ContentTypeHeader(contentType); typ != "" {
 		r.AppendHeader(&typ)
 	}
@@ -2333,7 +2337,7 @@ func (c *sipInbound) StartRinging() bool {
 				return
 			case r := <-cancels:
 				close(c.cancelled) // Other goroutines will respond to the primary INVITE
-				_ = tx.Respond(sip.NewResponseFromRequest(r, sip.StatusOK, "OK", nil))
+				_ = tx.Respond(newResponse(r, sip.StatusOK, "", nil))
 				return
 			case <-ticker.C:
 			}
@@ -2414,7 +2418,7 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 		return errors.New("call already rejected")
 	}
 	c.lastSDP = sdpData
-	r := sip.NewResponseFromRequest(c.invite, sip.StatusOK, "OK", sdpData)
+	r := newResponse(c.invite, sip.StatusOK, "", sdpData)
 
 	// This will effectively redirect future SIP requests to this server instance (if host address is not LB).
 	r.AppendHeader(c.contact)
@@ -2494,7 +2498,7 @@ func (c *sipInbound) Ack() *sip.Request {
 }
 
 func (c *sipInbound) AcceptBye(req *sip.Request, tx sip.ServerTransaction) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	_ = tx.Respond(newResponse(req, 200, "", nil))
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.drop() // mark as closed
