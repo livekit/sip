@@ -1028,25 +1028,25 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	}
 
 	rejectMedia := func(err error) error {
-		sipReason := sip.StatusInternalServerError
+		sipReason, reasonPhrase := sip.StatusInternalServerError, ""
 		log := log.WithValues("sdp", string(sdpOffer))
 		status, term := callDropped, stats.ServerError("media-failed")
 		if errors.Is(err, sdp.ErrNoCommonMedia) {
 			status, term = callMediaFailed, stats.ClientError("no-common-codec")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusNotAcceptableHere, "No Acceptable Codec"
 		} else if errors.Is(err, sdp.ErrNoCommonCrypto) {
 			status, term = callMediaFailed, stats.ClientError("no-common-crypto")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusNotAcceptableHere, "No Acceptable Encryption Profile"
 		} else if e := (SDPError{}); errors.As(err, &e) {
 			status, term = callMediaFailed, stats.ClientError("sdp-error")
-			sipReason = sip.StatusBadRequest
+			sipReason, reasonPhrase = sip.StatusNotAcceptableHere, "Invalid SDP"
 		}
 		if sipReason >= 500 {
 			log.Errorw("Cannot start media", err)
 		} else {
 			log.Warnw("Cannot start media", err)
 		}
-		c.cc.RespondAndDrop(sipReason, "")
+		c.cc.RespondAndDrop(sipReason, reasonPhrase)
 		c.close(ctx, EndCall{
 			Status: status,
 			Term:   term,
@@ -2213,6 +2213,10 @@ func (c *sipInbound) respond(status sip.StatusCode, reason string) bool {
 func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, contentType string, body []byte) bool {
 	if c.inviteTx == nil {
 		return false
+	}
+
+	if reason == "" {
+		reason = sipStatus(status)
 	}
 
 	r := sip.NewResponseFromRequest(c.invite, status, reason, body)
