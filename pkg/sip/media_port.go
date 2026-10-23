@@ -248,16 +248,27 @@ func (c *udpConn) GetSrc() (netip.AddrPort, bool) {
 
 func (c *udpConn) SetDst(addr netip.AddrPort) {
 	if addr.IsValid() {
-		prev := c.dst.Swap(&addr)
-		if prev == nil || !prev.IsValid() {
-			c.log.Debugw("setting media destination", "addr", addr.String())
-		} else if *prev != addr {
-			changeCount := c.dstChangeCount.Add(1)
-			now := time.Now().UnixNano()
-			if now-c.lastDstPrint.Load() > dstChangePrintInterval {
-				c.lastDstPrint.Store(now)
-				c.log.Infow("changing media destination", "prev", (*prev).String(), "addr", addr.String(), "count", changeCount)
-			}
+		c.logDstChange(c.dst.Swap(&addr), addr)
+	}
+}
+
+// learnDst sets the destination learned from symmetric RTP, unless it changed since
+// prev was loaded (e.g. a re-INVITE put the call on hold).
+func (c *udpConn) learnDst(prev *netip.AddrPort, addr netip.AddrPort) {
+	if addr.IsValid() && c.dst.CompareAndSwap(prev, &addr) {
+		c.logDstChange(prev, addr)
+	}
+}
+
+func (c *udpConn) logDstChange(prev *netip.AddrPort, addr netip.AddrPort) {
+	if prev == nil || !prev.IsValid() {
+		c.log.Debugw("setting media destination", "addr", addr.String())
+	} else if *prev != addr {
+		changeCount := c.dstChangeCount.Add(1)
+		now := time.Now().UnixNano()
+		if now-c.lastDstPrint.Load() > dstChangePrintInterval {
+			c.lastDstPrint.Store(now)
+			c.log.Infow("changing media destination", "prev", (*prev).String(), "addr", addr.String(), "count", changeCount)
 		}
 	}
 }
@@ -287,7 +298,7 @@ func (c *udpConn) Read(b []byte) (n int, err error) {
 		if dst != nil && dst.Addr().IsUnspecified() {
 			// On hold: the peer may keep sending, but it doesn't want our media.
 		} else if dst == nil || !dst.IsValid() || *dst != addr {
-			c.SetDst(addr)
+			c.learnDst(dst, addr)
 		}
 	}
 	return n, err
@@ -935,8 +946,11 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 
 	if changeSetSummary.includes(changeSetRemoteAddr) {
 		if c.Remote.Addr().IsUnspecified() {
-			// Older hold semantics: c=0.0.0.0
+			// Older hold semantics: c=0.0.0.0. RFC 3264 §8.4: send neither RTP nor RTCP.
+			// Writes to an unspecified destination are dropped; the next address resumes.
 			hold = true
+			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
+			p.negotiated.Remote = c.Remote
 		} else {
 			p.port.SetDst(netip.AddrPortFrom(c.Remote.Addr(), c.Remote.Port()))
 			p.negotiated.Remote = c.Remote
