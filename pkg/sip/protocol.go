@@ -36,6 +36,7 @@ import (
 const (
 	notifyAckTimeout = 5 * time.Second
 	referByeTimeout  = time.Second
+	byeRetryGrace    = 5 * time.Second
 	// referResultGrace is how long a REFER result is still accepted after the
 	// original call ended. Once the transfer target answers, our peer reports it
 	// in the final NOTIFY and then BYEs the original leg, which is no longer
@@ -58,10 +59,15 @@ func (r Result) NewResponse(req *sip.Request) *sip.Response {
 	if r.Code == 0 {
 		r.Code = sip.StatusServiceUnavailable
 	}
-	if r.Status == "" {
-		r.Status = sipStatus(r.Code)
+	return newResponse(req, r.Code, r.Status, nil)
+}
+
+// newResponse builds a response, defaulting an empty reason phrase to the standard one for the code.
+func newResponse(req *sip.Request, code sip.StatusCode, reason string, body []byte) *sip.Response {
+	if reason == "" {
+		reason = sipStatus(code)
 	}
-	return sip.NewResponseFromRequest(req, r.Code, r.Status, nil)
+	return sip.NewResponseFromRequest(req, code, reason, body)
 }
 
 type EndCall struct {
@@ -77,16 +83,20 @@ type EndCall struct {
 var statusNamesMap = map[int]string{
 	100: "Trying",
 	180: "Ringing",
-	181: "Call Is Forwarded",
+	181: "Call Is Being Forwarded",
 	182: "Queued",
-	183: "Session In Progress",
+	183: "Session Progress",
+	199: "Early Dialog Terminated",
 
 	200: "OK",
 	202: "Accepted",
+	204: "No Notification",
 
+	300: "Multiple Choices",
 	301: "Moved Permanently",
 	302: "Moved Temporarily",
 	305: "Use Proxy",
+	380: "Alternative Service",
 
 	400: "Bad Request",
 	401: "Unauthorized",
@@ -95,7 +105,7 @@ var statusNamesMap = map[int]string{
 	404: "Not Found",
 	405: "Method Not Allowed",
 	406: "Not Acceptable",
-	407: "Proxy Auth Required",
+	407: "Proxy Authentication Required",
 	408: "Request Timeout",
 	409: "Conflict",
 	410: "Gone",
@@ -104,7 +114,7 @@ var statusNamesMap = map[int]string{
 	413: "Request Entity Too Large",
 	414: "Request URI Too Long",
 	415: "Unsupported Media Type",
-	416: "Requested Range Not Satisfiable",
+	416: "Unsupported URI Scheme",
 	417: "Unknown Resource-Priority",
 	420: "Bad Extension",
 	421: "Extension Required",
@@ -124,7 +134,7 @@ var statusNamesMap = map[int]string{
 	469: "Bad Info Package",
 	470: "Consent Needed",
 	480: "Temporarily Unavailable",
-	481: "Call Transaction Does Not Exists",
+	481: "Call Does Not Exist",
 	482: "Loop Detected",
 	483: "Too Many Hops",
 	484: "Address Incomplete",
@@ -144,6 +154,8 @@ var statusNamesMap = map[int]string{
 	504: "Gateway Timeout",
 	505: "Version Not Supported",
 	513: "Message Too Large",
+	555: "Push Notification Service Not Supported",
+	580: "Precondition Failure",
 
 	600: "Busy Everywhere",
 	603: "Decline",
@@ -275,16 +287,23 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 
 // sendBye sends a BYE and waits for its final response. BYE is a non-INVITE
 // transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.
-func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) {
+func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) bool {
 	tx, err := c.Transaction(req)
 	if err != nil {
 		log.Infow("cannot send BYE", "error", err)
-		return
+		return false
 	}
 	defer tx.Terminate()
-	if _, err := sipResponse(ctx, tx, nil, nil); err != nil {
+	res, err := sipResponse(ctx, tx, nil, nil)
+	if err != nil {
 		log.Infow("no response to BYE", "error", err)
+		return false
 	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		log.Infow("BYE rejected", "status", res.StatusCode)
+		return false
+	}
+	return true
 }
 
 func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
@@ -732,7 +751,7 @@ func ParseReasonHeader(header string) (ReasonHeader, error) {
 		if i < 0 {
 			continue
 		}
-		key := strings.TrimSpace(line[:i])
+		key := strings.ToLower(strings.TrimSpace(line[:i]))
 		val := strings.TrimSpace(line[i+1:])
 		switch key {
 		case "cause":
