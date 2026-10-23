@@ -401,3 +401,20 @@ func TestInboundSignalingEventsSecondBye(t *testing.T) {
 	}
 	require.Equal(t, 1, n)
 }
+
+// When the BYE on the INVITE's connection is rejected and the retry via
+// Contact succeeds, the event reports the retry.
+func TestInboundSignalingEventsByeRetry(t *testing.T) {
+	h := &recordingStateHandler{}
+	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
+	call, ic := st.CreateInboundCall(t, overTCP)
+	byes := call.RegisterRequestChannel("BYE")
+	require.NoError(t, ic.Close())
+	expectBye(t, byes, 404, "Not Found")
+	retry := expectBye(t, byes, 200, "OK")
+
+	bye := eventOf(t, waitCallEnded(t, h), EventByeSent)
+	require.Equal(t, "ok", bye.Result)
+	require.Equal(t, 200, bye.StatusCode)
+	require.Equal(t, retry.CSeq().SeqNo, bye.CSeq)
+}
