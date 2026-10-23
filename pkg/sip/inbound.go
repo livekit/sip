@@ -1215,6 +1215,7 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 	// Accept returns only after the ACK (or after giving up on it), so use the
 	// time the first 200 OK went out. Zero (dropped) if it was never sent.
 	c.state.EmitSignalingEvent(inviteResponseEvent(EventAnsweredSent, c.cc.OKSentAt(), int(sip.StatusOK), c.cc.InviteCSeq()))
+	c.cc.reportAck() // an ACK that arrived before Accept recorded the 200 OK
 	if errors.Is(err, errNoACK) {
 		c.log().Errorw("Call accepted, but no ACK received", err)
 		c.closeWithNoACK(ctx)
@@ -2184,6 +2185,8 @@ type sipInbound struct {
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
 	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
 	okSent          atomic.Bool                 // a 200 OK was sent; readable while Accept holds mu
+	ackAt           atomic.Int64                // Unix ns of the first ACK, set before ack
+	ackReported     atomic.Bool                 // EventAckReceived was emitted
 	call            *inboundCall
 	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
 	// state receives signaling events for the messages this INVITE's
@@ -2538,15 +2541,31 @@ func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
 		c.log.Debugw("ignoring ACK for another INVITE", "inviteCSeq", c.inviteCSeq, "ackCSeq", cseq)
 		return
 	}
-	receivedAt := time.Now()
-	// Only store the first ACK seen.
-	first := c.ack.CompareAndSwap(nil, req)
+	// Only store the first ACK seen. Its time is set first, so it is there
+	// whenever the ACK is.
+	c.ackAt.CompareAndSwap(0, time.Now().UnixNano())
+	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
-	// Only the ACK for a 200 OK is an answered call's ACK; the caller also
-	// ACKs a final error response, such as the 487 after a CANCEL.
-	if first && c.okSent.Load() {
-		c.emit(SignalingEvent{Type: EventAckReceived, Time: receivedAt, SIPMethod: string(sip.ACK), CSeq: cseq.SeqNo})
+	c.reportAck()
+}
+
+// reportAck emits EventAckReceived once, when a 200 OK was sent and its ACK
+// arrived. The ACK can arrive before Accept records the 200 OK as sent, so
+// acceptCall calls this again after Accept returns. The ACK for an error
+// response (e.g. the 487 after a CANCEL) is never reported: no 200 OK was sent.
+func (c *sipInbound) reportAck() {
+	if !c.okSent.Load() {
+		return
 	}
+	ack := c.ack.Load()
+	if ack == nil || !c.ackReported.CompareAndSwap(false, true) {
+		return
+	}
+	ev := SignalingEvent{Type: EventAckReceived, Time: time.Unix(0, c.ackAt.Load()), SIPMethod: string(sip.ACK)}
+	if cseq := ack.CSeq(); cseq != nil {
+		ev.CSeq = cseq.SeqNo
+	}
+	c.emit(ev)
 }
 
 // Ack returns the first ACK seen for this call.

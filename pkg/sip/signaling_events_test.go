@@ -398,7 +398,20 @@ func TestSIPInboundAckEvent(t *testing.T) {
 	// The ACK for an error response (e.g. the 487 after a CANCEL) is not reported.
 	c, h = newLeg(false)
 	c.AcceptAck(ack(1), nil)
+	c.reportAck()
 	require.Empty(t, h.Events())
+
+	// An ACK that arrives before Accept records the 200 OK is reported once
+	// Accept returns, with its own arrival time.
+	c, h = newLeg(false)
+	before := time.Now()
+	c.AcceptAck(ack(1), nil)
+	require.Empty(t, h.Events())
+	c.okSent.Store(true)
+	c.reportAck() // as acceptCall does after Accept returns
+	c.AcceptAck(ack(1), nil)
+	require.Equal(t, []SignalingEventType{EventAckReceived}, h.EventTypes())
+	require.WithinRange(t, h.Events()[0].Time, before.Round(0), time.Now(), "the ACK keeps its arrival time")
 }
 
 // A peer that sends a second BYE (a new transaction, not a retransmission)
