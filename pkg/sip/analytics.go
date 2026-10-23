@@ -237,5 +237,8 @@ func (s *CallState) EmitSignalingEvent(ev SignalingEvent) {
 	ev.Direction = s.callInfo.CallDirection
 	ev.TrunkID = s.callInfo.TrunkId
 	ev.RoomID = s.callInfo.RoomId
+	if ev.DispatchRuleID == "" {
+		ev.DispatchRuleID = s.callInfo.DispatchRuleId
+	}
 	h.HandleSignalingEvent(ev)
 }
