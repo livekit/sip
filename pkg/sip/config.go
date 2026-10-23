@@ -33,6 +33,9 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 		if s.SignalingIP, err = getPublicIP(); err != nil {
 			return nil, err
 		}
+		if conf.ValidateExternalIPsAsV4 && !s.SignalingIP.Is4() {
+			return nil, fmt.Errorf("signaling external IP is not IPv4")
+		}
 		if s.SignalingIPLocal, err = getLocalIP(conf.LocalNet); err != nil {
 			return nil, err
 		}
@@ -52,6 +55,9 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 	if conf.MediaUseExternalIP && !conf.UseExternalIP {
 		if s.MediaIP, err = getPublicIP(); err != nil {
 			return nil, err
+		}
+		if conf.ValidateExternalIPsAsV4 && !s.MediaIP.Is4() {
+			return nil, fmt.Errorf("media external IP is not IPv4")
 		}
 	} else if conf.MediaNAT1To1IP != "" && conf.MediaNAT1To1IP != conf.NAT1To1IP {
 		ip, err := netip.ParseAddr(conf.MediaNAT1To1IP)
