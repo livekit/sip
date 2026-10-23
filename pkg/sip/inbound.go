@@ -2215,6 +2215,10 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		return false
 	}
 
+	if reason == "" { // Propagate default into setLastStatus too
+		reason = sipStatus(status)
+	}
+
 	r := newResponse(c.invite, status, reason, body)
 	if typ := sip.ContentTypeHeader(contentType); typ != "" {
 		r.AppendHeader(&typ)
