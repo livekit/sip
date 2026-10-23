@@ -73,6 +73,7 @@ func getPublicIP() (netip.Addr, error) {
 		if err == nil {
 			return netip.ParseAddr(ip)
 		} else {
+			logger.Warnw("external IP lookup failed", err, "attempt", i+1, "stunServers", rtcconfig.DefaultStunServers)
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
