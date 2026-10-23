@@ -380,6 +380,7 @@ func TestSIPInboundAckEvent(t *testing.T) {
 		h := &recordingStateHandler{}
 		c := &sipInbound{log: logger.GetLogger(), inviteCSeq: 1}
 		c.state.Store(NewCallState(h, &livekit.SIPCallInfo{CallId: "SCL_test"}))
+		c.okSending.Store(okSent)
 		c.okSent.Store(okSent)
 		return c, h
 	}
@@ -404,6 +405,7 @@ func TestSIPInboundAckEvent(t *testing.T) {
 	// An ACK that arrives before Accept records the 200 OK is reported once
 	// Accept returns, with its own arrival time.
 	c, h = newLeg(false)
+	c.okSending.Store(true) // the 200 OK write started
 	before := time.Now()
 	c.AcceptAck(ack(1), nil)
 	require.Empty(t, h.Events())
@@ -412,6 +414,20 @@ func TestSIPInboundAckEvent(t *testing.T) {
 	c.AcceptAck(ack(1), nil)
 	require.Equal(t, []SignalingEventType{EventAckReceived}, h.EventTypes())
 	require.WithinRange(t, h.Events()[0].Time, before.Round(0), time.Now(), "the ACK keeps its arrival time")
+
+	// A premature ACK (before any 200 OK) is not reported as the 200 OK's ACK;
+	// the real one that follows is.
+	c, h = newLeg(false)
+	c.AcceptAck(ack(1), nil)
+	c.okSending.Store(true)
+	c.okSent.Store(true)
+	c.reportAck()
+	require.Empty(t, h.Events())
+	require.True(t, c.GotACK(), "the call flow still sees the premature ACK")
+	before = time.Now()
+	c.AcceptAck(ack(1), nil)
+	require.Equal(t, []SignalingEventType{EventAckReceived}, h.EventTypes())
+	require.False(t, h.Events()[0].Time.Before(before.Round(0)), "the event has the real ACK's time")
 }
 
 // A peer that sends a second BYE (a new transaction, not a retransmission)

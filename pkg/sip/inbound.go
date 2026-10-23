@@ -2184,8 +2184,9 @@ type sipInbound struct {
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
 	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
+	okSending       atomic.Bool                 // the first 200 OK write started; an ACK before it is premature
 	okSent          atomic.Bool                 // a 200 OK was sent; readable while Accept holds mu
-	ackAt           atomic.Int64                // Unix ns of the first ACK, set before ack
+	ackAt           atomic.Int64                // Unix ns of the first ACK after okSending
 	ackReported     atomic.Bool                 // EventAckReceived was emitted
 	call            *inboundCall
 	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
@@ -2497,6 +2498,9 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	var acceptErr error
 retries:
 	for try := 1; ; try++ {
+		if try == 1 {
+			c.okSending.Store(true) // before the write: its ACK can arrive before Respond returns
+		}
 		if err := c.inviteTx.Respond(r); err != nil {
 			return err
 		}
@@ -2541,9 +2545,12 @@ func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
 		c.log.Debugw("ignoring ACK for another INVITE", "inviteCSeq", c.inviteCSeq, "ackCSeq", cseq)
 		return
 	}
-	// Only store the first ACK seen. Its time is set first, so it is there
-	// whenever the ACK is.
-	c.ackAt.CompareAndSwap(0, time.Now().UnixNano())
+	// Only the first ACK after the 200 OK write started is reported. One that
+	// arrives earlier (before any final response) still breaks acked, as before.
+	if c.okSending.Load() {
+		c.ackAt.CompareAndSwap(0, time.Now().UnixNano())
+	}
+	// Only store the first ACK seen.
 	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
 	c.reportAck()
@@ -2557,15 +2564,12 @@ func (c *sipInbound) reportAck() {
 	if !c.okSent.Load() {
 		return
 	}
-	ack := c.ack.Load()
-	if ack == nil || !c.ackReported.CompareAndSwap(false, true) {
+	at := c.ackAt.Load()
+	if at == 0 || !c.ackReported.CompareAndSwap(false, true) {
 		return
 	}
-	ev := SignalingEvent{Type: EventAckReceived, Time: time.Unix(0, c.ackAt.Load()), SIPMethod: string(sip.ACK)}
-	if cseq := ack.CSeq(); cseq != nil {
-		ev.CSeq = cseq.SeqNo
-	}
-	c.emit(ev)
+	// AcceptAck only takes ACKs with the INVITE's CSeq.
+	c.emit(SignalingEvent{Type: EventAckReceived, Time: time.Unix(0, at), SIPMethod: string(sip.ACK), CSeq: c.inviteCSeq})
 }
 
 // Ack returns the first ACK seen for this call.
