@@ -112,10 +112,11 @@ type Config struct {
 	MaxActiveCalls       int                 `yaml:"max_active_calls"` // if set, used for affinity-based routing
 	SIPTrunkIds          []string            `yaml:"sip_trunk_ids"`    // if set, only accept calls for these trunk IDs
 
-	UseExternalIP bool   `yaml:"use_external_ip"`
-	LocalNet      string `yaml:"local_net"` // local IP net to use, e.g. 192.168.0.0/24
-	NAT1To1IP     string `yaml:"nat_1_to_1_ip"`
-	ListenIP      string `yaml:"listen_ip"`
+	UseExternalIP           bool   `yaml:"use_external_ip"`
+	ValidateExternalIPsAsV4 bool   `yaml:"validate_external_ips_as_v4"` // if set, discovered IPs that are IPv6 will cause an error at startup
+	LocalNet                string `yaml:"local_net"`                   // local IP net to use, e.g. 192.168.0.0/24
+	NAT1To1IP               string `yaml:"nat_1_to_1_ip"`
+	ListenIP                string `yaml:"listen_ip"`
 
 	UDPMaxPayload int `yaml:"udp_max_payload"`
 	// if different from signaling IP
