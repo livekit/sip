@@ -111,7 +111,7 @@ var statusNamesMap = map[int]string{
 	411: "Length Required",
 	412: "Conditional Request Failed",
 	413: "Request Entity Too Large",
-	414: "Request-URI Too Long",
+	414: "Request URI Too Long",
 	415: "Unsupported Media Type",
 	416: "Unsupported URI Scheme",
 	417: "Unknown Resource-Priority",
