@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -44,10 +43,6 @@ const (
 	// BYE often wins the race. Without this window a transfer that actually
 	// completed would be reported as aborted.
 	referResultGrace = time.Second
-)
-
-var (
-	referIdRegexp = regexp.MustCompile(`^refer(;id=(\d+))?$`)
 )
 
 type Result struct {
@@ -458,15 +453,24 @@ func handleNotify(req *sip.Request) (notifyInfo, error) {
 		return notifyInfo{}, psrpc.NewErrorf(psrpc.MalformedRequest, "no event in NOTIFY request")
 	}
 
-	m := referIdRegexp.FindStringSubmatch(strings.ToLower(event.Value()))
-	if len(m) == 0 {
+	// Event: event-type *( SEMI event-param ). SEMI and EQUAL allow whitespace
+	// around them, and generic params other than id may follow (RFC 6665).
+	params := strings.Split(event.Value(), ";")
+	if !strings.EqualFold(strings.TrimSpace(params[0]), "refer") {
 		return notifyInfo{}, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
 	}
 
 	// REFER Notify
 	info := notifyInfo{Method: sip.REFER}
-	if len(m) >= 3 {
-		cseq64, _ := strconv.ParseUint(m[2], 10, 32)
+	for _, p := range params[1:] {
+		key, val, _ := strings.Cut(p, "=")
+		if !strings.EqualFold(strings.TrimSpace(key), "id") {
+			continue
+		}
+		cseq64, err := strconv.ParseUint(strings.TrimSpace(val), 10, 32)
+		if err != nil {
+			return notifyInfo{}, psrpc.NewErrorf(psrpc.MalformedRequest, "invalid event id %q", val)
+		}
 		info.CSeq = uint32(cseq64)
 	}
 	if h := req.GetHeader("Subscription-State"); h != nil {
