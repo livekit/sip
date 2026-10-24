@@ -667,7 +667,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			if sentStatus != nil {
 				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
 				if !challenge {
-					// A 401 for bad credentials; handleInviteAuth responds on tx directly.
+					// A final rejection, not a 407 challenge; handleInviteAuth responds on tx directly.
 					cc.emitRejected(sentStatus.Code, sentStatus.Status)
 				}
 			}
@@ -1215,7 +1215,6 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 	// Accept returns only after the ACK (or after giving up on it), so use the
 	// time the first 200 OK went out. Zero (dropped) if it was never sent.
 	c.state.EmitSignalingEvent(inviteResponseEvent(EventAnsweredSent, c.cc.OKSentAt(), int(sip.StatusOK), c.cc.InviteCSeq()))
-	c.cc.reportAck() // an ACK that arrived before Accept recorded the 200 OK
 	if errors.Is(err, errNoACK) {
 		c.log().Errorw("Call accepted, but no ACK received", err)
 		c.closeWithNoACK(ctx)
@@ -2183,10 +2182,7 @@ type sipInbound struct {
 	ringing         chan struct{}
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
-	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
-	okSending       atomic.Bool                 // the first 200 OK write started; an ACK before it is premature
-	okSent          atomic.Bool                 // a 200 OK was sent; readable while Accept holds mu
-	ackAt           atomic.Int64                // Unix ns of the first ACK after okSending
+	okSentAt        atomic.Int64                // Unix ns of the first 200 OK for the INVITE, 0 if none
 	ackReported     atomic.Bool                 // EventAckReceived was emitted
 	call            *inboundCall
 	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
@@ -2211,9 +2207,10 @@ func (c *sipInbound) lastStatusCode() int {
 
 // OKSentAt returns when the first 200 OK for the INVITE was sent, or zero.
 func (c *sipInbound) OKSentAt() time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.okSentAt
+	if ns := c.okSentAt.Load(); ns != 0 {
+		return time.Unix(0, ns)
+	}
+	return time.Time{}
 }
 
 func (c *sipInbound) SetCall(call *inboundCall) {
@@ -2499,14 +2496,14 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 retries:
 	for try := 1; ; try++ {
 		if try == 1 {
-			c.okSending.Store(true) // before the write: its ACK can arrive before Respond returns
+			// Set before the write: its ACK can arrive before Respond returns.
+			c.okSentAt.Store(time.Now().UnixNano())
 		}
 		if err := c.inviteTx.Respond(r); err != nil {
+			if try == 1 {
+				c.okSentAt.Store(0) // no 200 OK was sent
+			}
 			return err
-		}
-		if try == 1 {
-			c.okSentAt = time.Now()
-			c.okSent.Store(true)
 		}
 		c.setLastStatus(r.StatusCode, r.Reason)
 		if !waitForAck && c.legTr != TransportUDP {
@@ -2545,31 +2542,16 @@ func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
 		c.log.Debugw("ignoring ACK for another INVITE", "inviteCSeq", c.inviteCSeq, "ackCSeq", cseq)
 		return
 	}
-	// Only the first ACK after the 200 OK write started is reported. One that
-	// arrives earlier (before any final response) still breaks acked, as before.
-	if c.okSending.Load() {
-		c.ackAt.CompareAndSwap(0, time.Now().UnixNano())
-	}
+	receivedAt := time.Now()
 	// Only store the first ACK seen.
 	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
-	c.reportAck()
-}
-
-// reportAck emits EventAckReceived once, when a 200 OK was sent and its ACK
-// arrived. The ACK can arrive before Accept records the 200 OK as sent, so
-// acceptCall calls this again after Accept returns. The ACK for an error
-// response (e.g. the 487 after a CANCEL) is never reported: no 200 OK was sent.
-func (c *sipInbound) reportAck() {
-	if !c.okSent.Load() {
-		return
+	// Report the first ACK after the 200 OK went out. An ACK for an error
+	// response (e.g. the 487 after a CANCEL), or one sent before any final
+	// response, still breaks acked but is not reported.
+	if c.okSentAt.Load() != 0 && c.ackReported.CompareAndSwap(false, true) {
+		c.emit(SignalingEvent{Type: EventAckReceived, Time: receivedAt, SIPMethod: string(sip.ACK), CSeq: cseq.SeqNo})
 	}
-	at := c.ackAt.Load()
-	if at == 0 || !c.ackReported.CompareAndSwap(false, true) {
-		return
-	}
-	// AcceptAck only takes ACKs with the INVITE's CSeq.
-	c.emit(SignalingEvent{Type: EventAckReceived, Time: time.Unix(0, at), SIPMethod: string(sip.ACK), CSeq: c.inviteCSeq})
 }
 
 // Ack returns the first ACK seen for this call.
