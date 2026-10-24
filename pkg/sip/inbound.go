@@ -567,6 +567,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			SipCallId:     cc.SIPCallID(),
 		}
 		st := NewCallState(s.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+		cc.state.Store(st)
 		// The INVITE and the 100 Trying happened before the call state existed;
 		// report them now with their original times.
 		st.EmitSignalingEvent(SignalingEvent{
@@ -583,16 +584,18 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	tauth := cmon.StageDurTimer("get-auth")
 	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
-	tauth()
+	authDur := tauth()
+	authAt := time.Now()
 	checked()
 	if err != nil {
 		rejectInvite(stats.ServerError("auth-error"))
 		log.Warnw("Rejecting inbound, auth check failed", err)
-		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
 		// The project is unknown, but report the INVITE and its rejection anyway:
 		// a failing auth lookup is our outage, not the caller's. Only events are
 		// sent. The state is not kept, so no call info is flushed upstream.
 		st := newState(AuthInfo{})
+		st.EmitSignalingEvent(lookupEvent(EventInviteAuthorized, authAt, authDur, "error"))
+		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
 		st.EmitSignalingEvent(callEndedEvent(time.Now(), term, cc.lastStatusCode()))
 		return psrpc.NewError(psrpc.PermissionDenied, fmt.Errorf("rejecting inbound, auth check failed: %w", err))
 	}
@@ -606,6 +609,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	state = newState(r)
 	state.Flush()
+	state.EmitSignalingEvent(lookupEvent(EventInviteAuthorized, authAt, authDur, authResultName(r.Result)))
 
 	switch r.Result {
 	case AuthDrop:
@@ -662,6 +666,10 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if ok, challenge, sentStatus := s.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
 			if sentStatus != nil {
 				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
+				if !challenge {
+					// A final rejection, not a 407 challenge; handleInviteAuth responds on tx directly.
+					cc.emitRejected(sentStatus.Code, sentStatus.Status)
+				}
 			}
 			// Store (call-ID + from tag) to (to tag) mapping
 			s.cmu.Lock()
@@ -721,6 +729,7 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	c := s.byLocalTag[tag]
 	s.cmu.RUnlock()
 	if c != nil {
+		receivedAt := time.Now()
 		c.cc.AcceptBye(req, tx)
 		var (
 			reason    ReasonHeader
@@ -732,6 +741,15 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 			if err != nil {
 				c.log().Warnw("cannot parse reason header", err, "reason-raw", rawReason)
 			}
+		}
+		// sipgo answers a retransmitted BYE itself, but a peer can send a new BYE
+		// before close removes the call. It hung up once, so report it once.
+		if c.byeReceived.CompareAndSwap(false, true) {
+			ev := SignalingEvent{Type: EventByeReceived, Time: receivedAt, SIPMethod: string(sip.BYE), Reason: reasonCause(reason)}
+			if cseq := req.CSeq(); cseq != nil {
+				ev.CSeq = cseq.SeqNo
+			}
+			c.state.EmitSignalingEvent(ev)
 		}
 		c.log().Infow("BYE from remote",
 			"reason-type", reason.Type,
@@ -819,6 +837,7 @@ type inboundCall struct {
 	ctx               context.Context
 	cancel            func()
 	closeReason       atomic.Pointer[ReasonHeader]
+	byeReceived       atomic.Bool // the remote side's first BYE was reported
 	call              *rpc.SIPCall
 	mmu               sync.Mutex
 	media             MediaPort
@@ -940,7 +959,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		NoPin:           false,
 		ExtraAttributes: c.dispatchAttributes(),
 	})
-	tdisp()
+	dispDur := tdisp()
+	dispEv := lookupEvent(EventCallDispatched, time.Now(), dispDur, dispatchResultName(disp.Result))
+	dispEv.DispatchRuleID = disp.DispatchRuleID
+	c.state.EmitSignalingEvent(dispEv)
 	if disp.MediaConfig == nil {
 		disp.MediaConfig = &livekit.SIPMediaConfig{}
 	}
@@ -1565,6 +1587,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				noPin = pin == ""
 
 				c.log().Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
+				dispStart := time.Now()
 				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
 					TrunkID:         trunkID,
 					Call:            c.call,
@@ -1572,6 +1595,10 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 					NoPin:           noPin,
 					ExtraAttributes: c.dispatchAttributes(),
 				})
+				dispEv := lookupEvent(EventCallDispatched, time.Now(), time.Since(dispStart), dispatchResultName(disp.Result))
+				dispEv.DispatchRuleID = disp.DispatchRuleID
+				dispEv.WithPIN = true
+				c.state.EmitSignalingEvent(dispEv)
 				if disp.ProjectID != "" {
 					c.appendLogValues("projectID", disp.ProjectID)
 					c.projectID = disp.ProjectID
@@ -2156,8 +2183,19 @@ type sipInbound struct {
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
 	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
+	okSending       atomic.Bool                 // the first 200 OK write started; an ACK before it is premature
+	ackReported     atomic.Bool                 // EventAckReceived was emitted
 	call            *inboundCall
 	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
+	// state receives signaling events for the messages this INVITE's
+	// transaction handles. Nil until the call state exists; stays nil for a
+	// re-INVITE, which is answered for an existing call and reports nothing.
+	state atomic.Pointer[CallState]
+}
+
+// emit reports a signaling event for this INVITE, if the call state exists.
+func (c *sipInbound) emit(ev SignalingEvent) {
+	c.state.Load().EmitSignalingEvent(ev)
 }
 
 // lastStatusCode returns the final status sent for the INVITE, or 0 if none was sent.
@@ -2235,7 +2273,18 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		return false
 	}
 	c.setLastStatus(status, reason)
+	c.emitRejected(status, reason)
 	return true
+}
+
+// emitRejected reports a final non-2xx response sent to the INVITE.
+func (c *sipInbound) emitRejected(status sip.StatusCode, reason string) {
+	if status < 300 {
+		return
+	}
+	ev := inviteResponseEvent(EventRejected, time.Now(), int(status), c.inviteCSeq)
+	ev.Reason = reason
+	c.emit(ev)
 }
 
 func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
@@ -2336,8 +2385,10 @@ func (c *sipInbound) StartRinging() bool {
 			case <-stop:
 				return
 			case r := <-cancels:
+				receivedAt := time.Now()
 				close(c.cancelled) // Other goroutines will respond to the primary INVITE
 				_ = tx.Respond(newResponse(r, sip.StatusOK, "", nil))
+				c.emit(SignalingEvent{Type: EventCancelReceived, Time: receivedAt, SIPMethod: string(sip.CANCEL), CSeq: c.inviteCSeq})
 				return
 			case <-ticker.C:
 			}
@@ -2444,7 +2495,14 @@ func (c *sipInbound) Accept(ctx context.Context, sdpData []byte, headers map[str
 	var acceptErr error
 retries:
 	for try := 1; ; try++ {
+		if try == 1 {
+			// Set before the write: its ACK can arrive before Respond returns.
+			c.okSending.Store(true)
+		}
 		if err := c.inviteTx.Respond(r); err != nil {
+			if try == 1 {
+				c.okSending.Store(false) // no 200 OK was sent
+			}
 			return err
 		}
 		if try == 1 {
@@ -2487,9 +2545,16 @@ func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
 		c.log.Debugw("ignoring ACK for another INVITE", "inviteCSeq", c.inviteCSeq, "ackCSeq", cseq)
 		return
 	}
+	receivedAt := time.Now()
 	// Only store the first ACK seen.
 	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
+	// Report the first ACK after the 200 OK write started. An ACK for an error
+	// response (e.g. the 487 after a CANCEL), or one sent before any final
+	// response, still breaks acked but is not reported.
+	if c.okSending.Load() && c.ackReported.CompareAndSwap(false, true) {
+		c.emit(SignalingEvent{Type: EventAckReceived, Time: receivedAt, SIPMethod: string(sip.ACK), CSeq: cseq.SeqNo})
+	}
 }
 
 // Ack returns the first ACK seen for this call.
@@ -2597,21 +2662,42 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	c.setCSeq(r)
 	fallback := c.swapSrcDst(r)
 	c.drop()
-	if !sendBye(ctx, c.log, c, r) && fallback != "" {
+	sentAt := time.Now()
+	ev := SignalingEvent{Type: EventByeSent, Time: sentAt, SIPMethod: string(sip.BYE)}
+	if cseq := r.CSeq(); cseq != nil {
+		ev.CSeq = cseq.SeqNo
+	}
+	res, err := sendBye(ctx, c.log, c, r)
+	ev.Duration = time.Since(sentAt)
+	if !byeSucceeded(res, err) && fallback != "" {
 		c.log.Infow("retrying BYE via Contact", "addr", fallback)
 		r.SetDestination(fallback)
 		r.Via().Params.Add("branch", sip.GenerateBranchN(16))
 		r.CSeq().SeqNo++
+		var (
+			retryRes *sip.Response
+			retryErr error
+		)
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			sendBye(ctx, c.log, c, r)
+			retryRes, retryErr = sendBye(ctx, c.log, c, r)
 		}()
 		select {
 		case <-done:
+			// The retry finished, so it is the BYE's outcome.
+			res, err = retryRes, retryErr
+			ev.CSeq = r.CSeq().SeqNo
+			ev.Duration = time.Since(sentAt)
 		case <-time.After(byeRetryGrace):
+			// The retry is still pending: report the first attempt.
 		}
 	}
+	ev.Result = byeOutcome(res, err)
+	if res != nil {
+		ev.StatusCode = int(res.StatusCode)
+	}
+	c.emit(ev)
 }
 
 func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[string]string) {
@@ -2635,6 +2721,7 @@ func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[
 
 	if err := c.inviteTx.Respond(r); err == nil {
 		c.setLastStatus(r.StatusCode, r.Reason)
+		c.emitRejected(r.StatusCode, r.Reason)
 	}
 	c.drop()
 }
