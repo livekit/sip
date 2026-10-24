@@ -2182,7 +2182,8 @@ type sipInbound struct {
 	ringing         chan struct{}
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
-	okSentAt        atomic.Int64                // Unix ns of the first 200 OK for the INVITE, 0 if none
+	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
+	okSending       atomic.Bool                 // the first 200 OK write started; an ACK before it is premature
 	ackReported     atomic.Bool                 // EventAckReceived was emitted
 	call            *inboundCall
 	lastCallStatus  atomic.Pointer[livekit.SIPStatus]
@@ -2207,10 +2208,9 @@ func (c *sipInbound) lastStatusCode() int {
 
 // OKSentAt returns when the first 200 OK for the INVITE was sent, or zero.
 func (c *sipInbound) OKSentAt() time.Time {
-	if ns := c.okSentAt.Load(); ns != 0 {
-		return time.Unix(0, ns)
-	}
-	return time.Time{}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.okSentAt
 }
 
 func (c *sipInbound) SetCall(call *inboundCall) {
@@ -2497,13 +2497,16 @@ retries:
 	for try := 1; ; try++ {
 		if try == 1 {
 			// Set before the write: its ACK can arrive before Respond returns.
-			c.okSentAt.Store(time.Now().UnixNano())
+			c.okSending.Store(true)
 		}
 		if err := c.inviteTx.Respond(r); err != nil {
 			if try == 1 {
-				c.okSentAt.Store(0) // no 200 OK was sent
+				c.okSending.Store(false) // no 200 OK was sent
 			}
 			return err
+		}
+		if try == 1 {
+			c.okSentAt = time.Now()
 		}
 		c.setLastStatus(r.StatusCode, r.Reason)
 		if !waitForAck && c.legTr != TransportUDP {
@@ -2546,10 +2549,10 @@ func (c *sipInbound) AcceptAck(req *sip.Request, tx sip.ServerTransaction) {
 	// Only store the first ACK seen.
 	c.ack.CompareAndSwap(nil, req)
 	c.acked.Break()
-	// Report the first ACK after the 200 OK went out. An ACK for an error
+	// Report the first ACK after the 200 OK write started. An ACK for an error
 	// response (e.g. the 487 after a CANCEL), or one sent before any final
 	// response, still breaks acked but is not reported.
-	if c.okSentAt.Load() != 0 && c.ackReported.CompareAndSwap(false, true) {
+	if c.okSending.Load() && c.ackReported.CompareAndSwap(false, true) {
 		c.emit(SignalingEvent{Type: EventAckReceived, Time: receivedAt, SIPMethod: string(sip.ACK), CSeq: cseq.SeqNo})
 	}
 }

@@ -381,7 +381,7 @@ func TestSIPInboundAckEvent(t *testing.T) {
 		c := &sipInbound{log: logger.GetLogger(), inviteCSeq: 1}
 		c.state.Store(NewCallState(h, &livekit.SIPCallInfo{CallId: "SCL_test"}))
 		if okSent {
-			c.okSentAt.Store(time.Now().UnixNano())
+			c.okSending.Store(true)
 		}
 		return c, h
 	}
@@ -409,12 +409,13 @@ func TestSIPInboundAckEvent(t *testing.T) {
 	// the real one that follows is.
 	c, h = newLeg(false)
 	c.AcceptAck(ack(1), nil)
-	c.okSentAt.Store(time.Now().UnixNano())
+	c.okSending.Store(true)
+	before = time.Now()
 	require.Empty(t, h.Events())
 	require.True(t, c.GotACK(), "the call flow still sees the premature ACK")
 	c.AcceptAck(ack(1), nil)
 	require.Equal(t, []SignalingEventType{EventAckReceived}, h.EventTypes())
-	require.False(t, h.Events()[0].Time.Before(c.OKSentAt()), "the event has the real ACK's time")
+	require.False(t, h.Events()[0].Time.Before(before.Round(0)), "the event has the real ACK's time")
 }
 
 // A peer that sends a second BYE (a new transaction, not a retransmission)
