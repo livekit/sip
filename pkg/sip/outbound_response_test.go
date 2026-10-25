@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/sipgo/sip"
@@ -63,6 +64,48 @@ func TestSIPResponseDoneWithoutFinal(t *testing.T) {
 			close(tx.done)
 			response, err := sipResponse(context.Background(), tx, nil, nil)
 			require.Error(t, err)
+			require.Nil(t, response)
+			var incomplete transactionTimeoutError
+			require.ErrorAs(t, err, &incomplete)
+			if provisional {
+				require.Equal(t, 1, incomplete.responses)
+			} else {
+				require.Zero(t, incomplete.responses)
+			}
+		})
+	}
+}
+
+func TestSIPResponseDoneWithOpenResponseChannel(t *testing.T) {
+	for _, provisional := range []bool{false, true} {
+		t.Run(fmt.Sprint(provisional), func(t *testing.T) {
+			tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response, 1), done: make(chan struct{})}
+			if provisional {
+				tx.responses <- &sip.Response{StatusCode: 100}
+			}
+			close(tx.done)
+			var response *sip.Response
+			var err error
+			returned := make(chan struct{})
+			go func() {
+				response, err = sipResponse(context.Background(), tx, nil, nil)
+				close(returned)
+			}()
+			timedOut := false
+			select {
+			case <-returned:
+			case <-time.After(time.Second):
+				timedOut = true
+			}
+			close(tx.responses)
+			if timedOut {
+				// Release a stalled receive before failing, without leaving an unbounded wait.
+				select {
+				case <-returned:
+				case <-time.After(time.Second):
+				}
+				t.Fatal("completed transaction waited for its open response channel")
+			}
 			require.Nil(t, response)
 			var incomplete transactionTimeoutError
 			require.ErrorAs(t, err, &incomplete)
