@@ -76,7 +76,7 @@ func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {
 	return exp, got
 }
 
-type SIPCallTestParams struct {
+type SIPOutboundTestParams struct {
 	TrunkOut    string            // trunk ID for outbound call
 	NumberOut   string            // number for outbound call (LK phone numbers)
 	RoomOut     string            // room for outbound call
@@ -123,7 +123,7 @@ type SIPOutboundCall struct {
 }
 
 // TestSIPOutbound returns the call, which stays up until the test ends.
-func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPCallTestParams) *SIPOutboundCall {
+func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundTestParams) *SIPOutboundCall {
 	start := time.Now()
 	defer func() { t.Logf("+%.3fs: TestSIPOutbound took", secSince(start)) }()
 
@@ -798,7 +798,7 @@ func getRoomFromIndividualRule(ctx context.Context, lk *LiveKit, rule *livekit.S
 
 // TestSIPTransfer runs TestSIPOutbound, then transfers one leg of the call to NumberTo.
 // The transfer target must route to a direct dispatch rule on lkIn.
-func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, callParams SIPCallTestParams, transferParams SIPTransferTestParams) {
+func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, outboundParams SIPOutboundTestParams, transferParams SIPTransferTestParams) {
 	rulesTo, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, []string{transferParams.RuleTo})
 	require.NoError(t, err)
 	ruleTo := rulesTo[0]
@@ -810,7 +810,7 @@ func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, callParams
 		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomTo})
 	})
 
-	c := TestSIPOutbound(t, ctx, lkOut, lkIn, callParams)
+	c := TestSIPOutbound(t, ctx, lkOut, lkIn, outboundParams)
 	start := c.Start
 
 	lkLeg, roomLeg, identityLeg, callIDLeg := lkOut, c.RoomOut, c.IdentityOut, c.CallIDOut
@@ -882,7 +882,7 @@ Possible causes:
 
 	t.Logf("+%.3fs: testing audio after transfer", secSince(start))
 	CheckAudioForParticipants(t, ctx, participantKept, participantTo)
-	if !callParams.NoDMTF {
+	if !outboundParams.NoDMTF {
 		t.Logf("+%.3fs: testing dtmf after transfer", secSince(start))
 		CheckDTMFForParticipants(t, ctx, participantKept, participantTo, dataKept, dataTo)
 	}
