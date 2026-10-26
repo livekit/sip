@@ -474,7 +474,18 @@ func (lk *LiveKit) ExpectParticipants(t TB, ctx context.Context, room string, pa
 	defer ticker.Stop()
 wait:
 	for {
-		list := lk.RoomParticipants(t, room)
+		// The room may not exist yet, so retry errors until the context ends.
+		resp, err := lk.Rooms.ListParticipants(context.Background(), &livekit.ListParticipantsRequest{Room: room})
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				require.NoError(t, err, "cannot list participants in room %q", room)
+				return nil
+			case <-ticker.C:
+				continue wait
+			}
+		}
+		list := resp.Participants
 		if len(list) != len(participants) {
 			select {
 			case <-ctx.Done():
@@ -536,11 +547,15 @@ func (lk *LiveKit) waitRooms(t TB, ctx context.Context, none bool, filter func(r
 }
 
 func (lk *LiveKit) ExpectRoomWithParticipants(t TB, ctx context.Context, room string, participants []ParticipantInfo) []*livekit.ParticipantInfo {
+	if len(participants) != 0 {
+		// ListRooms can take seconds to show a new room in LiveKit Cloud, so query the room directly.
+		return lk.ExpectParticipants(t, ctx, room, participants)
+	}
 	filter := func(r *livekit.Room) bool {
 		return r.Name == room
 	}
-	rooms := lk.waitRooms(t, ctx, len(participants) == 0, filter)
-	if len(participants) == 0 && len(rooms) == 0 {
+	rooms := lk.waitRooms(t, ctx, true, filter)
+	if len(rooms) == 0 {
 		return nil
 	}
 	require.Len(t, rooms, 1)
