@@ -368,7 +368,7 @@ Check logs for call:
 	t.Logf("+%.3fs: waiting for inbound participant to become ready", secSince(start))
 	readyIn.Wait()
 
-	t.Logf("+%.3fs: asserting outbound room", secSince(start))
+	t.Logf("+%.3fs: asserting inbound room", secSince(start))
 	numInExp := numIn
 	if params.NumberInExp != "" {
 		numInExp = params.NumberInExp
