@@ -91,7 +91,7 @@ type SIPTestParams struct {
 
 	// Optional, only needed by TestSIPTransfer.
 	TransferIn  bool   // transfer the inbound leg instead of the outbound leg
-	NumberTo    string // number to transfer to (LK phone numbers)
+	NumberTo    string // number to transfer to
 	NumberToExp string // expected transfer number, as seen in the new inbound call
 	TrunkTo     string // trunk ID for the new inbound call
 	RuleTo      string // rule ID for the new inbound call
