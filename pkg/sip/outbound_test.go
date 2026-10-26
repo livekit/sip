@@ -226,6 +226,67 @@ func TestOutboundProviderLabel(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+// An answered call reports its end time when it ends.
+func TestOutboundCallReportsFullDuration(t *testing.T) {
+	states := &recordingStateHandler{}
+	req := MinimalCreateSIPParticipantRequest()
+	h, _, _ := waitOutboundINVITEAndACK(t, TestSIPConfig{GetIOClient: states.GetStateHandler()}, req,
+		func(*transactionRequest, *sip.Response) {})
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
+	}, time.Second, 10*time.Millisecond)
+
+	h.Client.cmu.Lock()
+	var call *outboundCall
+	for _, c := range h.Client.activeCalls {
+		call = c
+	}
+	h.Client.cmu.Unlock()
+	require.NotNil(t, call)
+	go func() { _ = call.EndCall(context.Background(), nil) }()
+	answerBYE(t, h, time.Second, req.SipCallId)
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_DISCONNECTED
+	}, time.Second, 10*time.Millisecond)
+	last := states.Last()
+	require.NotZero(t, last.EndedAtNs)
+	require.GreaterOrEqual(t, last.EndedAtNs, last.StartedAtNs)
+	for _, u := range states.Updates() {
+		if u.EndedAtNs != 0 {
+			require.Equal(t, u.EndedAtNs, last.EndedAtNs, "end time must not move once reported")
+			break
+		}
+	}
+}
+
+// A failed call reports its end time on the first error update.
+func TestOutboundErrorReportsEndTime(t *testing.T) {
+	states := &recordingStateHandler{}
+	h := NewTestSIP(t, TestSIPConfig{GetIOClient: states.GetStateHandler()})
+	req := MinimalCreateSIPParticipantRequest()
+	go func() { _, _ = h.Client.CreateSIPParticipant(t.Context(), req) }()
+
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
+	require.Equal(t, sip.INVITE, tr.req.Method)
+	// 4xx/6xx are reported as rejections; a 5xx is what reaches SCS_ERROR.
+	require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, sip.StatusServiceUnavailable, "Service Unavailable", nil)))
+
+	firstErr := func() *livekit.SIPCallInfo {
+		for _, u := range states.Updates() {
+			if u.CallStatus == livekit.SIPCallStatus_SCS_ERROR {
+				return u
+			}
+		}
+		return nil
+	}
+	require.Eventually(t, func() bool { return firstErr() != nil }, time.Second, 10*time.Millisecond)
+	require.NotZero(t, firstErr().EndedAtNs, "first error update must carry the end time")
+}
+
 // sipResponse returns immediately on a cancelled context, sending a CANCEL.
 func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	tx := &testSIPClientTransaction{
