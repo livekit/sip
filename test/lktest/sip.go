@@ -124,7 +124,7 @@ type sipOutboundCall struct {
 // TestSIPOutbound returns the call, which stays up until the test ends.
 func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPTestParams) *sipOutboundCall {
 	start := time.Now()
-	defer t.Logf("+%.3fs: TestSIPOutbound took", secSince(start))
+	defer func() { t.Logf("+%.3fs: TestSIPOutbound took", secSince(start)) }()
 
 	t.Logf("+%.3fs: getting trunk info", secSince(start))
 
