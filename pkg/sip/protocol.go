@@ -287,23 +287,29 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 
 // sendBye sends a BYE and waits for its final response. BYE is a non-INVITE
 // transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.
-func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) bool {
+// It returns the response, or the error if the BYE could not be sent or got
+// no response. byeSucceeded tells whether the BYE was accepted.
+func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) (*sip.Response, error) {
 	tx, err := c.Transaction(req)
 	if err != nil {
 		log.Infow("cannot send BYE", "error", err)
-		return false
+		return nil, err
 	}
 	defer tx.Terminate()
 	res, err := sipResponse(ctx, tx, nil, nil)
 	if err != nil {
 		log.Infow("no response to BYE", "error", err)
-		return false
+		return nil, err
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		log.Infow("BYE rejected", "status", res.StatusCode)
-		return false
 	}
-	return true
+	return res, nil
+}
+
+// byeSucceeded reports whether sendBye got a 2xx response.
+func byeSucceeded(res *sip.Response, err error) bool {
+	return err == nil && res != nil && res.StatusCode >= 200 && res.StatusCode < 300
 }
 
 func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {

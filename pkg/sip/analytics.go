@@ -237,5 +237,9 @@ func (s *CallState) EmitSignalingEvent(ev SignalingEvent) {
 	ev.Direction = s.callInfo.CallDirection
 	ev.TrunkID = s.callInfo.TrunkId
 	ev.RoomID = s.callInfo.RoomId
+	// A dispatch event reports its own lookup's rule, empty if none matched.
+	if ev.Type != EventCallDispatched {
+		ev.DispatchRuleID = s.callInfo.DispatchRuleId
+	}
 	h.HandleSignalingEvent(ev)
 }
