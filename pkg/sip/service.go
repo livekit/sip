@@ -612,3 +612,10 @@ func extractTransferErrorReason(err error) string {
 	// Return "other" for unknown errors
 	return "other"
 }
+
+func (s *Service) GetServiceConfig() ServiceConfig {
+	if s.sconf != nil {
+		return *s.sconf
+	}
+	return ServiceConfig{}
+}
