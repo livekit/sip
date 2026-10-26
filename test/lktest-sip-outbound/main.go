@@ -49,7 +49,7 @@ func run(ctx context.Context, t lktest.TB) {
 	lkOut := lktest.New(*fOutURL, *fOutKey, *fOutSecret)
 	lkIn := lktest.New(*fInURL, *fInKey, *fInSecret)
 
-	lktest.TestSIPOutbound(t, ctx, lkOut, lkIn, lktest.SIPTestParams{
+	lktest.TestSIPOutbound(t, ctx, lkOut, lkIn, lktest.SIPCallTestParams{
 		TrunkOut: *fOutTrunk,
 		RoomOut:  *fOutRoom,
 	})

@@ -76,7 +76,7 @@ func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {
 	return exp, got
 }
 
-type SIPTestParams struct {
+type SIPCallTestParams struct {
 	TrunkOut    string            // trunk ID for outbound call
 	NumberOut   string            // number for outbound call (LK phone numbers)
 	RoomOut     string            // room for outbound call
@@ -88,8 +88,9 @@ type SIPTestParams struct {
 	RuleIn      string            // rule ID for inbound call
 	AttrsIn     map[string]string // expected attributes for inbound participants
 	NoDMTF      bool              // do not test DTMF
+}
 
-	// Optional, only needed by TestSIPTransfer.
+type SIPTransferTestParams struct {
 	TransferIn  bool   // transfer the inbound leg instead of the outbound leg
 	NumberTo    string // number to transfer to
 	NumberToExp string // expected transfer number, as seen in the new inbound call
@@ -106,23 +107,23 @@ func loadVal[T any](ptr *atomic.Pointer[T]) T {
 	return *p
 }
 
-// sipOutboundCall is an established call between the outbound and inbound rooms of TestSIPOutbound.
-type sipOutboundCall struct {
-	start          time.Time
-	roomOut        string
-	roomIn         string
-	identityOut    string
-	identityIn     string
-	callIDOut      string
-	callIDIn       string
-	participantOut *Participant
-	participantIn  *Participant
-	dataOut        <-chan lksdk.DataPacket
-	dataIn         <-chan lksdk.DataPacket
+// SIPOutboundCall is an established call between the outbound and inbound rooms of TestSIPOutbound.
+type SIPOutboundCall struct {
+	Start          time.Time
+	RoomOut        string
+	RoomIn         string
+	IdentityOut    string
+	IdentityIn     string
+	CallIDOut      string
+	CallIDIn       string
+	ParticipantOut *Participant
+	ParticipantIn  *Participant
+	DataOut        <-chan lksdk.DataPacket
+	DataIn         <-chan lksdk.DataPacket
 }
 
 // TestSIPOutbound returns the call, which stays up until the test ends.
-func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPTestParams) *sipOutboundCall {
+func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPCallTestParams) *SIPOutboundCall {
 	start := time.Now()
 	defer func() { t.Logf("+%.3fs: TestSIPOutbound took", secSince(start)) }()
 
@@ -408,18 +409,18 @@ Check logs for call:
 		t.Logf("+%.3fs: retesting audio", secSince(start))
 		CheckAudioForParticipants(t, ctx, pOut, pIn)
 	}
-	return &sipOutboundCall{
-		start:          start,
-		roomOut:        params.RoomOut,
-		roomIn:         roomIn,
-		identityOut:    outIdentity,
-		identityIn:     inIdentity,
-		callIDOut:      loadVal(&callIDOut),
-		callIDIn:       loadVal(&callIDIn),
-		participantOut: pOut,
-		participantIn:  pIn,
-		dataOut:        dataOut,
-		dataIn:         dataIn,
+	return &SIPOutboundCall{
+		Start:          start,
+		RoomOut:        params.RoomOut,
+		RoomIn:         roomIn,
+		IdentityOut:    outIdentity,
+		IdentityIn:     inIdentity,
+		CallIDOut:      loadVal(&callIDOut),
+		CallIDIn:       loadVal(&callIDIn),
+		ParticipantOut: pOut,
+		ParticipantIn:  pIn,
+		DataOut:        dataOut,
+		DataIn:         dataIn,
 	}
 }
 
@@ -797,8 +798,8 @@ func getRoomFromIndividualRule(ctx context.Context, lk *LiveKit, rule *livekit.S
 
 // TestSIPTransfer runs TestSIPOutbound, then transfers one leg of the call to NumberTo.
 // The transfer target must route to a direct dispatch rule on lkIn.
-func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPTestParams) {
-	rulesTo, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, []string{params.RuleTo})
+func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, callParams SIPCallTestParams, transferParams SIPTransferTestParams) {
+	rulesTo, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, []string{transferParams.RuleTo})
 	require.NoError(t, err)
 	ruleTo := rulesTo[0]
 	require.NotNil(t, ruleTo, "transfer rule not found")
@@ -809,14 +810,14 @@ func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIP
 		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomTo})
 	})
 
-	c := TestSIPOutbound(t, ctx, lkOut, lkIn, params)
-	start := c.start
+	c := TestSIPOutbound(t, ctx, lkOut, lkIn, callParams)
+	start := c.Start
 
-	lkLeg, roomLeg, identityLeg, callIDLeg := lkOut, c.roomOut, c.identityOut, c.callIDOut
-	participantKept, dataKept := c.participantIn, c.dataIn
-	if params.TransferIn {
-		lkLeg, roomLeg, identityLeg, callIDLeg = lkIn, c.roomIn, c.identityIn, c.callIDIn
-		participantKept, dataKept = c.participantOut, c.dataOut
+	lkLeg, roomLeg, identityLeg, callIDLeg := lkOut, c.RoomOut, c.IdentityOut, c.CallIDOut
+	participantKept, dataKept := c.ParticipantIn, c.DataIn
+	if transferParams.TransferIn {
+		lkLeg, roomLeg, identityLeg, callIDLeg = lkIn, c.RoomIn, c.IdentityIn, c.CallIDIn
+		participantKept, dataKept = c.ParticipantOut, c.DataOut
 	}
 	var callIDTo string
 	defer func() {
@@ -833,7 +834,7 @@ Possible causes:
 - Carrier rejected the REFER
 - Carrier could not reach the transfer target
 - Transfer target has no dispatch rule`,
-			params.NumberTo, callIDLeg, callIDTo,
+			transferParams.NumberTo, callIDLeg, callIDTo,
 		)
 	}()
 
@@ -854,11 +855,11 @@ Possible causes:
 		},
 	})
 
-	t.Logf("+%.3fs: transferring %s in room %s to %s", secSince(start), identityLeg, roomLeg, params.NumberTo)
+	t.Logf("+%.3fs: transferring %s in room %s to %s", secSince(start), identityLeg, roomLeg, transferParams.NumberTo)
 	_, err = lkLeg.SIP.TransferSIPParticipant(ctx, &livekit.TransferSIPParticipantRequest{
 		RoomName:            roomLeg,
 		ParticipantIdentity: identityLeg,
-		TransferTo:          "tel:" + params.NumberTo,
+		TransferTo:          "tel:" + transferParams.NumberTo,
 	})
 	require.NoError(t, err)
 
@@ -868,20 +869,20 @@ Possible causes:
 	})
 
 	t.Logf("+%.3fs: asserting transfer target room %s", secSince(start), roomTo)
-	numToExp := params.NumberTo
-	if params.NumberToExp != "" {
-		numToExp = params.NumberToExp
+	numToExp := transferParams.NumberTo
+	if transferParams.NumberToExp != "" {
+		numToExp = transferParams.NumberToExp
 	}
 	pSIP := expectSIPParticipant(t, ctx, lkIn, roomTo)
 	callIDTo = pSIP.Attributes[livekit.AttrSIPCallID]
 	t.Logf("+%.3fs: transfer target participant %s (%s)", secSince(start), pSIP.Identity, callIDTo)
 	require.Equal(t, numToExp, pSIP.Attributes[livekit.AttrSIPPrefix+"trunkPhoneNumber"])
-	require.Equal(t, params.TrunkTo, pSIP.Attributes[livekit.AttrSIPTrunkID])
-	require.Equal(t, params.RuleTo, pSIP.Attributes[livekit.AttrSIPPrefix+"ruleID"])
+	require.Equal(t, transferParams.TrunkTo, pSIP.Attributes[livekit.AttrSIPTrunkID])
+	require.Equal(t, transferParams.RuleTo, pSIP.Attributes[livekit.AttrSIPPrefix+"ruleID"])
 
 	t.Logf("+%.3fs: testing audio after transfer", secSince(start))
 	CheckAudioForParticipants(t, ctx, participantKept, participantTo)
-	if !params.NoDMTF {
+	if !callParams.NoDMTF {
 		t.Logf("+%.3fs: testing dtmf after transfer", secSince(start))
 		CheckDTMFForParticipants(t, ctx, participantKept, participantTo, dataKept, dataTo)
 	}

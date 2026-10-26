@@ -949,7 +949,7 @@ func TestSIPOutbound(t *testing.T) {
 					for i := 0; i < 2; i++ {
 						// Running sub test here is important, because TestSIPOutbound registers Cleanup funcs.
 						t.Run(fmt.Sprintf("run %d", i+1), func(t *testing.T) {
-							lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPTestParams{
+							lktest.TestSIPOutbound(t, ctx, lkOut.LiveKit, lkIn.LiveKit, lktest.SIPCallTestParams{
 								TrunkOut: trunkOut,
 								RoomOut:  "outbound",
 								TrunkIn:  trunkIn,
