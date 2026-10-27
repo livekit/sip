@@ -374,7 +374,13 @@ func TestRegistrantRefreshesBeforeExpiry(t *testing.T) {
 	reqs := reg.waitRequests(3)
 	require.Equal(t, reqs[0].CallID().Value(), reqs[2].CallID().Value())
 	require.Greater(t, reqs[2].CSeq().SeqNo, reqs[1].CSeq().SeqNo)
-	require.Equal(t, time.Second, r.State().Expiry)
+	// Receipt at the mock precedes processing its response. With asynchronous
+	// refresh/lapse handling, wait for the renewed binding rather than inspecting
+	// the deliberately lapsed one in that response-processing window.
+	require.Eventually(t, func() bool {
+		st := r.State()
+		return st.Registered && st.Expiry == time.Second
+	}, time.Second, time.Millisecond)
 }
 
 func TestRegistrantUnregistersOnStop(t *testing.T) {
@@ -468,8 +474,9 @@ func freeAddr(t *testing.T) string {
 }
 
 func TestRegistrantStopDuringRegister(t *testing.T) {
-	// Nothing answers, so a REGISTER is in flight when Stop arrives. It must abort the
-	// transaction rather than wait out its 32s timeout.
+	// Nothing answers, so a REGISTER is in flight when Stop arrives. It must abort
+	// the 32s exchange, then budget a withdrawal because the remote outcome is
+	// unknowable. Response loss is not evidence that no binding was applied.
 	r, _ := newTestRegistrant(t, freeAddr(t), config.SIPRegistrationConfig{})
 	r.Start()
 	time.Sleep(100 * time.Millisecond)
@@ -485,9 +492,9 @@ func TestRegistrantStopDuringRegister(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Stop did not return")
 	}
-	require.Less(t, time.Since(start), 2*time.Second)
+	require.Less(t, time.Since(start), unregisterTimeout+time.Second)
 	require.False(t, r.State().Registered)
-	// Nothing was ever bound, so shutdown must not try to remove one.
+	// A failed best-effort withdrawal does not keep a local binding reported.
 	require.Nil(t, r.State().Error)
 }
 

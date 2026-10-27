@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -117,7 +118,9 @@ type registrant struct {
 	kaCallID  string
 	kaFromTag string
 
-	// Fields below are owned by run() and must not be touched from other goroutines.
+	// REGISTER exchange fields are owned by its single worker. run joins that worker
+	// before reading expiry, starting another exchange, or unregistering. OPTIONS has
+	// its own sequence and at most one worker; it never touches Digest/REGISTER fields.
 	cseq   uint32
 	kaCSeq uint32
 	// expiry is the lifetime we ask for, raised in place when a registrar demands more.
@@ -130,7 +133,11 @@ type registrant struct {
 	// for a 401, "Proxy-Authorization" for a 407.
 	authHeader string
 	nonceCount int
+	observedMu sync.Mutex
 	observed   string
+	// uncertain means a nonzero REGISTER might have applied but its response was lost.
+	// Owned by the REGISTER worker, read by run only after joining it.
+	uncertain bool
 	// bound records that the registrar has accepted a binding that has not been removed, so
 	// shutdown still withdraws it after a refresh failed. A binding left pointing at a stopped
 	// node sends inbound calls nowhere until it expires on its own.
@@ -143,8 +150,11 @@ type registrant struct {
 	state   atomic.Pointer[RegistrationState]
 	started atomic.Bool
 
-	stop core.Fuse
-	done chan struct{}
+	stop     core.Fuse
+	stopOnce sync.Once
+	// Published before stop breaks; read only after observing stop.
+	stopDeadline time.Time
+	done         chan struct{}
 }
 
 func newRegistrant(log logger.Logger, cli SIPClient, mon *stats.Monitor, conf *config.Config, sconf *ServiceConfig, rc config.SIPRegistrationConfig) (*registrant, error) {
@@ -245,7 +255,20 @@ func (r *registrant) Start() {
 // Stop unregisters and waits for the registration to shut down. It must be called before the
 // SIP client is closed, since the un-REGISTER is sent over it.
 func (r *registrant) Stop() {
-	r.stop.Break()
+	r.stopBefore(time.Now().Add(unregisterTimeout))
+	r.waitStopped()
+}
+
+// stopBefore signals without waiting, so a service can stop all accounts promptly
+// and give every withdrawal the same global deadline instead of N independent budgets.
+func (r *registrant) stopBefore(deadline time.Time) {
+	r.stopOnce.Do(func() {
+		r.stopDeadline = deadline
+		r.stop.Break()
+	})
+}
+
+func (r *registrant) waitStopped() {
 	if r.started.Load() {
 		<-r.done
 	}
@@ -262,17 +285,19 @@ func (r *registrant) setState(st RegistrationState) {
 	}
 }
 
+// registrationResult transfers completion of the only REGISTER worker back to run.
+// A buffered channel lets the worker finish even while run is handling stop/lapse.
+type registrationResult struct {
+	granted time.Duration
+	err     error
+}
+
 func (r *registrant) run() {
 	defer close(r.done)
-
-	// Fires immediately for the initial registration, then rescheduled per response.
 	refresh := time.NewTimer(0)
 	defer refresh.Stop()
-
-	// Fires when the current binding lapses, so a long backoff cannot leave us reporting one
-	// that is already gone. Every successful refresh pushes it out again.
-	lapse := time.NewTimer(0)
-	<-lapse.C
+	lapse := time.NewTimer(time.Hour)
+	lapse.Stop()
 	defer lapse.Stop()
 
 	var keepalive <-chan time.Time
@@ -281,34 +306,52 @@ func (r *registrant) run() {
 		defer t.Stop()
 		keepalive = t.C
 	}
-
+	var registering chan registrationResult
+	var pinging chan struct{}
+	// Only this owner updates binding/state. Workers cannot postpone lapse handling.
+	accept := func(result registrationResult) {
+		if result.err == nil {
+			r.bound, r.granted, r.boundUntil = true, result.granted, time.Now().Add(result.granted)
+		}
+	}
 	backoff := registerMinBackoff
 	for {
 		select {
 		case <-r.stop.Watch():
+			// Stop cancels both workers' response waits. Join them before using their
+			// sequence/auth state for a higher-CSeq, Contact-specific withdrawal.
+			if registering != nil {
+				accept(<-registering)
+			}
+			if pinging != nil {
+				<-pinging
+			}
 			r.unregister()
 			return
 		case <-refresh.C:
-			granted, err := r.registerOnce(r.refreshTimeout(), r.expiry)
-			if err == nil {
-				// Record the binding before anything else can return: a REGISTER answered as
-				// shutdown starts still created one, and the stop branch has to withdraw it.
-				r.bound, r.granted, r.boundUntil = true, granted, time.Now().Add(granted)
-			}
 			if r.stop.IsBroken() {
-				continue // shutting down; the stop branch unregisters
+				continue
 			}
-			if err != nil {
-				// A binding that has not expired yet is still live, so keep reporting it and
-				// keep the keepalives going: they hold open the NAT mapping the provider is
-				// already sending calls to. Once it lapses we stop claiming it.
-				r.setState(RegistrationState{Registered: r.stillBound(), Expiry: r.granted, Error: err})
-				if errors.Is(err, errAuthFailed) {
-					// Nothing here is fixed by trying again soon; the account has to change.
+			// One worker owns all Digest/REGISTER mutation until its result arrives.
+			timeout, expiry := r.refreshTimeout(), r.expiry
+			registering = make(chan registrationResult, 1)
+			go func(done chan<- registrationResult) {
+				granted, err := r.registerOnce(timeout, expiry)
+				done <- registrationResult{granted: granted, err: err}
+			}(registering)
+		case result := <-registering:
+			registering = nil
+			accept(result)
+			if r.stop.IsBroken() {
+				continue
+			}
+			if result.err != nil {
+				r.setState(RegistrationState{Registered: r.stillBound(), Expiry: r.granted, Error: result.err})
+				if errors.Is(result.err, errAuthFailed) {
 					backoff = registerMaxBackoff
-					r.log.Errorw("SIP registration was rejected", err, "retryIn", backoff)
+					r.log.Errorw("SIP registration was rejected", result.err, "retryIn", backoff)
 				} else {
-					r.log.Warnw("SIP registration failed, retrying", err, "retryIn", backoff)
+					r.log.Warnw("SIP registration failed, retrying", result.err, "retryIn", backoff)
 				}
 				refresh.Reset(backoff)
 				if backoff *= 2; backoff > registerMaxBackoff {
@@ -317,28 +360,36 @@ func (r *registrant) run() {
 				continue
 			}
 			backoff = registerMinBackoff
-			after := refreshAfter(granted)
+			after := refreshAfter(result.granted)
 			if r.State().Registered {
-				r.log.Debugw("SIP registration refreshed", "expiry", granted, "refreshIn", after)
+				r.log.Debugw("SIP registration refreshed", "expiry", result.granted, "refreshIn", after)
 			} else {
-				r.log.Infow("SIP registration established", "expiry", granted, "refreshIn", after)
+				r.log.Infow("SIP registration established", "expiry", result.granted, "refreshIn", after)
 			}
-			r.setState(RegistrationState{Registered: true, Expiry: granted})
+			r.setState(RegistrationState{Registered: true, Expiry: result.granted})
 			refresh.Reset(after)
-			lapse.Reset(granted)
+			lapse.Reset(result.granted)
 		case <-lapse.C:
 			if r.stop.IsBroken() || r.stillBound() {
-				continue // refreshed in the meantime
+				continue
 			}
 			last := r.State()
 			r.bound, r.granted, r.boundUntil = false, 0, time.Time{}
 			r.setState(RegistrationState{Error: last.Error})
 			r.log.Warnw("SIP registration lapsed; inbound calls will not arrive", last.Error)
 		case <-keepalive:
-			if r.stop.IsBroken() || !r.stillBound() {
-				continue // shutting down, or no binding to hold open
+			if r.stop.IsBroken() || !r.stillBound() || pinging != nil {
+				continue
 			}
-			r.sendKeepalive()
+			// A slow OPTIONS must not postpone registration/expiry either. Bounded
+			// to one outstanding ping; missed ticks are coalesced, not queued.
+			pinging = make(chan struct{}, 1)
+			go func(done chan<- struct{}) {
+				r.sendKeepalive()
+				done <- struct{}{}
+			}(pinging)
+		case <-pinging:
+			pinging = nil
 		}
 	}
 }
@@ -408,12 +459,22 @@ func (r *registrant) registerOnce(timeout time.Duration, expires time.Duration) 
 			}
 		}
 
+		// Cancellation or response loss cannot tell us whether the registrar applied
+		// this request. Keep its Contact eligible for withdrawal until a response
+		// establishes the outcome. The worker is joined before shutdown reads it.
+		wasUncertain := r.uncertain
+		if expires > 0 {
+			r.uncertain = true
+		}
 		resp, err := r.roundtrip(ctx, stop, req)
 		if err != nil {
 			return 0, err
 		}
+		// A rejection only resolves this transaction, not an earlier lost success.
+		r.uncertain = wasUncertain
 		switch resp.StatusCode {
 		case sip.StatusOK:
+			r.uncertain = false
 			r.logObservedAddress(resp)
 			granted := grantedExpiry(resp, &r.contact, expires)
 			if expires > 0 && granted <= 0 {
@@ -449,11 +510,17 @@ func (r *registrant) registerOnce(timeout time.Duration, expires time.Duration) 
 }
 
 func (r *registrant) unregister() {
-	if !r.stillBound() {
-		return // nothing bound, or it has lapsed on its own
+	if !r.stillBound() && !r.uncertain {
+		return // no accepted or possibly-applied binding needs withdrawal
 	}
 	r.bound, r.granted, r.boundUntil = false, 0, time.Time{}
-	if _, err := r.registerOnce(unregisterTimeout, 0); err != nil {
+	timeout := time.Until(r.stopDeadline)
+	if timeout <= 0 {
+		r.log.Warnw("SIP unregister budget exhausted", context.DeadlineExceeded)
+		r.setState(RegistrationState{})
+		return
+	}
+	if _, err := r.registerOnce(timeout, 0); err != nil {
 		r.log.Warnw("could not unregister", err)
 	} else {
 		r.log.Infow("SIP registration removed")
@@ -586,6 +653,9 @@ func (r *registrant) authorize(req *sip.Request) error {
 // difference separates "registered, but the provider is calling an address we do not have"
 // from "not registered".
 func (r *registrant) logObservedAddress(resp *sip.Response) {
+	// REGISTER and OPTIONS may complete concurrently; only this diagnostic value is shared.
+	r.observedMu.Lock()
+	defer r.observedMu.Unlock()
 	via := resp.Via()
 	if via == nil {
 		return
@@ -615,12 +685,14 @@ func (r *registrant) logObservedAddress(resp *sip.Response) {
 }
 
 // grantedExpiry reports the lifetime the registrar granted, preferring the most specific
-// source: the expires parameter on our own binding, then the Expires header, then the shortest
-// binding it listed, then the value we asked for. The third step covers registrars that rewrite
-// the Contact to the address they observed, which stops it matching ours. Underestimating the
+// source: the expires parameter on our own binding, then the shortest binding it listed,
+// then the Expires header, then the value we asked for. The second step covers registrars that
+// rewrite the Contact to the address they observed, which stops it matching ours. A global
+// Expires value must never override a shorter binding-specific lifetime. Underestimating the
 // lifetime only costs an early refresh, while overestimating lets the binding lapse.
 func grantedExpiry(resp *sip.Response, contact *sip.Uri, requested time.Duration) time.Duration {
 	var shortest time.Duration
+	haveBindingExpiry := false
 	for _, h := range resp.GetHeaders("Contact") {
 		c, ok := h.(*sip.ContactHeader)
 		if !ok {
@@ -638,15 +710,15 @@ func grantedExpiry(resp *sip.Response, contact *sip.Uri, requested time.Duration
 		if sameContact(&c.Address, contact) {
 			return d
 		}
-		if d > 0 && (shortest == 0 || d < shortest) {
-			shortest = d
+		if !haveBindingExpiry || d < shortest {
+			shortest, haveBindingExpiry = d, true
 		}
+	}
+	if haveBindingExpiry {
+		return shortest
 	}
 	if d, ok := headerSeconds(resp, "Expires"); ok {
 		return d
-	}
-	if shortest != 0 {
-		return shortest
 	}
 	return requested
 }

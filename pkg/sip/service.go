@@ -69,7 +69,9 @@ type Service struct {
 	srv     *Server
 	closers []io.Closer
 
-	registrants []*registrant
+	registrationsMu      sync.Mutex
+	registrationsStopped bool
+	registrants          []*registrant
 
 	mu               sync.Mutex
 	pendingTransfers map[LocalTag]*PendingTransfer
@@ -200,10 +202,22 @@ func (s *Service) ActiveCalls() ActiveCalls {
 // provider from routing new inbound calls to a node that is shutting down; Stop calls it too,
 // so it is safe either way.
 func (s *Service) StopRegistrations() {
-	for _, r := range s.registrants {
-		r.Stop()
+	s.registrationsMu.Lock()
+	s.registrationsStopped = true
+	registrants := s.registrants
+	deadline := time.Now().Add(unregisterTimeout)
+	// Every owner receives stop before any wait; withdrawals share this deadline
+	// and run concurrently in their existing owners, without N serial timeouts.
+	for _, r := range registrants {
+		r.stopBefore(deadline)
 	}
+	s.registrationsMu.Unlock()
+	for _, r := range registrants {
+		r.waitStopped()
+	}
+	s.registrationsMu.Lock()
 	s.registrants = nil
+	s.registrationsMu.Unlock()
 }
 
 func (s *Service) Stop() {
@@ -365,6 +379,11 @@ func (s *Service) startRegistrations(ua *sipgo.UserAgent) error {
 			}
 			break
 		}
+	}
+	s.registrationsMu.Lock()
+	defer s.registrationsMu.Unlock()
+	if s.registrationsStopped {
+		return errors.New("SIP registrations already stopped")
 	}
 	s.registrants = registrants
 	s.log.Infow("registering with SIP registrars", "count", len(registrants))
