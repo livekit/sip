@@ -371,6 +371,7 @@ func transferError(out transferOutcome) error {
 }
 
 func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
+	req.Upgrade()
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	// Check if provider is internal and config is set before allowing transfer
@@ -401,7 +402,7 @@ func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalT
 			defer cdone()
 
 			headers := maps.Clone(req.Headers) // shallow clone - string/string map. Needed to avoid mutating psrpc req
-			out := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, headers, req.PlayDialtone)
+			out := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, headers, req.Dialtone)
 			select {
 			case pending.Done <- out:
 			default:
@@ -470,7 +471,7 @@ func (s *Service) getOrCreatePendingTransfer(callID string, transferTo string) (
 	return pending, true
 }
 
-func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) transferOutcome {
+func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone livekit.SIPDialtone) transferOutcome {
 	// Look for call both in client (outbound) and server (inbound)
 	s.cli.cmu.Lock()
 	out := s.cli.activeCalls[LocalTag(callID)]
@@ -551,7 +552,17 @@ func (s *Service) validateCallProvider(state *CallState, transferTo string) erro
 	if info.ProviderInfo.PreventTransfer {
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "transfers are not supported for this phone number type")
 	}
-	if lksip.IsEmergencyNumber(lksip.URIUser(transferTo)) {
+	target := transferTo
+	if !strings.Contains(target, "<") {
+		// tel: targets arrive unbracketed, and a bare URI may not carry ',' pauses or '?' headers.
+		target = "<" + target + ">"
+	}
+	user, err := livekit.ParseSIPNameAddr(target)
+	if err != nil {
+		return psrpc.NewErrorf(psrpc.InvalidArgument, "invalid transfer target: %v", err)
+	}
+	user, _, _ = strings.Cut(user, "?")
+	if lksip.IsEmergencyNumber(user) {
 		return psrpc.NewErrorf(psrpc.InvalidArgument, "transfers to an emergency number are not supported from LiveKit phone numbers")
 	}
 	return nil

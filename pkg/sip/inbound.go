@@ -2024,7 +2024,7 @@ func dtmfEventFromSipDTMF(msg *livekit.SipDTMF) dtmf.Event {
 	}
 }
 
-func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (transferID string, retErr error) {
+func (c *inboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone livekit.SIPDialtone) (transferID string, retErr error) {
 	var err error
 
 	transferID = c.state.StartTransfer(transferTo)
@@ -2032,7 +2032,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		c.state.EndTransfer(transferID, retErr)
 	}()
 
-	if dialtone && c.started.IsBroken() && !c.done.Load() {
+	if ringback := dialtoneTones(dialtone); ringback != nil && c.started.IsBroken() && !c.done.Load() {
 		const ringVolume = math.MaxInt16 / 2
 
 		c.mmu.Lock()
@@ -2052,7 +2052,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
 		go func() {
-			err := tones.Play(rctx, mp.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, mp.GetOutboundAudioWriter(), ringVolume, ringback)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log().Infow("cannot play dial tone", "error", err)
 			}
