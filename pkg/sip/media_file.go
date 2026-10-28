@@ -26,7 +26,8 @@ type mediaRes struct {
 	wrongPin []msdk.PCM16Sample
 }
 
-func (s *Server) initMediaRes() {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) initMediaRes() {
 	s.res.enterPin = res.ReadOggAudioFile(res.EnterPinOgg)
 	s.res.roomJoin = res.ReadOggAudioFile(res.RoomJoinOgg)
 	s.res.wrongPin = res.ReadOggAudioFile(res.WrongPinOgg)

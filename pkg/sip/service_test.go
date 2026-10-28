@@ -1210,13 +1210,17 @@ func newServiceForAffinity(conf *config.Config) *Service {
 		activeCalls: make(map[LocalTag]*outboundCall),
 	}
 	srv := &Server{
+		conf: conf,
+	}
+	manager := &callManager{
 		conf:       conf,
 		byLocalTag: make(map[LocalTag]*inboundCall),
 	}
 	return &Service{
-		conf: conf,
-		cli:  cli,
-		srv:  srv,
+		conf:    conf,
+		cli:     cli,
+		srv:     srv,
+		manager: manager,
 	}
 }
 
@@ -1236,7 +1240,7 @@ func TestCreateSIPParticipantAffinity_NoConfig_WithCalls(t *testing.T) {
 	}
 	// Add 5 inbound calls
 	for i := 0; i < 5; i++ {
-		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		s.manager.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1310,7 +1314,7 @@ func TestCreateSIPParticipantAffinity_MixedInboundOutbound(t *testing.T) {
 		s.cli.activeCalls[LocalTag(fmt.Sprintf("out-%d", i))] = &outboundCall{}
 	}
 	for i := 0; i < 4; i++ {
-		s.srv.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
+		s.manager.byLocalTag[LocalTag(fmt.Sprintf("in-%d", i))] = &inboundCall{}
 	}
 
 	got := s.CreateSIPParticipantAffinity(context.Background(), nil)
@@ -1395,7 +1399,7 @@ func TestTransferSIPParticipantOutcome(t *testing.T) {
 		s := newServiceForAffinity(&config.Config{})
 		s.log = logger.GetLogger()
 		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
-		s.srv.byLocalTag[LocalTag(callID)] = &inboundCall{}
+		s.manager.byLocalTag[LocalTag(callID)] = &inboundCall{}
 
 		pending := &PendingTransfer{
 			CallID:     callID,
@@ -1655,7 +1659,7 @@ func newTransferRefusalService(t *testing.T, provider *livekit.ProviderInfo) *Se
 	s.log = logger.GetLogger()
 	s.mon = mon
 	s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
-	s.srv.byLocalTag["inbound"] = &inboundCall{
+	s.manager.byLocalTag["inbound"] = &inboundCall{
 		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
 	}
 	s.cli.activeCalls["outbound"] = &outboundCall{

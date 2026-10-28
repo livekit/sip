@@ -971,20 +971,20 @@ func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
 	log := slog.New(logger.ToSlogHandler(h.log))
 	switch req.Method {
 	case sip.INVITE:
-		h.Server.onInvite(log, req, tx)
+		h.Server.manager.HandleInvite(log, req, tx)
 	case sip.ACK:
-		h.Server.onAck(log, req, tx)
+		h.Server.manager.HandleAck(log, req, tx)
 	case sip.BYE:
-		h.Server.onBye(log, req, tx)
+		h.Server.manager.HandleBye(log, req, tx)
 	case sip.NOTIFY:
-		h.Server.onNotify(log, req, tx)
+		h.Server.manager.HandleNotify(log, req, tx)
 	case sip.OPTIONS:
-		h.Server.onOptions(log, req, tx)
+		h.Server.manager.HandleOptions(log, req, tx)
 	default:
 		if h.Client != nil && h.Client.OnRequest(req, tx) {
 			return
 		}
-		h.Server.OnNoRoute(log, req, tx)
+		h.Server.manager.HandleNoRoute(log, req, tx)
 	}
 }
 
@@ -1098,11 +1098,13 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 		client.Stop()
 	})
 
-	srv := NewServer(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetRoomServer(cfg.GetRoom), WithClient(client))
-	srv.SetHandler(cfg.Handler)
+	srv := NewServer(cfg.Config, log)
 	srv.sconf = sconf
-	srv.sipUnhandled = client.OnRequest
+	manager := newCallManager(srv, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoomServer(cfg.GetRoom), WithClient(client))
+	manager.SetHandler(cfg.Handler)
+	srv.manager = manager
 	t.Cleanup(srv.Stop)
+	t.Cleanup(manager.stop)
 
 	h.Client = client
 	h.Server = srv
