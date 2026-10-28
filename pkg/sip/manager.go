@@ -37,3 +37,44 @@ type CallManager interface {
 	CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error)
 	TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error)
 }
+
+type callManager struct{}
+
+var _ CallManager = (*callManager)(nil)
+
+// NewCallManager returns a new CallManager.
+func NewCallManager() CallManager {
+	return &callManager{}
+}
+
+func (m *callManager) HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) HandleBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) HandleNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) HandleNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	panic("not yet implemented")
+}
+
+func (m *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
+	panic("not yet implemented")
+}

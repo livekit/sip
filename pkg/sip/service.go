@@ -81,6 +81,8 @@ type Service struct {
 	srv     *Server
 	closers []io.Closer
 
+	manager CallManager
+
 	mu               sync.Mutex
 	pendingTransfers map[LocalTag]*PendingTransfer
 }
@@ -303,7 +305,7 @@ func (s *Service) Start() error {
 	}
 	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
 	// Thus, all unhandled transactions will be checked by the client.
-	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
+	if err := s.srv.Start(ua, s.sconf, tlsConf, s.manager, s.cli.OnRequest); err != nil {
 		return err
 	}
 	s.log.Debugw("sip service ready")

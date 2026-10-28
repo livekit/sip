@@ -162,6 +162,7 @@ type Server struct {
 	getRoom         GetRoomFunc
 	sipListeners    []io.Closer
 	sipUnhandled    RequestHandler
+	manager         CallManager
 
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
@@ -337,8 +338,9 @@ func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler 
 	return ret
 }
 
-func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
+func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, manager CallManager, unhandled RequestHandler) error {
 	s.sconf = sc
+	s.manager = manager
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
 	if agent == nil {

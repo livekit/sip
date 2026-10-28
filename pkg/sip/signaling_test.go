@@ -509,7 +509,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 
 	handler := &TestHandler{}
 
-	err = srv.Start(nil, sconf, nil, cli.OnRequest)
+	err = srv.Start(nil, sconf, nil, nil, cli.OnRequest)
 	require.NoError(t, err)
 	t.Cleanup(srv.Stop)
 	srv.SetHandler(handler)
