@@ -142,9 +142,9 @@ func (c *lateOfferCall) expectOffer(t *testing.T, ctx context.Context) {
 	c.call.SetRemoteSDP(resp.Body())
 	c.call.SetRouteSet(resp, true)
 
-	c.st.Server.cmu.Lock()
-	c.ic, ok = c.st.Server.byLocalTag[c.call.remoteTag]
-	c.st.Server.cmu.Unlock()
+	c.st.Manager.cmu.Lock()
+	c.ic, ok = c.st.Manager.byLocalTag[c.call.remoteTag]
+	c.st.Manager.cmu.Unlock()
 	require.True(t, ok, "call should be registered")
 }
 
@@ -273,16 +273,16 @@ func TestInboundLateOfferDisabled(t *testing.T) {
 
 	// The response is sent before the call is deregistered.
 	require.Eventually(t, func() bool {
-		st.Server.cmu.RLock()
-		defer st.Server.cmu.RUnlock()
-		return len(st.Server.byLocalTag) == 0
+		st.Manager.cmu.RLock()
+		defer st.Manager.cmu.RUnlock()
+		return len(st.Manager.byLocalTag) == 0
 	}, 5*time.Second, 10*time.Millisecond, "rejected call should be deregistered")
 }
 
 func TestInboundLateOffer(t *testing.T) {
 	st := NewServiceTest(t, nil)
 	// Enable late offer at the project level.
-	st.Server.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
+	st.Manager.SetHandler(&TestHandler{FeatureFlags: map[string]string{lateOfferFeatureFlag: "true"}})
 	callerRTP := netip.MustParseAddrPort("127.0.0.1:2827")
 
 	t.Run("success", func(t *testing.T) {
@@ -542,7 +542,7 @@ func TestInboundCallStatusCode(t *testing.T) {
 				sct.roomFunc = nil
 				handler := &TestHandler{}
 				sct.serviceTest.Handler = handler
-				sct.serviceTest.Server.handler = handler
+				sct.serviceTest.Manager.handler = handler
 				sct.serviceTest.Client.handler = handler
 			})
 		}
@@ -898,9 +898,9 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.True(t, ok, "remote tag should be present")
 		call.SetRemoteTag(LocalTag(remoteTag))
 
-		st.Server.cmu.Lock()
-		ic, ok := st.Server.byLocalTag[call.remoteTag]
-		st.Server.cmu.Unlock()
+		st.Manager.cmu.Lock()
+		ic, ok := st.Manager.byLocalTag[call.remoteTag]
+		st.Manager.cmu.Unlock()
 		require.True(t, ok, "call should be registered")
 
 		// Drop the INVITE transaction while the call is still ringing, as a BYE
@@ -950,9 +950,9 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.True(t, ok, "remote tag should be present")
 		call.SetRemoteTag(LocalTag(remoteTag))
 
-		st.Server.cmu.Lock()
-		ic, ok := st.Server.byLocalTag[call.remoteTag]
-		st.Server.cmu.Unlock()
+		st.Manager.cmu.Lock()
+		ic, ok := st.Manager.byLocalTag[call.remoteTag]
+		st.Manager.cmu.Unlock()
 		require.True(t, ok, "call should be registered")
 
 		// Let the answer reach the caller, then break the transport under the

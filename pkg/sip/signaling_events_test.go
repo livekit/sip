@@ -427,7 +427,7 @@ func TestInboundSignalingEventsSecondBye(t *testing.T) {
 	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond)
 	for range 2 {
 		bye := call.NewRequest(sip.BYE)
-		st.Server.onBye(nil, bye, &testSIPServerTransaction{
+		st.Server.manager.HandleBye(nil, bye, &testSIPServerTransaction{
 			log:       logger.GetLogger(),
 			req:       bye,
 			responses: make(chan *sip.Response, 1),
