@@ -87,6 +87,7 @@ type PortStatsSnapshot struct {
 	JitterBufferSSRCSwitches     uint64 `json:"jitter_buffer_ssrc_switches"`
 	JitterBufferPacketsReordered uint64 `json:"jitter_buffer_packets_reordered"`
 	JitterBufferSequenceRestarts uint64 `json:"jitter_buffer_sequence_restarts"`
+	JitterBufferPacketsStray     uint64 `json:"jitter_buffer_packets_stray"`
 
 	LatencyInE2E LatencyStatsSnapshot `json:"latency_in_e2e"`
 	LatencyOut   LatencyStatsSnapshot `json:"latency_out"`
@@ -122,6 +123,7 @@ type PortStats struct {
 	JitterBufferSSRCSwitches     atomic.Uint64
 	JitterBufferPacketsReordered atomic.Uint64
 	JitterBufferSequenceRestarts atomic.Uint64
+	JitterBufferPacketsStray     atomic.Uint64
 
 	LatencyInE2E LatencyStats
 	LatencyOut   LatencyStats
@@ -168,6 +170,7 @@ func (s *PortStats) Load() PortStatsSnapshot {
 		JitterBufferSSRCSwitches:     s.JitterBufferSSRCSwitches.Load(),
 		JitterBufferPacketsReordered: s.JitterBufferPacketsReordered.Load(),
 		JitterBufferSequenceRestarts: s.JitterBufferSequenceRestarts.Load(),
+		JitterBufferPacketsStray:     s.JitterBufferPacketsStray.Load(),
 		LatencyInE2E:                 s.LatencyInE2E.Load(),
 		LatencyOut:                   s.LatencyOut.Load(),
 		Closed:                       s.Closed.Load(),
