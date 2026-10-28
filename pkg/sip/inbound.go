@@ -481,7 +481,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 	}
 	if s.cli != nil { // Process reinvite for existing outbound calls
 		// TODO(alexfish): Consider moving this to outbound
-		oc := s.cli.getActiveCall(cc.ID())
+		oc := s.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 
 		// TODO(alexfish): Reply with an error if the new sequence number is
@@ -768,11 +768,7 @@ func (s *callManager) HandleBye(log *slog.Logger, req *sip.Request, tx sip.Serve
 		c.Bye(reason)
 		return
 	}
-	ok := false
-	if s.sipUnhandled != nil {
-		ok = s.sipUnhandled(req, tx)
-	}
-	if !ok {
+	if !s.onOutboundBye(req, tx) {
 		s.log.Infow("BYE for non-existent call", "callID", tag)
 		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
@@ -824,11 +820,7 @@ func (s *callManager) HandleNotify(log *slog.Logger, req *sip.Request, tx sip.Se
 
 		return
 	}
-	ok := false
-	if s.sipUnhandled != nil {
-		ok = s.sipUnhandled(req, tx)
-	}
-	if !ok {
+	if !s.onOutboundNotify(req, tx) {
 		s.log.Infow("NOTIFY for non-existent call")
 		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}

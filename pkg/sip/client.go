@@ -23,10 +23,8 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
 	esip "github.com/emiago/sipgo/sip"
@@ -64,22 +62,13 @@ func DefaultGetSipClientFunc(ua *sipgo.UserAgent, options ...sipgo.ClientOption)
 }
 
 type Client struct {
-	conf   *config.Config
-	sconf  *ServiceConfig
-	log    logger.Logger
-	region string
-	mon    *stats.Monitor
+	conf  *config.Config
+	sconf *ServiceConfig
+	log   logger.Logger
 
 	sipCli SIPClient
 
-	closing     core.Fuse
-	cmu         sync.Mutex
-	activeCalls map[LocalTag]*outboundCall
-
-	handler         Handler
-	getStateHandler GetStateHandler
-	getSipClient    GetSipClientFunc
-	getRoom         GetRoomFunc
+	getSipClient GetSipClientFunc
 }
 
 type ClientOption func(c *Client)
@@ -92,27 +81,14 @@ func WithGetSipClient(fn GetSipClientFunc) ClientOption {
 	}
 }
 
-func WithGetRoomClient(fn GetRoomFunc) ClientOption {
-	return func(c *Client) {
-		if fn != nil {
-			c.getRoom = fn
-		}
-	}
-}
-
-func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...ClientOption) *Client {
+func NewClient(conf *config.Config, log logger.Logger, options ...ClientOption) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:            conf,
-		log:             log,
-		region:          region,
-		mon:             mon,
-		getStateHandler: getStateHandler,
-		getSipClient:    DefaultGetSipClientFunc,
-		getRoom:         DefaultGetRoomFunc,
-		activeCalls:     make(map[LocalTag]*outboundCall),
+		conf:         conf,
+		log:          log,
+		getSipClient: DefaultGetSipClientFunc,
 	}
 	for _, option := range options {
 		option(c)
@@ -148,37 +124,26 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 }
 
 func (c *Client) Stop() {
-	ctx := context.Background()
-	ctx, span := Tracer.Start(ctx, "sip.Client.Stop")
+	_, span := Tracer.Start(context.Background(), "sip.Client.Stop")
 	defer span.End()
-	c.closing.Break()
-	c.cmu.Lock()
-	calls := maps.Values(c.activeCalls)
-	c.activeCalls = make(map[LocalTag]*outboundCall)
-	c.cmu.Unlock()
-	for _, call := range calls {
-		call.Close(ctx)
-	}
 	if c.sipCli != nil {
 		c.sipCli.Close()
 	}
-}
-
-func (c *Client) SetHandler(handler Handler) {
-	c.handler = handler
 }
 
 func (c *Client) ContactURI(tr Transport) URI {
 	return getContactURI(c.conf, c.sconf.SignalingIP, tr)
 }
 
-func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	ctx, span := Tracer.Start(ctx, "Client.CreateSIPParticipant")
 	defer span.End()
 	return c.createSIPParticipant(ctx, req)
 }
 
-func (c *Client) getActiveCall(tag LocalTag) *outboundCall {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) getActiveCall(tag LocalTag) *outboundCall {
 	c.cmu.Lock()
 	defer c.cmu.Unlock()
 	return c.activeCalls[tag]
@@ -376,7 +341,8 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 	return uri, from, to, nil
 }
 
-func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
 	if c.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
 	}
@@ -500,7 +466,8 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return info, nil
 }
 
-func (c *Client) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
 	toUri := ConvertURI(&to.Address)
 	fromUri := ConvertURI(&from.Address)
 	fromUri.Addr = netip.AddrPortFrom(c.sconf.SignalingIP, uint16(c.conf.SIPPort))
@@ -524,18 +491,8 @@ func (c *Client) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.T
 	return callInfo
 }
 
-func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
-	switch req.Method {
-	default:
-		return false
-	case "BYE":
-		return c.onBye(req, tx)
-	case "NOTIFY":
-		return c.onNotify(req, tx)
-	}
-}
-
-func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
 	defer span.End()
@@ -558,7 +515,8 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) onOutboundNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	tag, _ := GetLocalTagUAS(req)
 	c.cmu.Lock()
 	call := c.activeCalls[tag]
@@ -577,10 +535,12 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCall) error {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) RegisterOutboundTransferSIPParticipant(sipCallID string, o *outboundCall) error {
 	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
 }
 
-func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) DeregisterOutboundTransferSIPParticipant(sipCallID string) {
 	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }
