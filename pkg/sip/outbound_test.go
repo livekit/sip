@@ -52,7 +52,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { // Allow test to continue
-		_, err := h.Client.CreateSIPParticipant(ctx, req)
+		_, err := h.Manager.CreateSIPParticipant(ctx, req)
 		if err != nil && ctx.Err() == nil {
 			// Only log error if context wasn't cancelled
 			t.Logf("CreateSIPParticipant error: %v", err)
@@ -122,7 +122,7 @@ func waitOutboundINVITEAndACK(
 	t.Cleanup(cancel)
 
 	go func() {
-		_, err := h.Client.CreateSIPParticipant(ctx, participantReq)
+		_, err := h.Manager.CreateSIPParticipant(ctx, participantReq)
 		if err != nil && ctx.Err() == nil {
 			t.Logf("CreateSIPParticipant error: %v", err)
 			t.Fail()
@@ -238,12 +238,12 @@ func TestOutboundCallReportsFullDuration(t *testing.T) {
 		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
 	}, time.Second, 10*time.Millisecond)
 
-	h.Client.cmu.Lock()
+	h.Manager.cmu.Lock()
 	var call *outboundCall
-	for _, c := range h.Client.activeCalls {
+	for _, c := range h.Manager.activeCalls {
 		call = c
 	}
-	h.Client.cmu.Unlock()
+	h.Manager.cmu.Unlock()
 	require.NotNil(t, call)
 	go func() { _ = call.EndCall(context.Background(), nil) }()
 	answerBYE(t, h, time.Second, req.SipCallId)
@@ -268,7 +268,7 @@ func TestOutboundErrorReportsEndTime(t *testing.T) {
 	states := &recordingStateHandler{}
 	h := NewTestSIP(t, TestSIPConfig{GetIOClient: states.GetStateHandler()})
 	req := MinimalCreateSIPParticipantRequest()
-	go func() { _, _ = h.Client.CreateSIPParticipant(t.Context(), req) }()
+	go func() { _, _ = h.Manager.CreateSIPParticipant(t.Context(), req) }()
 
 	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
 	require.Equal(t, sip.INVITE, tr.req.Method)
@@ -715,7 +715,7 @@ func startInvite(t *testing.T, cfg TestSIPConfig, req *rpc.InternalCreateSIPPart
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() {
-		if _, err := h.Client.CreateSIPParticipant(ctx, req); err != nil && ctx.Err() == nil {
+		if _, err := h.Manager.CreateSIPParticipant(ctx, req); err != nil && ctx.Err() == nil {
 			t.Logf("CreateSIPParticipant: %v", err)
 		}
 	}()

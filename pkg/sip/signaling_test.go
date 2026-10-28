@@ -483,14 +483,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	require.Equal(t, stats.HealthOK, mon.Health(), "monitor should be healthy")
 	log := logger.NewTestLogger(t)
 
-	cli := NewClient(
-		"",
-		conf,
-		log,
-		mon,
-		options.GetStateHandler,
-		WithGetRoomClient(options.GetRoom),
-	)
+	cli := NewClient(conf, log)
 	srv := NewServer(conf, log)
 	require.NotNil(t, srv)
 
@@ -502,14 +495,14 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 
 	manager := newCallManager(
 		srv,
+		cli,
 		"",
 		conf,
 		sconf,
 		log,
 		mon,
 		options.GetStateHandler,
-		WithGetRoomServer(options.GetRoom),
-		WithClient(cli),
+		WithGetRoom(options.GetRoom),
 	)
 
 	handler := &TestHandler{}
@@ -517,13 +510,12 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	err = srv.Start(nil, sconf, nil, manager)
 	require.NoError(t, err)
 	t.Cleanup(srv.Stop)
-	t.Cleanup(manager.stop)
 	manager.SetHandler(handler)
 
 	err = cli.Start(nil, sconf)
 	require.NoError(t, err)
 	t.Cleanup(cli.Stop)
-	cli.SetHandler(handler)
+	t.Cleanup(manager.stop)
 
 	addr := netip.AddrPortFrom(loopback, uint16(sipPort))
 
@@ -666,7 +658,7 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 		st.mu.Unlock()
 	}()
 
-	_, err := st.Client.CreateSIPParticipant(ctx, req)
+	_, err := st.Manager.CreateSIPParticipant(ctx, req)
 	require.NoError(t, err)
 
 	var reqSink <-chan *sipUARequest
@@ -718,9 +710,9 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 		st.TestUA.TransactionRequest(t, bye, false)
 	})
 
-	st.Client.cmu.Lock()
-	defer st.Client.cmu.Unlock()
-	oc, ok := st.Client.activeCalls[call.remoteTag]
+	st.Manager.cmu.Lock()
+	defer st.Manager.cmu.Unlock()
+	oc, ok := st.Manager.activeCalls[call.remoteTag]
 	require.True(t, ok, "call should be registered")
 
 	t.Logf("outbound call: %+v", call)
@@ -736,9 +728,9 @@ func lookupCall(t *testing.T, st *serviceTest, call *sipUADialogTest) (RoomInter
 		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "inbound call should become active")
 		return ic.lkRoom, ic.media
 	}
-	st.Client.cmu.Lock()
-	oc := st.Client.activeCalls[call.remoteTag]
-	st.Client.cmu.Unlock()
+	st.Manager.cmu.Lock()
+	oc := st.Manager.activeCalls[call.remoteTag]
+	st.Manager.cmu.Unlock()
 	require.NotNil(t, oc, "call should be registered as inbound or outbound")
 	require.Eventually(t, oc.started.IsBroken, 5*time.Second, 10*time.Millisecond, "outbound call should become active")
 	return oc.lkRoom, oc.media
@@ -1960,7 +1952,7 @@ func TestRetransmission(t *testing.T) {
 			st.mu.Unlock()
 		}()
 
-		_, err := st.Client.CreateSIPParticipant(ctx, req)
+		_, err := st.Manager.CreateSIPParticipant(ctx, req)
 		require.NoError(t, err)
 
 		var msg *sipUARequest
