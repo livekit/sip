@@ -27,7 +27,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -82,9 +81,6 @@ type Service struct {
 	closers []io.Closer
 
 	manager *callManager
-
-	mu               sync.Mutex
-	pendingTransfers map[LocalTag]*PendingTransfer
 }
 
 // GetStateHandler returns the per-call StateHandler that CallState forwards
@@ -109,12 +105,11 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	}
 	cli := NewClient(conf, log)
 	s := &Service{
-		conf:             conf,
-		log:              log,
-		mon:              mon,
-		cli:              cli,
-		srv:              NewServer(conf, log, opts...),
-		pendingTransfers: make(map[LocalTag]*PendingTransfer),
+		conf: conf,
+		log:  log,
+		mon:  mon,
+		cli:  cli,
+		srv:  NewServer(conf, log, opts...),
 	}
 	var err error
 	s.sconf, err = GetServiceConfig(s.conf)
@@ -317,6 +312,10 @@ func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCre
 	return resp, siperrors.ApplySIPStatus(err)
 }
 
+func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
+	return s.manager.TransferSIPParticipant(ctx, req)
+}
+
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
 	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
 		return 0
@@ -331,7 +330,8 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 	return 1 / (1 + active)
 }
 
-func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
 	out := s.transferSIPParticipant(ctx, req)
 	if out.Err != nil {
 		return nil, transferError(out)
@@ -372,7 +372,8 @@ func transferError(out transferOutcome) error {
 	return psrpc.NewError(code, out.Err, details...)
 }
 
-func (s *Service) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
 	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	// Check if provider is internal and config is set before allowing transfer
@@ -453,7 +454,8 @@ func transferReason(err error) (livekit.SIPTransferReason, *livekit.SIPStatus) {
 	return livekit.SIPTransferReason_STR_UNSPECIFIED, nil
 }
 
-func (s *Service) getOrCreatePendingTransfer(callID string, transferTo string) (*PendingTransfer, bool) {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) getOrCreatePendingTransfer(callID string, transferTo string) (*PendingTransfer, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -472,11 +474,12 @@ func (s *Service) getOrCreatePendingTransfer(callID string, transferTo string) (
 	return pending, true
 }
 
-func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) transferOutcome {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) transferOutcome {
 	// Look for call both in client (outbound) and server (inbound)
-	s.manager.cmu.Lock()
-	out := s.manager.activeCalls[LocalTag(callID)]
-	s.manager.cmu.Unlock()
+	s.cmu.Lock()
+	out := s.activeCalls[LocalTag(callID)]
+	s.cmu.Unlock()
 
 	if out != nil {
 		s.mon.TransferStarted(stats.Outbound)
@@ -489,9 +492,9 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 		return transferOutcome{TransferID: transferID}
 	}
 
-	s.manager.cmu.Lock()
-	in := s.manager.byLocalTag[LocalTag(callID)]
-	s.manager.cmu.Unlock()
+	s.cmu.Lock()
+	in := s.byLocalTag[LocalTag(callID)]
+	s.cmu.Unlock()
 
 	if in != nil {
 		s.mon.TransferStarted(stats.Inbound)
@@ -509,19 +512,20 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 	return transferOutcome{Err: err}
 }
 
-func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
 	// Look for call both in client (outbound) and server (inbound)
-	s.manager.cmu.Lock()
-	out := s.manager.activeCalls[LocalTag(callID)]
-	s.manager.cmu.Unlock()
+	s.cmu.Lock()
+	out := s.activeCalls[LocalTag(callID)]
+	s.cmu.Unlock()
 
 	if out != nil {
 		return s.rejectTransfer(stats.Outbound, s.validateCallProvider(out.state, transferTo))
 	}
 
-	s.manager.cmu.Lock()
-	in := s.manager.byLocalTag[LocalTag(callID)]
-	s.manager.cmu.Unlock()
+	s.cmu.Lock()
+	in := s.byLocalTag[LocalTag(callID)]
+	s.cmu.Unlock()
 
 	if in != nil {
 		return s.rejectTransfer(stats.Inbound, s.validateCallProvider(in.state, transferTo))
@@ -532,7 +536,8 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, tran
 
 // rejectTransfer counts a transfer refused before it started as an attempt
 // that failed, so failures never outnumber attempts.
-func (s *Service) rejectTransfer(dir stats.CallDir, err error) error {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) rejectTransfer(dir stats.CallDir, err error) error {
 	if err != nil {
 		s.mon.TransferStarted(dir)
 		s.mon.TransferFailed(dir, extractTransferErrorReason(err), true)
@@ -540,7 +545,8 @@ func (s *Service) rejectTransfer(dir stats.CallDir, err error) error {
 	return err
 }
 
-func (s *Service) validateCallProvider(state *CallState, transferTo string) error {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) validateCallProvider(state *CallState, transferTo string) error {
 	info := state.Info()
 	if state == nil || info == nil || info.ProviderInfo == nil {
 		return nil // No provider info to validate

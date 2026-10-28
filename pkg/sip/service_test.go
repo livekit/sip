@@ -1397,8 +1397,8 @@ func TestTransferSIPParticipantOutcome(t *testing.T) {
 	// call already finished and reporting out.
 	newService := func(out transferOutcome) *Service {
 		s := newServiceForAffinity(&config.Config{})
-		s.log = logger.GetLogger()
-		s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+		s.manager.log = logger.GetLogger()
+		s.manager.pendingTransfers = make(map[LocalTag]*PendingTransfer)
 		s.manager.byLocalTag[LocalTag(callID)] = &inboundCall{}
 
 		pending := &PendingTransfer{
@@ -1408,7 +1408,7 @@ func TestTransferSIPParticipantOutcome(t *testing.T) {
 		}
 		pending.Done <- out
 		pending.Outcome.Store(&out)
-		s.pendingTransfers[LocalTag(callID)] = pending
+		s.manager.pendingTransfers[LocalTag(callID)] = pending
 		return s
 	}
 
@@ -1599,7 +1599,7 @@ func TestValidateCallProvider(t *testing.T) {
 				state = NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: c.provider})
 			}
 			s := &Service{}
-			err := s.validateCallProvider(state, c.transferTo)
+			err := s.manager.validateCallProvider(state, c.transferTo)
 			if c.code == "" {
 				require.NoError(t, err)
 				return
@@ -1630,7 +1630,7 @@ func TestTransferToEmergencyNumber(t *testing.T) {
 			code, _ := psrpc.GetErrorCode(err)
 			require.Equal(t, psrpc.InvalidArgument, code)
 			require.NotNil(t, livekit.SIPTransferErrorFrom(err))
-			require.Empty(t, s.pendingTransfers)
+			require.Empty(t, s.manager.pendingTransfers)
 			require.Equal(t, totalBefore+1, gatherCounter(t, transfersTotalMetric, map[string]string{"dir": dir}))
 			require.Equal(t, failedBefore+1, gatherCounter(t, transfersFailedMetric, map[string]string{"dir": dir, "reason": "invalid_argument"}))
 		})
@@ -1652,9 +1652,9 @@ func newTransferRefusalService(t *testing.T, provider *livekit.ProviderInfo) *Se
 	t.Cleanup(mon.Stop)
 
 	s := newServiceForAffinity(&config.Config{})
-	s.log = logger.GetLogger()
-	s.mon = mon
-	s.pendingTransfers = make(map[LocalTag]*PendingTransfer)
+	s.manager.log = logger.GetLogger()
+	s.manager.mon = mon
+	s.manager.pendingTransfers = make(map[LocalTag]*PendingTransfer)
 	s.manager.byLocalTag["inbound"] = &inboundCall{
 		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_INBOUND}),
 	}

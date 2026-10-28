@@ -520,13 +520,12 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	addr := netip.AddrPortFrom(loopback, uint16(sipPort))
 
 	service := &Service{
-		conf:             conf,
-		log:              log,
-		mon:              mon,
-		cli:              cli,
-		srv:              srv,
-		manager:          manager,
-		pendingTransfers: make(map[LocalTag]*PendingTransfer),
+		conf:    conf,
+		log:     log,
+		mon:     mon,
+		cli:     cli,
+		srv:     srv,
+		manager: manager,
 	}
 	s := &serviceTest{
 		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(64)),
