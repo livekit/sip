@@ -452,7 +452,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		user:            req.Username,
 		pass:            req.Password,
 		dtmf:            req.Dtmf,
-		dialtone:        req.PlayDialtone,
+		dialtone:        req.Dialtone,
 		headers:         maps.Clone(req.Headers), // shallow clone - string/string map. Needed to avoid mutating psrpc req
 		includeHeaders:  req.IncludeHeaders,
 		headersToAttrs:  req.HeadersToAttributes,

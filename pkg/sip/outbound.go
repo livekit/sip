@@ -52,7 +52,7 @@ type sipOutboundConfig struct {
 	user            string
 	pass            string
 	dtmf            string
-	dialtone        bool
+	dialtone        livekit.SIPDialtone
 	headers         map[string]string
 	includeHeaders  livekit.SIPHeaderOptions
 	headersToAttrs  map[string]string
@@ -518,7 +518,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 }
 
 func (c *outboundCall) dialSIP(ctx context.Context) error {
-	if c.sipConf.dialtone {
+	if ringback := dialtoneTones(c.sipConf.dialtone); ringback != nil {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
@@ -534,7 +534,7 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 				c.log.Infow("room is not ready, ignoring dial tone")
 				return
 			}
-			err := tones.Play(rctx, dst, ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, dst, ringVolume, ringback)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
@@ -853,7 +853,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	return nil
 }
 
-func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone bool) (transferID string, retErr error) {
+func (c *outboundCall) transferCall(ctx context.Context, transferTo string, headers map[string]string, dialtone livekit.SIPDialtone) (transferID string, retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.transferCall")
 	defer span.End()
 	var err error
@@ -863,7 +863,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		c.state.EndTransfer(transferID, retErr)
 	}()
 
-	if dialtone && c.started.IsBroken() && !c.stopped.IsBroken() {
+	if ringback := dialtoneTones(dialtone); ringback != nil && c.started.IsBroken() && !c.stopped.IsBroken() {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
@@ -878,7 +878,7 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		}()
 
 		go func() {
-			err := tones.Play(rctx, c.media.GetOutboundAudioWriter(), ringVolume, tones.ETSIRinging)
+			err := tones.Play(rctx, c.media.GetOutboundAudioWriter(), ringVolume, ringback)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				c.log.Infow("cannot play dial tone", "error", err)
 			}
