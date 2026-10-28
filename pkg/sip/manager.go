@@ -85,6 +85,9 @@ type callManager struct {
 	cli *Client
 
 	res mediaRes
+
+	mu               sync.Mutex // protects pendingTransfers
+	pendingTransfers map[LocalTag]*PendingTransfer
 }
 
 var _ CallManager = (*callManager)(nil)
@@ -115,6 +118,7 @@ func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Co
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		activeCalls:        make(map[LocalTag]*outboundCall),
+		pendingTransfers:   make(map[LocalTag]*PendingTransfer),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	// Initialize the rejected-invite replay cache unless explicitly disabled.
@@ -153,8 +157,4 @@ func (s *callManager) stop() {
 	for _, c := range calls {
 		c.Shutdown(ctx)
 	}
-}
-
-func (s *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
-	panic("not yet implemented")
 }
