@@ -107,7 +107,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if conf.MediaTimeoutInitial <= 0 {
 		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
 	}
-	cli := NewClient(region, conf, log, mon, getStateHandler)
+	cli := NewClient(conf, log)
 	s := &Service{
 		conf:             conf,
 		log:              log,
@@ -121,7 +121,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if err != nil {
 		return nil, err
 	}
-	s.manager = newCallManager(s.srv, region, conf, s.sconf, log, mon, getStateHandler, WithClient(cli))
+	s.manager = newCallManager(s.srv, cli, region, conf, s.sconf, log, mon, getStateHandler)
 
 	const placeholder = "${IP}"
 	if strings.Contains(s.conf.SIPHostname, placeholder) {
@@ -181,8 +181,8 @@ func sampleMap[K comparable, V any](limit int, m map[K]V, sample func(v V) strin
 func (s *Service) ActiveCalls() ActiveCalls {
 	st := ActiveCalls{}
 
-	s.cli.cmu.Lock()
-	samples, total := sampleMap(5, s.cli.activeCalls, func(v *outboundCall) string {
+	s.manager.cmu.Lock()
+	samples, total := sampleMap(5, s.manager.activeCalls, func(v *outboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
@@ -190,7 +190,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	})
 	st.Outbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.cli.cmu.Unlock()
+	s.manager.cmu.Unlock()
 
 	s.manager.cmu.Lock()
 	samples, total = sampleMap(5, s.manager.byLocalTag, func(v *inboundCall) string {
@@ -207,8 +207,8 @@ func (s *Service) ActiveCalls() ActiveCalls {
 }
 
 func (s *Service) Stop() {
-	s.cli.Stop()
 	s.manager.stop()
+	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
 	for _, c := range s.closers {
@@ -218,7 +218,6 @@ func (s *Service) Stop() {
 
 func (s *Service) SetHandler(handler Handler) {
 	s.manager.SetHandler(handler)
-	s.cli.SetHandler(handler)
 }
 
 func (s *Service) Start() error {
@@ -314,7 +313,7 @@ func (s *Service) Start() error {
 }
 
 func (s *Service) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	resp, err := s.cli.CreateSIPParticipant(ctx, req)
+	resp, err := s.manager.CreateSIPParticipant(ctx, req)
 	return resp, siperrors.ApplySIPStatus(err)
 }
 
@@ -475,9 +474,9 @@ func (s *Service) getOrCreatePendingTransfer(callID string, transferTo string) (
 
 func (s *Service) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) transferOutcome {
 	// Look for call both in client (outbound) and server (inbound)
-	s.cli.cmu.Lock()
-	out := s.cli.activeCalls[LocalTag(callID)]
-	s.cli.cmu.Unlock()
+	s.manager.cmu.Lock()
+	out := s.manager.activeCalls[LocalTag(callID)]
+	s.manager.cmu.Unlock()
 
 	if out != nil {
 		s.mon.TransferStarted(stats.Outbound)
@@ -512,9 +511,9 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 
 func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
 	// Look for call both in client (outbound) and server (inbound)
-	s.cli.cmu.Lock()
-	out := s.cli.activeCalls[LocalTag(callID)]
-	s.cli.cmu.Unlock()
+	s.manager.cmu.Lock()
+	out := s.manager.activeCalls[LocalTag(callID)]
+	s.manager.cmu.Unlock()
 
 	if out != nil {
 		return s.rejectTransfer(stats.Outbound, s.validateCallProvider(out.state, transferTo))
