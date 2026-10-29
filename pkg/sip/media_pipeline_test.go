@@ -679,7 +679,7 @@ func generateDTMFPackets(t *testing.T, rate int, digits string) [][]*rtp.Packet 
 	var buf msrtp.Buffer
 	packets := make([][]*rtp.Packet, len(digits))
 	last := len(buf)
-	w := msrtp.NewSeqWriter(&buf, rate).NewStream(101, rate)
+	w := msrtp.NewSeqWriter(&buf, rate).NewManualStream(101)
 	for i := range digits {
 		err := dtmf.Write(context.Background(), nil, w, rate, digits[i:i+1])
 		require.NoError(t, err)
