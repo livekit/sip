@@ -95,6 +95,116 @@ func TestMediaPipelineG711PlayoutReordersAudioAroundDTMF(t *testing.T) {
 	}
 }
 
+// Each paced frame keeps its own original RTP arrival time, including time
+// spent in the packet jitter buffer and the completed downstream write.
+func TestMediaPipelineG711PlayoutInboundLatency(t *testing.T) {
+	for _, codec := range []struct{ name, full string }{
+		{g711.ULawSDPNameOnly, g711.ULawSDPNameAndRate},
+		{g711.ALawSDPNameOnly, g711.ALawSDPNameAndRate},
+	} {
+		t.Run(codec.name, func(t *testing.T) {
+			for _, jitter := range []bool{false, true} {
+				name := "without_jitter"
+				if jitter {
+					name = "with_jitter"
+				}
+				t.Run(name, func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						h := newPipelineHarness(t, 8000)
+						out := &pipelineLatencySink{playoutCodecSink: playoutCodecSink{rate: 8000}, delay: 5 * time.Millisecond}
+						h.audioIn.Swap(out)
+						configurePlayoutPipeline(t, h, codec.name, jitter)
+						epoch := time.Now()
+						at := func(d time.Duration) {
+							time.Sleep(time.Until(epoch.Add(d)))
+							synctest.Wait()
+						}
+						var expected msdk.PCM16Sample
+						packets := make([][]byte, 6)
+						for i := range packets {
+							pcm := make(msdk.PCM16Sample, 160)
+							for j := range pcm {
+								pcm[j] = int16((i + 1) * 2000)
+							}
+							payload, quantized := playoutCodecEncode(codec.full, pcm)
+							packets[i] = payload
+							expected = append(expected, quantized...)
+						}
+						sendAudio := func(seq uint16, frame int) {
+							h.injectRTP(&rtp.Packet{Header: rtp.Header{
+								Version: 2, SSRC: 7, PayloadType: h.audio.Type,
+								SequenceNumber: seq, Timestamp: 1000 + uint32(frame*160),
+							}, Payload: packets[frame]})
+							synctest.Wait()
+						}
+						sendDigit := func(seq uint16, digit byte, timestamp uint32) {
+							var payload [4]byte
+							n, err := dtmf.Encode(payload[:], dtmf.Event{Digit: digit, Volume: 10, Dur: 160, End: true})
+							require.NoError(t, err)
+							h.injectRTP(&rtp.Packet{Header: rtp.Header{
+								Version: 2, SSRC: 7, PayloadType: testDTMFPT,
+								SequenceNumber: seq, Timestamp: timestamp,
+							}, Payload: payload[:n]})
+							synctest.Wait()
+						}
+						sendAudio(1, 0)
+						at(20 * time.Millisecond)
+						sendAudio(4, 2) // Held by jitter until sequence numbers 2 and 3 arrive.
+						at(30 * time.Millisecond)
+						sendAudio(2, 1)
+						sendDigit(3, '5', 1160)
+						at(50 * time.Millisecond)
+						sendAudio(5, 3)
+						at(55 * time.Millisecond)
+						sendDigit(6, '6', 1480)
+						at(70 * time.Millisecond)
+						sendAudio(7, 4)
+						at(75 * time.Millisecond)
+						sendDigit(8, '7', 1640)
+						at(90 * time.Millisecond)
+						sendAudio(9, 5)
+						at(95 * time.Millisecond)
+						sendDigit(10, '8', 1800)
+						at(170 * time.Millisecond)
+						frames := out.snapshot()
+						require.Len(t, frames, 6)
+						var received msdk.PCM16Sample
+						for i, frame := range frames {
+							received = append(received, frame.pcm...)
+							require.Equal(t, time.Duration(65+i*20)*time.Millisecond, frame.at.Sub(epoch))
+						}
+						require.Equal(t, expected, received)
+						stats := &h.conf.stats.LatencyInE2E
+						// Original arrivals 0/30/20/50/70/90 ms and write completions
+						// 65/85/105/125/145/165 ms give 65/55/85/75/75/75 ms of latency.
+						require.Equal(t, uint64(6), stats.Count.Load(), "one end-to-end observation per received audio frame")
+						require.Equal(t, uint64(430*time.Millisecond), stats.SumNs.Load())
+						require.Equal(t, uint64(85*time.Millisecond), stats.MaxNs.Load(), "must include the reordered packet's pre-jitter arrival and completed downstream write")
+						require.Equal(t, []string{"5", "6", "7", "8"}, h.roomDTMF.snapshot())
+
+						beforeSilence := stats.Load()
+						at(190 * time.Millisecond)
+						sendDigit(11, '9', 2120)
+						at(230 * time.Millisecond)
+						require.Greater(t, len(out.snapshot()), len(frames), "playout continues generating silence")
+						require.Equal(t, beforeSilence, stats.Load(), "generated silence has no RTP arrival and must not inherit a DTMF or previous audio timestamp")
+					})
+				})
+			}
+		})
+	}
+}
+
+type pipelineLatencySink struct {
+	playoutCodecSink
+	delay time.Duration
+}
+
+func (s *pipelineLatencySink) WriteSample(pcm msdk.PCM16Sample) error {
+	time.Sleep(s.delay)
+	return s.playoutCodecSink.WriteSample(pcm)
+}
+
 // Negotiation owns the paced worker and its resampler; the reusable room sink
 // belongs to the anchors and must stay open for the next pipeline generation.
 func TestMediaPipelineG711PlayoutRebuildPreservesRoomSink(t *testing.T) {

@@ -166,7 +166,11 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	codecName := codecInfo.SDPFullName()
 	paced := codecName == g711.ULawSDPNameAndRate || codecName == g711.ALawSDPNameAndRate
 	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
-	if !paced {
+	var latency *playoutLatency
+	if paced {
+		latency = newPlayoutLatency(sink, &p.conf.stats.LatencyInE2E)
+		sink = latency
+	} else {
 		sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
 	}
 	sink = msdk.ResampleWriter(sink, codecInfo.SampleRate)
@@ -184,7 +188,7 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 	var audioHandler rtp.HandlerCloser
 	if paced {
 		p.playoutSink = sink
-		audioHandler = newG711Playout(sink, codecName, &p.conf.stats.InputPlayout, p.conf.log, p.conf.opts.EnableJitterBuffer)
+		audioHandler = newG711PlayoutWithLatency(sink, codecName, &p.conf.stats.InputPlayout, p.conf.log, p.conf.opts.EnableJitterBuffer, latency)
 	} else {
 		audioHandler, err = rtp.DecodePCMWithCodec(sink, mc.Audio.Codec, mc.Audio.Info.CodecConfig, mc.Audio.Type)
 		if err != nil {
@@ -229,12 +233,18 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 			SequenceRestarts: &p.conf.stats.JitterBufferSequenceRestarts,
 			Stray:            &p.conf.stats.JitterBufferPacketsStray,
 		})...)
-		hnd = &jitterInputHandler{HandlerCloser: hnd}
+		if !paced {
+			hnd = &jitterInputHandler{HandlerCloser: hnd}
+		}
 	}
 	// Stream stats go before the jitter buffer, so they see the network arrival
 	// order and timing, not the buffer's reordered and paced output.
 	hnd = newRTPStreamStats(hnd, &p.conf.stats.MuxStats)
-	if !paced {
+	if paced {
+		// Clone once before any retaining handler and associate latency with
+		// that owned packet, rather than a shared receive-loop timestamp.
+		hnd = &playoutArrivalHandler{HandlerCloser: hnd, latency: latency, audioType: mc.Audio.Type}
+	} else {
 		hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
 	}
 

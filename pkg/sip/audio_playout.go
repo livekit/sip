@@ -106,6 +106,7 @@ type g711Playout struct {
 	err     error
 	started bool
 	ordered bool // The existing jitter buffer has selected and ordered this stream.
+	latency *playoutLatency
 
 	next         time.Time
 	cursor       int64
@@ -125,11 +126,16 @@ type g711Playout struct {
 	retired      []uint32 // Bounded recent history prevents old-source switch-back.
 	pcm          [playoutCapacity]int16
 	arrival      [playoutCapacity]time.Time // Zero denotes an unfilled sample.
+	received     [playoutCapacity]time.Time // Original arrival before the outer jitter buffer.
 }
 
 // newG711Playout does not own out. In particular, replacing an input handler
 // must not close the shared MediaPort SwitchWriter used by the replacement.
 func newG711Playout(out msdk.PCM16Writer, codecName string, stats *PlayoutStats, log logger.Logger, ordered bool) rtp.HandlerCloser {
+	return newG711PlayoutWithLatency(out, codecName, stats, log, ordered, nil)
+}
+
+func newG711PlayoutWithLatency(out msdk.PCM16Writer, codecName string, stats *PlayoutStats, log logger.Logger, ordered bool, latency *playoutLatency) rtp.HandlerCloser {
 	if stats == nil {
 		stats = &PlayoutStats{}
 	}
@@ -138,6 +144,7 @@ func newG711Playout(out msdk.PCM16Writer, codecName string, stats *PlayoutStats,
 		out:   msdk.ResampleWriter(msdk.NopCloser(out), playoutRate),
 		codec: codecName, stats: stats, log: log,
 		ordered: ordered,
+		latency: latency,
 		wake:    make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	switch codecName {
@@ -178,6 +185,7 @@ func (h *g711Playout) resetLocked(header *rtp.Header, now time.Time) {
 		}
 	}
 	clear(h.arrival[:])
+	clear(h.received[:])
 	h.started, h.cursor, h.lastPos = true, 0, 0
 	h.next = now.Add(playoutDelay)
 	h.ssrc, h.lastTS, h.lastSeq = header.SSRC, header.Timestamp, header.SequenceNumber
@@ -207,6 +215,10 @@ func (h *g711Playout) HandleRTP(header *rtp.Header, payload []byte) error {
 		return fmt.Errorf("G711 payload exceeds RTP MTU: %d", len(payload))
 	}
 	now := time.Now()
+	var received time.Time
+	if h.latency != nil {
+		received = h.latency.take(payload)
+	}
 	pos := int64(0)
 	progressing := false
 	if !h.started {
@@ -329,6 +341,7 @@ func (h *g711Playout) HandleRTP(header *rtp.Header, payload []byte) error {
 		index := i % playoutCapacity
 		if h.arrival[index].IsZero() { // Do not overwrite previously accepted audio.
 			h.pcm[index], h.arrival[index] = decoded[i-pos], now
+			h.received[index] = received
 		}
 	}
 	if end > start {
@@ -366,6 +379,7 @@ func (h *g711Playout) run() {
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	var errorCnt int
+	var origins [playoutFrameSamples]playoutOrigin
 	for {
 		h.mu.Lock()
 		started, next, closed := h.started, h.next, h.closed
@@ -391,9 +405,12 @@ func (h *g711Playout) run() {
 			case <-timer.C:
 			}
 		}
-		frame, ok := h.readFrame(time.Now())
+		frame, ok := h.readFrame(time.Now(), origins[:])
 		if !ok {
 			continue
+		}
+		if h.latency != nil {
+			h.latency.enqueue(origins[:])
 		}
 		if err := h.out.WriteSample(frame); err != nil {
 			errorCnt++
@@ -420,7 +437,7 @@ func (h *g711Playout) run() {
 	}
 }
 
-func (h *g711Playout) readFrame(now time.Time) (msdk.PCM16Sample, bool) {
+func (h *g711Playout) readFrame(now time.Time, origins []playoutOrigin) (msdk.PCM16Sample, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed || !h.started || now.Before(h.next) {
@@ -443,6 +460,7 @@ func (h *g711Playout) readFrame(now time.Time) (msdk.PCM16Sample, bool) {
 	frame := make(msdk.PCM16Sample, playoutFrameSamples)
 	var audio uint64
 	var oldest time.Time
+	clear(origins)
 	for i := range frame {
 		index := (h.cursor + int64(i)) % playoutCapacity
 		if at := h.arrival[index]; !at.IsZero() {
@@ -451,7 +469,13 @@ func (h *g711Playout) readFrame(now time.Time) (msdk.PCM16Sample, bool) {
 			if oldest.IsZero() || at.Before(oldest) {
 				oldest = at
 			}
+			if received := h.received[index]; received.IsZero() {
+				origins[i].unknown = true
+			} else {
+				origins[i].at = received
+			}
 			h.arrival[index] = time.Time{}
+			h.received[index] = time.Time{}
 		}
 	}
 	h.stats.AudioSamples.Add(audio)
