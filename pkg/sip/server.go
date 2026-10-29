@@ -278,8 +278,6 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 	return nil
 }
 
-type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
-
 func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler {
 	ret := handler
 	for _, interceptor := range slices.Backward(s.interceptors) {
