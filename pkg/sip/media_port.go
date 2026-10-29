@@ -51,11 +51,12 @@ const (
 )
 
 type PortStatsSnapshot struct {
-	Streams        uint64 `json:"streams"`
-	Packets        uint64 `json:"packets"`
-	IgnoredPackets uint64 `json:"packets_ignored"`
-	InputPackets   uint64 `json:"packets_input"`
-	FailedPackets  uint64 `json:"packets_failed"`
+	InputPlayout   PlayoutStatsSnapshot `json:"input_playout"`
+	Streams        uint64               `json:"streams"`
+	Packets        uint64               `json:"packets"`
+	IgnoredPackets uint64               `json:"packets_ignored"`
+	InputPackets   uint64               `json:"packets_input"`
+	FailedPackets  uint64               `json:"packets_failed"`
 
 	MuxPackets        uint64 `json:"mux_packets"`
 	MuxBytes          uint64 `json:"mux_bytes"`
@@ -96,6 +97,7 @@ type PortStatsSnapshot struct {
 }
 
 type PortStats struct {
+	InputPlayout   PlayoutStats
 	Streams        atomic.Uint64
 	Packets        atomic.Uint64
 	IgnoredPackets atomic.Uint64
@@ -140,6 +142,7 @@ type PortStats struct {
 
 func (s *PortStats) Load() PortStatsSnapshot {
 	return PortStatsSnapshot{
+		InputPlayout:                 s.InputPlayout.Load(),
 		Streams:                      s.Streams.Load(),
 		Packets:                      s.Packets.Load(),
 		IgnoredPackets:               s.IgnoredPackets.Load(),
@@ -539,11 +542,13 @@ type mediaPort struct {
 	encryption       sdp.Encryption
 	localCrypto      []srtp.Profile // our SRTP material, generated once per port
 
-	mu         sync.RWMutex
-	pipeline   *mediaPortPipeline
-	localSDP   []byte
-	offer      *sdp.Offer
-	negotiated *sdp.MediaConfig
+	inputWriteMu sync.Mutex // Serializes PCM writes with replacement of their sink.
+	inputClosing bool       // Protected by inputWriteMu; Fuse breaks after its callback.
+	mu           sync.RWMutex
+	pipeline     *mediaPortPipeline
+	localSDP     []byte
+	offer        *sdp.Offer
+	negotiated   *sdp.MediaConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -715,7 +720,13 @@ func (p *mediaPort) Close() {
 			logError("conn", conn.Close())
 		}
 
-		logError("audioIn", p.audioIn.Close())   // Propagate Close() to onwards to room
+		p.inputWriteMu.Lock()
+		p.inputClosing = true
+		input := p.audioIn.Swap(nil)
+		p.inputWriteMu.Unlock()
+		if input != nil {
+			logError("audioIn", input.Close()) // Propagate Close() onwards to room.
+		}
 		logError("dtmfIn", p.dtmfIn.Close())     // Propagate Close() to onwards to room
 		logError("audioOut", p.audioOut.Close()) // No-op, but do anyway
 		logError("dtmfOut", p.dtmfOut.Close())   // No-op, but do anyway
@@ -756,7 +767,28 @@ func (p *mediaPort) GetOutboundAudioWriter() msdk.PCM16Writer {
 }
 
 func (p *mediaPort) WriteInboundAudioTo(w msdk.PCM16Writer) msdk.PCM16Writer {
+	p.inputWriteMu.Lock()
+	defer p.inputWriteMu.Unlock()
+	if p.inputClosing {
+		return w // The caller owns closing the unused replacement.
+	}
 	return p.audioIn.Swap(w)
+}
+
+// The port owns the shared sink; a pipeline only borrows it. A guarded swap
+// ensures the returned old writer has no in-flight writes when callers close it.
+type mediaInputWriter struct{ port *mediaPort }
+
+func (w mediaInputWriter) String() string  { return w.port.audioIn.String() }
+func (w mediaInputWriter) SampleRate() int { return w.port.audioIn.SampleRate() }
+func (w mediaInputWriter) Close() error    { return nil }
+func (w mediaInputWriter) WriteSample(sample msdk.PCM16Sample) error {
+	w.port.inputWriteMu.Lock()
+	defer w.port.inputWriteMu.Unlock()
+	if w.port.inputClosing {
+		return io.ErrClosedPipe
+	}
+	return w.port.audioIn.WriteSample(sample)
 }
 
 func (p *mediaPort) GetOutboundDTMFWriter() msdk.WriteCloser[string] {
@@ -986,7 +1018,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 			pipelineConfig,
 			c,
 			p.port,
-			p.audioIn,
+			mediaInputWriter{port: p},
 			p.dtmfIn,
 			p.audioOut.SampleRate(),
 		)

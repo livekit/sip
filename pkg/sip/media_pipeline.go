@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
@@ -77,6 +79,7 @@ type mediaPortPipeline struct {
 	muxToRoom     atomic.Pointer[rtp.HandlerCloser]
 	dtmfMixer     *mixer.Mixer
 	audioToRoom   rtp.HandlerCloser
+	playoutSink   msdk.PCM16Writer // Owned wrappers; closed after the playout worker joins.
 	dtmfToRoom    rtp.HandlerCloser
 	dtmfHandler   msdk.WriteCloser[string] // Reference, not closed
 	audioToPort   msdk.PCM16Writer         // post-mixer chain towards port
@@ -159,9 +162,13 @@ func (p *mediaPortPipeline) init(
 func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM16Writer, dtmfToRoom msdk.WriteCloser[string]) error {
 	var err error
 	var inboundLatencyEntry atomic.Int64
-	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
-	sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
 	codecInfo := mc.Audio.Info
+	codecName := codecInfo.SDPFullName()
+	paced := codecName == g711.ULawSDPNameAndRate || codecName == g711.ALawSDPNameAndRate
+	sink := msdk.NopCloser(audioToRoom) // Prevent pipeline close from closing room
+	if !paced {
+		sink = newLatencyPCMExit(sink, &inboundLatencyEntry, &p.conf.stats.LatencyInE2E)
+	}
 	sink = msdk.ResampleWriter(sink, codecInfo.SampleRate)
 	sink = newMediaWriterCount(sink, &p.conf.stats.AudioInFrames, &p.conf.stats.AudioInSamples)
 
@@ -174,17 +181,20 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 		sink = l
 	}
 
-	audioHandler, err := rtp.DecodePCMWithCodec(sink, mc.Audio.Codec, mc.Audio.Info.CodecConfig, mc.Audio.Type)
-	if err != nil {
-		sink.Close()
-		return err
+	var audioHandler rtp.HandlerCloser
+	if paced {
+		p.playoutSink = sink
+		audioHandler = newG711Playout(sink, codecName, &p.conf.stats.InputPlayout, p.conf.log, p.conf.opts.EnableJitterBuffer)
+	} else {
+		audioHandler, err = rtp.DecodePCMWithCodec(sink, mc.Audio.Codec, mc.Audio.Info.CodecConfig, mc.Audio.Type)
+		if err != nil {
+			sink.Close()
+			return err
+		}
+		// SilenceFiller injects decoded silence but needs the RTP headers.
+		audioHandler = newSilenceFiller(audioHandler, sink, codecInfo.RTPClockRate, codecInfo.SampleRate, p.conf.log)
+		audioHandler = NewSerializedRTPHandler(audioHandler)
 	}
-
-	// SilenceFiller injects silence after decoding, but it needs access to RTP headers
-	// And these are only available before decoding, hence it wraps both audioHandler & sink
-	audioHandler = newSilenceFiller(audioHandler, sink, codecInfo.RTPClockRate, codecInfo.SampleRate, p.conf.log)
-
-	audioHandler = NewSerializedRTPHandler(audioHandler) // SilenceFiller/Codecs are not thread-safe
 
 	mux := rtp.NewMux(nil)
 	mux.SetDefault(newRTPStatsHandler(p.conf.mon, "", nil))
@@ -219,14 +229,26 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 			SequenceRestarts: &p.conf.stats.JitterBufferSequenceRestarts,
 			Stray:            &p.conf.stats.JitterBufferPacketsStray,
 		})...)
+		hnd = &jitterInputHandler{HandlerCloser: hnd}
 	}
 	// Stream stats go before the jitter buffer, so they see the network arrival
 	// order and timing, not the buffer's reordered and paced output.
 	hnd = newRTPStreamStats(hnd, &p.conf.stats.MuxStats)
-	hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
+	if !paced {
+		hnd = newLatencyRTPEntry(hnd, &inboundLatencyEntry)
+	}
 
 	p.muxToRoom.Store(&hnd)
 	return nil
+}
+
+// The jitter buffer retains reordered packets after HandleRTP returns, whereas
+// the UDP reader reuses its header and payload. Give the buffer owned data.
+type jitterInputHandler struct{ rtp.HandlerCloser }
+
+func (h *jitterInputHandler) HandleRTP(header *rtp.Header, payload []byte) error {
+	ownedHeader := header.Clone()
+	return h.HandlerCloser.HandleRTP(&ownedHeader, bytes.Clone(payload))
 }
 
 // Processes an incoming telephony-event packet, turns into SipDTMF, and forwards it.
@@ -419,6 +441,10 @@ func (p *mediaPortPipeline) Close() error {
 	}
 	if p.audioToRoom != nil {
 		p.audioToRoom.Close()
+	}
+	if p.playoutSink != nil {
+		errs = append(errs, p.playoutSink.Close())
+		p.playoutSink = nil
 	}
 	if p.dtmfToRoom != nil {
 		p.dtmfToRoom.Close()
