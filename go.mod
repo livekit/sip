@@ -14,7 +14,7 @@ require (
 	github.com/livekit/protocol v1.53.2-0.20261026191254-db2b85ac4713
 	github.com/livekit/psrpc v0.8.2
 	github.com/livekit/server-sdk-go/v2 v2.19.0
-	github.com/livekit/sipgo v0.13.2-0.20261023195824-c9b00a3b057d
+	github.com/livekit/sipgo v0.13.2-0.20261029205133-945bb5918283
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/rtp v1.10.5
@@ -73,7 +73,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/cel-go v0.29.0 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
