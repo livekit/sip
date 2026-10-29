@@ -133,36 +133,36 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
-	c, _ := s.infos.byLocalTag.Get(id)
+func (cm *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
+	c, _ := cm.infos.byLocalTag.Get(id)
 	if c != nil {
 		return c
 	}
-	s.infos.Lock()
-	defer s.infos.Unlock()
-	c, _ = s.infos.byLocalTag.Get(id)
+	cm.infos.Lock()
+	defer cm.infos.Unlock()
+	c, _ = cm.infos.byLocalTag.Get(id)
 	if c != nil {
 		return c
 	}
 	c = &inboundCallInfo{}
-	s.infos.byLocalTag.Add(id, c)
+	cm.infos.byLocalTag.Add(id, c)
 	return c
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) getInvite(sipCallID string) *inProgressInvite {
-	s.imu.Lock()
-	defer s.imu.Unlock()
-	for i := range s.inProgressInvites {
-		if s.inProgressInvites[i].sipCallID == sipCallID {
-			return s.inProgressInvites[i]
+func (cm *callManager) getInvite(sipCallID string) *inProgressInvite {
+	cm.imu.Lock()
+	defer cm.imu.Unlock()
+	for i := range cm.inProgressInvites {
+		if cm.inProgressInvites[i].sipCallID == sipCallID {
+			return cm.inProgressInvites[i]
 		}
 	}
-	if len(s.inProgressInvites) >= digestLimit {
-		s.inProgressInvites = s.inProgressInvites[1:]
+	if len(cm.inProgressInvites) >= digestLimit {
+		cm.inProgressInvites = cm.inProgressInvites[1:]
 	}
 	is := &inProgressInvite{sipCallID: sipCallID}
-	s.inProgressInvites = append(s.inProgressInvites, is)
+	cm.inProgressInvites = append(cm.inProgressInvites, is)
 	return is
 }
 
@@ -205,7 +205,7 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 // (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
 // a finalized error state.
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
+func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
 	if auth.Realm == "" {
 		auth.Realm = UserAgent
 	}
@@ -223,7 +223,7 @@ func (s *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx s
 		return true, false, nil
 	}
 
-	if s.conf.HideInboundPort {
+	if cm.conf.HideInboundPort {
 		// We will send password request anyway, so might as well signal that the progress is made.
 		log.Debugw("Sending processing response due to HideInboundPort config")
 		_ = tx.Respond(newResponse(req, 100, "", nil))
@@ -234,7 +234,7 @@ func (s *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx s
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	inviteState := s.getInvite(sipCallID)
+	inviteState := cm.getInvite(sipCallID)
 	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
 	h := req.GetHeader("Proxy-Authorization")
@@ -374,13 +374,13 @@ func providerLabel(p *livekit.ProviderInfo) string {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+func (cm *callManager) HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
-	_ = s.processInvite(req, tx)
+	_ = cm.processInvite(req, tx)
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
+func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
 	start := time.Now()
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Server.processInvite")
@@ -418,20 +418,20 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 			info.EndedAtNs = time.Now().UnixNano()
 		})
 	}()
-	s.mon.InviteReqRaw(stats.Inbound)
+	cm.mon.InviteReqRaw(stats.Inbound)
 
 	src, err := netip.ParseAddrPort(req.Source())
 	if err != nil {
 		tx.Terminate()
-		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
+		cm.log.Errorw("cannot parse source IP", err, "fromIP", src)
 		return psrpc.NewError(psrpc.MalformedRequest, fmt.Errorf("cannot parse source IP: %w", err))
 	}
 	tr := callTransportFromReq(req)
 
-	cc, err = s.newInbound(req, tx, src)
+	cc, err = cm.newInbound(req, tx, src)
 	if err != nil {
-		s.log.Errorw("invalid invite", err)
-		if !s.conf.HideInboundPort {
+		cm.log.Errorw("invalid invite", err)
+		if !cm.conf.HideInboundPort {
 			r := newResponse(req, sip.StatusBadRequest, "", nil)
 			r.AppendHeader(sip.HeaderClone(allowHeader))
 			_ = tx.Respond(r)
@@ -446,8 +446,8 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 	// Replay cached final rejection for retries reusing the same Call-ID +
 	// From-tag (e.g. provider-level failover after a 4xx). Skips creating
 	// a duplicate call object and the OnSessionEnd side-effects that follow.
-	if s.rejectedInvites != nil {
-		if prev, ok := s.rejectedInvites.Get([2]string{cc.SIPCallID(), string(cc.Tag())}); ok {
+	if cm.rejectedInvites != nil {
+		if prev, ok := cm.rejectedInvites.Get([2]string{cc.SIPCallID(), string(cc.Tag())}); ok {
 			log.Debugw("replaying cached INVITE rejection", "status", prev.status, "reason", prev.reason)
 			cc.RespondAndDrop(prev.status, prev.reason)
 			return nil
@@ -456,9 +456,9 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 
 	log.Infow("processing invite")
 
-	s.cmu.RLock()
-	existing := s.byLocalTag[cc.ID()]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	existing := cm.byLocalTag[cc.ID()]
+	cm.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		if existing.lateAnswerPending.Load() {
 			existing.log().Infow("rejecting reinvite, late answer pending", "cseq", cc.InviteCSeq())
@@ -479,9 +479,9 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
-	if s.cli != nil { // Process reinvite for existing outbound calls
+	if cm.cli != nil { // Process reinvite for existing outbound calls
 		// TODO(alexfish): Consider moving this to outbound
-		oc := s.getActiveCall(cc.ID())
+		oc := cm.getActiveCall(cc.ID())
 		newCSeq := cc.InviteCSeq()
 
 		// TODO(alexfish): Reply with an error if the new sequence number is
@@ -513,7 +513,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 
 	from, to := cc.From(), cc.To()
 
-	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
+	cmon := cm.mon.NewCall(stats.Inbound, from.Host, to.Host)
 	rejectInvite := func(t stats.Termination) {
 		term = t
 		cmon.InviteErrorShort(t)
@@ -531,7 +531,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 	joinDur := cmon.JoinDur()
 
 	var tryingTime time.Time // zero unless 100 Trying was actually sent
-	if !s.conf.HideInboundPort && cc.Processing() {
+	if !cm.conf.HideInboundPort && cc.Processing() {
 		tryingTime = time.Now()
 	}
 
@@ -544,7 +544,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 		To:        ToSIPUri("", to),
 	}
 	rheaders := cc.RemoteHeaders()
-	s.handler.OnInboundInfo(log, callInfo, rheaders)
+	cm.handler.OnInboundInfo(log, callInfo, rheaders)
 	for _, h := range rheaders {
 		switch h := h.(type) {
 		case *sip.ViaHeader:
@@ -561,7 +561,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 	newState := func(r AuthInfo) *CallState {
 		initial := &livekit.SIPCallInfo{
 			CallId:        string(cc.ID()),
-			Region:        s.region,
+			Region:        cm.region,
 			FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
 			ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
 			CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
@@ -571,7 +571,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 			ProviderInfo:  r.ProviderInfo,
 			SipCallId:     cc.SIPCallID(),
 		}
-		st := NewCallState(s.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+		st := NewCallState(cm.getStateHandler(r.ProjectID, r.Observability, initial), initial)
 		cc.state.Store(st)
 		// The INVITE and the 100 Trying happened before the call state existed;
 		// report them now with their original times.
@@ -588,7 +588,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 	}
 
 	tauth := cmon.StageDurTimer("get-auth")
-	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
+	r, err := cm.handler.GetAuthCredentials(ctx, callInfo)
 	authDur := tauth()
 	authAt := time.Now()
 	checked()
@@ -652,7 +652,7 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was rejected by the auth service")
 	case AuthPassword:
-		if s.conf.HideInboundPort {
+		if cm.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
 			if cc.Processing() {
 				tryingTime = time.Now()
@@ -663,12 +663,12 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 		if h := req.CallID(); h != nil {
 			sipCallID = h.Value()
 		}
-		inviteState := s.getInvite(sipCallID)
+		inviteState := cm.getInvite(sipCallID)
 		// New INVITE supersedes any pending 407-challenge timer for this Call-ID.
 		inviteState.authResolved.Store(true)
 
-		s.getCallInfo(cc.ID()).countInvite(log, req)
-		if ok, challenge, sentStatus := s.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
+		cm.getCallInfo(cc.ID()).countInvite(log, req)
+		if ok, challenge, sentStatus := cm.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
 			if sentStatus != nil {
 				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
 				if !challenge {
@@ -677,9 +677,9 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 				}
 			}
 			// Store (call-ID + from tag) to (to tag) mapping
-			s.cmu.Lock()
-			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
-			s.cmu.Unlock()
+			cm.cmu.Lock()
+			cm.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
+			cm.cmu.Unlock()
 			rejectInvite(stats.ClientError("unauthorized"))
 			if challenge {
 				// 407 sent: defer finalization to the timer or the next INVITE,
@@ -692,32 +692,32 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 		}
 		// ok
 	case AuthAccept:
-		s.getCallInfo(cc.ID()).countInvite(log, req)
+		cm.getCallInfo(cc.ID()).countInvite(log, req)
 		// ok
 	}
 
-	call = s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
+	call = cm.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
 	cc.SetCall(call)
 	call.joinDur = joinDur
 	call.sigTs.InviteTime = start
 	call.sigTs.TryingTime = tryingTime
-	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
+	return call.handleInvite(call.ctx, req, r.TrunkID, cm.conf)
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+func (cm *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		return
 	}
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	c := cm.byLocalTag[tag]
+	cm.cmu.RUnlock()
 	if c == nil {
 		return
 	}
@@ -726,16 +726,16 @@ func (s *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.Serve
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) HandleBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+func (cm *callManager) HandleBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		_ = tx.Respond(newResponse(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	c := cm.byLocalTag[tag]
+	cm.cmu.RUnlock()
 	if c != nil {
 		receivedAt := time.Now()
 		c.cc.AcceptBye(req, tx)
@@ -768,14 +768,14 @@ func (s *callManager) HandleBye(log *slog.Logger, req *sip.Request, tx sip.Serve
 		c.Bye(reason)
 		return
 	}
-	if !s.onOutboundBye(req, tx) {
-		s.log.Infow("BYE for non-existent call", "callID", tag)
+	if !cm.onOutboundBye(req, tx) {
+		cm.log.Infow("BYE for non-existent call", "callID", tag)
 		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) HandleNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+func (cm *callManager) HandleNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	callID := ""
 	if h := req.CallID(); h != nil {
 		callID = h.Value()
@@ -790,7 +790,7 @@ func (s *callManager) HandleNoRoute(log *slog.Logger, req *sip.Request, tx sip.S
 		to = h.Address.String()
 		toTag = h.Params.GetOr("tag", "")
 	}
-	s.log.Infow("Inbound SIP request not handled",
+	cm.log.Infow("Inbound SIP request not handled",
 		"method", req.Method.String(),
 		"sipCallID", callID,
 		"callID", toTag,
@@ -800,16 +800,16 @@ func (s *callManager) HandleNoRoute(log *slog.Logger, req *sip.Request, tx sip.S
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) HandleNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+func (cm *callManager) HandleNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		_ = tx.Respond(newResponse(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	c := cm.byLocalTag[tag]
+	cm.cmu.RUnlock()
 	if c != nil {
 		c.log().Infow("NOTIFY")
 		err := c.cc.handleNotify(req, tx)
@@ -820,8 +820,8 @@ func (s *callManager) HandleNotify(log *slog.Logger, req *sip.Request, tx sip.Se
 
 		return
 	}
-	if !s.onOutboundNotify(req, tx) {
-		s.log.Infow("NOTIFY for non-existent call")
+	if !cm.onOutboundNotify(req, tx) {
+		cm.log.Infow("NOTIFY for non-existent call")
 		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
 }
@@ -859,7 +859,7 @@ type inboundCall struct {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) newInboundCall(
+func (cm *callManager) newInboundCall(
 	ctx context.Context,
 	tid traceid.ID,
 	log logger.Logger,
@@ -874,7 +874,7 @@ func (s *callManager) newInboundCall(
 	// Map known headers immediately on join. The rest of the mapping will be available later.
 	extra = HeadersToAttrs(extra, nil, 0, cc, nil)
 	c := &inboundCall{
-		cm:         s,
+		cm:         cm,
 		tid:        tid,
 		callStart:  callStart,
 		mon:        mon,
@@ -884,17 +884,17 @@ func (s *callManager) newInboundCall(
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		endCall:    make(chan EndCall, 1),
-		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
+		jitterBuf:  SelectValueBool(cm.conf.EnableJitterBuffer, cm.conf.EnableJitterBufferProb),
 		projectID:  "", // Will be set in handleInvite when available
 	}
 	c.stats.Update()
 	c.setLog(log.WithValues("jitterBuf", c.jitterBuf))
 	// we need it created earlier so that the audio mixer is available for pin prompts
-	c.lkRoom = s.getRoom(c.log(), &c.stats.Room)
+	c.lkRoom = cm.getRoom(c.log(), &c.stats.Room)
 	c.ctx, c.cancel = context.WithCancel(ctx)
-	s.cmu.Lock()
-	s.byLocalTag[cc.ID()] = c
-	s.cmu.Unlock()
+	cm.cmu.Lock()
+	cm.byLocalTag[cc.ID()] = c
+	cm.cmu.Unlock()
 	return c
 }
 
@@ -2077,7 +2077,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
+func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
 	sipCallIDHdr := invite.CallID()
 	if sipCallIDHdr == nil {
 		return nil, errors.New("no Call-ID header in INVITE")
@@ -2109,9 +2109,9 @@ func (s *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransac
 	toTag, ok := toHdr.Params.Get("tag")
 	if !ok || toTag == "" {
 		// Check if the call-ID + from tag is in the provisional invites cache
-		s.cmu.Lock()
-		cachedTag, ok := s.provisionalInvites.Get([2]string{sipCallID, fromTag})
-		s.cmu.Unlock()
+		cm.cmu.Lock()
+		cachedTag, ok := cm.provisionalInvites.Get([2]string{sipCallID, fromTag})
+		cm.cmu.Unlock()
 		if ok && cachedTag != "" {
 			// Use the cached tag to reuse the originally assigned SCL ID
 			toTag = string(cachedTag)
@@ -2123,8 +2123,8 @@ func (s *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransac
 	}
 
 	legTr := legTransportFromReq(invite)
-	contact := s.ContactURI(legTr)
-	log := s.log.WithValues(
+	contact := cm.ContactURI(legTr)
+	log := cm.log.WithValues(
 		"callID", toTag,
 		"sipCallID", sipCallID,
 		"fromIP", src.Addr().String(),
@@ -2137,7 +2137,7 @@ func (s *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransac
 		"direction", "inbound",
 	)
 	c := &sipInbound{
-		cm:        s,
+		cm:        cm,
 		id:        LocalTag(toTag),
 		invite:    invite,
 		inviteTx:  inviteTx,

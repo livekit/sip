@@ -133,24 +133,24 @@ func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Co
 	return s
 }
 
-func (s *callManager) SetHandler(handler Handler) {
-	s.handler = handler
+func (cm *callManager) SetHandler(handler Handler) {
+	cm.handler = handler
 }
 
-func (s *callManager) ContactURI(tr Transport) URI {
-	return getContactURI(s.conf, s.sconf.SignalingIP, tr)
+func (cm *callManager) ContactURI(tr Transport) URI {
+	return getContactURI(cm.conf, cm.sconf.SignalingIP, tr)
 }
 
 // stop shuts down all active calls.
-func (s *callManager) stop() {
+func (cm *callManager) stop() {
 	ctx := context.Background()
-	s.closing.Break()
-	s.cmu.Lock()
-	outCalls := maps.Values(s.activeCalls)
-	s.activeCalls = make(map[LocalTag]*outboundCall)
-	calls := maps.Values(s.byLocalTag)
-	s.byLocalTag = make(map[LocalTag]*inboundCall)
-	s.cmu.Unlock()
+	cm.closing.Break()
+	cm.cmu.Lock()
+	outCalls := maps.Values(cm.activeCalls)
+	cm.activeCalls = make(map[LocalTag]*outboundCall)
+	calls := maps.Values(cm.byLocalTag)
+	cm.byLocalTag = make(map[LocalTag]*inboundCall)
+	cm.cmu.Unlock()
 	for _, c := range outCalls {
 		c.Close(ctx)
 	}

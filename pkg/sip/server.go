@@ -352,11 +352,11 @@ func (s *Server) Stop() {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
-	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
+func (cm *callManager) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
+	return cm.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
-	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
+func (cm *callManager) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
+	cm.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

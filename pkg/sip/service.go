@@ -331,8 +331,8 @@ func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.Int
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
-	out := s.transferSIPParticipant(ctx, req)
+func (cm *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
+	out := cm.transferSIPParticipant(ctx, req)
 	if out.Err != nil {
 		return nil, transferError(out)
 	}
@@ -373,22 +373,22 @@ func transferError(out transferOutcome) error {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
-	s.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
+func (cm *callManager) transferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) transferOutcome {
+	cm.log.Infow("transferring SIP call", "callID", req.SipCallId, "transferTo", req.TransferTo)
 
 	// Check if provider is internal and config is set before allowing transfer
-	if err := s.checkInternalProviderRequest(ctx, req.SipCallId, req.TransferTo); err != nil {
+	if err := cm.checkInternalProviderRequest(ctx, req.SipCallId, req.TransferTo); err != nil {
 		return transferOutcome{Err: err}
 	}
 
-	pending, isNew := s.getOrCreatePendingTransfer(req.SipCallId, req.TransferTo)
+	pending, isNew := cm.getOrCreatePendingTransfer(req.SipCallId, req.TransferTo)
 	if !isNew {
 		if pending.TransferTo != req.TransferTo {
 			err := psrpc.NewErrorf(psrpc.InvalidArgument, "call already being transferred elsewhere")
 			return transferOutcome{Err: err}
 		}
 		// Already transferred, resume wait
-		s.log.Debugw("repeated request for call transfer", "callID", req.SipCallId, "transferTo", req.TransferTo)
+		cm.log.Debugw("repeated request for call transfer", "callID", req.SipCallId, "transferTo", req.TransferTo)
 		// TODO: Maybe just bump the psrpc timeout? It gets auto retried anyway internally.
 	} else {
 		// Initial transfer request for this call
@@ -404,18 +404,18 @@ func (s *callManager) transferSIPParticipant(ctx context.Context, req *rpc.Inter
 			defer cdone()
 
 			headers := maps.Clone(req.Headers) // shallow clone - string/string map. Needed to avoid mutating psrpc req
-			out := s.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, headers, req.PlayDialtone)
+			out := cm.processParticipantTransfer(ctx, req.SipCallId, req.TransferTo, headers, req.PlayDialtone)
 			select {
 			case pending.Done <- out:
 			default:
-				s.log.Errorw("pending transfer received more than one error", out.Err, "callID", req.SipCallId, "transferTo", req.TransferTo)
+				cm.log.Errorw("pending transfer received more than one error", out.Err, "callID", req.SipCallId, "transferTo", req.TransferTo)
 			}
 			pending.Outcome.Store(&out)
 			close(pending.Done)
 
-			s.mu.Lock()
-			delete(s.pendingTransfers, LocalTag(req.SipCallId))
-			s.mu.Unlock()
+			cm.mu.Lock()
+			delete(cm.pendingTransfers, LocalTag(req.SipCallId))
+			cm.mu.Unlock()
 		}()
 	}
 
@@ -455,12 +455,12 @@ func transferReason(err error) (livekit.SIPTransferReason, *livekit.SIPStatus) {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) getOrCreatePendingTransfer(callID string, transferTo string) (*PendingTransfer, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (cm *callManager) getOrCreatePendingTransfer(callID string, transferTo string) (*PendingTransfer, bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 
 	keyCall := LocalTag(callID)
-	pending, ok := s.pendingTransfers[keyCall]
+	pending, ok := cm.pendingTransfers[keyCall]
 	if ok {
 		return pending, false
 	}
@@ -470,65 +470,65 @@ func (s *callManager) getOrCreatePendingTransfer(callID string, transferTo strin
 		TransferTo: transferTo,
 		Done:       make(chan transferOutcome, 1),
 	}
-	s.pendingTransfers[keyCall] = pending
+	cm.pendingTransfers[keyCall] = pending
 	return pending, true
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) transferOutcome {
+func (cm *callManager) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone bool) transferOutcome {
 	// Look for call both in client (outbound) and server (inbound)
-	s.cmu.Lock()
-	out := s.activeCalls[LocalTag(callID)]
-	s.cmu.Unlock()
+	cm.cmu.Lock()
+	out := cm.activeCalls[LocalTag(callID)]
+	cm.cmu.Unlock()
 
 	if out != nil {
-		s.mon.TransferStarted(stats.Outbound)
+		cm.mon.TransferStarted(stats.Outbound)
 		transferID, err := out.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
-			s.mon.TransferFailed(stats.Outbound, extractTransferErrorReason(err), true)
+			cm.mon.TransferFailed(stats.Outbound, extractTransferErrorReason(err), true)
 			return transferOutcome{TransferID: transferID, Err: err}
 		}
-		s.mon.TransferSucceeded(stats.Outbound)
+		cm.mon.TransferSucceeded(stats.Outbound)
 		return transferOutcome{TransferID: transferID}
 	}
 
-	s.cmu.Lock()
-	in := s.byLocalTag[LocalTag(callID)]
-	s.cmu.Unlock()
+	cm.cmu.Lock()
+	in := cm.byLocalTag[LocalTag(callID)]
+	cm.cmu.Unlock()
 
 	if in != nil {
-		s.mon.TransferStarted(stats.Inbound)
+		cm.mon.TransferStarted(stats.Inbound)
 		transferID, err := in.transferCall(ctx, transferTo, headers, dialtone)
 		if err != nil {
-			s.mon.TransferFailed(stats.Inbound, extractTransferErrorReason(err), true)
+			cm.mon.TransferFailed(stats.Inbound, extractTransferErrorReason(err), true)
 			return transferOutcome{TransferID: transferID, Err: err}
 		}
-		s.mon.TransferSucceeded(stats.Inbound)
+		cm.mon.TransferSucceeded(stats.Inbound)
 		return transferOutcome{TransferID: transferID}
 	}
 
 	err := psrpc.NewErrorf(psrpc.NotFound, "unknown call")
-	s.mon.TransferFailed(stats.Inbound, "unknown_call", false)
+	cm.mon.TransferFailed(stats.Inbound, "unknown_call", false)
 	return transferOutcome{Err: err}
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
+func (cm *callManager) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
 	// Look for call both in client (outbound) and server (inbound)
-	s.cmu.Lock()
-	out := s.activeCalls[LocalTag(callID)]
-	s.cmu.Unlock()
+	cm.cmu.Lock()
+	out := cm.activeCalls[LocalTag(callID)]
+	cm.cmu.Unlock()
 
 	if out != nil {
-		return s.rejectTransfer(stats.Outbound, s.validateCallProvider(out.state, transferTo))
+		return cm.rejectTransfer(stats.Outbound, cm.validateCallProvider(out.state, transferTo))
 	}
 
-	s.cmu.Lock()
-	in := s.byLocalTag[LocalTag(callID)]
-	s.cmu.Unlock()
+	cm.cmu.Lock()
+	in := cm.byLocalTag[LocalTag(callID)]
+	cm.cmu.Unlock()
 
 	if in != nil {
-		return s.rejectTransfer(stats.Inbound, s.validateCallProvider(in.state, transferTo))
+		return cm.rejectTransfer(stats.Inbound, cm.validateCallProvider(in.state, transferTo))
 	}
 
 	return psrpc.NewErrorf(psrpc.NotFound, "unknown call")
@@ -537,16 +537,16 @@ func (s *callManager) checkInternalProviderRequest(ctx context.Context, callID, 
 // rejectTransfer counts a transfer refused before it started as an attempt
 // that failed, so failures never outnumber attempts.
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) rejectTransfer(dir stats.CallDir, err error) error {
+func (cm *callManager) rejectTransfer(dir stats.CallDir, err error) error {
 	if err != nil {
-		s.mon.TransferStarted(dir)
-		s.mon.TransferFailed(dir, extractTransferErrorReason(err), true)
+		cm.mon.TransferStarted(dir)
+		cm.mon.TransferFailed(dir, extractTransferErrorReason(err), true)
 	}
 	return err
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) validateCallProvider(state *CallState, transferTo string) error {
+func (cm *callManager) validateCallProvider(state *CallState, transferTo string) error {
 	info := state.Info()
 	if state == nil || info == nil || info.ProviderInfo == nil {
 		return nil // No provider info to validate

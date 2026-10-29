@@ -136,17 +136,17 @@ func (c *Client) ContactURI(tr Transport) URI {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+func (cm *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
 	ctx, span := Tracer.Start(ctx, "Client.CreateSIPParticipant")
 	defer span.End()
-	return c.createSIPParticipant(ctx, req)
+	return cm.createSIPParticipant(ctx, req)
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) getActiveCall(tag LocalTag) *outboundCall {
-	c.cmu.Lock()
-	defer c.cmu.Unlock()
-	return c.activeCalls[tag]
+func (cm *callManager) getActiveCall(tag LocalTag) *outboundCall {
+	cm.cmu.Lock()
+	defer cm.cmu.Unlock()
+	return cm.activeCalls[tag]
 }
 
 func setUriTransport(p *sip.Uri, tr livekit.SIPTransport) {
@@ -342,23 +342,23 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
-	if c.mon.Health() != stats.HealthOK {
+func (cm *callManager) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
+	if cm.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
 	}
 	req.Upgrade()
 	if req.RoomName == "" {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "room name must be set")
 	}
-	defaultHost := c.ContactURI(TransportFrom(req.Transport)).GetHost()
-	log := c.log
+	defaultHost := cm.ContactURI(TransportFrom(req.Transport)).GetHost()
+	log := cm.log
 	if req.ProjectId != "" {
 		log = log.WithValues("projectID", req.ProjectId)
 	}
 	if req.SipTrunkId != "" {
 		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
-	mconf, err := newMediaConfig(req.Media, c.conf.MediaTimeout)
+	mconf, err := newMediaConfig(req.Media, cm.conf.MediaTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -383,8 +383,8 @@ func (c *callManager) createSIPParticipant(ctx context.Context, req *rpc.Interna
 	)
 
 	req.ParticipantAttributes = maps.Clone(req.ParticipantAttributes) // shallow clone - string/string map. Needed to avoid mutating psrpc req
-	initial := c.createSIPCallInfo(uri, from, to, req)
-	state := NewCallState(c.getStateHandler(req.ProjectId, req.Observability, initial), initial)
+	initial := cm.createSIPCallInfo(uri, from, to, req)
+	state := NewCallState(cm.getStateHandler(req.ProjectId, req.Observability, initial), initial)
 
 	defer func() {
 		state.Update(func(info *livekit.SIPCallInfo) {
@@ -430,7 +430,7 @@ func (c *callManager) createSIPParticipant(ctx context.Context, req *rpc.Interna
 		mediaConfig:     mconf,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, tid, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
+	call, err := cm.newCall(ctx, tid, cm.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
 	if err != nil {
 		return nil, err
 	}
@@ -467,14 +467,14 @@ func (c *callManager) createSIPParticipant(ctx context.Context, req *rpc.Interna
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
+func (cm *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
 	toUri := ConvertURI(&to.Address)
 	fromUri := ConvertURI(&from.Address)
-	fromUri.Addr = netip.AddrPortFrom(c.sconf.SignalingIP, uint16(c.conf.SIPPort))
+	fromUri.Addr = netip.AddrPortFrom(cm.sconf.SignalingIP, uint16(cm.conf.SIPPort))
 
 	callInfo := &livekit.SIPCallInfo{
 		CallId:                req.SipCallId,
-		Region:                c.region,
+		Region:                cm.region,
 		TrunkId:               req.SipTrunkId,
 		RoomName:              req.RoomName,
 		ParticipantIdentity:   req.ParticipantIdentity,
@@ -492,14 +492,14 @@ func (c *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) bool {
+func (cm *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	ctx := context.Background()
 	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
 	defer span.End()
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
-	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	cm.cmu.Lock()
+	call := cm.activeCalls[tag]
+	cm.cmu.Unlock()
 	if call == nil {
 		return false
 	}
@@ -516,11 +516,11 @@ func (c *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) 
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) onOutboundNotify(req *sip.Request, tx sip.ServerTransaction) bool {
+func (cm *callManager) onOutboundNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
-	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	cm.cmu.Lock()
+	call := cm.activeCalls[tag]
+	cm.cmu.Unlock()
 	if call == nil {
 		return false
 	}
@@ -536,11 +536,11 @@ func (c *callManager) onOutboundNotify(req *sip.Request, tx sip.ServerTransactio
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) RegisterOutboundTransferSIPParticipant(sipCallID string, o *outboundCall) error {
-	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
+func (cm *callManager) RegisterOutboundTransferSIPParticipant(sipCallID string, o *outboundCall) error {
+	return cm.handler.RegisterTransferSIPParticipantTopic(sipCallID)
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) DeregisterOutboundTransferSIPParticipant(sipCallID string) {
-	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
+func (cm *callManager) DeregisterOutboundTransferSIPParticipant(sipCallID string) {
+	cm.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }
