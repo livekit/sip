@@ -543,7 +543,6 @@ func TestInboundCallStatusCode(t *testing.T) {
 				handler := &TestHandler{}
 				sct.serviceTest.Handler = handler
 				sct.serviceTest.Manager.handler = handler
-				sct.serviceTest.Client.handler = handler
 			})
 		}
 

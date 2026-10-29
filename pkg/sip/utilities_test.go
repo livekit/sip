@@ -918,6 +918,7 @@ type testSIPHarness struct {
 	log           logger.Logger
 	Client        *Client
 	Server        *Server
+	Manager       *callManager
 	client        *testSIPClient
 	clientCreated atomic.Bool
 }
@@ -945,7 +946,7 @@ func (h *testSIPHarness) WaitRequest(tb testing.TB, timeout time.Duration, callI
 }
 
 // Handle delivers req to the package as sipgo would: INVITE/ACK/BYE/NOTIFY/OPTIONS
-// hit Server handlers, anything else falls through to Client.OnRequest then OnNoRoute.
+// hit the CallManager handlers, anything else goes to HandleNoRoute.
 // Dispatch runs in a goroutine because inbound Accept blocks until ACK.
 func (h *testSIPHarness) Handle(req *sip.Request) *testSIPServerTransaction {
 	if req.Source() == "" {
@@ -981,9 +982,6 @@ func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
 	case sip.OPTIONS:
 		h.Server.manager.HandleOptions(log, req, tx)
 	default:
-		if h.Client != nil && h.Client.OnRequest(req, tx) {
-			return
-		}
 		h.Server.manager.HandleNoRoute(log, req, tx)
 	}
 }
@@ -1076,8 +1074,7 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 		client: newTestSIPClient(log, cfg.ResolveAddr),
 	}
 
-	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(h.newClient), WithGetRoomClient(cfg.GetRoom))
-	client.SetHandler(cfg.Handler)
+	client := NewClient(cfg.Config, log, WithGetSipClient(h.newClient))
 
 	// Set up service config with minimal values
 	localIP, err := config.GetLocalIP()
@@ -1100,7 +1097,7 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 
 	srv := NewServer(cfg.Config, log)
 	srv.sconf = sconf
-	manager := newCallManager(srv, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoomServer(cfg.GetRoom), WithClient(client))
+	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoom(cfg.GetRoom))
 	manager.SetHandler(cfg.Handler)
 	srv.manager = manager
 	t.Cleanup(srv.Stop)
@@ -1108,6 +1105,7 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 
 	h.Client = client
 	h.Server = srv
+	h.Manager = manager
 	return h
 }
 

@@ -65,7 +65,7 @@ type sipOutboundConfig struct {
 }
 
 type outboundCall struct {
-	c         *Client
+	cm        *callManager
 	tid       traceid.ID
 	log       logger.Logger
 	state     *CallState
@@ -89,7 +89,8 @@ type outboundCall struct {
 	sipConf    sipOutboundConfig
 }
 
-func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
 	signalLoggingEnabled, _ := strconv.ParseBool(sipConf.featureFlags[signalLoggingFeatureFlag])
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
@@ -106,7 +107,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 
 	now := time.Now()
 	call := &outboundCall{
-		c:         c,
+		cm:        c,
 		tid:       tid,
 		log:       log,
 		sipConf:   sipConf,
@@ -425,21 +426,21 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		}
 		c.lkRoomIn = nil
 
-		c.c.cmu.Lock()
-		delete(c.c.activeCalls, c.cc.ID())
-		c.c.cmu.Unlock()
+		c.cm.cmu.Lock()
+		delete(c.cm.activeCalls, c.cc.ID())
+		c.cm.cmu.Unlock()
 
-		c.c.DeregisterTransferSIPParticipant(string(c.cc.ID()))
+		c.cm.DeregisterOutboundTransferSIPParticipant(string(c.cc.ID()))
 
 		// Call the handler asynchronously to avoid blocking
-		if c.c.handler != nil {
+		if c.cm.handler != nil {
 			state := c.state
 			callID := state.Info().CallId
 			go func(tid traceid.ID) {
 				ctx := context.WithoutCancel(ctx)
 				ctx, span := Tracer.Start(ctx, "sip.outbound.OnSessionEnd")
 				defer span.End()
-				c.c.handler.OnSessionEnd(ctx, &CallIdentifier{
+				c.cm.handler.OnSessionEnd(ctx, &CallIdentifier{
 					TraceID:   tid,
 					ProjectID: c.projectID,
 					CallID:    callID,
@@ -489,13 +490,13 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 
 	sipCallID := attrs[livekit.AttrSIPCallID]
 	if sipCallID != "" {
-		c.c.RegisterTransferSIPParticipant(sipCallID, c)
+		c.cm.RegisterOutboundTransferSIPParticipant(sipCallID, c)
 	}
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
 	r := getRoom(c.log, &c.stats.Room)
-	if err := r.Connect(ctx, c.c.conf, lkNew); err != nil {
+	if err := r.Connect(ctx, c.cm.conf, lkNew); err != nil {
 		_ = r.Close()
 		return err
 	}
@@ -582,7 +583,7 @@ func (c *outboundCall) connectMedia() {
 		c.log.Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
-	if processor := c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
+	if processor := c.cm.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
 
@@ -905,14 +906,16 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 	return transferID, nil
 }
 
-func (c *Client) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
+// TODO(alexfish): Move this into manager.go
+func (c *callManager) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
 	contactHeader := &sip.ContactHeader{
 		Address: *contact.GetContactURI(),
 	}
 	from.Params.Add("tag", string(id))
 	return &sipOutbound{
 		log:        log,
-		c:          c,
+		cli:        c.cli,
+		closing:    &c.closing,
 		id:         id,
 		callID:     guid.HashedID(string(id)),
 		uri:        uri,
@@ -927,7 +930,8 @@ func (c *Client) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *s
 
 type sipOutbound struct {
 	log          logger.Logger
-	c            *Client
+	cli          *Client
+	closing      *core.Fuse
 	id           LocalTag
 	uri          *sip.Uri
 	from         *sip.FromHeader
@@ -1181,7 +1185,7 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	if c.invite == nil || c.inviteOk == nil {
 		return psrpc.NewErrorf(psrpc.Canceled, "call already closed")
 	}
-	return c.c.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
+	return c.cli.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
 }
 
 // resolveDest resolves the request URI up front so the INVITE carries an
@@ -1207,7 +1211,7 @@ func (c *sipOutbound) resolveDest(ctx context.Context, headers map[string]string
 		}
 	}
 
-	addr, err := c.c.sipCli.ResolveAddrPreferSRV(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
+	addr, err := c.cli.sipCli.ResolveAddrPreferSRV(ctx, uriTransport(c.uri), c.uri.Host, c.uri.Port, c.uri.Scheme)
 	if err != nil {
 		// Leave the address empty and let the transport layer try its own way.
 		c.log.Warnw("could not resolve destination, falling back to transport resolution", err,
@@ -1263,7 +1267,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
-	tx, err := c.c.sipCli.TransactionRequest(req)
+	tx, err := c.cli.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1277,7 +1281,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	// Log the actual local port used for TCP connections from the DialPort range
 	if req.Transport() == "TCP" {
 		// Type-assert to *sipgo.Client to access the embedded UserAgent
-		if sipClient, ok := c.c.sipCli.(*sipgo.Client); ok {
+		if sipClient, ok := c.cli.sipCli.(*sipgo.Client); ok {
 			if tpl := sipClient.TransportLayer(); tpl != nil {
 				// Try to get the connection using the destination address
 				// The connection should be available after TransactionRequest creates it
@@ -1292,21 +1296,21 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		}
 	}
 
-	resp, err := sipResponse(ctx, tx, c.c.closing.Watch(), setState)
-	if err != nil && resp == nil && (ctx.Err() != nil || c.c.closing.IsBroken()) {
+	resp, err := sipResponse(ctx, tx, c.closing.Watch(), setState)
+	if err != nil && resp == nil && (ctx.Err() != nil || c.closing.IsBroken()) {
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
-		go watchCancelledInvite(c.log, c.c.sipCli, c.getHeaders, req, tx)
+		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx)
 	}
 	return req, resp, err
 }
 
 func (c *sipOutbound) WriteRequest(req *sip.Request) error {
-	return c.c.sipCli.WriteRequest(req)
+	return c.cli.sipCli.WriteRequest(req)
 }
 
 func (c *sipOutbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
-	return c.c.sipCli.TransactionRequest(req)
+	return c.cli.sipCli.TransactionRequest(req)
 }
 
 func (c *sipOutbound) setCSeq(req *sip.Request) {
@@ -1332,7 +1336,7 @@ func (c *sipOutbound) sendBye(ctx context.Context, headers map[string]string) {
 	for k, v := range headers {
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
-	if c.c.closing.IsBroken() {
+	if c.closing.IsBroken() {
 		// do not wait for a response
 		_ = c.WriteRequest(r)
 		return
@@ -1383,7 +1387,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer non established call") // call wasn't established
 	}
 
-	if c.c.closing.IsBroken() {
+	if c.closing.IsBroken() {
 		c.mu.Unlock()
 		return psrpc.NewErrorf(psrpc.FailedPrecondition, "can't transfer hung up call")
 	}
@@ -1403,7 +1407,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, err := sendRefer(ctx, c, req, c.c.closing.Watch())
+	_, err := sendRefer(ctx, c, req, c.closing.Watch())
 	if err != nil {
 		return err
 	}
