@@ -545,7 +545,6 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 							SSRCSwitches:     &r.stats.JitterBufferSSRCSwitches,
 							Reordered:        &r.stats.JitterBufferPacketsReordered,
 							SequenceRestarts: &r.stats.JitterBufferSequenceRestarts,
-							Stray:            &r.stats.JitterBufferPacketsStray,
 						})...)
 					}
 
