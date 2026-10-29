@@ -820,7 +820,7 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 	audioSwitch.Swap(port)
 	frame := make(msdk.PCM16Sample, rate/int(time.Second/msrtp.DefFrameDur))
 
-	// In-band DTMF audio is written once per frame while digits are sent; room audio goes along with it.
+	// No audio, real or in-band DTMF, should be written while digits are sent.
 	frames := 0
 	w := &dtmfOutWriter{
 		log:     logger.NewTestLogger(t),

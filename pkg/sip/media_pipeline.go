@@ -297,7 +297,7 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 		var audioSwitch *msdk.WriteCloserSwitch[msdk.PCM16Sample]
 		dropAudioDuringDTMF := p.conf.opts.DropAudioDuringDTMF
 		if dtmfInfo.Info.RTPClockRate != codecInfo.RTPClockRate {
-			// Asterisk releases older than 2024-10/07 don't support >8kHz dtmf,
+			// Asterisk releases older than ~Oct 2024 don't support >8kHz dtmf,
 			// AND have bug(s) when receiving audio during DTMF. It is what it is.
 			// Mismatching clock rates are a fingerprint of releases - Force audio drop during DTMF.
 			dropAudioDuringDTMF = true
