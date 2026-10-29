@@ -114,9 +114,9 @@ func NewClient(id string, conf ClientConfig) (*Client, error) {
 	}
 	cli.mediaConn = rtpconn.NewConn(&rtpconn.ConnConfig{TimeoutCallback: conf.OnMediaTimeout})
 	cli.mediaConn.EnableTimeout(false) // enabled later
-	cli.media = rtp.NewSeqWriter(cli.mediaConn)
+	cli.media = rtp.NewSeqWriter(cli.mediaConn, codec.Info().RTPClockRate)
 	cli.mediaAudio = cli.media.NewStream(cli.audioType, codec.Info().RTPClockRate)
-	cli.mediaDTMF = cli.media.NewStream(101, codec.Info().RTPClockRate)
+	cli.mediaDTMF = cli.media.NewManualStream(101)
 	cli.audioOut, err = mixer.NewMixer(rtp.EncodePCM(cli.mediaAudio, cli.audioCodec), rtp.DefFrameDur, 1, mixer.WithOutputChannel())
 	if err != nil {
 		cli.Close()
@@ -449,7 +449,7 @@ func (c *Client) SendDTMF(digits string) error {
 	w := c.audioOut.NewInput()
 	defer w.Close()
 	sampleRate := c.audioCodec.Info().RTPClockRate
-	return dtmf.Write(context.Background(), w, c.mediaDTMF, sampleRate, c.mediaAudio.GetCurrentTimestamp(), digits)
+	return dtmf.Write(context.Background(), w, c.mediaDTMF, sampleRate, digits)
 }
 
 func (c *Client) SendNotify(eventReq *sip.Request, notifyStatus string) error {
