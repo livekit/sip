@@ -242,14 +242,15 @@ type Room struct {
 	p         atomic.Pointer[ParticipantInfo]
 	reconnect atomic.Pointer[reconnectState]
 	// Closing the room joins recovery writes before returning to its owner.
-	recoveryMu sync.Mutex
-	recoveryWG sync.WaitGroup
-	ready      core.Fuse
-	subscribe  atomic.Bool
-	subscribed core.Fuse
-	stopped    core.Fuse
-	closed     core.Fuse
-	stats      *RoomStats
+	recoveryMu     sync.Mutex
+	recoveryClosed bool
+	recoveryWG     sync.WaitGroup
+	ready          core.Fuse
+	subscribe      atomic.Bool
+	subscribed     core.Fuse
+	stopped        core.Fuse
+	closed         core.Fuse
+	stats          *RoomStats
 }
 
 type ParticipantConfig struct {
@@ -678,7 +679,7 @@ func (r *Room) onReconnected() {
 	// and subscribing does a blocking websocket write per track. Pass the room we
 	// already read so a concurrent close cannot make this a nil dereference.
 	r.recoveryMu.Lock()
-	if r.closed.IsBroken() {
+	if r.recoveryClosed {
 		r.recoveryMu.Unlock()
 		return
 	}
@@ -752,10 +753,10 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 			r.mix.Stop()
 		}
 	})
-	// The closed fuse fences future registrations. Pair with recoveryMu to
-	// finish any registration that saw the room before the fuse was broken;
-	// never hold that mutex while disconnecting the SDK or waiting for writes.
+	// Stop registrations before joining workers. Never hold recoveryMu while
+	// disconnecting the SDK or waiting for writes.
 	r.recoveryMu.Lock()
+	r.recoveryClosed = true
 	r.recoveryMu.Unlock()
 	r.recoveryWG.Wait()
 	return errors.Join(errs...)
