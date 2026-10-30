@@ -81,6 +81,8 @@ type Service struct {
 	srv     *Server
 	closers []io.Closer
 
+	manager *callManager
+
 	mu               sync.Mutex
 	pendingTransfers map[LocalTag]*PendingTransfer
 }
@@ -106,13 +108,12 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 		conf.MediaTimeoutInitial = defaultMediaTimeoutInitial
 	}
 	cli := NewClient(region, conf, log, mon, getStateHandler)
-	options := append([]ServerOption{WithClient(cli)}, opts...)
 	s := &Service{
 		conf:             conf,
 		log:              log,
 		mon:              mon,
 		cli:              cli,
-		srv:              NewServer(region, conf, log, mon, getStateHandler, options...),
+		srv:              NewServer(conf, log, opts...),
 		pendingTransfers: make(map[LocalTag]*PendingTransfer),
 	}
 	var err error
@@ -120,6 +121,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if err != nil {
 		return nil, err
 	}
+	s.manager = newCallManager(s.srv, region, conf, s.sconf, log, mon, getStateHandler, WithClient(cli))
 
 	const placeholder = "${IP}"
 	if strings.Contains(s.conf.SIPHostname, placeholder) {
@@ -190,8 +192,8 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	st.SampleIDs = append(st.SampleIDs, samples...)
 	s.cli.cmu.Unlock()
 
-	s.srv.cmu.Lock()
-	samples, total = sampleMap(5, s.srv.byLocalTag, func(v *inboundCall) string {
+	s.manager.cmu.Lock()
+	samples, total = sampleMap(5, s.manager.byLocalTag, func(v *inboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
@@ -199,13 +201,14 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	})
 	st.Inbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.srv.cmu.Unlock()
+	s.manager.cmu.Unlock()
 
 	return st
 }
 
 func (s *Service) Stop() {
 	s.cli.Stop()
+	s.manager.stop()
 	s.srv.Stop()
 	s.mon.Stop()
 	for _, c := range s.closers {
@@ -214,7 +217,7 @@ func (s *Service) Stop() {
 }
 
 func (s *Service) SetHandler(handler Handler) {
-	s.srv.SetHandler(handler)
+	s.manager.SetHandler(handler)
 	s.cli.SetHandler(handler)
 }
 
@@ -303,7 +306,7 @@ func (s *Service) Start() error {
 	}
 	// Server is responsible for answering all transactions. However, the client may also receive some (e.g. BYE).
 	// Thus, all unhandled transactions will be checked by the client.
-	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
+	if err := s.srv.Start(ua, s.sconf, tlsConf, s.manager); err != nil {
 		return err
 	}
 	s.log.Debugw("sip service ready")
@@ -488,9 +491,9 @@ func (s *Service) processParticipantTransfer(ctx context.Context, callID string,
 		return transferOutcome{TransferID: transferID}
 	}
 
-	s.srv.cmu.Lock()
-	in := s.srv.byLocalTag[LocalTag(callID)]
-	s.srv.cmu.Unlock()
+	s.manager.cmu.Lock()
+	in := s.manager.byLocalTag[LocalTag(callID)]
+	s.manager.cmu.Unlock()
 
 	if in != nil {
 		s.mon.TransferStarted(stats.Inbound)
@@ -518,9 +521,9 @@ func (s *Service) checkInternalProviderRequest(ctx context.Context, callID, tran
 		return s.rejectTransfer(stats.Outbound, s.validateCallProvider(out.state, transferTo))
 	}
 
-	s.srv.cmu.Lock()
-	in := s.srv.byLocalTag[LocalTag(callID)]
-	s.srv.cmu.Unlock()
+	s.manager.cmu.Lock()
+	in := s.manager.byLocalTag[LocalTag(callID)]
+	s.manager.cmu.Unlock()
 
 	if in != nil {
 		return s.rejectTransfer(stats.Inbound, s.validateCallProvider(in.state, transferTo))
