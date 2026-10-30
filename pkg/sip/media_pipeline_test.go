@@ -802,17 +802,6 @@ func TestJitterStatsAccumulateAcrossBuffers(t *testing.T) {
 	require.Equal(t, uint64(4), stray.Load())
 }
 
-// frameHook is a PCM writer that calls fn on every frame.
-type frameHook struct {
-	rate int
-	fn   func()
-}
-
-func (w *frameHook) String() string                       { return "frameHook" }
-func (w *frameHook) SampleRate() int                      { return w.rate }
-func (w *frameHook) Close() error                         { return nil }
-func (w *frameHook) WriteSample(_ msdk.PCM16Sample) error { w.fn(); return nil }
-
 func TestDTMFOutWriterDropsAudio(t *testing.T) {
 	const rate = 8000
 	port := &pcmCollector{sampleRate: rate}
@@ -826,10 +815,11 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 		log:     logger.NewTestLogger(t),
 		pcmRate: rate,
 		ctx:     context.Background(),
-		dtmfAudio: &frameHook{rate: rate, fn: func() {
+		dtmfAudio: msdk.NewFuncWriteCloser[msdk.PCM16Sample](rate, func(frame msdk.PCM16Sample) error {
 			frames++
 			require.NoError(t, audioSwitch.WriteSample(frame))
-		}},
+			return nil
+		}),
 		audioSwitch: audioSwitch,
 	}
 	require.NoError(t, w.WriteSample("1"))
