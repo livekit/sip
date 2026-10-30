@@ -546,7 +546,7 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	if call == nil {
 		return false
 	}
-	call.log.Infow("BYE from remote")
+	call.getLogger().Infow("BYE from remote")
 	go func(call *outboundCall) {
 		call.cc.AcceptBye(req, tx)
 		call.CloseWith(ctx, EndCall{

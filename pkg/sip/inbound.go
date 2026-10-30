@@ -484,11 +484,11 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if oc != nil && oc.cc.InviteCSeq() < newCSeq {
 			localSDP, err := oc.media.GetLocalSDP()
 			if err != nil || len(localSDP) == 0 {
-				oc.log.Errorw("outbound call does not have an SDP", err)
+				oc.getLogger().Errorw("outbound call does not have an SDP", err)
 				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 				return nil
 			}
-			oc.log.Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+			oc.getLogger().Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 			if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
 				log.Errorw("failed to update outbound call SDP", err)
 				if ok := errors.As(err, &SDPError{}); ok {
