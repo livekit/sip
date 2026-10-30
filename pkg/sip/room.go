@@ -239,8 +239,11 @@ type Room struct {
 
 	// p is replaced on every reconnect, since the server issues a new
 	// participant SID, and read concurrently by Participant().
-	p          atomic.Pointer[ParticipantInfo]
-	reconnect  atomic.Pointer[reconnectState]
+	p         atomic.Pointer[ParticipantInfo]
+	reconnect atomic.Pointer[reconnectState]
+	// Closing the room joins recovery writes before returning to its owner.
+	recoveryMu sync.Mutex
+	recoveryWG sync.WaitGroup
 	ready      core.Fuse
 	subscribe  atomic.Bool
 	subscribed core.Fuse
@@ -674,7 +677,17 @@ func (r *Room) onReconnected() {
 	// The SDK calls this from the reconnect itself, inside the join's timeout,
 	// and subscribing does a blocking websocket write per track. Pass the room we
 	// already read so a concurrent close cannot make this a nil dereference.
-	go r.resubscribeAfterReconnect(room)
+	r.recoveryMu.Lock()
+	if r.closed.IsBroken() {
+		r.recoveryMu.Unlock()
+		return
+	}
+	r.recoveryWG.Add(1)
+	r.recoveryMu.Unlock()
+	go func() {
+		defer r.recoveryWG.Done()
+		r.resubscribeAfterReconnect(room)
+	}()
 }
 
 func (r *Room) resubscribeAfterReconnect(room *lksdk.Room) {
@@ -739,6 +752,12 @@ func (r *Room) CloseWithReason(reason livekit.DisconnectReason) error {
 			r.mix.Stop()
 		}
 	})
+	// The closed fuse fences future registrations. Pair with recoveryMu to
+	// finish any registration that saw the room before the fuse was broken;
+	// never hold that mutex while disconnecting the SDK or waiting for writes.
+	r.recoveryMu.Lock()
+	r.recoveryMu.Unlock()
+	r.recoveryWG.Wait()
 	return errors.Join(errs...)
 }
 
