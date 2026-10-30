@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/protocol/livekit"
@@ -460,4 +461,194 @@ func TestInboundSignalingEventsByeRetry(t *testing.T) {
 	require.Equal(t, "ok", bye.Result)
 	require.Equal(t, 200, bye.StatusCode)
 	require.Equal(t, retry.CSeq().SeqNo, bye.CSeq)
+}
+
+// startOutboundCall creates an outbound call and returns its first INVITE.
+func startOutboundCall(t *testing.T, req *rpc.InternalCreateSIPParticipantRequest) (*recordingStateHandler, *testSIPHarness, *transactionRequest) {
+	t.Helper()
+	states := &recordingStateHandler{}
+	h := NewTestSIP(t, TestSIPConfig{GetIOClient: states.GetStateHandler()})
+	go func() { _, _ = h.Client.CreateSIPParticipant(t.Context(), req) }()
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
+	require.Equal(t, sip.INVITE, tr.req.Method)
+	return states, h, tr
+}
+
+// respond sends a response without a body to the INVITE.
+func respond(t *testing.T, tr *transactionRequest, code sip.StatusCode, hdrs ...sip.Header) {
+	t.Helper()
+	res := sip.NewResponseFromRequest(tr.req, code, "", nil)
+	for _, h := range hdrs {
+		res.AppendHeader(h)
+	}
+	require.NoError(t, tr.transaction.SendResponse(res))
+}
+
+// answerOutbound answers the INVITE and waits for the ACK.
+func answerOutbound(t *testing.T, h *testSIPHarness, tr *transactionRequest, callID string) {
+	t.Helper()
+	require.NoError(t, tr.transaction.SendResponse(sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))))
+	require.Equal(t, sip.ACK, h.WaitRequest(t, time.Second, callID, "").req.Method)
+}
+
+// activeCall waits until the call is active and returns it.
+func activeCall(t *testing.T, states *recordingStateHandler, h *testSIPHarness, callID string) *outboundCall {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
+	}, time.Second, 10*time.Millisecond)
+	h.Client.cmu.Lock()
+	defer h.Client.cmu.Unlock()
+	return h.Client.activeCalls[LocalTag(callID)]
+}
+
+func TestOutboundSignalingEventsAnswered(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	states, h, tr := startOutboundCall(t, req)
+	respond(t, tr, sip.StatusTrying)
+	respond(t, tr, sip.StatusRinging)
+	respond(t, tr, sip.StatusRinging) // a repeat is not reported again
+	answerOutbound(t, h, tr, req.SipCallId)
+	call := activeCall(t, states, h, req.SipCallId)
+	go func() { _ = call.EndCall(context.Background(), nil) }()
+	answerBYE(t, h, time.Second, req.SipCallId)
+
+	evs := waitEventTypes(t, states, []SignalingEventType{
+		EventCallRequested, EventInviteSent, EventProvisionalReceived, EventProvisionalReceived,
+		EventAnsweredReceived, EventAckSent,
+		EventCallEnded, EventByeSent, // the call ends before the BYE goes out
+	})
+	cseq := tr.req.CSeq().SeqNo
+	for _, ev := range evs {
+		require.Equal(t, req.SipCallId, ev.CallID, ev.Type)
+		require.Equal(t, tr.req.CallID().Value(), ev.SIPCallID, ev.Type)
+		require.Equal(t, livekit.SIPCallDirection_SCD_OUTBOUND, ev.Direction, ev.Type)
+		if ev.Type != EventCallRequested && ev.Type != EventCallEnded && ev.Type != EventByeSent {
+			require.Equal(t, cseq, ev.CSeq, ev.Type)
+		}
+	}
+	require.Equal(t, TransportUDP, evs[1].Transport)
+	require.Equal(t, []int{100, 180, 200}, []int{evs[2].StatusCode, evs[3].StatusCode, evs[4].StatusCode})
+	require.Equal(t, 200, evs[6].StatusCode)
+	bye := evs[7]
+	require.Equal(t, "ok", bye.Result)
+	require.Equal(t, 200, bye.StatusCode)
+}
+
+func TestOutboundSignalingEventsAuthRetry(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	req.Username, req.Password = "user", "pass"
+	states, h, tr := startOutboundCall(t, req)
+	respond(t, tr, sip.StatusProxyAuthRequired, sip.NewHeader("Proxy-Authenticate", `Digest realm="example", nonce="abc"`))
+	retry := h.WaitTransaction(t, time.Second, req.SipCallId, "")
+	answerOutbound(t, h, retry, req.SipCallId)
+
+	evs := waitEventTypes(t, states, []SignalingEventType{
+		EventCallRequested, EventInviteSent, EventAuthChallenged, EventInviteSent, EventAnsweredReceived, EventAckSent,
+	})
+	first, second := tr.req.CSeq().SeqNo, retry.req.CSeq().SeqNo
+	require.NotEqual(t, first, second)
+	require.Equal(t, []uint32{first, first, second, second}, []uint32{evs[1].CSeq, evs[2].CSeq, evs[3].CSeq, evs[4].CSeq})
+	require.Equal(t, 407, evs[2].StatusCode)
+}
+
+// The callee hangs up; a second BYE before the call is closed is not reported again.
+func TestOutboundSignalingEventsRemoteBye(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	states, h, tr := startOutboundCall(t, req)
+	answerOutbound(t, h, tr, req.SipCallId)
+	activeCall(t, states, h, req.SipCallId)
+
+	from, to := tr.req.From(), tr.req.To()
+	remote := &sip.FromHeader{Address: to.Address, Params: sip.NewParams()}
+	remote.Params.Add("tag", "remote")
+	for range 2 {
+		bye := sip.NewRequest(sip.BYE, from.Address)
+		bye.AppendHeader(&sip.ToHeader{Address: from.Address, Params: from.Params.Clone()})
+		bye.AppendHeader(remote)
+		bye.AppendHeader(tr.req.CallID())
+		bye.AppendHeader(&sip.CSeqHeader{SeqNo: 7, MethodName: sip.BYE})
+		bye.AppendHeader(sip.NewHeader("Reason", `Q.850;cause=16;text="Normal call clearing"`))
+		require.True(t, h.Client.OnRequest(bye, &testSIPServerTransaction{
+			log: logger.GetLogger(), req: bye, responses: make(chan *sip.Response, 1), done: make(chan struct{}),
+		}))
+	}
+
+	evs := waitCallEnded(t, states)
+	types := eventTypes(evs)
+	require.Equal(t, []SignalingEventType{EventAckSent, EventByeReceived, EventCallEnded}, types[len(types)-3:])
+	bye := eventOf(t, evs, EventByeReceived)
+	require.Equal(t, "q.850;cause=16", bye.Reason) // ParseReasonHeader lowercases the protocol
+	require.Equal(t, uint32(7), bye.CSeq)
+}
+
+func TestOutboundSignalingEventsNotAnswered(t *testing.T) {
+	cases := []struct {
+		name   string
+		setup  func(req *rpc.InternalCreateSIPParticipantRequest)
+		act    func(t *testing.T, states *recordingStateHandler, h *testSIPHarness, tr *transactionRequest)
+		want   SignalingEventType // the event before EventCallEnded
+		status int                // on want and on EventCallEnded
+		reason string             // on want
+	}{
+		{
+			name: "busy",
+			act: func(t *testing.T, states *recordingStateHandler, h *testSIPHarness, tr *transactionRequest) {
+				respond(t, tr, sip.StatusBusyHere, sip.NewHeader("Reason", "Q.850;cause=17"))
+			},
+			want: EventFailed, status: 486, reason: "q.850;cause=17",
+		},
+		{
+			name: "auth without credentials",
+			act: func(t *testing.T, states *recordingStateHandler, h *testSIPHarness, tr *transactionRequest) {
+				respond(t, tr, sip.StatusProxyAuthRequired, sip.NewHeader("Proxy-Authenticate", `Digest realm="example", nonce="abc"`))
+			},
+			want: EventFailed, status: 407,
+		},
+		{
+			name: "ringing timeout",
+			setup: func(req *rpc.InternalCreateSIPParticipantRequest) {
+				req.RingingTimeout = durationpb.New(300 * time.Millisecond)
+			},
+			act: func(t *testing.T, states *recordingStateHandler, h *testSIPHarness, tr *transactionRequest) {
+				respond(t, tr, sip.StatusRinging)
+			},
+			want: EventCancelSent, reason: "timeout",
+		},
+		{
+			// What a disconnect from the LiveKit server does; closing the room locally doesn't.
+			name: "room closed while ringing",
+			act: func(t *testing.T, states *recordingStateHandler, h *testSIPHarness, tr *transactionRequest) {
+				respond(t, tr, sip.StatusRinging)
+				require.Eventually(t, func() bool {
+					return slices.Contains(states.EventTypes(), EventProvisionalReceived)
+				}, time.Second, 10*time.Millisecond)
+				h.Client.cmu.Lock()
+				call := h.Client.activeCalls[LocalTag(states.Events()[0].CallID)]
+				h.Client.cmu.Unlock()
+				call.lkRoom.(*testRoom).room.stopped.Break()
+			},
+			want: EventCancelSent, reason: "hangup",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := MinimalCreateSIPParticipantRequest()
+			if c.setup != nil {
+				c.setup(req)
+			}
+			states, h, tr := startOutboundCall(t, req)
+			c.act(t, states, h, tr)
+
+			evs := waitCallEnded(t, states)
+			types := eventTypes(evs)
+			require.Equal(t, []SignalingEventType{c.want, EventCallEnded}, types[len(types)-2:])
+			last := evs[len(evs)-2]
+			require.Equal(t, c.status, last.StatusCode)
+			require.Equal(t, c.reason, last.Reason)
+			require.Equal(t, tr.req.CSeq().SeqNo, last.CSeq)
+			require.Equal(t, c.status, evs[len(evs)-1].StatusCode)
+		})
+	}
 }
