@@ -306,7 +306,7 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 		}
 		if dropAudioDuringDTMF {
 			audioSwitch = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](p.mixerToPort.SampleRate())
-			audioSwitch.Swap(p.mixerToPort)
+			_ = audioSwitch.Swap(p.mixerToPort) // just created, always returns nil
 			p.mixerToPort = audioSwitch
 		}
 
@@ -519,7 +519,12 @@ func (w *dtmfOutWriter) WriteSample(sample string) error {
 	defer w.mu.Unlock()
 	if w.audioSwitch != nil {
 		prevWriter := w.audioSwitch.Swap(nil)
-		defer w.audioSwitch.Swap(prevWriter)
+		defer func() {
+			popped := w.audioSwitch.Swap(prevWriter)
+			if popped != nil {
+				panic("audioSwitch accessed outside of lock")
+			}
+		}()
 	}
 	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, w.pcmRate, sample)
 	if err != nil {
