@@ -154,7 +154,6 @@ type Server struct {
 	log          logger.Logger
 	sipSrv       *sipgo.Server
 	sipListeners []io.Closer
-	manager      CallManager
 
 	conf         *config.Config
 	sconf        *ServiceConfig
@@ -291,7 +290,6 @@ func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler 
 
 func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, manager CallManager) error {
 	s.sconf = sc
-	s.manager = manager
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
 	if agent == nil {
@@ -313,12 +311,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 		return err
 	}
 
-	s.sipSrv.OnOptions(s.wrapHandler(s.manager.HandleOptions))
-	s.sipSrv.OnInvite(s.wrapHandler(s.manager.HandleInvite))
-	s.sipSrv.OnAck(s.wrapHandler(s.manager.HandleAck))
-	s.sipSrv.OnBye(s.wrapHandler(s.manager.HandleBye))
-	s.sipSrv.OnNotify(s.wrapHandler(s.manager.HandleNotify))
-	s.sipSrv.OnNoRoute(s.wrapHandler(s.manager.HandleNoRoute))
+	s.sipSrv.OnOptions(s.wrapHandler(manager.HandleOptions))
+	s.sipSrv.OnInvite(s.wrapHandler(manager.HandleInvite))
+	s.sipSrv.OnAck(s.wrapHandler(manager.HandleAck))
+	s.sipSrv.OnBye(s.wrapHandler(manager.HandleBye))
+	s.sipSrv.OnNotify(s.wrapHandler(manager.HandleNotify))
+	s.sipSrv.OnNoRoute(s.wrapHandler(manager.HandleNoRoute))
 
 	listenIP := s.conf.ListenIP
 	if listenIP == "" {
