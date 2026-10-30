@@ -249,7 +249,6 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 	room.roomLog = roomLog
 
 	// Create a minimal lksdk.Room without connecting
-	lksdk.SetLogger(log)
 	sdkRoom := lksdk.NewRoom(nil)
 	room.room.Store(sdkRoom)
 

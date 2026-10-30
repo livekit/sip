@@ -74,8 +74,7 @@ type reconnectFixture struct {
 func newReconnectFixture(t *testing.T) *reconnectFixture {
 	t.Helper()
 
-	log := logger.NewTestLogger(t)
-	r := NewRoom(log, &RoomStats{})
+	r := NewRoom(logger.NewTestLogger(t), &RoomStats{})
 	t.Cleanup(func() { _ = r.Close() })
 
 	cb := r.newRoomCallback(&config.Config{}, RoomConfig{})
@@ -89,7 +88,6 @@ func newReconnectFixture(t *testing.T) *reconnectFixture {
 		inner(pub, rp)
 	}
 
-	lksdk.SetLogger(log)
 	sdk := lksdk.NewRoom(cb)
 	r.room.Store(sdk)
 	r.ready.Break()
