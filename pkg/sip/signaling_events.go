@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -28,6 +29,7 @@ import (
 // SignalingEventType names one step in a call's signaling lifecycle.
 type SignalingEventType string
 
+// Inbound calls.
 const (
 	// EventInviteReceived: an initial INVITE arrived. Emitted once the call
 	// state exists (after the auth lookup), with the original arrival time.
@@ -68,14 +70,47 @@ const (
 	// that was being set up is closed unanswered (e.g. 487 after a CANCEL), the
 	// response goes out after EventCallEnded's time, as a BYE would.
 	EventRejected SignalingEventType = "sip.rejected"
+)
+
+// Outbound calls.
+const (
+	// EventCallRequested: CreateSIPParticipant asked for the call. Time is when
+	// the request arrived; the INVITE follows once the room is joined.
+	EventCallRequested SignalingEventType = "sip.call.requested"
+	// EventInviteSent: an INVITE was sent. Once per attempt: the retry with
+	// credentials after a 401/407 is a second event, told apart by CSeq.
+	EventInviteSent SignalingEventType = "sip.invite.sent"
+	// EventProvisionalReceived: the first response with a given 1xx code (100,
+	// 180, 183, ...) arrived for the call, with that code in StatusCode.
+	EventProvisionalReceived SignalingEventType = "sip.provisional.received"
+	// EventAuthChallenged: the INVITE got a 401 or 407. The call retries with
+	// credentials if it has them; if it can't, EventFailed follows.
+	EventAuthChallenged SignalingEventType = "sip.auth.challenged"
+	// EventAnsweredReceived: the 200 OK for the INVITE arrived.
+	EventAnsweredReceived SignalingEventType = "sip.answered.received"
+	// EventAckSent: the ACK for the 200 OK was sent.
+	EventAckSent SignalingEventType = "sip.ack.sent"
+	// EventFailed: the INVITE got a final non-2xx response, with its
+	// StatusCode. Reason is the cause from its Reason header, if any; the
+	// reason phrase is left out, as the remote side controls it.
+	EventFailed SignalingEventType = "sip.failed"
+	// EventCancelSent: the INVITE was cancelled before a final response.
+	// Reason says why: "timeout" (no answer within the ringing timeout),
+	// "shutdown" (the service is stopping) or "hangup" (the call was ended).
+	EventCancelSent SignalingEventType = "sip.cancel.sent"
+)
+
+// Both directions.
+const (
 	// EventByeReceived: the remote side hung up with a BYE. Reason is the
-	// cause from its Reason header (e.g. "Q.850;cause=16"), if any.
+	// cause from its Reason header (e.g. "q.850;cause=16"), if any.
 	EventByeReceived SignalingEventType = "sip.bye.received"
 	// EventByeSent: we hung up with a BYE. Time is when it was sent, which is
 	// after EventCallEnded's time (the call ends when we decide to end it); the
 	// event is emitted when the BYE transaction finishes. Result is the outcome
 	// ("ok", "error" or "timeout"), StatusCode the response (0 if none) and
-	// Duration the time to it.
+	// Duration the time to it. An outbound BYE sent while the service shuts
+	// down is not waited for, so its Result is empty.
 	EventByeSent SignalingEventType = "sip.bye.sent"
 	// EventCallEnded: the call is over, for any reason, including rejections
 	// before a call was set up.
@@ -109,8 +144,9 @@ type SignalingEvent struct {
 	// SIP message details, set when the event corresponds to a SIP message.
 	SIPMethod string
 	// StatusCode is the SIP status of the response. On EventCallEnded it is the
-	// final response sent to the INVITE: 200 for every answered call, however
-	// it ended later. Result and Reason say how the call ended.
+	// final response to the INVITE, sent (inbound) or received (outbound): 200
+	// for every answered call, however it ended later. Result and Reason say
+	// how the call ended.
 	StatusCode int
 	CSeq       uint32
 	Transport  Transport
@@ -199,6 +235,40 @@ func reasonCause(r ReasonHeader) string {
 		return ""
 	}
 	return fmt.Sprintf("%s;cause=%d", r.Type, r.Cause)
+}
+
+// messageCause renders the Reason header of a request or response as
+// reasonCause does, or "" if it has none or it doesn't parse.
+func messageCause(m interface{ GetHeader(string) sip.Header }) string {
+	h := m.GetHeader("Reason")
+	if h == nil {
+		return ""
+	}
+	r, err := ParseReasonHeader(h.Value())
+	if err != nil {
+		return ""
+	}
+	return reasonCause(r)
+}
+
+// requestCSeq returns the request's CSeq number, or 0 if it has none.
+func requestCSeq(req *sip.Request) uint32 {
+	if h := req.CSeq(); h != nil {
+		return h.SeqNo
+	}
+	return 0
+}
+
+// cancelReason says why an outbound INVITE was cancelled, for EventCancelSent.
+func cancelReason(ctx context.Context, shuttingDown bool) string {
+	switch {
+	case shuttingDown:
+		return "shutdown"
+	case errors.Is(context.Cause(ctx), ErrSIPRequestTimeout):
+		return "timeout"
+	default:
+		return "hangup"
+	}
 }
 
 // inviteResponseEvent builds an event for a response sent to the INVITE.
