@@ -143,6 +143,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 		DTMFAudio:            conf.AudioDTMF,
 		Codecs:               sipConf.mediaConfig.Codecs,
 		Encryption:           sipConf.mediaConfig.Encryption,
+		DropAudioDuringDTMF:  sipConf.mediaConfig.DropAudioDuringDTMF,
 	}, RoomSampleRate)
 	if err != nil {
 		call.close(ctx, EndCall{

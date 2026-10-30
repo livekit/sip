@@ -375,7 +375,7 @@ func (h *pipelineHarness) injectAudio(ssrc uint32, seq uint16, ts uint32, pcm ms
 		clock = h.codec.Info().SampleRate
 	}
 	var buf msrtp.Buffer
-	stream := msrtp.NewSeqWriter(&buf).NewStream(h.audio.Type, clock)
+	stream := msrtp.NewSeqWriter(&buf, clock).NewStream(h.audio.Type, clock)
 	enc := msrtp.EncodePCM(stream, h.codec)
 	require.NoError(h.t, enc.WriteSample(pcm))
 	require.NoError(h.t, enc.Close())
@@ -619,7 +619,7 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 	if clock == 0 {
 		clock = cinfo.Info.SampleRate
 	}
-	enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded).NewStream(cinfo.Type, clock), h.codec)
+	enc := msrtp.EncodePCM(msrtp.NewSeqWriter(&encoded, clock).NewStream(cinfo.Type, clock), h.codec)
 	require.NoError(t, enc.WriteSample(silence))
 	require.NoError(t, enc.Close())
 	require.NotEmpty(t, encoded, "codec produced no RTP")
@@ -679,13 +679,11 @@ func generateDTMFPackets(t *testing.T, rate int, digits string) [][]*rtp.Packet 
 	var buf msrtp.Buffer
 	packets := make([][]*rtp.Packet, len(digits))
 	last := len(buf)
-	w := msrtp.NewSeqWriter(&buf).NewStream(101, rate)
-	timestamp := uint32(1000)
+	w := msrtp.NewSeqWriter(&buf, rate).NewManualStream(101)
 	for i := range digits {
-		err := dtmf.Write(context.Background(), nil, w, rate, timestamp, digits[i:i+1])
+		err := dtmf.Write(context.Background(), nil, w, rate, digits[i:i+1])
 		require.NoError(t, err)
 		require.NotEmpty(t, buf)
-		timestamp += uint32(rate / 2)
 		packets[i] = slices.Clone(buf[last:])
 		last = len(buf)
 	}
@@ -802,4 +800,66 @@ func TestJitterStatsAccumulateAcrossBuffers(t *testing.T) {
 	require.Equal(t, uint64(6), dropped.Load())
 	require.Equal(t, uint64(9), reordered.Load())
 	require.Equal(t, uint64(4), stray.Load())
+}
+
+func TestDTMFOutWriterDropsAudio(t *testing.T) {
+	const rate = 8000
+	port := &pcmCollector{sampleRate: rate}
+	audioSwitch := msdk.NewWriteCloserSwitch[msdk.PCM16Sample](rate)
+	audioSwitch.Swap(port)
+	frame := make(msdk.PCM16Sample, rate/int(time.Second/msrtp.DefFrameDur))
+
+	// No audio, real or in-band DTMF, should be written while digits are sent.
+	frames := 0
+	w := &dtmfOutWriter{
+		log:     logger.NewTestLogger(t),
+		pcmRate: rate,
+		ctx:     context.Background(),
+		dtmfAudio: msdk.NewFuncWriteCloser[msdk.PCM16Sample](rate, func(frame msdk.PCM16Sample) error {
+			frames++
+			require.NoError(t, audioSwitch.WriteSample(frame))
+			return nil
+		}),
+		audioSwitch: audioSwitch,
+	}
+	require.NoError(t, w.WriteSample("1"))
+	require.NotZero(t, frames)
+	require.Zero(t, port.len(), "audio sent during DTMF")
+
+	require.NoError(t, audioSwitch.WriteSample(frame))
+	require.Equal(t, len(frame), port.len(), "audio not reconnected after DTMF")
+}
+
+func TestMediaPipelineDropAudioDuringDTMF(t *testing.T) {
+	cases := []struct {
+		name     string
+		drop     bool
+		dtmfRate int
+		want     bool
+	}{
+		{name: "off", drop: false, dtmfRate: 8000, want: false},
+		{name: "option", drop: true, dtmfRate: 8000, want: true},
+		{name: "clock_rate_mismatch", drop: false, dtmfRate: 16000, want: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newPipelineHarness(t, 8000)
+			codec := audioCodecByName(t, g711.ULawSDPNameOnly)
+			h.configureType(codec, 0, testAudioPT(codec), testDTMFPT, false)
+			require.NoError(t, h.pipeline.Close())
+			h.port.Reopen()
+
+			h.dtmf = dtmfCodec(nil, testDTMFPT, c.dtmfRate, 0)
+			h.conf.opts = &MediaOptions{DropAudioDuringDTMF: c.drop}
+			pipe, err := NewMediaPortPipeline(h.conf, h.mediaConfig(), h.port, h.audioIn, h.dtmfIn, h.audioIn.SampleRate())
+			require.NoError(t, err)
+			h.pipeline = pipe
+
+			w := pipe.dtmfToPort.(*dtmfOutWriter)
+			require.Equal(t, c.want, w.audioSwitch != nil)
+			if c.want {
+				require.Equal(t, msdk.PCM16Writer(w.audioSwitch), pipe.mixerToPort)
+			}
+		})
+	}
 }

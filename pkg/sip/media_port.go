@@ -383,6 +383,7 @@ type MediaOptions struct {
 	Codecs               *msdk.CodecSet
 	Encryption           sdp.Encryption
 	DTMFAudio            bool
+	DropAudioDuringDTMF  bool // stop sending audio RTP while DTMF is sent
 }
 
 func (o *MediaOptions) ApplyDefaults() {

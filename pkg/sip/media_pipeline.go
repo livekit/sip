@@ -267,7 +267,7 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 	codecInfo := mc.Audio.Info
 	w = newLatencyRTPExit(w, &outboundLatencyEntry, &p.conf.stats.LatencyOut)
 	w = newRTPStatsWriter(p.conf.mon, mc.Audio.Type, dtmfInfo.Type, codecInfo.SDPFullName(), dtmf.SDPNameOnly, w)
-	s := rtp.NewSeqWriter(w)
+	s := rtp.NewSeqWriter(w, codecInfo.RTPClockRate)
 	audioOutRTP := s.NewStream(mc.Audio.Type, codecInfo.RTPClockRate)
 
 	audioOut, err := rtp.EncodePCMWithCodec(audioOutRTP, mc.Audio.Codec, mc.Audio.Info.CodecConfig)
@@ -294,30 +294,42 @@ func (p *mediaPortPipeline) setupOutput(mc *sdp.MediaConfig, incomingSampleRate 
 	p.mixerToPort = audioOut
 
 	if dtmfInfo.Type != 0 {
+		var audioSwitch *msdk.WriteCloserSwitch[msdk.PCM16Sample]
+		dropAudioDuringDTMF := p.conf.opts.DropAudioDuringDTMF
+		if dtmfInfo.Info.RTPClockRate != codecInfo.RTPClockRate {
+			// Asterisk releases older than ~Oct 2024 don't support >8kHz dtmf,
+			// AND have bug(s) when receiving audio during DTMF. It is what it is.
+			// Mismatching clock rates are a fingerprint of releases - Force audio drop during DTMF.
+			dropAudioDuringDTMF = true
+			p.conf.log.Infow("dropping audio during DTMF due to clock rate mismatch",
+				"audio-clock-rate", codecInfo.RTPClockRate, "dtmf-clock-rate", dtmfInfo.Info.RTPClockRate)
+		}
+		if dropAudioDuringDTMF {
+			audioSwitch = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](p.mixerToPort.SampleRate())
+			_ = audioSwitch.Swap(p.mixerToPort) // just created, always returns nil
+			p.mixerToPort = audioSwitch
+		}
+
 		var dtmfAudio msdk.PCM16Writer = nil
-		if p.conf.opts.DTMFAudio {
+		if p.conf.opts.DTMFAudio && !dropAudioDuringDTMF {
 			// Add separate mixer for DTMF audio.
 			// TODO: optimize, if we'll ever need this code path
-			mix, err := mixer.NewMixer(audioOut, rtp.DefFrameDur, 1, mixer.WithOutputChannel())
+			mix, err := mixer.NewMixer(p.mixerToPort, rtp.DefFrameDur, 1, mixer.WithOutputChannel())
 			if err != nil {
 				return err
 			}
-			audioOut = mix.NewInput()
+			p.mixerToPort = mix.NewInput()
 			dtmfAudio = mix.NewInput()
 			p.dtmfMixer = mix
-			p.mixerToPort = audioOut
 		}
 
 		p.dtmfToPort = &dtmfOutWriter{
-			log:        p.conf.log,
-			pcmRate:    dtmfInfo.Info.SampleRate,
-			ctx:        p.ctx,
-			dtmfEvents: s.NewStream(dtmfInfo.Type, dtmfInfo.Info.RTPClockRate),
-			dtmfAudio:  dtmfAudio,
-			getTimestamp: func() uint32 {
-				audioTs := audioOutRTP.GetCurrentTimestamp()
-				return uint32(uint64(audioTs) * uint64(dtmfInfo.Info.RTPClockRate) / uint64(codecInfo.RTPClockRate))
-			},
+			log:         p.conf.log,
+			pcmRate:     dtmfInfo.Info.SampleRate,
+			ctx:         p.ctx,
+			dtmfEvents:  s.NewManualStream(dtmfInfo.Type),
+			dtmfAudio:   dtmfAudio,
+			audioSwitch: audioSwitch,
 		}
 	}
 	return nil
@@ -465,11 +477,11 @@ type dtmfOutWriter struct {
 	log     logger.Logger
 	pcmRate int
 
-	mu           sync.Mutex
-	ctx          context.Context // canceled by pipeline Close, aborts an in-flight digit train
-	dtmfEvents   *rtp.Stream
-	dtmfAudio    msdk.PCM16Writer
-	getTimestamp func() uint32
+	mu          sync.Mutex
+	ctx         context.Context // canceled by pipeline Close, aborts an in-flight digit train
+	dtmfEvents  *rtp.Stream
+	dtmfAudio   msdk.PCM16Writer
+	audioSwitch *msdk.WriteCloserSwitch[msdk.PCM16Sample] // if set, audio is disconnected while digits are sent
 }
 
 func (w *dtmfOutWriter) String() string {
@@ -505,11 +517,16 @@ func (w *dtmfOutWriter) WriteSample(sample string) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	var rtpTs uint32
-	if w.dtmfEvents != nil {
-		rtpTs = w.getTimestamp() // TODO: Maybe time to introduce the auto timestamp feature?
+	if w.audioSwitch != nil {
+		prevWriter := w.audioSwitch.Swap(nil)
+		defer func() {
+			popped := w.audioSwitch.Swap(prevWriter)
+			if popped != nil {
+				panic("audioSwitch accessed outside of lock")
+			}
+		}()
 	}
-	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, w.pcmRate, rtpTs, sample)
+	err := dtmf.Write(w.ctx, w.dtmfAudio, w.dtmfEvents, w.pcmRate, sample)
 	if err != nil {
 		return err
 	}

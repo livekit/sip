@@ -86,16 +86,18 @@ func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*s
 		mediaTimeout = m.MediaTimeout.AsDuration()
 	}
 	return &sipMediaConfig{
-		Encryption:   enc,
-		Codecs:       s,
-		MediaTimeout: mediaTimeout,
+		Encryption:          enc,
+		Codecs:              s,
+		MediaTimeout:        mediaTimeout,
+		DropAudioDuringDTMF: m.DropAudioDuringDtmf,
 	}, nil
 }
 
 type sipMediaConfig struct {
-	Encryption   sdp.Encryption
-	Codecs       *msdk.CodecSet
-	MediaTimeout time.Duration
+	Encryption          sdp.Encryption
+	Codecs              *msdk.CodecSet
+	MediaTimeout        time.Duration
+	DropAudioDuringDTMF bool
 }
 
 func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
