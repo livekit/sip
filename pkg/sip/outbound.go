@@ -1323,12 +1323,12 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 
 	cseq := requestCSeq(req)
-	sentAt := time.Now()
 	tx, err := c.c.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
 	}
-	c.emitEvent(SignalingEvent{Type: EventInviteSent, Time: sentAt, SIPMethod: string(sip.INVITE), CSeq: cseq, Transport: Transport(strings.ToLower(req.Transport()))})
+	// Timed after TransactionRequest, which may first connect over TCP/TLS.
+	c.emitEvent(SignalingEvent{Type: EventInviteSent, Time: time.Now(), SIPMethod: string(sip.INVITE), CSeq: cseq, Transport: Transport(strings.ToLower(req.Transport()))})
 	handedOff := false
 	defer func() {
 		if !handedOff {

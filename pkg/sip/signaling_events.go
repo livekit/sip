@@ -97,6 +97,9 @@ const (
 	// EventCancelSent: the INVITE was cancelled before a final response.
 	// Reason says why: "timeout" (no answer within the ringing timeout),
 	// "shutdown" (the service is stopping) or "hangup" (the call was ended).
+	// The call ends without waiting for the final response to the cancelled
+	// INVITE (usually 487), so EventCallEnded has StatusCode 0. A 200 that races
+	// the CANCEL is acknowledged and hung up at once, and gets no events.
 	EventCancelSent SignalingEventType = "sip.cancel.sent"
 )
 
