@@ -283,3 +283,66 @@ func TestRoomReconnect(t *testing.T) {
 			"cached participant SID must be refreshed after a reconnect")
 	})
 }
+
+// A reconnect can be paused after its closed check but before it writes the
+// subscription. Closing the room must join that work before returning.
+type blockedReconnectLogger struct {
+	logger.Logger
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (l *blockedReconnectLogger) Infow(msg string, keysAndValues ...interface{}) {
+	if msg == "re-subscribing to remote tracks after reconnect" {
+		l.once.Do(func() { close(l.entered) })
+		<-l.release
+	}
+	l.Logger.Infow(msg, keysAndValues...)
+}
+
+func TestRoomCloseWaitsForReconnectSubscriptions(t *testing.T) {
+	f := newReconnectFixture(t)
+	f.join(t)
+	blocked := &blockedReconnectLogger{
+		Logger:  f.room.roomLog,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	f.room.roomLog = blocked
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(blocked.release) }) }
+	defer release()
+	f.reconnectEscalated()
+	select {
+	case <-blocked.entered:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect did not start subscription recovery")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- f.room.Close() }()
+	require.Eventually(t, func() bool { return f.room.Room() == nil }, time.Second, time.Millisecond)
+	select {
+	case <-closed:
+		t.Fatal("Close returned with reconnect subscription work still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	// A second Close must also wait. Neither close may hold the registration
+	// mutex while disconnecting the SDK or joining the worker.
+	closedAgain := make(chan error, 1)
+	go func() { closedAgain <- f.room.Close() }()
+	select {
+	case <-closedAgain:
+		t.Fatal("concurrent Close returned with reconnect work still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	for _, done := range []chan error{closed, closedAgain} {
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(time.Second):
+			t.Fatal("Close did not finish after reconnect work completed")
+		}
+	}
+}
