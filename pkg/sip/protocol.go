@@ -444,6 +444,29 @@ type notifyInfo struct {
 	Sub    SubscriptionState // Subscription-State header, zero value if absent
 }
 
+// splitEventParams splits an Event header value on the semicolons that are
+// outside quoted strings, since a quoted param value may contain one.
+func splitEventParams(v string) []string {
+	var params []string
+	start, quoted := 0, false
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case '\\':
+			if quoted {
+				i++
+			}
+		case '"':
+			quoted = !quoted
+		case ';':
+			if !quoted {
+				params = append(params, v[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(params, v[start:])
+}
+
 func handleNotify(req *sip.Request) (notifyInfo, error) {
 	event := req.GetHeader("Event")
 	if event == nil {
@@ -455,7 +478,7 @@ func handleNotify(req *sip.Request) (notifyInfo, error) {
 
 	// Event: event-type *( SEMI event-param ). SEMI and EQUAL allow whitespace
 	// around them, and generic params other than id may follow (RFC 6665).
-	params := strings.Split(event.Value(), ";")
+	params := splitEventParams(event.Value())
 	if !strings.EqualFold(strings.TrimSpace(params[0]), "refer") {
 		return notifyInfo{}, psrpc.NewErrorf(psrpc.Unimplemented, "unknown event")
 	}
