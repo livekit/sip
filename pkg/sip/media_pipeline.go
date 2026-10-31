@@ -218,6 +218,7 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 			Reordered:        &p.conf.stats.JitterBufferPacketsReordered,
 			SequenceRestarts: &p.conf.stats.JitterBufferSequenceRestarts,
 			Stray:            &p.conf.stats.JitterBufferPacketsStray,
+			Duplicate:        &p.conf.stats.JitterBufferPacketsDuplicate,
 		})...)
 	}
 	// Stream stats go before the jitter buffer, so they see the network arrival
