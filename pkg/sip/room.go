@@ -71,6 +71,7 @@ type RoomStatsSnapshot struct {
 	JitterBufferPacketsReordered uint64 `json:"jitter_buffer_packets_reordered"`
 	JitterBufferSequenceRestarts uint64 `json:"jitter_buffer_sequence_restarts"`
 	JitterBufferPacketsStray     uint64 `json:"jitter_buffer_packets_stray"`
+	JitterBufferPacketsDuplicate uint64 `json:"jitter_buffer_packets_duplicate"`
 
 	TrackSubscribes uint64 `json:"track_subscribes"`
 	Resumes         uint64 `json:"resumes"`
@@ -115,6 +116,7 @@ type RoomStats struct {
 	JitterBufferPacketsReordered atomic.Uint64
 	JitterBufferSequenceRestarts atomic.Uint64
 	JitterBufferPacketsStray     atomic.Uint64
+	JitterBufferPacketsDuplicate atomic.Uint64
 
 	LatencyOutRecv LatencyStats // measures track recv → opus decode → mixer input.
 
@@ -148,6 +150,7 @@ func (s *RoomStats) Load() RoomStatsSnapshot {
 		JitterBufferPacketsReordered: s.JitterBufferPacketsReordered.Load(),
 		JitterBufferSequenceRestarts: s.JitterBufferSequenceRestarts.Load(),
 		JitterBufferPacketsStray:     s.JitterBufferPacketsStray.Load(),
+		JitterBufferPacketsDuplicate: s.JitterBufferPacketsDuplicate.Load(),
 
 		TrackSubscribes: s.TrackSubscribes.Load(),
 		Resumes:         s.Resumes.Load(),
@@ -546,6 +549,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 							Reordered:        &r.stats.JitterBufferPacketsReordered,
 							SequenceRestarts: &r.stats.JitterBufferSequenceRestarts,
 							Stray:            &r.stats.JitterBufferPacketsStray,
+							Duplicate:        &r.stats.JitterBufferPacketsDuplicate,
 						})...)
 					}
 
