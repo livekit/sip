@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/frostbyte73/core"
@@ -67,7 +68,7 @@ type sipOutboundConfig struct {
 type outboundCall struct {
 	c         *Client
 	tid       traceid.ID
-	log       logger.Logger
+	logPtr    atomic.Pointer[logger.Logger]
 	state     *CallState
 	callStart time.Time
 	cc        *sipOutbound
@@ -108,7 +109,6 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call := &outboundCall{
 		c:         c,
 		tid:       tid,
-		log:       log,
 		sipConf:   sipConf,
 		state:     state,
 		callStart: now,
@@ -118,7 +118,8 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	}
 	call.stats.Update()
 	call.cc = c.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
-	call.log = call.log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", call.cc.callID)
+	log = log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", call.cc.callID)
+	call.setLog(log)
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
 		call.cc.routeHeaders = conf.OutboundRouteHeaders
 	}
@@ -128,7 +129,7 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	call.mon.SetProvider(providerLabel(state.Info().GetProviderInfo()))
 	var err error
 
-	call.media, err = NewMediaPort(call.log, call.mon, &MediaOptions{
+	call.media, err = NewMediaPort(log, call.mon, &MediaOptions{
 		IP:                   c.sconf.MediaIP,
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.conf.MediaTimeoutInitial,
@@ -168,6 +169,18 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	defer c.cmu.Unlock()
 	c.activeCalls[id] = call
 	return call, nil
+}
+
+func (c *outboundCall) setLog(log logger.Logger) {
+	c.logPtr.Store(&log)
+}
+
+func (c *outboundCall) log() logger.Logger {
+	ptr := c.logPtr.Load()
+	if ptr == nil {
+		return nil
+	}
+	return *ptr
 }
 
 func (c *outboundCall) setAttrsToHeaders(headers map[string]string) map[string]string {
@@ -238,7 +251,7 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 		}
 		lkroom := c.lkRoom.Room()
 		if lkroom == nil {
-			c.log.Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
+			c.log().Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
 			return
 		}
 		info.RoomId = lkroom.SID()
@@ -267,7 +280,7 @@ func (c *outboundCall) waitClose(ctx context.Context) error {
 			c.stats.Update()
 			c.printStats()
 		case <-ticker.C:
-			c.log.Debugw("sending keep-alive")
+			c.log().Debugw("sending keep-alive")
 			c.state.ForceFlush()
 		case <-c.Disconnected():
 			roomReason := c.lkRoom.ClosedReason()
@@ -359,7 +372,7 @@ func (c *outboundCall) EndCall(ctx context.Context, headers map[string]string) e
 }
 
 func (c *outboundCall) printStats() {
-	c.stats.Log(c.log, c.callStart)
+	c.stats.Log(c.log(), c.callStart)
 }
 
 func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
@@ -369,7 +382,7 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 	c.stopped.Once(func() {
 		done = true
 		c.stats.Closed.Store(true)
-		log := c.log.WithValues("status", end.Status, "result", string(end.Term.Result), "reason", end.Term.Reason)
+		log := c.log().WithValues("status", end.Status, "result", string(end.Term.Result), "reason", end.Term.Reason)
 		defer func() {
 			c.stats.Update()
 			c.printStats()
@@ -464,7 +477,7 @@ func (c *outboundCall) connectSIP(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.dialSIP(ctx); err != nil {
-		c.log.Infow("SIP call failed", "error", err)
+		c.log().Infow("SIP call failed", "error", err)
 		res := classifyInviteError(err)
 		if !c.sigTs.InviteTime.IsZero() {
 			// INVITE sent: a call may exist, so don't surface a retryable 5xx.
@@ -476,7 +489,7 @@ func (c *outboundCall) connectSIP(ctx context.Context) error {
 	c.connectMedia()
 	c.started.Break()
 	c.lkRoom.Subscribe()
-	c.log.Infow("Outbound SIP call established")
+	c.log().Infow("Outbound SIP call established")
 	return nil
 }
 
@@ -495,7 +508,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
-	r := getRoom(c.log, &c.stats.Room)
+	r := getRoom(c.log(), &c.stats.Room)
 	if err := r.Connect(ctx, c.c.conf, lkNew); err != nil {
 		_ = r.Close()
 		return err
@@ -532,12 +545,12 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 			defer span.End()
 
 			if dst == nil {
-				c.log.Infow("room is not ready, ignoring dial tone")
+				c.log().Infow("room is not ready, ignoring dial tone")
 				return
 			}
 			err := tones.Play(rctx, dst, ringVolume, ringback)
 			if err != nil && !errors.Is(err, context.Canceled) {
-				c.log.Infow("cannot play dial tone", "error", err)
+				c.log().Infow("cannot play dial tone", "error", err)
 			}
 		}()
 	}
@@ -575,12 +588,12 @@ func (c *outboundCall) updateRemoteFromSDP(body []byte) error {
 func (c *outboundCall) connectMedia() {
 	if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
 		old.Close()
-		c.log.Warnw("room has unexpected outbound audio writer", nil)
+		c.log().Warnw("room has unexpected outbound audio writer", nil)
 	}
 
 	if old := c.lkRoom.WriteOutboundDTMFTo(c.media.GetOutboundDTMFWriter()); old != nil {
 		old.Close()
-		c.log.Warnw("room has unexpected outbound DTMF writer", nil)
+		c.log().Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
 	if processor := c.c.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
@@ -589,7 +602,7 @@ func (c *outboundCall) connectMedia() {
 
 	if old := c.media.WriteInboundAudioTo(c.lkRoomIn); old != nil {
 		old.Close()
-		c.log.Warnw("media port has unexpected inbound audio writer", nil)
+		c.log().Warnw("media port has unexpected inbound audio writer", nil)
 	}
 
 	// WriteInboundAudioTo takes ownership of c.lkRoomIn, so nil it out to avoid
@@ -604,7 +617,7 @@ func (c *outboundCall) connectMedia() {
 	}
 	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter(rate)); old != nil {
 		old.Close()
-		c.log.Warnw("media port has unexpected inbound DTMF writer", nil)
+		c.log().Warnw("media port has unexpected inbound DTMF writer", nil)
 	}
 }
 
@@ -690,7 +703,7 @@ func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination, headers
 			return
 		case <-time.After(5 * time.Minute):
 			c.mon.CallTerminationFailure()
-			c.log.Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
+			c.log().Errorw("call failed to terminate after 5 minutes", nil) // To be able to get call IDs
 		}
 	}()
 
@@ -722,7 +735,7 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 		if room != nil {
 			room.LocalParticipant.SetAttributes(extra)
 		} else {
-			c.log.Warnw("could not set attributes on nil room", nil, "attrs", extra)
+			c.log().Warnw("could not set attributes on nil room", nil, "attrs", extra)
 		}
 	}
 }
@@ -756,7 +769,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		return err
 	}
 	c.mon.SDPSize(len(sdpOfferData), true, false)
-	c.log.Debugw("SDP offer", "sdp", string(sdpOfferData))
+	c.log().Debugw("SDP offer", "sdp", string(sdpOfferData))
 	joinDur := c.mon.JoinDur()
 
 	c.mon.InviteReq()
@@ -801,14 +814,14 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 			c.mon.InviteError("other")
 		}
 		c.cc.Close(ctx, nil)
-		c.log.Infow("SIP invite failed", "error", err)
+		c.log().Infow("SIP invite failed", "error", err)
 		return err
 	}
 	c.sigTs.AcceptTime = time.Now()
 	c.mon.SDPSize(len(sdpResp), false, true)
-	c.log.Debugw("SDP answer", "sdp", string(sdpResp))
+	c.log().Debugw("SDP answer", "sdp", string(sdpResp))
 
-	c.log = LoggerWithHeaders(c.log, c.cc)
+	c.setLog(LoggerWithHeaders(c.log(), c.cc))
 
 	err = c.media.ProcessAnswer(sdpResp)
 	if err != nil {
@@ -818,7 +831,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	c.mon.InviteAccept()
 	err = c.cc.AckInviteOK(ctx)
 	if err != nil {
-		c.log.Infow("SIP accept failed", "error", err)
+		c.log().Infow("SIP accept failed", "error", err)
 		return err
 	}
 	c.sigTs.AckTime = time.Now()
@@ -833,7 +846,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		// is classified as no-answer; if the 200 OK wins by a hair, we end up here
 		// instead. Same timeout either way, so it has to classify the same way.
 		cause := context.Cause(ctx)
-		c.log.Infow("outbound call answered after abort; hanging up", "error", cause)
+		c.log().Infow("outbound call answered after abort; hanging up", "error", cause)
 		return psrpc.NewError(psrpc.Canceled, cause)
 	}
 	c.callDur = c.mon.CallDur()
@@ -881,18 +894,18 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 		go func() {
 			err := tones.Play(rctx, c.media.GetOutboundAudioWriter(), ringVolume, ringback)
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				c.log.Infow("cannot play dial tone", "error", err)
+				c.log().Infow("cannot play dial tone", "error", err)
 			}
 		}()
 	}
 
 	err = c.cc.transferCall(ctx, transferTo, headers, c.closing.Watch())
 	if err != nil {
-		c.log.Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
+		c.log().Infow("outbound call failed to transfer", "error", err, "transferTo", transferTo)
 		return transferID, err
 	}
 
-	c.log.Infow("outbound call transferred", "transferTo", transferTo)
+	c.log().Infow("outbound call transferred", "transferTo", transferTo)
 
 	// Give time for the peer to hang up first, but hang up ourselves if this doesn't happen within 1 second
 	time.AfterFunc(referByeTimeout, func() {
