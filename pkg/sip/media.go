@@ -42,6 +42,7 @@ type jitterStatsTargets struct {
 	Reordered        *atomic.Uint64
 	SequenceRestarts *atomic.Uint64
 	Stray            *atomic.Uint64
+	Duplicate        *atomic.Uint64
 }
 
 // newJitterOptions returns the options for every SIP jitter buffer. Both legs
@@ -95,6 +96,7 @@ func (a *jitterStatsAccumulator) onStats(st *jitter.BufferStats) {
 	a.add(a.targets.Reordered, st.PacketsReordered, &a.prev.PacketsReordered)
 	a.add(a.targets.SequenceRestarts, st.SequenceRestarts, &a.prev.SequenceRestarts)
 	a.add(a.targets.Stray, st.PacketsStray, &a.prev.PacketsStray)
+	a.add(a.targets.Duplicate, st.PacketsDuplicate, &a.prev.PacketsDuplicate)
 }
 
 type Stats struct {
