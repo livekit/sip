@@ -171,6 +171,18 @@ func (c *Client) newCall(ctx context.Context, tid traceid.ID, conf *config.Confi
 	return call, nil
 }
 
+func (c *outboundCall) setLog(log logger.Logger) {
+	c.logPtr.Store(&log)
+}
+
+func (c *outboundCall) log() logger.Logger {
+	ptr := c.logPtr.Load()
+	if ptr == nil {
+		return nil
+	}
+	return *ptr
+}
+
 func (c *outboundCall) setAttrsToHeaders(headers map[string]string) map[string]string {
 	if len(c.sipConf.attrsToHeaders) == 0 {
 		return headers
