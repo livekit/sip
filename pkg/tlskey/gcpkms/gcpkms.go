@@ -118,7 +118,7 @@ func Open(ctx context.Context, uri string) (crypto.Signer, error) {
 func parseURI(uri string) (string, error) {
 	name, ok := strings.CutPrefix(uri, Scheme+"://")
 	if !ok || !strings.HasPrefix(name, "projects/") || !strings.Contains(name, "/cryptoKeyVersions/") {
-		return "", fmt.Errorf("gcpkms: want %s://projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N, got %q", Scheme, uri)
+		return "", fmt.Errorf("gcpkms: key URI must be %s://projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N", Scheme)
 	}
 	return name, nil
 }

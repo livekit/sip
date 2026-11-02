@@ -152,7 +152,8 @@ var tls12Only = []tls.SignatureScheme{
 
 // CheckTLS13 returns an error when c allows TLS 1.3 but a certificate's key can produce only
 // signature schemes TLS 1.3 removed: every TLS 1.3 handshake on that certificate would fail,
-// so c has to cap the version at TLS 1.2 instead.
+// so c has to cap the version at TLS 1.2 instead. The caller knows how its configuration sets
+// that cap and adds the hint.
 func CheckTLS13(c *tls.Config) error {
 	if c.MaxVersion != 0 && c.MaxVersion < tls.VersionTLS13 {
 		return nil
@@ -163,7 +164,7 @@ func CheckTLS13(c *tls.Config) error {
 			continue
 		}
 		if !slices.ContainsFunc(schemes, func(s tls.SignatureScheme) bool { return !slices.Contains(tls12Only, s) }) {
-			return fmt.Errorf("tlskey: certificate %d: its key only signs %v, which TLS 1.3 does not allow; set tls.max_version: tls1.2", i, schemes)
+			return fmt.Errorf("tlskey: certificate %d: its key only signs %v, which TLS 1.3 does not allow, but TLS 1.3 is enabled", i, schemes)
 		}
 	}
 	return nil

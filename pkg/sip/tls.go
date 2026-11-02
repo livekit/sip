@@ -18,7 +18,24 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
+
+	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/tlskey"
 )
+
+// checkTLS13 is tlskey.CheckTLS13 with the configuration change that fixes it. With warn_only,
+// ApplyPolicy leaves max_version unenforced, so setting it alone would not help.
+func checkTLS13(tconf *config.TLSConfig, c *tls.Config) error {
+	err := tlskey.CheckTLS13(c)
+	if err == nil {
+		return nil
+	}
+	if tconf.WarnOnly {
+		return fmt.Errorf("%w; set tls.max_version: tls1.2 and unset tls.warn_only, which leaves it unenforced", err)
+	}
+	return fmt.Errorf("%w; set tls.max_version: tls1.2", err)
+}
 
 func ConfigureTLS(c *tls.Config) {
 	// We can't use default cert verification, because SIP headers usually specify IP address instead of a hostname.

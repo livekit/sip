@@ -240,7 +240,7 @@ func TestHandshake(t *testing.T) {
 		_, err = handshake(t, cert, 0, pool)
 		require.Error(t, err)
 		conf := &tls.Config{Certificates: []tls.Certificate{cert}}
-		require.ErrorContains(t, CheckTLS13(conf), "set tls.max_version: tls1.2")
+		require.ErrorContains(t, CheckTLS13(conf), "TLS 1.3 is enabled")
 		conf.MaxVersion = tls.VersionTLS12
 		require.NoError(t, CheckTLS13(conf))
 	})

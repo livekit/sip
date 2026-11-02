@@ -209,9 +209,14 @@ func (s *Service) Stop() {
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
+	s.closeAll()
+}
+
+func (s *Service) closeAll() {
 	for _, c := range s.closers {
 		_ = c.Close()
 	}
+	s.closers = nil
 }
 
 func (s *Service) SetHandler(handler Handler) {
@@ -219,7 +224,12 @@ func (s *Service) SetHandler(handler Handler) {
 	s.cli.SetHandler(handler)
 }
 
-func (s *Service) Start() error {
+func (s *Service) Start() (err error) {
+	defer func() {
+		if err != nil {
+			s.closeAll()
+		}
+	}()
 	s.log.Debugw("starting sip service", "version", version.Version)
 	for name, enabled := range s.conf.Codecs {
 		if enabled {
@@ -300,7 +310,7 @@ func (s *Service) Start() error {
 		if err := tconf.ApplyPolicy(s.log, tlsConf); err != nil {
 			return err
 		}
-		if err := tlskey.CheckTLS13(tlsConf); err != nil {
+		if err := checkTLS13(tconf, tlsConf); err != nil {
 			return err
 		}
 

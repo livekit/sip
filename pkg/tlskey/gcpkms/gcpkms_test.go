@@ -214,7 +214,8 @@ func TestOpen(t *testing.T) {
 			testName,
 		} {
 			_, err := Open(ctx, uri)
-			require.ErrorContains(t, err, "want gcpkms://projects/P/", uri)
+			require.ErrorContains(t, err, "must be gcpkms://projects/P/", uri)
+			require.NotContains(t, err.Error(), uri, "a key URI may carry a secret")
 		}
 	})
 
