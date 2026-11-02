@@ -383,7 +383,7 @@ func (s *callManager) HandleInvite(log *slog.Logger, req *sip.Request, tx sip.Se
 func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
 	start := time.Now()
 	ctx := context.Background()
-	ctx, span := Tracer.Start(ctx, "sip.Server.processInvite")
+	ctx, span := Tracer.Start(ctx, "sip.callManager.processInvite")
 	defer span.End()
 
 	var state *CallState

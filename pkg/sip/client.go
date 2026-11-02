@@ -137,7 +137,7 @@ func (c *Client) ContactURI(tr Transport) URI {
 
 // TODO(alexfish): Move this into manager.go
 func (c *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	ctx, span := Tracer.Start(ctx, "Client.CreateSIPParticipant")
+	ctx, span := Tracer.Start(ctx, "sip.callManager.CreateSIPParticipant")
 	defer span.End()
 	return c.createSIPParticipant(ctx, req)
 }
@@ -494,7 +494,7 @@ func (c *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *
 // TODO(alexfish): Move this into manager.go
 func (c *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	ctx := context.Background()
-	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
+	ctx, span := Tracer.Start(ctx, "sip.callManager.onOutboundBye")
 	defer span.End()
 	tag, _ := GetLocalTagUAS(req)
 	c.cmu.Lock()

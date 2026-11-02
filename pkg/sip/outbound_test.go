@@ -238,12 +238,12 @@ func TestOutboundCallReportsFullDuration(t *testing.T) {
 		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
 	}, time.Second, 10*time.Millisecond)
 
-	h.manager.cmu.Lock()
+	h.manager.cmu.RLock()
 	var call *outboundCall
 	for _, c := range h.manager.activeCalls {
 		call = c
 	}
-	h.manager.cmu.Unlock()
+	h.manager.cmu.RUnlock()
 	require.NotNil(t, call)
 	go func() { _ = call.EndCall(context.Background(), nil) }()
 	answerBYE(t, h, time.Second, req.SipCallId)

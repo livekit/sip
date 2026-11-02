@@ -185,9 +185,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	})
 	st.Outbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.manager.cmu.Unlock()
 
-	s.manager.cmu.Lock()
 	samples, total = sampleMap(5, s.manager.byLocalTag, func(v *inboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
