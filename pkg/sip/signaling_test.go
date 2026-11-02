@@ -416,8 +416,9 @@ func (d *sipUADialogTest) UnregisterRequestChannel(method string) {
 
 type serviceTest struct {
 	TestUA  *sipUATest
-	Server  *Server // Processing inbound calls and SIP
-	Client  *Client // Processing outbound calls
+	Server  *Server      // Processing inbound SIP
+	Manager *callManager // Processing inbound calls
+	Client  *Client      // Processing outbound calls
 	Handler Handler
 	Service *Service
 
@@ -490,15 +491,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		options.GetStateHandler,
 		WithGetRoomClient(options.GetRoom),
 	)
-	srv := NewServer(
-		"",
-		conf,
-		log,
-		mon,
-		options.GetStateHandler,
-		WithGetRoomServer(options.GetRoom),
-		WithClient(cli),
-	)
+	srv := NewServer(conf, log)
 	require.NotNil(t, srv)
 
 	sconf := &ServiceConfig{
@@ -507,12 +500,25 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		MediaIP:          loopback,
 	}
 
+	manager := newCallManager(
+		srv,
+		"",
+		conf,
+		sconf,
+		log,
+		mon,
+		options.GetStateHandler,
+		WithGetRoomServer(options.GetRoom),
+		WithClient(cli),
+	)
+
 	handler := &TestHandler{}
 
-	err = srv.Start(nil, sconf, nil, cli.OnRequest)
+	err = srv.Start(nil, sconf, nil, manager)
 	require.NoError(t, err)
 	t.Cleanup(srv.Stop)
-	srv.SetHandler(handler)
+	t.Cleanup(manager.stop)
+	manager.SetHandler(handler)
 
 	err = cli.Start(nil, sconf)
 	require.NoError(t, err)
@@ -527,11 +533,13 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		mon:              mon,
 		cli:              cli,
 		srv:              srv,
+		manager:          manager,
 		pendingTransfers: make(map[LocalTag]*PendingTransfer),
 	}
 	s := &serviceTest{
 		TestUA:  newUATest(t, srv.log, addr, withUATestBuffer(64)),
 		Server:  srv,
+		Manager: manager,
 		Client:  cli,
 		Handler: handler,
 		Service: service,
@@ -629,9 +637,9 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 		st.TestUA.TransactionRequest(t, bye, true)
 	})
 
-	st.Server.cmu.Lock()
-	defer st.Server.cmu.Unlock()
-	ic, ok := st.Server.byLocalTag[call.remoteTag]
+	st.Manager.cmu.Lock()
+	defer st.Manager.cmu.Unlock()
+	ic, ok := st.Manager.byLocalTag[call.remoteTag]
 	require.True(t, ok, "call should be registered")
 
 	t.Logf("inbound call: %+v", call)
@@ -721,9 +729,9 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 
 func lookupCall(t *testing.T, st *serviceTest, call *sipUADialogTest) (RoomInterface, MediaPort) {
 	t.Helper()
-	st.Server.cmu.Lock()
-	ic := st.Server.byLocalTag[call.remoteTag]
-	st.Server.cmu.Unlock()
+	st.Manager.cmu.Lock()
+	ic := st.Manager.byLocalTag[call.remoteTag]
+	st.Manager.cmu.Unlock()
 	if ic != nil {
 		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "inbound call should become active")
 		return ic.lkRoom, ic.media

@@ -24,14 +24,10 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/frostbyte73/core"
-	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/icholy/digest"
-	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
@@ -40,9 +36,10 @@ import (
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
+	"github.com/livekit/sipgo/transaction"
+	"github.com/livekit/sipgo/transport"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/stats"
 )
 
 const (
@@ -154,37 +151,13 @@ type Handler interface {
 type HandlerInterceptor func(sipgo.RequestHandler) sipgo.RequestHandler
 
 type Server struct {
-	log             logger.Logger
-	mon             *stats.Monitor
-	region          string
-	sipSrv          *sipgo.Server
-	getStateHandler GetStateHandler
-	getRoom         GetRoomFunc
-	sipListeners    []io.Closer
-	sipUnhandled    RequestHandler
+	log          logger.Logger
+	sipSrv       *sipgo.Server
+	sipListeners []io.Closer
 
-	imu               sync.Mutex
-	inProgressInvites []*inProgressInvite
-
-	closing            core.Fuse
-	cmu                sync.RWMutex
-	byLocalTag         map[LocalTag]*inboundCall
-	provisionalInvites *expirable.LRU[[2]string, LocalTag]
-	rejectedInvites    *expirable.LRU[[2]string, rejectedInviteResponse]
-
-	infos struct {
-		sync.Mutex
-		byLocalTag *expirable.LRU[LocalTag, *inboundCallInfo]
-	}
-
-	handler      Handler
 	conf         *config.Config
 	sconf        *ServiceConfig
 	interceptors []HandlerInterceptor
-
-	cli *Client // optional, for outbound reinvite handling
-
-	res mediaRes
 }
 
 type inProgressInvite struct {
@@ -200,20 +173,6 @@ type rejectedInviteResponse struct {
 
 type ServerOption func(s *Server)
 
-func WithGetRoomServer(fn GetRoomFunc) ServerOption {
-	return func(s *Server) {
-		if fn != nil {
-			s.getRoom = fn
-		}
-	}
-}
-
-func WithClient(cli *Client) ServerOption {
-	return func(s *Server) {
-		s.cli = cli
-	}
-}
-
 // WithInterceptors configures all sip handlers to be wrapped with the given set
 // of interceptors. Interceptors are applied s.t. the first interceptor is the
 // outermost one.
@@ -223,38 +182,30 @@ func WithInterceptors(interceptors ...HandlerInterceptor) ServerOption {
 	}
 }
 
-func NewServer(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...ServerOption) *Server {
+func NewServer(conf *config.Config, log logger.Logger, options ...ServerOption) *Server {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	s := &Server{
-		log:                log,
-		conf:               conf,
-		region:             region,
-		mon:                mon,
-		getStateHandler:    getStateHandler,
-		getRoom:            DefaultGetRoomFunc,
-		byLocalTag:         make(map[LocalTag]*inboundCall),
-		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
-	}
-	// Initialize the rejected-invite replay cache unless explicitly disabled.
-	if !conf.DisableRejectedInviteCache {
-		s.rejectedInvites = expirable.NewLRU[[2]string, rejectedInviteResponse](maxCallCache, nil, callCacheTTL)
+		log:  log,
+		conf: conf,
 	}
 	for _, option := range options {
 		option(s)
 	}
-	s.infos.byLocalTag = expirable.NewLRU[LocalTag, *inboundCallInfo](maxCallCache, nil, callCacheTTL)
-	s.initMediaRes()
 	return s
-}
-
-func (s *Server) SetHandler(handler Handler) {
-	s.handler = handler
 }
 
 func (s *Server) ContactURI(tr Transport) URI {
 	return getContactURI(s.conf, s.sconf.SignalingIP, tr)
+}
+
+func (s *Server) transportLayer() *transport.Layer {
+	return s.sipSrv.TransportLayer()
+}
+
+func (s *Server) transactionLayer() *transaction.Layer {
+	return s.sipSrv.TransactionLayer()
 }
 
 func (s *Server) startUDP(addr netip.AddrPort) error {
@@ -337,7 +288,7 @@ func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler 
 	return ret
 }
 
-func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, unhandled RequestHandler) error {
+func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.Config, manager CallManager) error {
 	s.sconf = sc
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
@@ -360,13 +311,12 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 		return err
 	}
 
-	s.sipSrv.OnOptions(s.wrapHandler(s.onOptions))
-	s.sipSrv.OnInvite(s.wrapHandler(s.onInvite))
-	s.sipSrv.OnAck(s.wrapHandler(s.onAck))
-	s.sipSrv.OnBye(s.wrapHandler(s.onBye))
-	s.sipSrv.OnNotify(s.wrapHandler(s.onNotify))
-	s.sipSrv.OnNoRoute(s.wrapHandler(s.OnNoRoute))
-	s.sipUnhandled = unhandled
+	s.sipSrv.OnOptions(s.wrapHandler(manager.HandleOptions))
+	s.sipSrv.OnInvite(s.wrapHandler(manager.HandleInvite))
+	s.sipSrv.OnAck(s.wrapHandler(manager.HandleAck))
+	s.sipSrv.OnBye(s.wrapHandler(manager.HandleBye))
+	s.sipSrv.OnNotify(s.wrapHandler(manager.HandleNotify))
+	s.sipSrv.OnNoRoute(s.wrapHandler(manager.HandleNoRoute))
 
 	listenIP := s.conf.ListenIP
 	if listenIP == "" {
@@ -395,15 +345,6 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 }
 
 func (s *Server) Stop() {
-	ctx := context.Background()
-	s.closing.Break()
-	s.cmu.Lock()
-	calls := maps.Values(s.byLocalTag)
-	s.byLocalTag = make(map[LocalTag]*inboundCall)
-	s.cmu.Unlock()
-	for _, c := range calls {
-		c.Shutdown(ctx)
-	}
 	if s.sipSrv != nil {
 		_ = s.sipSrv.Close()
 	}
@@ -412,10 +353,12 @@ func (s *Server) Stop() {
 	}
 }
 
-func (s *Server) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
 	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
-func (s *Server) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
+// TODO(alexfish): Move this into manager.go
+func (s *callManager) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
 	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }
