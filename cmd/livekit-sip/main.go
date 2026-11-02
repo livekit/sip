@@ -36,6 +36,7 @@ import (
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/stats"
+	_ "github.com/livekit/sip/pkg/tlskey/gcpkms" // tls.certs[].key_uri: gcpkms://
 	"github.com/livekit/sip/version"
 )
 
