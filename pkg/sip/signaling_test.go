@@ -628,8 +628,8 @@ func (st *serviceTest) CreateInboundCall(t *testing.T, opts ...createCallTestOpt
 		st.TestUA.TransactionRequest(t, bye, true)
 	})
 
-	st.Manager.cmu.Lock()
-	defer st.Manager.cmu.Unlock()
+	st.Manager.cmu.RLock()
+	defer st.Manager.cmu.RUnlock()
 	ic, ok := st.Manager.byLocalTag[call.remoteTag]
 	require.True(t, ok, "call should be registered")
 
@@ -709,8 +709,8 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 		st.TestUA.TransactionRequest(t, bye, false)
 	})
 
-	st.Manager.cmu.Lock()
-	defer st.Manager.cmu.Unlock()
+	st.Manager.cmu.RLock()
+	defer st.Manager.cmu.RUnlock()
 	oc, ok := st.Manager.activeCalls[call.remoteTag]
 	require.True(t, ok, "call should be registered")
 
@@ -720,16 +720,16 @@ func (st *serviceTest) CreateOutboundCall(t *testing.T, opts ...createCallTestOp
 
 func lookupCall(t *testing.T, st *serviceTest, call *sipUADialogTest) (RoomInterface, MediaPort) {
 	t.Helper()
-	st.Manager.cmu.Lock()
+	st.Manager.cmu.RLock()
 	ic := st.Manager.byLocalTag[call.remoteTag]
-	st.Manager.cmu.Unlock()
+	st.Manager.cmu.RUnlock()
 	if ic != nil {
 		require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "inbound call should become active")
 		return ic.lkRoom, ic.media
 	}
-	st.Manager.cmu.Lock()
+	st.Manager.cmu.RLock()
 	oc := st.Manager.activeCalls[call.remoteTag]
-	st.Manager.cmu.Unlock()
+	st.Manager.cmu.RUnlock()
 	require.NotNil(t, oc, "call should be registered as inbound or outbound")
 	require.Eventually(t, oc.started.IsBroken, 5*time.Second, 10*time.Millisecond, "outbound call should become active")
 	return oc.lkRoom, oc.media

@@ -144,8 +144,8 @@ func (c *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.Interna
 
 // TODO(alexfish): Move this into manager.go
 func (c *callManager) getActiveCall(tag LocalTag) *outboundCall {
-	c.cmu.Lock()
-	defer c.cmu.Unlock()
+	c.cmu.RLock()
+	defer c.cmu.RUnlock()
 	return c.activeCalls[tag]
 }
 
@@ -497,9 +497,9 @@ func (c *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) 
 	ctx, span := Tracer.Start(ctx, "sip.callManager.onOutboundBye")
 	defer span.End()
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
+	c.cmu.RLock()
 	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	c.cmu.RUnlock()
 	if call == nil {
 		return false
 	}
@@ -518,9 +518,9 @@ func (c *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) 
 // TODO(alexfish): Move this into manager.go
 func (c *callManager) onOutboundNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
+	c.cmu.RLock()
 	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	c.cmu.RUnlock()
 	if call == nil {
 		return false
 	}

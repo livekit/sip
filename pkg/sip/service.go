@@ -176,7 +176,7 @@ func sampleMap[K comparable, V any](limit int, m map[K]V, sample func(v V) strin
 func (s *Service) ActiveCalls() ActiveCalls {
 	st := ActiveCalls{}
 
-	s.manager.cmu.Lock()
+	s.manager.cmu.RLock()
 	samples, total := sampleMap(5, s.manager.activeCalls, func(v *outboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
@@ -194,7 +194,7 @@ func (s *Service) ActiveCalls() ActiveCalls {
 	})
 	st.Inbound = total
 	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.manager.cmu.Unlock()
+	s.manager.cmu.RUnlock()
 
 	return st
 }
@@ -476,9 +476,9 @@ func (s *callManager) getOrCreatePendingTransfer(callID string, transferTo strin
 // TODO(alexfish): Move this into manager.go
 func (s *callManager) processParticipantTransfer(ctx context.Context, callID string, transferTo string, headers map[string]string, dialtone livekit.SIPDialtone) transferOutcome {
 	// Look for call both in client (outbound) and server (inbound)
-	s.cmu.Lock()
+	s.cmu.RLock()
 	out := s.activeCalls[LocalTag(callID)]
-	s.cmu.Unlock()
+	s.cmu.RUnlock()
 
 	if out != nil {
 		s.mon.TransferStarted(stats.Outbound)
@@ -491,9 +491,9 @@ func (s *callManager) processParticipantTransfer(ctx context.Context, callID str
 		return transferOutcome{TransferID: transferID}
 	}
 
-	s.cmu.Lock()
+	s.cmu.RLock()
 	in := s.byLocalTag[LocalTag(callID)]
-	s.cmu.Unlock()
+	s.cmu.RUnlock()
 
 	if in != nil {
 		s.mon.TransferStarted(stats.Inbound)
@@ -514,17 +514,17 @@ func (s *callManager) processParticipantTransfer(ctx context.Context, callID str
 // TODO(alexfish): Move this into manager.go
 func (s *callManager) checkInternalProviderRequest(ctx context.Context, callID, transferTo string) error {
 	// Look for call both in client (outbound) and server (inbound)
-	s.cmu.Lock()
+	s.cmu.RLock()
 	out := s.activeCalls[LocalTag(callID)]
-	s.cmu.Unlock()
+	s.cmu.RUnlock()
 
 	if out != nil {
 		return s.rejectTransfer(stats.Outbound, s.validateCallProvider(out.state, transferTo))
 	}
 
-	s.cmu.Lock()
+	s.cmu.RLock()
 	in := s.byLocalTag[LocalTag(callID)]
-	s.cmu.Unlock()
+	s.cmu.RUnlock()
 
 	if in != nil {
 		return s.rejectTransfer(stats.Inbound, s.validateCallProvider(in.state, transferTo))
