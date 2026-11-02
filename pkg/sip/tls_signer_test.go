@@ -26,6 +26,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"hash/crc32"
 	"math/big"
 	"net"
@@ -201,6 +202,71 @@ func TestTLSKeySigner(t *testing.T) {
 		_, err = s.Sign(nil, make([]byte, 64), crypto.SHA512)
 		require.ErrorContains(t, err, "cannot sign")
 	})
+}
+
+func TestTLSKeySignerErrors(t *testing.T) {
+	ctx := context.Background()
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	t.Run("p384 and sha512 keys sign a handshake", func(t *testing.T) {
+		p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		require.NoError(t, err)
+		for _, f := range []*fakeKMS{
+			{key: p384, alg: kmspb.CryptoKeyVersion_EC_SIGN_P384_SHA384},
+			{key: rsaKey, alg: kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_4096_SHA512},
+		} {
+			registerFakeKMS(t, f)
+			certFile, roots := writeCert(t, f.key)
+			cert, err := loadTLSCertificate(ctx, config.TLSCert{CertFile: certFile, KeyURI: "fakekms://k/1"})
+			require.NoError(t, err)
+			_, err = handshake(t, cert, tls.VersionTLS12, roots)
+			require.NoError(t, err, f.alg)
+			require.Equal(t, 1, f.signs)
+		}
+	})
+
+	t.Run("KMS key the signer cannot use", func(t *testing.T) {
+		_, err := newGCPKMSSignerWithClient(ctx, &fakeKMS{key: rsaKey, alg: kmspb.CryptoKeyVersion_GOOGLE_SYMMETRIC_ENCRYPTION}, "k/1")
+		require.ErrorContains(t, err, "unsupported key algorithm")
+		_, err = newGCPKMSSignerWithClient(ctx, failingKMS{&fakeKMS{key: rsaKey}}, "k/1")
+		require.ErrorContains(t, err, "unavailable")
+	})
+
+	t.Run("KMS sign error fails the handshake", func(t *testing.T) {
+		s, err := newGCPKMSSignerWithClient(ctx, &fakeKMS{key: rsaKey, alg: kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_2048_SHA256}, "k/1")
+		require.NoError(t, err)
+		s.client = failingKMS{s.client.(*fakeKMS)}
+		_, err = s.Sign(nil, make([]byte, 32), crypto.SHA256)
+		require.ErrorContains(t, err, "unavailable")
+	})
+
+	t.Run("bad certificate file", func(t *testing.T) {
+		registerFakeKMS(t, &fakeKMS{key: rsaKey, alg: kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_2048_SHA256})
+		_, err := loadTLSCertificate(ctx, config.TLSCert{CertFile: filepath.Join(t.TempDir(), "missing.pem"), KeyURI: "fakekms://k/1"})
+		require.Error(t, err)
+		empty := filepath.Join(t.TempDir(), "empty.pem")
+		require.NoError(t, os.WriteFile(empty, []byte("not a pem"), 0600))
+		_, err = loadTLSCertificate(ctx, config.TLSCert{CertFile: empty, KeyURI: "fakekms://k/1"})
+		require.ErrorContains(t, err, "no certificate")
+	})
+
+	t.Run("signer that fails to open", func(t *testing.T) {
+		registerFakeKMS(t, &fakeKMS{key: rsaKey, alg: kmspb.CryptoKeyVersion_GOOGLE_SYMMETRIC_ENCRYPTION})
+		certFile, _ := writeCert(t, rsaKey)
+		_, err := loadTLSCertificate(ctx, config.TLSCert{CertFile: certFile, KeyURI: "fakekms://k/1"})
+		require.ErrorContains(t, err, "open fakekms://k/1")
+	})
+}
+
+type failingKMS struct{ *fakeKMS }
+
+func (failingKMS) GetPublicKey(context.Context, *kmspb.GetPublicKeyRequest, ...gax.CallOption) (*kmspb.PublicKey, error) {
+	return nil, errors.New("unavailable")
+}
+
+func (failingKMS) AsymmetricSign(context.Context, *kmspb.AsymmetricSignRequest, ...gax.CallOption) (*kmspb.AsymmetricSignResponse, error) {
+	return nil, errors.New("unavailable")
 }
 
 type corruptKMS struct{ *fakeKMS }
