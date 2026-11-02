@@ -19,10 +19,47 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/tlskey"
 )
+
+// keyLogFile is a TLS key log, synced to disk every 30s until it is closed.
+type keyLogFile struct {
+	*os.File
+	done chan struct{}
+}
+
+func openKeyLog(path string) (*keyLogFile, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	k := &keyLogFile{File: f, done: make(chan struct{})}
+	go k.syncEvery(30 * time.Second)
+	return k, nil
+}
+
+func (k *keyLogFile) syncEvery(d time.Duration) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			_ = k.File.Sync()
+		case <-k.done:
+			return
+		}
+	}
+}
+
+// Close stops the sync loop and closes the file.
+func (k *keyLogFile) Close() error {
+	close(k.done)
+	return k.File.Close()
+}
 
 // checkTLS13 is tlskey.CheckTLS13 with the configuration change that fixes it. With warn_only,
 // ApplyPolicy leaves max_version unenforced, so setting it alone would not help.

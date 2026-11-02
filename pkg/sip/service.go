@@ -24,7 +24,6 @@ import (
 	"maps"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -287,19 +286,12 @@ func (s *Service) Start() (err error) {
 		}
 		var keyLog io.Writer
 		if tconf.KeyLog != "" {
-			f, err := os.OpenFile(tconf.KeyLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			f, err := openKeyLog(tconf.KeyLog)
 			if err != nil {
 				return err
 			}
 			s.closers = append(s.closers, f)
 			keyLog = f
-			go func() {
-				ticker := time.NewTicker(30 * time.Second)
-				defer ticker.Stop()
-				for range ticker.C {
-					f.Sync()
-				}
-			}()
 		}
 		tlsConf = &tls.Config{
 			NextProtos:   tlsALPNProtocols(tconf.ALPNProtocols),

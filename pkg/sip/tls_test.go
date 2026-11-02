@@ -202,7 +202,8 @@ func TestServiceStartTLS(t *testing.T) {
 
 	t.Run("serves TLS 1.2 signed by the external key", func(t *testing.T) {
 		signer := pkcs1("testkey:capped")
-		tconf := &config.TLSConfig{MaxVersion: "tls1.2", Certs: []config.TLSCert{{CertFile: certFile, KeyURI: "testkey:capped"}}}
+		keyLog := filepath.Join(t.TempDir(), "keys.log")
+		tconf := &config.TLSConfig{MaxVersion: "tls1.2", KeyLog: keyLog, Certs: []config.TLSCert{{CertFile: certFile, KeyURI: "testkey:capped"}}}
 		s := newTLSService(t, tconf)
 		stop := sync.OnceFunc(s.Stop)
 		t.Cleanup(stop)
@@ -219,5 +220,30 @@ func TestServiceStartTLS(t *testing.T) {
 
 		stop()
 		require.True(t, signer.closed.Load(), "Stop must close the signer")
+		logged, err := os.ReadFile(keyLog)
+		require.NoError(t, err)
+		require.Contains(t, string(logged), "CLIENT_RANDOM ")
 	})
+}
+
+// TestKeyLogFile: closing the key log stops its sync loop instead of leaving it syncing a
+// closed file every 30s.
+func TestKeyLogFile(t *testing.T) {
+	k, err := openKeyLog(filepath.Join(t.TempDir(), "keys.log"))
+	require.NoError(t, err)
+	exited := make(chan struct{})
+	go func() {
+		k.syncEvery(time.Millisecond)
+		close(exited)
+	}()
+	time.Sleep(5 * time.Millisecond)
+
+	require.NoError(t, k.Close())
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("sync loop still running after Close")
+	}
+	_, err = k.Write([]byte("x"))
+	require.ErrorIs(t, err, os.ErrClosed)
 }

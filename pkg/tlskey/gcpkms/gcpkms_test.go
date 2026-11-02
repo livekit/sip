@@ -189,6 +189,14 @@ func TestRegistered(t *testing.T) {
 	require.Contains(t, tlskey.Schemes(), Scheme)
 }
 
+// TestNewClient: the real client constructor reports missing credentials instead of hanging or
+// falling back to another source.
+func TestNewClient(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
+	_, err := newClient(context.Background())
+	require.ErrorContains(t, err, "missing.json")
+}
+
 func TestOpen(t *testing.T) {
 	ctx := context.Background()
 	rsaKey := mustRSA(t)
