@@ -918,6 +918,7 @@ type testSIPHarness struct {
 	log           logger.Logger
 	Client        *Client
 	Server        *Server
+	manager       CallManager
 	client        *testSIPClient
 	clientCreated atomic.Bool
 }
@@ -971,20 +972,20 @@ func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
 	log := slog.New(logger.ToSlogHandler(h.log))
 	switch req.Method {
 	case sip.INVITE:
-		h.Server.manager.HandleInvite(log, req, tx)
+		h.manager.HandleInvite(log, req, tx)
 	case sip.ACK:
-		h.Server.manager.HandleAck(log, req, tx)
+		h.manager.HandleAck(log, req, tx)
 	case sip.BYE:
-		h.Server.manager.HandleBye(log, req, tx)
+		h.manager.HandleBye(log, req, tx)
 	case sip.NOTIFY:
-		h.Server.manager.HandleNotify(log, req, tx)
+		h.manager.HandleNotify(log, req, tx)
 	case sip.OPTIONS:
-		h.Server.manager.HandleOptions(log, req, tx)
+		h.manager.HandleOptions(log, req, tx)
 	default:
 		if h.Client != nil && h.Client.OnRequest(req, tx) {
 			return
 		}
-		h.Server.manager.HandleNoRoute(log, req, tx)
+		h.manager.HandleNoRoute(log, req, tx)
 	}
 }
 
@@ -1102,12 +1103,12 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 	srv.sconf = sconf
 	manager := newCallManager(srv, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoomServer(cfg.GetRoom), WithClient(client))
 	manager.SetHandler(cfg.Handler)
-	srv.manager = manager
 	t.Cleanup(srv.Stop)
 	t.Cleanup(manager.stop)
 
 	h.Client = client
 	h.Server = srv
+	h.manager = manager
 	return h
 }
 
