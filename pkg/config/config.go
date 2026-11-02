@@ -54,8 +54,16 @@ const (
 )
 
 type TLSCert struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	CertFile string `yaml:"cert_file"` // PEM certificate chain, leaf first
+
+	// Exactly one of KeyFile and KeyURI.
+	KeyFile string `yaml:"key_file"` // PEM private key
+	// KeyURI names a private key held outside this host, in a KMS or HSM that signs each
+	// handshake instead of handing the key out. The URI scheme selects the backend (pkg/tlskey);
+	// the service ships Cloud KMS:
+	//   gcpkms://projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
+	// A key that only signs PKCS#1 v1.5 (RSA_SIGN_PKCS1_* in KMS) needs max_version: tls1.2.
+	KeyURI string `yaml:"key_uri"`
 }
 
 type TLSConfig struct {
@@ -200,6 +208,11 @@ func (c *Config) Init() error {
 		}
 		if tc.ListenPort == 0 {
 			tc.ListenPort = tc.Port
+		}
+		for i, cert := range tc.Certs {
+			if err := cert.Validate(); err != nil {
+				return fmt.Errorf("tls.certs[%d]: %w", i, err)
+			}
 		}
 	}
 	if c.RTPPort.Start == 0 {

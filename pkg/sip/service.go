@@ -44,6 +44,7 @@ import (
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
+	"github.com/livekit/sip/pkg/tlskey"
 	"github.com/livekit/sip/version"
 )
 
@@ -259,9 +260,18 @@ func (s *Service) Start() error {
 		}
 		var certs []tls.Certificate
 		for _, c := range tconf.Certs {
-			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			var cert tls.Certificate
+			var err error
+			if c.KeyURI != "" {
+				cert, err = tlskey.Load(context.Background(), c.CertFile, c.KeyURI)
+			} else {
+				cert, err = tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			}
 			if err != nil {
 				return err
+			}
+			if cl, ok := cert.PrivateKey.(io.Closer); ok {
+				s.closers = append(s.closers, cl)
 			}
 			certs = append(certs, cert)
 		}
@@ -288,6 +298,9 @@ func (s *Service) Start() error {
 		}
 
 		if err := tconf.ApplyPolicy(s.log, tlsConf); err != nil {
+			return err
+		}
+		if err := tlskey.CheckTLS13(tlsConf); err != nil {
 			return err
 		}
 

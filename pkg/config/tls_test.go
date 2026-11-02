@@ -34,6 +34,31 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
+func TestTLSCertValidate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cert    TLSCert
+		wantErr string
+	}{
+		"key file":     {TLSCert{CertFile: "c.pem", KeyFile: "k.pem"}, ""},
+		"key uri":      {TLSCert{CertFile: "c.pem", KeyURI: "gcpkms://projects/p/x"}, ""},
+		"no cert file": {TLSCert{KeyFile: "k.pem"}, "cert_file is required"},
+		"no key":       {TLSCert{CertFile: "c.pem"}, "exactly one of key_file and key_uri"},
+		"two keys":     {TLSCert{CertFile: "c.pem", KeyFile: "k.pem", KeyURI: "gcpkms://projects/p/x"}, "exactly one of key_file and key_uri"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.cert.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantErr)
+			}
+		})
+	}
+
+	conf := &Config{TLS: &TLSConfig{Certs: []TLSCert{{CertFile: "c.pem", KeyFile: "k.pem"}, {CertFile: "c.pem"}}}}
+	require.ErrorContains(t, conf.Init(), "tls.certs[1]: set exactly one of key_file and key_uri")
+}
+
 func TestParseCipherSuites(t *testing.T) {
 	log := logger.NewTestLogger(t)
 
