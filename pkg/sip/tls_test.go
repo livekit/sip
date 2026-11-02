@@ -10,7 +10,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"math/big"
+	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -54,11 +58,21 @@ func TestTLSALPNProtocols(t *testing.T) {
 	})
 }
 
-// testSigner is a key the "testkey" URI scheme opens; it records whether it was closed.
+// testSigner is a key the "testkey" URI scheme opens: it signs with a local key, counts the
+// signatures, can be limited to one scheme like a KMS key, and records whether it was closed.
 type testSigner struct {
 	crypto.Signer
-	closed atomic.Bool
+	schemes []tls.SignatureScheme
+	signs   atomic.Int32
+	closed  atomic.Bool
 }
+
+func (s *testSigner) Sign(r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	s.signs.Add(1)
+	return s.Signer.Sign(r, digest, opts)
+}
+
+func (s *testSigner) SignatureSchemes() []tls.SignatureScheme { return s.schemes }
 
 func (s *testSigner) Close() error {
 	s.closed.Store(true)
@@ -76,22 +90,50 @@ func init() {
 	})
 }
 
-// writeServerCert writes a self-signed certificate for key and returns its path.
-func writeServerCert(t *testing.T, key crypto.Signer) string {
+// writeServerCert writes a self-signed certificate for key and returns its path and a pool
+// trusting it.
+func writeServerCert(t *testing.T, key crypto.Signer) (string, *x509.CertPool) {
 	t.Helper()
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "sip.example.com"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "sip.example.com"},
+		DNSNames:              []string{"sip.example.com"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
 	require.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "cert.pem")
 	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
-	return path
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return path, pool
+}
+
+// newTLSService builds a Service on random test ports with the given TLS config; tconf.Port
+// and ListenPort are filled in. Nothing is started.
+func newTLSService(t *testing.T, tconf *config.TLSConfig) *Service {
+	t.Helper()
+	sipPort := mrand.Intn(testPortSIPMax-testPortSIPMin-1) + testPortSIPMin
+	tconf.Port, tconf.ListenPort = sipPort+1, sipPort+1
+	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+	require.NoError(t, err)
+	s, err := NewService("", &config.Config{
+		SIPPort:       sipPort,
+		SIPPortListen: sipPort,
+		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+		TLS:           tconf,
+	}, mon, logger.NewTestLogger(t), func(string, *rpc.SIPCallObservability, *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
+	require.NoError(t, err)
+	return s
 }
 
 func TestCheckTLS13Hint(t *testing.T) {
@@ -122,28 +164,60 @@ func TestServiceStartClosesSigners(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	signer := &testSigner{Signer: key}
-	testSigners.Store("testkey:service", signer)
+	testSigners.Store("testkey:later-fails", signer)
+	certFile, _ := writeServerCert(t, key)
 
-	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
-	require.NoError(t, err)
-	s, err := NewService("", &config.Config{
-		SIPPort:       testPortSIPMin,
-		SIPPortListen: testPortSIPMin,
-		TLS: &config.TLSConfig{
-			Port:       testPortSIPMin + 1,
-			ListenPort: testPortSIPMin + 1,
-			Certs: []config.TLSCert{
-				{CertFile: writeServerCert(t, key), KeyURI: "testkey:service"},
-				{CertFile: filepath.Join(t.TempDir(), "missing.pem"), KeyFile: "missing.pem"},
-			},
-		},
-	}, mon, logger.NewTestLogger(t), func(string, *rpc.SIPCallObservability, *livekit.SIPCallInfo) StateHandler {
-		return NewRPCStateHandler(nil)
-	})
-	require.NoError(t, err)
+	s := newTLSService(t, &config.TLSConfig{Certs: []config.TLSCert{
+		{CertFile: certFile, KeyURI: "testkey:later-fails"},
+		{CertFile: filepath.Join(t.TempDir(), "missing.pem"), KeyFile: "missing.pem"},
+	}})
 	t.Cleanup(s.Stop)
 
 	require.ErrorIs(t, s.Start(), os.ErrNotExist)
 	require.True(t, signer.closed.Load(), "signer left open after a failed Start")
 	require.Empty(t, s.closers)
+}
+
+// TestServiceStartTLS runs the service with a certificate whose key is external and limited to
+// PKCS#1, the Cloud KMS case: Start refuses it while TLS 1.3 is enabled, and with the cap the
+// TLS listener serves a handshake signed by that key.
+func TestServiceStartTLS(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	certFile, pool := writeServerCert(t, key)
+	pkcs1 := func(uri string) *testSigner {
+		signer := &testSigner{Signer: key, schemes: []tls.SignatureScheme{tls.PKCS1WithSHA256}}
+		testSigners.Store(uri, signer)
+		return signer
+	}
+
+	t.Run("PKCS#1 key with TLS 1.3 enabled", func(t *testing.T) {
+		signer := pkcs1("testkey:uncapped")
+		s := newTLSService(t, &config.TLSConfig{Certs: []config.TLSCert{{CertFile: certFile, KeyURI: "testkey:uncapped"}}})
+		t.Cleanup(s.Stop)
+
+		require.ErrorContains(t, s.Start(), "set tls.max_version: tls1.2")
+		require.True(t, signer.closed.Load(), "signer left open after a failed Start")
+	})
+
+	t.Run("serves TLS 1.2 signed by the external key", func(t *testing.T) {
+		signer := pkcs1("testkey:capped")
+		tconf := &config.TLSConfig{MaxVersion: "tls1.2", Certs: []config.TLSCert{{CertFile: certFile, KeyURI: "testkey:capped"}}}
+		s := newTLSService(t, tconf)
+		stop := sync.OnceFunc(s.Stop)
+		t.Cleanup(stop)
+		require.NoError(t, s.Start())
+
+		localIP, err := config.GetLocalIP()
+		require.NoError(t, err)
+		conn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", localIP, tconf.ListenPort), &tls.Config{ServerName: "sip.example.com", RootCAs: pool})
+		require.NoError(t, err)
+		require.Equal(t, uint16(tls.VersionTLS12), conn.ConnectionState().Version)
+		require.NoError(t, conn.Close())
+		require.EqualValues(t, 1, signer.signs.Load())
+		require.False(t, signer.closed.Load())
+
+		stop()
+		require.True(t, signer.closed.Load(), "Stop must close the signer")
+	})
 }
