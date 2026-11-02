@@ -259,9 +259,12 @@ func (s *Service) Start() error {
 		}
 		var certs []tls.Certificate
 		for _, c := range tconf.Certs {
-			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			cert, err := loadTLSCertificate(context.Background(), c)
 			if err != nil {
 				return err
+			}
+			if cl, ok := cert.PrivateKey.(io.Closer); ok {
+				s.closers = append(s.closers, cl)
 			}
 			certs = append(certs, cert)
 		}
@@ -288,6 +291,9 @@ func (s *Service) Start() error {
 		}
 
 		if err := tconf.ApplyPolicy(s.log, tlsConf); err != nil {
+			return err
+		}
+		if err := checkTLS13Signers(tlsConf); err != nil {
 			return err
 		}
 

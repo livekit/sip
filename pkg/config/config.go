@@ -56,6 +56,10 @@ const (
 type TLSCert struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+	// KeyURI points to a private key held by an external signer instead of a file,
+	// e.g. "gcpkms://projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1".
+	// Set either KeyFile or KeyURI.
+	KeyURI string `yaml:"key_uri"`
 }
 
 type TLSConfig struct {
