@@ -26,7 +26,6 @@ import (
 	"github.com/livekit/sip/pkg/tlskey"
 )
 
-// keyLogFile is a TLS key log, synced to disk every 30s until it is closed.
 type keyLogFile struct {
 	*os.File
 	done chan struct{}
@@ -55,14 +54,12 @@ func (k *keyLogFile) syncEvery(d time.Duration) {
 	}
 }
 
-// Close stops the sync loop and closes the file.
 func (k *keyLogFile) Close() error {
 	close(k.done)
 	return k.File.Close()
 }
 
-// checkTLS13 is tlskey.CheckTLS13 with the configuration change that fixes it. With warn_only,
-// ApplyPolicy leaves max_version unenforced, so setting it alone would not help.
+// checkTLS13 adds the configuration fix to tlskey.CheckTLS13: with warn_only, ApplyPolicy leaves max_version unenforced.
 func checkTLS13(tconf *config.TLSConfig, c *tls.Config) error {
 	err := tlskey.CheckTLS13(c)
 	if err == nil {

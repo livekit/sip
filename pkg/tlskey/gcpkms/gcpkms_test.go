@@ -122,7 +122,6 @@ func (f *fakeKMS) Close() error {
 	return nil
 }
 
-// useFake makes Open talk to f instead of Cloud KMS.
 func useFake(t *testing.T, f *fakeKMS) {
 	t.Helper()
 	prev := newClient
@@ -144,8 +143,6 @@ func mustEC(t *testing.T, curve elliptic.Curve) *ecdsa.PrivateKey {
 	return key
 }
 
-// writeCert writes a self-signed server certificate for key and returns its path and a pool
-// trusting it.
 func writeCert(t *testing.T, key crypto.Signer) (string, *x509.CertPool) {
 	t.Helper()
 	tmpl := &x509.Certificate{
@@ -189,8 +186,7 @@ func TestRegistered(t *testing.T) {
 	require.Contains(t, tlskey.Schemes(), Scheme)
 }
 
-// TestNewClient: the real client constructor reports missing credentials instead of hanging or
-// falling back to another source.
+// A missing credentials file fails detection at once, so this needs no gcloud setup or network.
 func TestNewClient(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
 	_, err := newClient(context.Background())
@@ -258,8 +254,6 @@ func TestOpen(t *testing.T) {
 	})
 }
 
-// TestHandshake loads a certificate through tlskey with a gcpkms:// key for every supported
-// algorithm and completes a real TLS handshake with one KMS signature.
 func TestHandshake(t *testing.T) {
 	ctx := context.Background()
 	rsaKey, p256, p384 := mustRSA(t), mustEC(t, elliptic.P256()), mustEC(t, elliptic.P384())

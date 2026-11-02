@@ -12,15 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package gcpkms signs TLS handshakes with a Google Cloud KMS asymmetric key. The key never
-// leaves KMS, and the service account only needs roles/cloudkms.signer on the key version.
-//
-// Importing the package registers the "gcpkms" key URI scheme with tlskey:
-//
-//	gcpkms://projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
-//
-// The client uses Application Default Credentials. Each new TLS connection makes one
-// AsymmetricSign call; established connections make none.
+// Package gcpkms signs TLS handshakes with a Google Cloud KMS asymmetric key version,
+// gcpkms://projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N, under Application
+// Default Credentials. The key never leaves KMS, the service account needs roles/cloudkms.signer
+// only, and each new TLS connection costs one AsymmetricSign call.
 package gcpkms
 
 import (
@@ -47,8 +42,7 @@ import (
 // Scheme is the key URI scheme this package registers.
 const Scheme = "gcpkms"
 
-// signTimeout bounds one AsymmetricSign call. The SDK's default is 60s, far longer than any
-// peer waits for a TLS handshake.
+// signTimeout bounds one AsymmetricSign call; the SDK's default is 60s, longer than any peer waits.
 const signTimeout = 5 * time.Second
 
 func init() {
@@ -72,9 +66,7 @@ type algorithm struct {
 	scheme tls.SignatureScheme
 }
 
-// algorithms maps each KMS signing algorithm a TLS certificate can use to the digest KMS
-// expects and the one signature scheme the key produces. Ed25519, secp256k1, raw PKCS#1 and
-// the post-quantum algorithms are left out.
+// algorithms: the KMS signing algorithms usable in TLS. Ed25519, secp256k1, raw PKCS#1 and post-quantum are left out.
 var algorithms = map[kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm]algorithm{
 	kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_2048_SHA256: {crypto.SHA256, false, tls.PKCS1WithSHA256},
 	kmspb.CryptoKeyVersion_RSA_SIGN_PKCS1_3072_SHA256: {crypto.SHA256, false, tls.PKCS1WithSHA256},
@@ -88,7 +80,6 @@ var algorithms = map[kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm]algorithm{
 	kmspb.CryptoKeyVersion_EC_SIGN_P384_SHA384:        {crypto.SHA384, false, tls.ECDSAWithP384AndSHA384},
 }
 
-// key is a Cloud KMS key version used as a TLS private key.
 type key struct {
 	client client
 	name   string
@@ -96,7 +87,7 @@ type key struct {
 	alg    algorithm
 }
 
-// Open opens the key version a gcpkms:// URI names, with Application Default Credentials.
+// Open opens the key version a gcpkms:// URI names.
 func Open(ctx context.Context, uri string) (crypto.Signer, error) {
 	name, err := parseURI(uri)
 	if err != nil {
@@ -148,14 +139,11 @@ func open(ctx context.Context, c client, name string) (*key, error) {
 
 func (k *key) Public() crypto.PublicKey { return k.pub }
 
-// SignatureSchemes returns the one scheme the key version was created for.
 func (k *key) SignatureSchemes() []tls.SignatureScheme { return []tls.SignatureScheme{k.alg.scheme} }
 
-// Close closes the KMS client.
 func (k *key) Close() error { return k.client.Close() }
 
-// Sign asks KMS to sign digest. TLS passes the opts of the scheme it negotiated, which
-// SignatureSchemes limited to the key's own; anything else is refused before the call.
+// Sign refuses anything but the key version's own algorithm before calling KMS.
 func (k *key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	_, pss := opts.(*rsa.PSSOptions)
 	if opts.HashFunc() != k.alg.hash || pss != k.alg.pss || len(digest) != k.alg.hash.Size() {
@@ -180,8 +168,7 @@ func (k *key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("gcpkms: sign with %s: %w", k.name, err)
 	}
-	// The checks Cloud KMS documents: the digest arrived intact, the right key answered, and
-	// the signature came back intact.
+	// The integrity checks Cloud KMS documents: digest arrived intact, the right key answered, signature intact.
 	if !resp.VerifiedDigestCrc32C || resp.Name != k.name || resp.SignatureCrc32C.GetValue() != crc32c(resp.Signature) {
 		return nil, fmt.Errorf("gcpkms: sign with %s: request or response corrupted in transit", k.name)
 	}

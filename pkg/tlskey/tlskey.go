@@ -12,16 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package tlskey loads a TLS certificate whose private key stays outside the process, in a
-// KMS, an HSM or any other signer that never hands the key out.
-//
-// A certificate names its key with a URI, and the URI scheme selects the backend. A backend
-// registers itself with [Register], usually from an init function that a blank import runs:
-//
-//	import _ "github.com/livekit/sip/pkg/tlskey/gcpkms"
-//
-// A backend only has to return a [crypto.Signer]: crypto/tls accepts any signer as a private
-// key, so nothing else in the TLS stack changes.
+// Package tlskey loads a TLS certificate whose private key stays in a KMS or HSM that signs for
+// it. The key URI's scheme selects a backend registered with Register, usually from an init
+// function that a blank import runs: _ "github.com/livekit/sip/pkg/tlskey/gcpkms".
 package tlskey
 
 import (
@@ -39,18 +32,12 @@ import (
 	"sync"
 )
 
-// Opener opens the private key that a key URI names. The returned signer may also implement
-//   - [io.Closer], called when the service stops;
-//   - [SignatureSchemer], which a KMS or HSM backend must implement.
-//
-// A key URI can carry a secret (an RFC 7512 PKCS#11 URI has pin-value), so this package never
-// puts the URI in an error; a backend should name the key some other way.
+// Opener opens the key a URI names. The signer may also implement io.Closer (closed when the
+// service stops) and SignatureSchemer. Errors never echo the URI: a PKCS#11 URI can carry a PIN.
 type Opener func(ctx context.Context, uri string) (crypto.Signer, error)
 
-// SignatureSchemer is implemented by signers that can produce only some TLS signature
-// schemes. A KMS or HSM key version is created for one algorithm, so its backend must
-// implement it: otherwise TLS picks RSA-PSS for any RSA key, and a PKCS#1 key fails every
-// handshake. [Load] copies the schemes into tls.Certificate.SupportedSignatureAlgorithms.
+// SignatureSchemer limits a key to the TLS signature schemes it can produce. A KMS or HSM key
+// must implement it, or TLS picks RSA-PSS for an RSA key and a PKCS#1 key fails every handshake.
 type SignatureSchemer interface {
 	SignatureSchemes() []tls.SignatureScheme
 }
@@ -60,8 +47,7 @@ var (
 	openers = map[string]Opener{}
 )
 
-// Register makes [Open] and [Load] handle key URIs of the given scheme. Like
-// database/sql.Register, it panics on an empty scheme, a nil opener or a scheme registered twice.
+// Register adds the backend for a key URI scheme; like database/sql.Register, duplicates and nils panic.
 func Register(scheme string, open Opener) {
 	if scheme == "" || open == nil {
 		panic("tlskey: Register with an empty scheme or a nil opener")
@@ -81,8 +67,7 @@ func Schemes() []string {
 	return slices.Sorted(maps.Keys(openers))
 }
 
-// Open opens the private key uri names through the backend registered for its scheme. The
-// scheme ends at the first ':', so "gcpkms://..." and "pkcs11:..." both reach their backend.
+// Open opens the key uri names. The scheme ends at the first ':', so "pkcs11:..." works like "gcpkms://...".
 func Open(ctx context.Context, uri string) (crypto.Signer, error) {
 	scheme, _, ok := strings.Cut(uri, ":")
 	if !ok || scheme == "" {
@@ -101,8 +86,7 @@ func Open(ctx context.Context, uri string) (crypto.Signer, error) {
 	return signer, nil
 }
 
-// Load reads the PEM certificate chain in certFile and opens its private key at keyURI, as
-// tls.LoadX509KeyPair does for a key file. The chain's public key must match the signer's.
+// Load reads the PEM chain in certFile and opens its key at keyURI, like tls.LoadX509KeyPair for a key file.
 func Load(ctx context.Context, certFile, keyURI string) (tls.Certificate, error) {
 	cert, err := loadChain(certFile)
 	if err != nil {
@@ -150,10 +134,8 @@ var tls12Only = []tls.SignatureScheme{
 	tls.PKCS1WithSHA1, tls.PKCS1WithSHA256, tls.PKCS1WithSHA384, tls.PKCS1WithSHA512, tls.ECDSAWithSHA1,
 }
 
-// CheckTLS13 returns an error when c allows TLS 1.3 but a certificate's key can produce only
-// signature schemes TLS 1.3 removed: every TLS 1.3 handshake on that certificate would fail,
-// so c has to cap the version at TLS 1.2 instead. The caller knows how its configuration sets
-// that cap and adds the hint.
+// CheckTLS13 fails when c allows TLS 1.3 but a certificate's key signs only tls12Only schemes:
+// every TLS 1.3 handshake on it would fail. The caller adds the configuration hint.
 func CheckTLS13(c *tls.Config) error {
 	if c.MaxVersion != 0 && c.MaxVersion < tls.VersionTLS13 {
 		return nil

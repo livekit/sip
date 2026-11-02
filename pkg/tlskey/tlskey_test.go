@@ -36,8 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// memKey stands in for a key held outside the process: it signs with a local key, counts the
-// signatures and, like a KMS key, can be limited to one signature scheme.
+// memKey stands in for a key held outside the process, limited to one scheme like a KMS key.
 type memKey struct {
 	crypto.Signer
 	schemes []tls.SignatureScheme
@@ -57,7 +56,6 @@ func (k *memKey) Close() error {
 	return nil
 }
 
-// memKeys holds the signers the "mem" scheme opens, by URI.
 var memKeys sync.Map
 
 func init() {
@@ -67,7 +65,7 @@ func init() {
 		}
 		return nil, errors.New("no such key")
 	})
-	// A scheme whose URIs have no "//", like RFC 7512 PKCS#11 URIs: the opener gets the URI whole.
+	// A scheme whose URIs have no "//", like PKCS#11 URIs: the opener gets the URI whole.
 	Register("echo", func(_ context.Context, uri string) (crypto.Signer, error) {
 		return nil, errors.New("opened " + uri)
 	})
@@ -80,7 +78,6 @@ func mustRSA(t *testing.T) *rsa.PrivateKey {
 	return key
 }
 
-// selfSigned returns a self-signed server certificate for key, in DER.
 func selfSigned(t *testing.T, key crypto.Signer) []byte {
 	t.Helper()
 	tmpl := &x509.Certificate{
@@ -124,8 +121,6 @@ func roots(t *testing.T, der []byte) *x509.CertPool {
 	return pool
 }
 
-// handshake runs a TLS handshake against a server holding cert, capped at maxVersion (0 for
-// Go's default), and returns the client's view of it.
 func handshake(t *testing.T, cert tls.Certificate, maxVersion uint16, roots *x509.CertPool) (tls.ConnectionState, error) {
 	t.Helper()
 	srv, cli := net.Pipe()

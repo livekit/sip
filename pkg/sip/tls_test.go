@@ -58,8 +58,7 @@ func TestTLSALPNProtocols(t *testing.T) {
 	})
 }
 
-// testSigner is a key the "testkey" URI scheme opens: it signs with a local key, counts the
-// signatures, can be limited to one scheme like a KMS key, and records whether it was closed.
+// testSigner is a key the "testkey" scheme opens: counts signatures, optionally one scheme, records Close.
 type testSigner struct {
 	crypto.Signer
 	schemes []tls.SignatureScheme
@@ -90,8 +89,6 @@ func init() {
 	})
 }
 
-// writeServerCert writes a self-signed certificate for key and returns its path and a pool
-// trusting it.
 func writeServerCert(t *testing.T, key crypto.Signer) (string, *x509.CertPool) {
 	t.Helper()
 	tmpl := &x509.Certificate{
@@ -116,8 +113,7 @@ func writeServerCert(t *testing.T, key crypto.Signer) (string, *x509.CertPool) {
 	return path, pool
 }
 
-// newTLSService builds a Service on random test ports with the given TLS config; tconf.Port
-// and ListenPort are filled in. Nothing is started.
+// newTLSService builds an unstarted Service on random test ports and fills in tconf's TLS port.
 func newTLSService(t *testing.T, tconf *config.TLSConfig) *Service {
 	t.Helper()
 	sipPort := mrand.Intn(testPortSIPMax-testPortSIPMin-1) + testPortSIPMin
@@ -158,8 +154,6 @@ func TestCheckTLS13Hint(t *testing.T) {
 	}
 }
 
-// TestServiceStartClosesSigners: a signer opened for one certificate is closed when Start fails
-// on a later one, and Stop does not close it again.
 func TestServiceStartClosesSigners(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -178,9 +172,6 @@ func TestServiceStartClosesSigners(t *testing.T) {
 	require.Empty(t, s.closers)
 }
 
-// TestServiceStartTLS runs the service with a certificate whose key is external and limited to
-// PKCS#1, the Cloud KMS case: Start refuses it while TLS 1.3 is enabled, and with the cap the
-// TLS listener serves a handshake signed by that key.
 func TestServiceStartTLS(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
@@ -226,9 +217,10 @@ func TestServiceStartTLS(t *testing.T) {
 	})
 }
 
-// TestKeyLogFile: closing the key log stops its sync loop instead of leaving it syncing a
-// closed file every 30s.
 func TestKeyLogFile(t *testing.T) {
+	_, err := openKeyLog(filepath.Join(t.TempDir(), "missing", "keys.log"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+
 	k, err := openKeyLog(filepath.Join(t.TempDir(), "keys.log"))
 	require.NoError(t, err)
 	exited := make(chan struct{})

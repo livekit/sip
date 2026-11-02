@@ -55,12 +55,9 @@ const (
 
 type TLSCert struct {
 	CertFile string `yaml:"cert_file"` // PEM certificate chain, leaf first
-
 	// Exactly one of KeyFile and KeyURI.
 	KeyFile string `yaml:"key_file"` // PEM private key
-	// KeyURI names a private key held outside this host, in a KMS or HSM that signs each
-	// handshake instead of handing the key out. The URI scheme selects the backend (pkg/tlskey);
-	// the service ships Cloud KMS:
+	// KeyURI names a key held in a KMS or HSM that signs each handshake; its scheme picks the backend (pkg/tlskey):
 	//   gcpkms://projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N
 	// A key that only signs PKCS#1 v1.5 (RSA_SIGN_PKCS1_* in KMS) needs max_version: tls1.2.
 	KeyURI string `yaml:"key_uri"`
