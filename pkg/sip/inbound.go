@@ -479,36 +479,35 @@ func (s *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) 
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
-	if s.cli != nil { // Process reinvite for existing outbound calls
-		// TODO(alexfish): Consider moving this to outbound
-		oc := s.getActiveCall(cc.ID())
-		newCSeq := cc.InviteCSeq()
 
-		// TODO(alexfish): Reply with an error if the new sequence number is
-		// strictly less than the existing one.
-		if oc != nil && oc.cc.InviteCSeq() < newCSeq {
-			localSDP, err := oc.media.GetLocalSDP()
-			if err != nil || len(localSDP) == 0 {
-				oc.log().Errorw("outbound call does not have an SDP", err)
-				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
-				return nil
-			}
-			oc.log().Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-			if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
-				log.Errorw("failed to update outbound call SDP", err)
-				if ok := errors.As(err, &SDPError{}); ok {
-					cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
-				} else {
-					cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
-				}
-				return nil
-			}
-			oc.cc.RecordInvite(newCSeq)
-			// TODO(alexfish): Reply with the new SDP.
-			cc.AcceptAsKeepAlive(localSDP)
+	// Process reinvite for existing outbound calls
+	// TODO(alexfish): Consider moving this to outbound
+	oc := s.getActiveCall(cc.ID())
+	newCSeq := cc.InviteCSeq()
+
+	// TODO(alexfish): Reply with an error if the new sequence number is
+	// strictly less than the existing one.
+	if oc != nil && oc.cc.InviteCSeq() < newCSeq {
+		localSDP, err := oc.media.GetLocalSDP()
+		if err != nil || len(localSDP) == 0 {
+			oc.log().Errorw("outbound call does not have an SDP", err)
+			cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 			return nil
 		}
-
+		oc.log().Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+			log.Errorw("failed to update outbound call SDP", err)
+			if ok := errors.As(err, &SDPError{}); ok {
+				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
+			} else {
+				cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
+			}
+			return nil
+		}
+		oc.cc.RecordInvite(newCSeq)
+		// TODO(alexfish): Reply with the new SDP.
+		cc.AcceptAsKeepAlive(localSDP)
+		return nil
 	}
 
 	from, to := cc.From(), cc.To()
