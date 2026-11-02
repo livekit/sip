@@ -1591,12 +1591,15 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 
 				c.log().Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
 				dispStart := time.Now()
+				// from here on the caller waits on us, not on their own input
+				attrs := lksip.PinEnteredTimeAttributes(dispStart)
+				maps.Copy(attrs, c.dispatchAttributes())
 				disp = c.cm.handler.DispatchCall(ctx, &CallInfo{
 					TrunkID:         trunkID,
 					Call:            c.call,
 					Pin:             pin,
 					NoPin:           noPin,
-					ExtraAttributes: c.dispatchAttributes(),
+					ExtraAttributes: attrs,
 				})
 				dispEv := lookupEvent(EventCallDispatched, time.Now(), time.Since(dispStart), dispatchResultName(disp.Result))
 				dispEv.DispatchRuleID = disp.DispatchRuleID

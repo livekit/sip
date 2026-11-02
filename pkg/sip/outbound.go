@@ -35,6 +35,7 @@ import (
 	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/protocol/utils/traceid"
 	"github.com/livekit/psrpc"
@@ -560,15 +561,18 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		return err
 	}
 
+	// the answer time goes with the first status after the answer
+	answered := lksip.AnswerTimeAttributes(c.sigTs.AcceptTime)
 	if digits := c.sipConf.dtmf; digits != "" {
-		c.setStatus(CallAutomation)
+		c.setStatusWith(CallAutomation, answered)
+		answered = nil
 		// Write initial DTMF to SIP
 		dtmfWriter := c.media.GetOutboundDTMFWriter()
 		if err := dtmfWriter.WriteSample(digits); err != nil {
 			return fmt.Errorf("error writing digits (%s): %w", digits, err)
 		}
 	}
-	c.setStatus(CallActive)
+	c.setStatusWith(CallActive, answered)
 	return nil
 }
 
@@ -713,6 +717,11 @@ func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination, headers
 }
 
 func (c *outboundCall) setStatus(v CallStatus) {
+	c.setStatusWith(v, nil)
+}
+
+// setStatusWith sets the status and extra attributes in one update.
+func (c *outboundCall) setStatusWith(v CallStatus, extra map[string]string) {
 	attr := v.Attribute()
 	if attr == "" {
 		return
@@ -724,9 +733,11 @@ func (c *outboundCall) setStatus(v CallStatus) {
 	if r == nil {
 		return
 	}
-	r.LocalParticipant.SetAttributes(map[string]string{
+	attrs := map[string]string{
 		livekit.AttrSIPCallStatus: attr,
-	})
+	}
+	maps.Copy(attrs, extra)
+	r.LocalParticipant.SetAttributes(attrs)
 }
 
 func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.SIPHeaderOptions, cc Signaling, hdrs Headers) {
