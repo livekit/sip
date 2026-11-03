@@ -91,7 +91,7 @@ type outboundCall struct {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
+func (cm *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.Config, log logger.Logger, id LocalTag, room RoomConfig, sipConf sipOutboundConfig, state *CallState, projectID string) (*outboundCall, error) {
 	signalLoggingEnabled, _ := strconv.ParseBool(sipConf.featureFlags[signalLoggingFeatureFlag])
 	if sipConf.maxCallDuration <= 0 || sipConf.maxCallDuration > maxCallDuration {
 		sipConf.maxCallDuration = maxCallDuration
@@ -104,11 +104,11 @@ func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.
 	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
-	contact := c.ContactURI(tr)
+	contact := cm.ContactURI(tr)
 
 	now := time.Now()
 	call := &outboundCall{
-		cm:        c,
+		cm:        cm,
 		tid:       tid,
 		sipConf:   sipConf,
 		state:     state,
@@ -118,7 +118,7 @@ func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.
 		projectID: projectID,
 	}
 	call.stats.Update()
-	call.cc = c.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
+	call.cc = cm.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
 	log = log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", call.cc.callID)
 	call.setLog(log)
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
@@ -126,17 +126,17 @@ func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.
 	}
 	call.cc.preferSRV = featureFlagEnabled(sipConf.featureFlags, outboundPreferSRVFeatureFlag)
 
-	call.mon = c.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
+	call.mon = cm.mon.NewCall(stats.Outbound, sipConf.from.Address.Host, sipConf.to.Address.Host)
 	call.mon.SetProvider(providerLabel(state.Info().GetProviderInfo()))
 	var err error
 
 	call.media, err = NewMediaPort(log, call.mon, &MediaOptions{
-		IP:                   c.sconf.MediaIP,
+		IP:                   cm.sconf.MediaIP,
 		Ports:                conf.RTPPort,
-		MediaTimeoutInitial:  c.conf.MediaTimeoutInitial,
+		MediaTimeoutInitial:  cm.conf.MediaTimeoutInitial,
 		MediaTimeout:         sipConf.mediaConfig.MediaTimeout,
-		SymmetricRTP:         c.conf.SymmetricRTP,
-		IgnoreLocalAddrInSDP: c.conf.IgnoreLocalAddrInSDP,
+		SymmetricRTP:         cm.conf.SymmetricRTP,
+		IgnoreLocalAddrInSDP: cm.conf.IgnoreLocalAddrInSDP,
 		EnableJitterBuffer:   call.jitterBuf,
 		LogSignalChanges:     signalLoggingEnabled,
 		Stats:                &call.stats.Port,
@@ -156,7 +156,7 @@ func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.
 		})
 		return nil, err
 	}
-	if err := call.connectToRoom(ctx, room, c.getRoom); err != nil {
+	if err := call.connectToRoom(ctx, room, cm.getRoom); err != nil {
 		call.close(ctx, EndCall{
 			Report: fmt.Errorf("room join failed: %w", err),
 			Status: callDropped,
@@ -166,9 +166,9 @@ func (c *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config.
 		return nil, psrpc.NewError(psrpc.Internal, fmt.Errorf("update room failed: %w", err))
 	}
 
-	c.cmu.Lock()
-	defer c.cmu.Unlock()
-	c.activeCalls[id] = call
+	cm.cmu.Lock()
+	defer cm.cmu.Unlock()
+	cm.activeCalls[id] = call
 	return call, nil
 }
 
@@ -921,15 +921,15 @@ func (c *outboundCall) transferCall(ctx context.Context, transferTo string, head
 }
 
 // TODO(alexfish): Move this into manager.go
-func (c *callManager) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
+func (cm *callManager) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri, to *sip.ToHeader, from *sip.FromHeader, contact URI, getHeaders setHeadersFunc) *sipOutbound {
 	contactHeader := &sip.ContactHeader{
 		Address: *contact.GetContactURI(),
 	}
 	from.Params.Add("tag", string(id))
 	return &sipOutbound{
 		log:        log,
-		cli:        c.cli,
-		closing:    &c.closing,
+		cli:        cm.cli,
+		closing:    &cm.closing,
 		id:         id,
 		callID:     guid.HashedID(string(id)),
 		uri:        uri,
