@@ -210,6 +210,18 @@ func (s *Service) Start() error {
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
 	}
+	started := false
+	defer func() {
+		if !started {
+			s.mon.Stop()
+		}
+	}()
+	if err := s.mon.RegisterActiveCalls(func() (inbound, outbound int) {
+		st := s.ActiveCalls()
+		return st.Inbound, st.Outbound
+	}); err != nil {
+		return err
+	}
 	// The UA must be shared between the client and the server.
 	// Otherwise, the client will have to listen on a random port, which must then be forwarded.
 	//
@@ -302,6 +314,7 @@ func (s *Service) Start() error {
 	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
 		return err
 	}
+	started = true
 	s.log.Debugw("sip service ready")
 	return nil
 }

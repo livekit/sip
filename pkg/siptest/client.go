@@ -779,8 +779,6 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 			c.log.Debug("skipping signal", "len", len(decoded), "signals", out)
 		}
 	}
-
-	return nil
 }
 
 func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {

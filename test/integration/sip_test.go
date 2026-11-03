@@ -39,6 +39,8 @@ import (
 )
 
 type SIPServer struct {
+	NodeID  string
+	Service *sip.Service
 	LiveKit *LiveKit
 	Client  *lksdk.SIPClient
 	IP      netip.Addr
@@ -122,6 +124,8 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	//       which in turn only accepts UDP from the address used in DialUDP.
 	addr := local
 	return &SIPServer{
+		NodeID:  conf.NodeID,
+		Service: sipsrv,
 		LiveKit: lk,
 		Client:  lksdk.NewSIPClient(lk.WsUrl, lk.ApiKey, lk.ApiSecret),
 		IP:      addr,
