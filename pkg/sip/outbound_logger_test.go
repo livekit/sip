@@ -32,16 +32,16 @@ func TestOutboundLoggerEnrichmentDuringStats(t *testing.T) {
 	defer cancel()
 	created := make(chan error, 1)
 	go func() {
-		_, err := h.Client.CreateSIPParticipant(ctx, req)
+		_, err := h.manager.CreateSIPParticipant(ctx, req)
 		created <- err
 	}()
 	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
-	h.Client.cmu.Lock()
+	h.manager.cmu.RLock()
 	var call *outboundCall
-	for _, active := range h.Client.activeCalls {
+	for _, active := range h.manager.activeCalls {
 		call = active
 	}
-	h.Client.cmu.Unlock()
+	h.manager.cmu.RUnlock()
 	require.NotNil(t, call)
 
 	// Keep the stats callback active while sipSignal enriches the logger from
