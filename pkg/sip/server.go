@@ -278,8 +278,6 @@ func (s *Server) startTLS(addr netip.AddrPort, conf *tls.Config) error {
 	return nil
 }
 
-type RequestHandler func(req *sip.Request, tx sip.ServerTransaction) bool
-
 func (s *Server) wrapHandler(handler sipgo.RequestHandler) sipgo.RequestHandler {
 	ret := handler
 	for _, interceptor := range slices.Backward(s.interceptors) {
@@ -354,11 +352,11 @@ func (s *Server) Stop() {
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
-	return s.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
+func (cm *callManager) RegisterTransferSIPParticipant(sipCallID LocalTag, i *inboundCall) error {
+	return cm.handler.RegisterTransferSIPParticipantTopic(string(sipCallID))
 }
 
 // TODO(alexfish): Move this into manager.go
-func (s *callManager) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
-	s.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
+func (cm *callManager) DeregisterTransferSIPParticipant(sipCallID LocalTag) {
+	cm.handler.DeregisterTransferSIPParticipantTopic(string(sipCallID))
 }

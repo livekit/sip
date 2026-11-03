@@ -62,7 +62,6 @@ type callManager struct {
 	tr              sipTransport
 	getStateHandler GetStateHandler
 	getRoom         GetRoomFunc
-	sipUnhandled    RequestHandler
 
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
@@ -70,6 +69,7 @@ type callManager struct {
 	closing            core.Fuse
 	cmu                sync.RWMutex
 	byLocalTag         map[LocalTag]*inboundCall
+	activeCalls        map[LocalTag]*outboundCall
 	provisionalInvites *expirable.LRU[[2]string, LocalTag]
 	rejectedInvites    *expirable.LRU[[2]string, rejectedInviteResponse]
 
@@ -82,33 +82,27 @@ type callManager struct {
 	conf    *config.Config
 	sconf   *ServiceConfig
 
-	cli *Client // optional, for outbound reinvite handling
+	cli *Client
 
 	res mediaRes
+
+	mu               sync.Mutex // protects pendingTransfers
+	pendingTransfers map[LocalTag]*PendingTransfer
 }
 
 var _ CallManager = (*callManager)(nil)
 
 type CallManagerOption func(s *callManager)
 
-func WithGetRoomServer(fn GetRoomFunc) CallManagerOption {
-	return func(s *callManager) {
+func WithGetRoom(fn GetRoomFunc) CallManagerOption {
+	return func(cm *callManager) {
 		if fn != nil {
-			s.getRoom = fn
+			cm.getRoom = fn
 		}
 	}
 }
 
-// WithClient sets the Client that handles outbound calls. In-dialog requests
-// for calls the manager doesn't know about are passed to it.
-func WithClient(cli *Client) CallManagerOption {
-	return func(s *callManager) {
-		s.cli = cli
-		s.sipUnhandled = cli.OnRequest
-	}
-}
-
-func newCallManager(tr sipTransport, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...CallManagerOption) *callManager {
+func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...CallManagerOption) *callManager {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -117,11 +111,14 @@ func newCallManager(tr sipTransport, region string, conf *config.Config, sconf *
 		mon:                mon,
 		region:             region,
 		tr:                 tr,
+		cli:                cli,
 		conf:               conf,
 		sconf:              sconf,
 		getStateHandler:    getStateHandler,
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
+		activeCalls:        make(map[LocalTag]*outboundCall),
+		pendingTransfers:   make(map[LocalTag]*PendingTransfer),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
 	// Initialize the rejected-invite replay cache unless explicitly disabled.
@@ -136,31 +133,28 @@ func newCallManager(tr sipTransport, region string, conf *config.Config, sconf *
 	return s
 }
 
-func (s *callManager) SetHandler(handler Handler) {
-	s.handler = handler
+func (cm *callManager) SetHandler(handler Handler) {
+	cm.handler = handler
 }
 
-func (s *callManager) ContactURI(tr Transport) URI {
-	return getContactURI(s.conf, s.sconf.SignalingIP, tr)
+func (cm *callManager) ContactURI(tr Transport) URI {
+	return getContactURI(cm.conf, cm.sconf.SignalingIP, tr)
 }
 
 // stop shuts down all active calls.
-func (s *callManager) stop() {
+func (cm *callManager) stop() {
 	ctx := context.Background()
-	s.closing.Break()
-	s.cmu.Lock()
-	calls := maps.Values(s.byLocalTag)
-	s.byLocalTag = make(map[LocalTag]*inboundCall)
-	s.cmu.Unlock()
+	cm.closing.Break()
+	cm.cmu.Lock()
+	outCalls := maps.Values(cm.activeCalls)
+	cm.activeCalls = make(map[LocalTag]*outboundCall)
+	calls := maps.Values(cm.byLocalTag)
+	cm.byLocalTag = make(map[LocalTag]*inboundCall)
+	cm.cmu.Unlock()
+	for _, c := range outCalls {
+		c.Close(ctx)
+	}
 	for _, c := range calls {
 		c.Shutdown(ctx)
 	}
-}
-
-func (s *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	panic("not yet implemented")
-}
-
-func (s *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error) {
-	panic("not yet implemented")
 }

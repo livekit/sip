@@ -142,9 +142,9 @@ func (c *lateOfferCall) expectOffer(t *testing.T, ctx context.Context) {
 	c.call.SetRemoteSDP(resp.Body())
 	c.call.SetRouteSet(resp, true)
 
-	c.st.Manager.cmu.Lock()
+	c.st.Manager.cmu.RLock()
 	c.ic, ok = c.st.Manager.byLocalTag[c.call.remoteTag]
-	c.st.Manager.cmu.Unlock()
+	c.st.Manager.cmu.RUnlock()
 	require.True(t, ok, "call should be registered")
 }
 
@@ -543,7 +543,6 @@ func TestInboundCallStatusCode(t *testing.T) {
 				handler := &TestHandler{}
 				sct.serviceTest.Handler = handler
 				sct.serviceTest.Manager.handler = handler
-				sct.serviceTest.Client.handler = handler
 			})
 		}
 
@@ -898,9 +897,9 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.True(t, ok, "remote tag should be present")
 		call.SetRemoteTag(LocalTag(remoteTag))
 
-		st.Manager.cmu.Lock()
+		st.Manager.cmu.RLock()
 		ic, ok := st.Manager.byLocalTag[call.remoteTag]
-		st.Manager.cmu.Unlock()
+		st.Manager.cmu.RUnlock()
 		require.True(t, ok, "call should be registered")
 
 		// Drop the INVITE transaction while the call is still ringing, as a BYE
@@ -950,9 +949,9 @@ func TestInboundCallStatusCode(t *testing.T) {
 		require.True(t, ok, "remote tag should be present")
 		call.SetRemoteTag(LocalTag(remoteTag))
 
-		st.Manager.cmu.Lock()
+		st.Manager.cmu.RLock()
 		ic, ok := st.Manager.byLocalTag[call.remoteTag]
-		st.Manager.cmu.Unlock()
+		st.Manager.cmu.RUnlock()
 		require.True(t, ok, "call should be registered")
 
 		// Let the answer reach the caller, then break the transport under the
