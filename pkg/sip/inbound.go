@@ -430,7 +430,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 
 	cc, err = cm.newInbound(req, tx, src)
 	if err != nil {
-		cm.log.Errorw("invalid invite", err)
+		cm.log.Warnw("invalid invite", err)
 		if !cm.conf.HideInboundPort {
 			r := newResponse(req, sip.StatusBadRequest, "", nil)
 			r.AppendHeader(sip.HeaderClone(allowHeader))
@@ -490,7 +490,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 	if oc != nil && oc.cc.InviteCSeq() < newCSeq {
 		localSDP, err := oc.media.GetLocalSDP()
 		if err != nil || len(localSDP) == 0 {
-			oc.log().Errorw("outbound call does not have an SDP", err)
+			oc.log().Warnw("outbound call does not have an SDP", err)
 			cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 			return nil
 		}
