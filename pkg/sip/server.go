@@ -24,7 +24,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	msdk "github.com/livekit/media-sdk"
@@ -156,11 +155,6 @@ type Server struct {
 	conf         *config.Config
 	sconf        *ServiceConfig
 	interceptors []HandlerInterceptor
-}
-
-type inProgressInvite struct {
-	sipCallID    string
-	authResolved atomic.Bool
 }
 
 type rejectedInviteResponse struct {

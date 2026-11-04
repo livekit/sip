@@ -89,10 +89,11 @@ func hashPassword(password string) string {
 
 type inboundCallInfo struct {
 	sync.Mutex
-	cseq        uint32
-	cseqAuth    uint32
-	invites     uint32
-	invitesAuth uint32
+	cseq           uint32
+	cseqAuth       uint32
+	invites        uint32
+	invitesAuth    uint32
+	challengeTimer *time.Timer // pending finalization of a challenged INVITE
 }
 
 func inviteHasAuth(r *sip.Request) bool {
@@ -128,6 +129,26 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 	}
 }
 
+func (c *inboundCallInfo) setChallengeTimer(timeout time.Duration, cb func()) error {
+	if timeout > 0 && cb == nil {
+		return errors.New("callback is required")
+	}
+	if timeout == 0 && cb != nil {
+		return errors.New("callback unnecessary")
+	}
+	c.Lock()
+	defer c.Unlock()
+	if c.challengeTimer != nil {
+		c.challengeTimer.Stop()
+	}
+	if timeout == 0 {
+		c.challengeTimer = nil
+	} else {
+		c.challengeTimer = time.AfterFunc(timeout, cb)
+	}
+	return nil
+}
+
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
 	c, _ := cm.infos.byLocalTag.Get(id)
@@ -143,55 +164,6 @@ func (cm *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
 	c = &inboundCallInfo{}
 	cm.infos.byLocalTag.Add(id, c)
 	return c
-}
-
-// TODO(alexfish): Move this into manager.go
-func (cm *callManager) getInvite(sipCallID string) *inProgressInvite {
-	cm.imu.Lock()
-	defer cm.imu.Unlock()
-	for i := range cm.inProgressInvites {
-		if cm.inProgressInvites[i].sipCallID == sipCallID {
-			return cm.inProgressInvites[i]
-		}
-	}
-	if len(cm.inProgressInvites) >= digestLimit {
-		cm.inProgressInvites = cm.inProgressInvites[1:]
-	}
-	is := &inProgressInvite{sipCallID: sipCallID}
-	cm.inProgressInvites = append(cm.inProgressInvites, is)
-	return is
-}
-
-// scheduleAuthChallengeTimeout finalizes st as SCS_ERROR after authChallengeTimeout
-// unless authResolved is set to true (by a follow-up INVITE) before the timer fires.
-func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logger.Logger, sentStatus *Result) {
-	i.authResolved.Store(false)
-	challengedAt := time.Now()
-	time.AfterFunc(authChallengeTimeout, func() {
-		if !i.authResolved.CompareAndSwap(false, true) {
-			return
-		}
-		log.Infow("auth challenge timed out without authenticated retry; finalizing call as error",
-			"sipCallID", i.sipCallID, "timeout", authChallengeTimeout)
-		st.Update(func(info *livekit.SIPCallInfo) {
-			info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
-			info.Error = "auth challenge issued, no authenticated retry received"
-			// EndedAtNs reflects when the call effectively ended.
-			info.EndedAtNs = challengedAt.UnixNano()
-			if sentStatus != nil {
-				info.CallStatusCode = &livekit.SIPStatus{
-					Code:   livekit.SIPStatusCode(sentStatus.Code),
-					Status: sentStatus.Status,
-				}
-			}
-		})
-		statusCode := 0
-		if sentStatus != nil {
-			statusCode = int(sentStatus.Code)
-		}
-		// Same termination the challenge was counted under in processInvite.
-		st.EmitSignalingEvent(callEndedEvent(challengedAt, stats.ClientError("unauthorized"), statusCode))
-	})
 }
 
 // handleInviteAuth performs SIP digest authentication on an inbound INVITE.
@@ -650,11 +622,9 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 				state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, cc.TryingAt(), int(sip.StatusTrying), cc.InviteCSeq()))
 			}
 		}
-		inviteState := cm.getInvite(cc.SIPCallID())
-		// New INVITE supersedes any pending 407-challenge timer for this Call-ID.
-		inviteState.authResolved.Store(true)
-
-		cm.getCallInfo(cc.ID()).countInvite(log, req)
+		callInfo := cm.getCallInfo(cc.ID())
+		callInfo.setChallengeTimer(0, nil) // stop any pending timer
+		callInfo.countInvite(log, req)
 		if ok, challenge, sentStatus := cm.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
 			if sentStatus != nil {
 				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
@@ -671,8 +641,33 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 			if challenge {
 				// 407 sent: defer finalization to the timer or the next INVITE,
 				// not the deferred handler at the top of processInvite.
-				inviteState.scheduleAuthChallengeTimeout(state, log, sentStatus)
+				stateRef := state
 				state = nil
+				challengedAt := time.Now()
+
+				// Same termination the challenge was counted under in processInvite.
+				callInfo.setChallengeTimer(authChallengeTimeout, func() {
+					log.Infow("auth challenge timed out without authenticated retry; finalizing call as error",
+						"timeout", authChallengeTimeout)
+					stateRef.Update(func(info *livekit.SIPCallInfo) {
+						info.CallStatus = livekit.SIPCallStatus_SCS_ERROR
+						info.Error = "auth challenge issued, no authenticated retry received"
+						// EndedAtNs reflects when the call effectively ended.
+						info.EndedAtNs = challengedAt.UnixNano()
+						if sentStatus != nil {
+							info.CallStatusCode = &livekit.SIPStatus{
+								Code:   livekit.SIPStatusCode(sentStatus.Code),
+								Status: sentStatus.Status,
+							}
+						}
+					})
+					statusCode := 0
+					if sentStatus != nil {
+						statusCode = int(sentStatus.Code)
+					}
+
+					stateRef.EmitSignalingEvent(callEndedEvent(challengedAt, stats.ClientError("unauthorized"), statusCode))
+				})
 			}
 			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
