@@ -619,19 +619,16 @@ func recoveryKind(resumed bool) string {
 // detaches our track from its peer connection while the connection is rebuilt,
 // and writes to a detached track are discarded without an error.
 //
-// When a resume fails and escalates to a full reconnect, this runs a second
-// time before onReconnected. Keep the first state: its start time is when the
-// gap began, and its SID is the one from before the recovery.
+// This can run more than once before onReconnected, for example when a resume
+// escalates to a full reconnect. Keep the first state: its start time is when
+// the gap began, and its SID is the one from before the recovery.
 func (r *Room) onReconnecting() {
 	var sid string
 	if room := r.room.Load(); room != nil {
 		sid = room.LocalParticipant.SID()
 	}
 	r.stats.Recovering.Store(true)
-	if !r.reconnect.CompareAndSwap(nil, &reconnectState{startedAt: time.Now(), sid: sid}) {
-		r.roomLog.Infow("resume failed, reconnecting to room", "participantID", sid)
-		return
-	}
+	r.reconnect.CompareAndSwap(nil, &reconnectState{startedAt: time.Now(), sid: sid})
 	r.roomLog.Infow("lost connection to room, recovering", "participantID", sid)
 }
 
