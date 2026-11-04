@@ -383,6 +383,38 @@ func (cm *callManager) HandleInvite(log *slog.Logger, req *sip.Request, tx sip.S
 	_ = cm.processInvite(req, tx)
 }
 
+// newState creates the call state from the auth result. The state's handler
+// is chosen by project, so it can't exist before the auth lookup answers.
+func (cm *callManager) newState(r AuthInfo, cc *sipInbound) *CallState {
+	initial := &livekit.SIPCallInfo{
+		CallId:        string(cc.ID()),
+		Region:        cm.region,
+		FromUri:       CreateURIFromUserAndAddress(cc.From().User, cc.Source().String(), cc.Transport()).ToSIPUri(),
+		ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, cc.Transport()).ToSIPUri(),
+		CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
+		CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
+		CreatedAtNs:   time.Now().UnixNano(),
+		TrunkId:       r.TrunkID,
+		ProviderInfo:  r.ProviderInfo,
+		SipCallId:     cc.SIPCallID(),
+	}
+	st := NewCallState(cm.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+	cc.state.Store(st)
+	// The INVITE and the 100 Trying happened before the call state existed;
+	// report them now with their original times.
+	st.EmitSignalingEvent(SignalingEvent{
+		Type:      EventInviteReceived,
+		Time:      cc.InviteAt(),
+		SIPMethod: string(sip.INVITE),
+		CSeq:      cc.InviteCSeq(),
+		Transport: cc.Transport(),
+	})
+	if tryingTime := cc.TryingAt(); !tryingTime.IsZero() {
+		st.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
+	}
+	return st
+}
+
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
 	start := time.Now()
@@ -430,9 +462,8 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		cm.log.Errorw("cannot parse source IP", err, "fromIP", src)
 		return psrpc.NewError(psrpc.MalformedRequest, fmt.Errorf("cannot parse source IP: %w", err))
 	}
-	tr := callTransportFromReq(req)
 
-	cc, err = cm.newInbound(req, tx, src)
+	cc, err = cm.newInbound(req, tx, src, start)
 	if err != nil {
 		cm.log.Warnw("invalid invite", err)
 		if !cm.conf.HideInboundPort {
@@ -444,7 +475,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		return psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invite validation failed: %w", err))
 	}
 	tid := traceid.FromGUID(string(cc.ID()))
-	log := cc.log.WithValues("transport", tr, "traceID", tid.String())
+	log := cc.log.WithValues("traceID", tid.String())
 	cc.log = log
 
 	// Replay cached final rejection for retries reusing the same Call-ID +
@@ -517,21 +548,20 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 	checkDur := cmon.CheckDur()
 	checked := func() {
 		checkDurOnce.Do(func() {
-			checkDur(time.Since(start))
+			checkDur(time.Since(cc.InviteAt()))
 		})
 	}
 	defer checked()
 	joinDur := cmon.JoinDur()
 
-	var tryingTime time.Time // zero unless 100 Trying was actually sent
-	if !cm.conf.HideInboundPort && cc.Processing() {
-		tryingTime = time.Now()
+	if !cm.conf.HideInboundPort {
+		cc.Processing()
 	}
 
 	callInfo := &rpc.SIPCall{
 		LkCallId:  string(cc.ID()),
 		SipCallId: cc.SIPCallID(),
-		SourceIp:  src.Addr().String(),
+		SourceIp:  cc.Source().Addr().String(),
 		Address:   ToSIPUri("", cc.Address()),
 		From:      ToSIPUri("", from),
 		To:        ToSIPUri("", to),
@@ -549,37 +579,6 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		}
 	}
 
-	// newState creates the call state from the auth result. The state's handler
-	// is chosen by project, so it can't exist before the auth lookup answers.
-	newState := func(r AuthInfo) *CallState {
-		initial := &livekit.SIPCallInfo{
-			CallId:        string(cc.ID()),
-			Region:        cm.region,
-			FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
-			ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
-			CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
-			CallDirection: livekit.SIPCallDirection_SCD_INBOUND,
-			CreatedAtNs:   time.Now().UnixNano(),
-			TrunkId:       r.TrunkID,
-			ProviderInfo:  r.ProviderInfo,
-			SipCallId:     cc.SIPCallID(),
-		}
-		st := NewCallState(cm.getStateHandler(r.ProjectID, r.Observability, initial), initial)
-		cc.state.Store(st)
-		// The INVITE and the 100 Trying happened before the call state existed;
-		// report them now with their original times.
-		st.EmitSignalingEvent(SignalingEvent{
-			Type:      EventInviteReceived,
-			Time:      start,
-			SIPMethod: string(sip.INVITE),
-			CSeq:      cc.InviteCSeq(),
-			Transport: tr,
-		})
-		// tryingTime is zero (event dropped) if 100 Trying was not sent yet.
-		st.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
-		return st
-	}
-
 	tauth := cmon.StageDurTimer("get-auth")
 	r, err := cm.handler.GetAuthCredentials(ctx, callInfo)
 	authDur := tauth()
@@ -591,7 +590,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		// The project is unknown, but report the INVITE and its rejection anyway:
 		// a failing auth lookup is our outage, not the caller's. Only events are
 		// sent. The state is not kept, so no call info is flushed upstream.
-		st := newState(AuthInfo{})
+		st := cm.newState(AuthInfo{}, cc)
 		st.EmitSignalingEvent(lookupEvent(EventInviteAuthorized, authAt, authDur, "error"))
 		cc.RespondAndDrop(sip.StatusServiceUnavailable, "Try again later")
 		st.EmitSignalingEvent(callEndedEvent(time.Now(), term, cc.lastStatusCode()))
@@ -605,7 +604,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 	}
 	cmon.SetProvider(providerLabel(r.ProviderInfo))
 
-	state = newState(r)
+	state = cm.newState(r, cc)
 	state.Flush()
 	state.EmitSignalingEvent(lookupEvent(EventInviteAuthorized, authAt, authDur, authResultName(r.Result)))
 
@@ -648,8 +647,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		if cm.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
 			if cc.Processing() {
-				tryingTime = time.Now()
-				state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
+				state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, cc.TryingAt(), int(sip.StatusTrying), cc.InviteCSeq()))
 			}
 		}
 		inviteState := cm.getInvite(cc.SIPCallID())
@@ -685,11 +683,9 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		// ok
 	}
 
-	call = cm.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
+	call = cm.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, nil)
 	cc.SetCall(call)
 	call.joinDur = joinDur
-	call.sigTs.InviteTime = start
-	call.sigTs.TryingTime = tryingTime
 	return call.handleInvite(call.ctx, req, r.TrunkID, cm.conf)
 }
 
@@ -822,7 +818,6 @@ type inboundCall struct {
 	cc                *sipInbound
 	mon               *stats.CallMonitor
 	state             *CallState
-	callStart         time.Time
 	extraAttrs        map[string]string
 	attrsToHdr        map[string]string
 	ctx               context.Context
@@ -856,7 +851,6 @@ func (cm *callManager) newInboundCall(
 	cc *sipInbound,
 	call *rpc.SIPCall,
 	state *CallState,
-	callStart time.Time,
 	extra map[string]string,
 ) *inboundCall {
 	ctx = context.WithoutCancel(ctx)
@@ -865,7 +859,6 @@ func (cm *callManager) newInboundCall(
 	c := &inboundCall{
 		cm:         cm,
 		tid:        tid,
-		callStart:  callStart,
 		mon:        mon,
 		cc:         cc,
 		call:       call,
@@ -884,6 +877,8 @@ func (cm *callManager) newInboundCall(
 	cm.cmu.Lock()
 	cm.byLocalTag[cc.ID()] = c
 	cm.cmu.Unlock()
+	c.sigTs.InviteTime = cc.InviteAt()
+	c.sigTs.TryingTime = cc.TryingAt()
 	return c
 }
 
@@ -1637,7 +1632,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 }
 
 func (c *inboundCall) printStats(log logger.Logger) {
-	c.stats.Log(log, c.callStart)
+	c.stats.Log(log, c.cc.InviteAt())
 }
 
 func (c *inboundCall) closeWithTerm(ctx context.Context, t stats.Termination) {
@@ -2073,7 +2068,7 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 }
 
 // TODO(alexfish): Move this into manager.go
-func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
+func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort, sipInviteAt time.Time) (*sipInbound, error) {
 	sipCallIDHdr := invite.CallID()
 	if sipCallIDHdr == nil {
 		return nil, errors.New("no Call-ID header in INVITE")
@@ -2119,6 +2114,7 @@ func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransa
 	}
 
 	legTr := legTransportFromReq(invite)
+	tr := callTransportFromReq(invite)
 	contact := cm.ContactURI(legTr)
 	log := cm.log.WithValues(
 		"callID", toTag,
@@ -2131,17 +2127,21 @@ func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransa
 		"toUser", toHdr.Address.User,
 		"sipTag", fromTag,
 		"direction", "inbound",
+		"transport", tr,
 	)
 	c := &sipInbound{
-		cm:        cm,
-		id:        LocalTag(toTag),
-		invite:    invite,
-		inviteTx:  inviteTx,
-		to:        toHdr,
-		from:      fromHdr,
-		tag:       RemoteTag(fromTag),
-		sipCallID: sipCallID,
-		legTr:     legTr,
+		cm:          cm,
+		id:          LocalTag(toTag),
+		invite:      invite,
+		inviteTx:    inviteTx,
+		to:          toHdr,
+		from:        fromHdr,
+		tag:         RemoteTag(fromTag),
+		sipCallID:   sipCallID,
+		legTr:       legTr,
+		tr:          tr,
+		src:         src,
+		sipInviteAt: sipInviteAt,
 		contact: &sip.ContactHeader{
 			Address: *contact.GetContactURI(),
 		},
@@ -2172,7 +2172,9 @@ type sipInbound struct {
 	from       *sip.FromHeader
 	to         *sip.ToHeader
 	legTr      Transport
+	tr         Transport // Transport used between LK SIP and the provider
 	referDone  chan error
+	src        netip.AddrPort
 
 	mu              sync.RWMutex
 	lastSDP         []byte
@@ -2182,7 +2184,9 @@ type sipInbound struct {
 	ringing         chan struct{}
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
-	okSentAt        time.Time                   // first 200 OK for the INVITE; guarded by mu
+	sipInviteAt     time.Time                   // INVITE received; guarded by mu
+	sipTryingAt     time.Time                   // first 100 Trying for the INVITE; guarded by mu
+	sipOkAt         time.Time                   // first 200 OK for the INVITE; guarded by mu
 	okSending       atomic.Bool                 // the first 200 OK write started; an ACK before it is premature
 	ackReported     atomic.Bool                 // EventAckReceived was emitted
 	call            *inboundCall
@@ -2206,11 +2210,27 @@ func (c *sipInbound) lastStatusCode() int {
 	return 0
 }
 
+func (c *sipInbound) Source() netip.AddrPort {
+	return c.src
+}
+
+func (c *sipInbound) InviteAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sipInviteAt
+}
+
+func (c *sipInbound) TryingAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sipTryingAt
+}
+
 // OKSentAt returns when the first 200 OK for the INVITE was sent, or zero.
 func (c *sipInbound) OKSentAt() time.Time {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.okSentAt
+	return c.sipOkAt
 }
 
 func (c *sipInbound) SetCall(call *inboundCall) {
@@ -2341,6 +2361,10 @@ func (c *sipInbound) InviteCSeq() uint32 {
 	return c.inviteCSeq
 }
 
+func (c *sipInbound) Transport() Transport {
+	return c.tr
+}
+
 func (c *sipInbound) RemoteHeaders() Headers {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -2354,10 +2378,16 @@ func (c *sipInbound) RemoteHeaders() Headers {
 func (c *sipInbound) Processing() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.respond(sip.StatusTrying, "Processing")
+	if c.sipTryingAt.IsZero() {
+		c.sipTryingAt = time.Now()
+		return c.respond(sip.StatusTrying, "Processing")
+	}
+	return false
 }
 
 func (c *sipInbound) sendRinging() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.respond(sip.StatusRinging, "Ringing")
 }
 
@@ -2528,7 +2558,7 @@ retries:
 			return err
 		}
 		if try == 1 {
-			c.okSentAt = time.Now()
+			c.sipOkAt = time.Now()
 		}
 		c.setLastStatus(r.StatusCode, r.Reason)
 		if !waitForAck && c.legTr != TransportUDP {
