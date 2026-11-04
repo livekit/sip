@@ -918,6 +918,7 @@ type testSIPHarness struct {
 	log           logger.Logger
 	Client        *Client
 	Server        *Server
+	manager       *callManager
 	client        *testSIPClient
 	clientCreated atomic.Bool
 }
@@ -945,7 +946,7 @@ func (h *testSIPHarness) WaitRequest(tb testing.TB, timeout time.Duration, callI
 }
 
 // Handle delivers req to the package as sipgo would: INVITE/ACK/BYE/NOTIFY/OPTIONS
-// hit Server handlers, anything else falls through to Client.OnRequest then OnNoRoute.
+// hit the CallManager handlers, anything else goes to HandleNoRoute.
 // Dispatch runs in a goroutine because inbound Accept blocks until ACK.
 func (h *testSIPHarness) Handle(req *sip.Request) *testSIPServerTransaction {
 	if req.Source() == "" {
@@ -971,20 +972,17 @@ func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
 	log := slog.New(logger.ToSlogHandler(h.log))
 	switch req.Method {
 	case sip.INVITE:
-		h.Server.onInvite(log, req, tx)
+		h.manager.HandleInvite(log, req, tx)
 	case sip.ACK:
-		h.Server.onAck(log, req, tx)
+		h.manager.HandleAck(log, req, tx)
 	case sip.BYE:
-		h.Server.onBye(log, req, tx)
+		h.manager.HandleBye(log, req, tx)
 	case sip.NOTIFY:
-		h.Server.onNotify(log, req, tx)
+		h.manager.HandleNotify(log, req, tx)
 	case sip.OPTIONS:
-		h.Server.onOptions(log, req, tx)
+		h.manager.HandleOptions(log, req, tx)
 	default:
-		if h.Client != nil && h.Client.OnRequest(req, tx) {
-			return
-		}
-		h.Server.OnNoRoute(log, req, tx)
+		h.manager.HandleNoRoute(log, req, tx)
 	}
 }
 
@@ -1076,8 +1074,7 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 		client: newTestSIPClient(log, cfg.ResolveAddr),
 	}
 
-	client := NewClient(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetSipClient(h.newClient), WithGetRoomClient(cfg.GetRoom))
-	client.SetHandler(cfg.Handler)
+	client := NewClient(cfg.Config, log, WithGetSipClient(h.newClient))
 
 	// Set up service config with minimal values
 	localIP, err := config.GetLocalIP()
@@ -1098,14 +1095,16 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 		client.Stop()
 	})
 
-	srv := NewServer(cfg.Region, cfg.Config, log, cfg.Monitor, cfg.GetIOClient, WithGetRoomServer(cfg.GetRoom), WithClient(client))
-	srv.SetHandler(cfg.Handler)
+	srv := NewServer(cfg.Config, log)
 	srv.sconf = sconf
-	srv.sipUnhandled = client.OnRequest
+	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoom(cfg.GetRoom))
+	manager.SetHandler(cfg.Handler)
 	t.Cleanup(srv.Stop)
+	t.Cleanup(manager.stop)
 
 	h.Client = client
 	h.Server = srv
+	h.manager = manager
 	return h
 }
 

@@ -132,35 +132,37 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 	}
 }
 
-func (s *Server) getCallInfo(id LocalTag) *inboundCallInfo {
-	c, _ := s.infos.byLocalTag.Get(id)
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
+	c, _ := cm.infos.byLocalTag.Get(id)
 	if c != nil {
 		return c
 	}
-	s.infos.Lock()
-	defer s.infos.Unlock()
-	c, _ = s.infos.byLocalTag.Get(id)
+	cm.infos.Lock()
+	defer cm.infos.Unlock()
+	c, _ = cm.infos.byLocalTag.Get(id)
 	if c != nil {
 		return c
 	}
 	c = &inboundCallInfo{}
-	s.infos.byLocalTag.Add(id, c)
+	cm.infos.byLocalTag.Add(id, c)
 	return c
 }
 
-func (s *Server) getInvite(sipCallID string) *inProgressInvite {
-	s.imu.Lock()
-	defer s.imu.Unlock()
-	for i := range s.inProgressInvites {
-		if s.inProgressInvites[i].sipCallID == sipCallID {
-			return s.inProgressInvites[i]
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) getInvite(sipCallID string) *inProgressInvite {
+	cm.imu.Lock()
+	defer cm.imu.Unlock()
+	for i := range cm.inProgressInvites {
+		if cm.inProgressInvites[i].sipCallID == sipCallID {
+			return cm.inProgressInvites[i]
 		}
 	}
-	if len(s.inProgressInvites) >= digestLimit {
-		s.inProgressInvites = s.inProgressInvites[1:]
+	if len(cm.inProgressInvites) >= digestLimit {
+		cm.inProgressInvites = cm.inProgressInvites[1:]
 	}
 	is := &inProgressInvite{sipCallID: sipCallID}
-	s.inProgressInvites = append(s.inProgressInvites, is)
+	cm.inProgressInvites = append(cm.inProgressInvites, is)
 	return is
 }
 
@@ -202,7 +204,8 @@ func (i *inProgressInvite) scheduleAuthChallengeTimeout(st *CallState, log logge
 // client to retry) from a hard auth failure. Callers should treat
 // (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
 // a finalized error state.
-func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
 	if auth.Realm == "" {
 		auth.Realm = UserAgent
 	}
@@ -220,7 +223,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 		return true, false, nil
 	}
 
-	if s.conf.HideInboundPort {
+	if cm.conf.HideInboundPort {
 		// We will send password request anyway, so might as well signal that the progress is made.
 		log.Debugw("Sending processing response due to HideInboundPort config")
 		_ = tx.Respond(newResponse(req, 100, "", nil))
@@ -231,7 +234,7 @@ func (s *Server) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.Se
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	inviteState := s.getInvite(sipCallID)
+	inviteState := cm.getInvite(sipCallID)
 	log = log.WithValues("inviteStateSipCallID", sipCallID)
 
 	h := req.GetHeader("Proxy-Authorization")
@@ -370,15 +373,17 @@ func providerLabel(p *livekit.ProviderInfo) string {
 	}
 }
 
-func (s *Server) onInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// Error processed in defer
-	_ = s.processInvite(req, tx)
+	_ = cm.processInvite(req, tx)
 }
 
-func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction) (retErr error) {
 	start := time.Now()
 	ctx := context.Background()
-	ctx, span := Tracer.Start(ctx, "sip.Server.processInvite")
+	ctx, span := Tracer.Start(ctx, "sip.callManager.processInvite")
 	defer span.End()
 
 	var state *CallState
@@ -413,20 +418,20 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			info.EndedAtNs = time.Now().UnixNano()
 		})
 	}()
-	s.mon.InviteReqRaw(stats.Inbound)
+	cm.mon.InviteReqRaw(stats.Inbound)
 
 	src, err := netip.ParseAddrPort(req.Source())
 	if err != nil {
 		tx.Terminate()
-		s.log.Errorw("cannot parse source IP", err, "fromIP", src)
+		cm.log.Errorw("cannot parse source IP", err, "fromIP", src)
 		return psrpc.NewError(psrpc.MalformedRequest, fmt.Errorf("cannot parse source IP: %w", err))
 	}
 	tr := callTransportFromReq(req)
 
-	cc, err = s.newInbound(req, tx, src)
+	cc, err = cm.newInbound(req, tx, src)
 	if err != nil {
-		s.log.Errorw("invalid invite", err)
-		if !s.conf.HideInboundPort {
+		cm.log.Errorw("invalid invite", err)
+		if !cm.conf.HideInboundPort {
 			r := newResponse(req, sip.StatusBadRequest, "", nil)
 			r.AppendHeader(sip.HeaderClone(allowHeader))
 			_ = tx.Respond(r)
@@ -441,8 +446,8 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	// Replay cached final rejection for retries reusing the same Call-ID +
 	// From-tag (e.g. provider-level failover after a 4xx). Skips creating
 	// a duplicate call object and the OnSessionEnd side-effects that follow.
-	if s.rejectedInvites != nil {
-		if prev, ok := s.rejectedInvites.Get([2]string{cc.SIPCallID(), string(cc.Tag())}); ok {
+	if cm.rejectedInvites != nil {
+		if prev, ok := cm.rejectedInvites.Get([2]string{cc.SIPCallID(), string(cc.Tag())}); ok {
 			log.Debugw("replaying cached INVITE rejection", "status", prev.status, "reason", prev.reason)
 			cc.RespondAndDrop(prev.status, prev.reason)
 			return nil
@@ -451,9 +456,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 
 	log.Infow("processing invite")
 
-	s.cmu.RLock()
-	existing := s.byLocalTag[cc.ID()]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	existing := cm.byLocalTag[cc.ID()]
+	cm.cmu.RUnlock()
 	if existing != nil && existing.cc.InviteCSeq() < cc.InviteCSeq() {
 		if existing.lateAnswerPending.Load() {
 			existing.log().Infow("rejecting reinvite, late answer pending", "cseq", cc.InviteCSeq())
@@ -474,41 +479,40 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
 		return nil
 	}
-	if s.cli != nil { // Process reinvite for existing outbound calls
-		// TODO(alexfish): Consider moving this to outbound
-		oc := s.cli.getActiveCall(cc.ID())
-		newCSeq := cc.InviteCSeq()
 
-		// TODO(alexfish): Reply with an error if the new sequence number is
-		// strictly less than the existing one.
-		if oc != nil && oc.cc.InviteCSeq() < newCSeq {
-			localSDP, err := oc.media.GetLocalSDP()
-			if err != nil || len(localSDP) == 0 {
-				oc.log().Errorw("outbound call does not have an SDP", err)
-				cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
-				return nil
-			}
-			oc.log().Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
-			if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
-				log.Errorw("failed to update outbound call SDP", err)
-				if ok := errors.As(err, &SDPError{}); ok {
-					cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
-				} else {
-					cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
-				}
-				return nil
-			}
-			oc.cc.RecordInvite(newCSeq)
-			// TODO(alexfish): Reply with the new SDP.
-			cc.AcceptAsKeepAlive(localSDP)
+	// Process reinvite for existing outbound calls
+	// TODO(alexfish): Consider moving this to outbound
+	oc := cm.getActiveCall(cc.ID())
+	newCSeq := cc.InviteCSeq()
+
+	// TODO(alexfish): Reply with an error if the new sequence number is
+	// strictly less than the existing one.
+	if oc != nil && oc.cc.InviteCSeq() < newCSeq {
+		localSDP, err := oc.media.GetLocalSDP()
+		if err != nil || len(localSDP) == 0 {
+			oc.log().Errorw("outbound call does not have an SDP", err)
+			cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 			return nil
 		}
-
+		oc.log().Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
+		if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
+			log.Errorw("failed to update outbound call SDP", err)
+			if ok := errors.As(err, &SDPError{}); ok {
+				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
+			} else {
+				cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
+			}
+			return nil
+		}
+		oc.cc.RecordInvite(newCSeq)
+		// TODO(alexfish): Reply with the new SDP.
+		cc.AcceptAsKeepAlive(localSDP)
+		return nil
 	}
 
 	from, to := cc.From(), cc.To()
 
-	cmon := s.mon.NewCall(stats.Inbound, from.Host, to.Host)
+	cmon := cm.mon.NewCall(stats.Inbound, from.Host, to.Host)
 	rejectInvite := func(t stats.Termination) {
 		term = t
 		cmon.InviteErrorShort(t)
@@ -526,7 +530,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	joinDur := cmon.JoinDur()
 
 	var tryingTime time.Time // zero unless 100 Trying was actually sent
-	if !s.conf.HideInboundPort && cc.Processing() {
+	if !cm.conf.HideInboundPort && cc.Processing() {
 		tryingTime = time.Now()
 	}
 
@@ -539,7 +543,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		To:        ToSIPUri("", to),
 	}
 	rheaders := cc.RemoteHeaders()
-	s.handler.OnInboundInfo(log, callInfo, rheaders)
+	cm.handler.OnInboundInfo(log, callInfo, rheaders)
 	for _, h := range rheaders {
 		switch h := h.(type) {
 		case *sip.ViaHeader:
@@ -556,7 +560,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	newState := func(r AuthInfo) *CallState {
 		initial := &livekit.SIPCallInfo{
 			CallId:        string(cc.ID()),
-			Region:        s.region,
+			Region:        cm.region,
 			FromUri:       CreateURIFromUserAndAddress(cc.From().User, src.String(), tr).ToSIPUri(),
 			ToUri:         CreateURIFromUserAndAddress(cc.To().User, cc.To().Host, tr).ToSIPUri(),
 			CallStatus:    livekit.SIPCallStatus_SCS_CALL_INCOMING,
@@ -566,7 +570,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 			ProviderInfo:  r.ProviderInfo,
 			SipCallId:     cc.SIPCallID(),
 		}
-		st := NewCallState(s.getStateHandler(r.ProjectID, r.Observability, initial), initial)
+		st := NewCallState(cm.getStateHandler(r.ProjectID, r.Observability, initial), initial)
 		cc.state.Store(st)
 		// The INVITE and the 100 Trying happened before the call state existed;
 		// report them now with their original times.
@@ -583,7 +587,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 	}
 
 	tauth := cmon.StageDurTimer("get-auth")
-	r, err := s.handler.GetAuthCredentials(ctx, callInfo)
+	r, err := cm.handler.GetAuthCredentials(ctx, callInfo)
 	authDur := tauth()
 	authAt := time.Now()
 	checked()
@@ -647,7 +651,7 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		cc.RespondAndDrop(sip.StatusForbidden, "Auth failure")
 		return psrpc.NewErrorf(psrpc.PermissionDenied, "call was rejected by the auth service")
 	case AuthPassword:
-		if s.conf.HideInboundPort {
+		if cm.conf.HideInboundPort {
 			// We will send password request anyway, so might as well signal that the progress is made.
 			if cc.Processing() {
 				tryingTime = time.Now()
@@ -658,12 +662,12 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		if h := req.CallID(); h != nil {
 			sipCallID = h.Value()
 		}
-		inviteState := s.getInvite(sipCallID)
+		inviteState := cm.getInvite(sipCallID)
 		// New INVITE supersedes any pending 407-challenge timer for this Call-ID.
 		inviteState.authResolved.Store(true)
 
-		s.getCallInfo(cc.ID()).countInvite(log, req)
-		if ok, challenge, sentStatus := s.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
+		cm.getCallInfo(cc.ID()).countInvite(log, req)
+		if ok, challenge, sentStatus := cm.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
 			if sentStatus != nil {
 				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
 				if !challenge {
@@ -672,9 +676,9 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 				}
 			}
 			// Store (call-ID + from tag) to (to tag) mapping
-			s.cmu.Lock()
-			s.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
-			s.cmu.Unlock()
+			cm.cmu.Lock()
+			cm.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
+			cm.cmu.Unlock()
 			rejectInvite(stats.ClientError("unauthorized"))
 			if challenge {
 				// 407 sent: defer finalization to the timer or the next INVITE,
@@ -687,30 +691,32 @@ func (s *Server) processInvite(req *sip.Request, tx sip.ServerTransaction) (retE
 		}
 		// ok
 	case AuthAccept:
-		s.getCallInfo(cc.ID()).countInvite(log, req)
+		cm.getCallInfo(cc.ID()).countInvite(log, req)
 		// ok
 	}
 
-	call = s.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
+	call = cm.newInboundCall(ctx, tid, log, cmon, cc, callInfo, state, start, nil)
 	cc.SetCall(call)
 	call.joinDur = joinDur
 	call.sigTs.InviteTime = start
 	call.sigTs.TryingTime = tryingTime
-	return call.handleInvite(call.ctx, req, r.TrunkID, s.conf)
+	return call.handleInvite(call.ctx, req, r.TrunkID, cm.conf)
 }
 
-func (s *Server) onOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
-func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		return
 	}
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	c := cm.byLocalTag[tag]
+	cm.cmu.RUnlock()
 	if c == nil {
 		return
 	}
@@ -718,16 +724,17 @@ func (s *Server) onAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 	c.cc.AcceptAck(req, tx)
 }
 
-func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		_ = tx.Respond(newResponse(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	c := cm.byLocalTag[tag]
+	cm.cmu.RUnlock()
 	if c != nil {
 		receivedAt := time.Now()
 		c.cc.AcceptBye(req, tx)
@@ -760,17 +767,14 @@ func (s *Server) onBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransact
 		c.Bye(reason)
 		return
 	}
-	ok := false
-	if s.sipUnhandled != nil {
-		ok = s.sipUnhandled(req, tx)
-	}
-	if !ok {
-		s.log.Infow("BYE for non-existent call", "callID", tag)
+	if !cm.onOutboundBye(req, tx) {
+		cm.log.Infow("BYE for non-existent call", "callID", tag)
 		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
 }
 
-func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	callID := ""
 	if h := req.CallID(); h != nil {
 		callID = h.Value()
@@ -785,7 +789,7 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 		to = h.Address.String()
 		toTag = h.Params.GetOr("tag", "")
 	}
-	s.log.Infow("Inbound SIP request not handled",
+	cm.log.Infow("Inbound SIP request not handled",
 		"method", req.Method.String(),
 		"sipCallID", callID,
 		"callID", toTag,
@@ -794,16 +798,17 @@ func (s *Server) OnNoRoute(log *slog.Logger, req *sip.Request, tx sip.ServerTran
 	tx.Respond(newResponse(req, 405, "", nil))
 }
 
-func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
 		_ = tx.Respond(newResponse(req, sip.StatusBadRequest, "", nil))
 		return
 	}
 
-	s.cmu.RLock()
-	c := s.byLocalTag[tag]
-	s.cmu.RUnlock()
+	cm.cmu.RLock()
+	c := cm.byLocalTag[tag]
+	cm.cmu.RUnlock()
 	if c != nil {
 		c.log().Infow("NOTIFY")
 		err := c.cc.handleNotify(req, tx)
@@ -814,18 +819,14 @@ func (s *Server) onNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTrans
 
 		return
 	}
-	ok := false
-	if s.sipUnhandled != nil {
-		ok = s.sipUnhandled(req, tx)
-	}
-	if !ok {
-		s.log.Infow("NOTIFY for non-existent call")
+	if !cm.onOutboundNotify(req, tx) {
+		cm.log.Infow("NOTIFY for non-existent call")
 		_ = tx.Respond(newResponse(req, sip.StatusCallTransactionDoesNotExists, "", nil))
 	}
 }
 
 type inboundCall struct {
-	s                 *Server
+	cm                *callManager
 	tid               traceid.ID
 	logPtr            atomic.Pointer[logger.Logger]
 	cc                *sipInbound
@@ -856,7 +857,8 @@ type inboundCall struct {
 	projectID         string
 }
 
-func (s *Server) newInboundCall(
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) newInboundCall(
 	ctx context.Context,
 	tid traceid.ID,
 	log logger.Logger,
@@ -871,7 +873,7 @@ func (s *Server) newInboundCall(
 	// Map known headers immediately on join. The rest of the mapping will be available later.
 	extra = HeadersToAttrs(extra, nil, 0, cc, nil)
 	c := &inboundCall{
-		s:          s,
+		cm:         cm,
 		tid:        tid,
 		callStart:  callStart,
 		mon:        mon,
@@ -881,17 +883,17 @@ func (s *Server) newInboundCall(
 		extraAttrs: extra,
 		dtmf:       make(chan dtmf.Event, 10),
 		endCall:    make(chan EndCall, 1),
-		jitterBuf:  SelectValueBool(s.conf.EnableJitterBuffer, s.conf.EnableJitterBufferProb),
+		jitterBuf:  SelectValueBool(cm.conf.EnableJitterBuffer, cm.conf.EnableJitterBufferProb),
 		projectID:  "", // Will be set in handleInvite when available
 	}
 	c.stats.Update()
 	c.setLog(log.WithValues("jitterBuf", c.jitterBuf))
 	// we need it created earlier so that the audio mixer is available for pin prompts
-	c.lkRoom = s.getRoom(c.log(), &c.stats.Room)
+	c.lkRoom = cm.getRoom(c.log(), &c.stats.Room)
 	c.ctx, c.cancel = context.WithCancel(ctx)
-	s.cmu.Lock()
-	s.byLocalTag[cc.ID()] = c
-	s.cmu.Unlock()
+	cm.cmu.Lock()
+	cm.byLocalTag[cc.ID()] = c
+	cm.cmu.Unlock()
 	return c
 }
 
@@ -925,11 +927,16 @@ func (c *inboundCall) mediaTimeout(ctx context.Context) error {
 	return nil // logged as a warning in close
 }
 
-func (c *inboundCall) dispatchAttributes() map[string]string {
-	if c.sigTs.InviteTime.IsZero() {
-		return nil
+// dispatchAttributes returns the call times for the participant. Zero times are left out.
+func (c *inboundCall) dispatchAttributes(pinEnteredAt time.Time) map[string]string {
+	attrs := make(map[string]string)
+	if !c.sigTs.InviteTime.IsZero() {
+		maps.Copy(attrs, lksip.InviteTimeAttributes(c.sigTs.InviteTime))
 	}
-	return lksip.InviteTimeAttributes(c.sigTs.InviteTime)
+	if !pinEnteredAt.IsZero() {
+		maps.Copy(attrs, lksip.PinEnteredTimeAttributes(pinEnteredAt))
+	}
+	return attrs
 }
 
 func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkID string, conf *config.Config) error {
@@ -952,12 +959,12 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	// Send initial request. In the best case scenario, we will immediately get a room name to join.
 	// Otherwise, we could even learn that this number is not allowed and reject the call, or ask for pin if required.
 	tdisp := c.mon.StageDurTimer("eval-dispatch")
-	disp := c.s.handler.DispatchCall(ctx, &CallInfo{
+	disp := c.cm.handler.DispatchCall(ctx, &CallInfo{
 		TrunkID:         trunkID,
 		Call:            c.call,
 		Pin:             "",
 		NoPin:           false,
-		ExtraAttributes: c.dispatchAttributes(),
+		ExtraAttributes: c.dispatchAttributes(time.Time{}),
 	})
 	dispDur := tdisp()
 	dispEv := lookupEvent(EventCallDispatched, time.Now(), dispDur, dispatchResultName(disp.Result))
@@ -966,7 +973,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	if disp.MediaConfig == nil {
 		disp.MediaConfig = &livekit.SIPMediaConfig{}
 	}
-	mconf, err := newMediaConfig(disp.MediaConfig, c.s.conf.MediaTimeout)
+	mconf, err := newMediaConfig(disp.MediaConfig, c.cm.conf.MediaTimeout)
 	if err != nil {
 		c.log().Errorw("Cannot create media config", err)
 		c.cc.RespondAndDrop(sip.StatusInternalServerError, "")
@@ -1231,7 +1238,7 @@ func (c *inboundCall) acceptCall(ctx context.Context, disp CallDispatch, sdpData
 }
 
 func (c *inboundCall) waitForMedia(ctx context.Context, mediaTimeout time.Duration) (bool, error) {
-	c.media.SetTimeout(c.s.conf.MediaTimeoutInitial, mediaTimeout) // Only enable media timeout once we send back SDP.
+	c.media.SetTimeout(c.cm.conf.MediaTimeoutInitial, mediaTimeout) // Only enable media timeout once we send back SDP.
 	// Attach room outputs
 	if old := c.lkRoom.WriteOutboundAudioTo(c.media.GetOutboundAudioWriter()); old != nil {
 		c.log().Warnw("room has unexpected outbound audio writer", nil)
@@ -1250,7 +1257,7 @@ func (c *inboundCall) waitForMedia(ctx context.Context, mediaTimeout time.Durati
 
 func (c *inboundCall) acceptCallAndWaitForMedia(ctx context.Context, disp CallDispatch, sdpResponseBody []byte, mediaTimeout time.Duration, expectingLateAnswer bool) (bool, <-chan time.Time, error) {
 	defer c.mon.StageDurTimer("call-accept")()
-	waitForAck := expectingLateAnswer || c.s.conf.Experimental.InboundWaitACK
+	waitForAck := expectingLateAnswer || c.cm.conf.Experimental.InboundWaitACK
 	if err := c.acceptCall(ctx, disp, sdpResponseBody, waitForAck); err != nil {
 		return false, nil, err
 	}
@@ -1332,7 +1339,7 @@ func (c *inboundCall) waitForCallEnd(ctx context.Context, ackReceived <-chan str
 			// allowing us to accommodate this eventuality. If, however, there is no media
 			// observed, the call still ends quickly.
 			// Once ACKs are certain to be reliable, we will end the call here.
-			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.s.conf.MediaTimeoutInitial), mediaTimeout)
+			c.media.SetTimeout(min(inviteOkAckLateTimeout, c.cm.conf.MediaTimeoutInitial), mediaTimeout)
 		}
 	}
 }
@@ -1383,12 +1390,12 @@ func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config
 
 	logSignalChanges, _ := strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(c.log(), c.mon, &MediaOptions{
-		IP:                   c.s.sconf.MediaIP,
+		IP:                   c.cm.sconf.MediaIP,
 		Ports:                conf.RTPPort,
-		MediaTimeoutInitial:  c.s.conf.MediaTimeoutInitial,
+		MediaTimeoutInitial:  c.cm.conf.MediaTimeoutInitial,
 		MediaTimeout:         mconf.MediaTimeout,
 		SymmetricRTP:         conf.SymmetricRTP,
-		IgnoreLocalAddrInSDP: c.s.conf.IgnoreLocalAddrInSDP,
+		IgnoreLocalAddrInSDP: c.cm.conf.IgnoreLocalAddrInSDP,
 		EnableJitterBuffer:   c.jitterBuf,
 		LogSignalChanges:     logSignalChanges,
 		Stats:                &c.stats.Port,
@@ -1562,7 +1569,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 	}
 	c.connectPinDTMF(dtmfRate)
 	const pinLimit = 16
-	c.playAudio(ctx, c.s.res.enterPin)
+	c.playAudio(ctx, c.cm.res.enterPin)
 	pin := ""
 	noPin := false
 	for {
@@ -1588,13 +1595,14 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				noPin = pin == ""
 
 				c.log().Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
+				// from here on the caller waits on us, not on their own input
 				dispStart := time.Now()
-				disp = c.s.handler.DispatchCall(ctx, &CallInfo{
+				disp = c.cm.handler.DispatchCall(ctx, &CallInfo{
 					TrunkID:         trunkID,
 					Call:            c.call,
 					Pin:             pin,
 					NoPin:           noPin,
-					ExtraAttributes: c.dispatchAttributes(),
+					ExtraAttributes: c.dispatchAttributes(dispStart),
 				})
 				dispEv := lookupEvent(EventCallDispatched, time.Now(), time.Since(dispStart), dispatchResultName(disp.Result))
 				dispEv.DispatchRuleID = disp.DispatchRuleID
@@ -1617,17 +1625,17 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				}
 				if disp.Result != DispatchAccept || disp.Room.RoomName == "" {
 					c.log().Infow("Rejecting call", "pin", pin, "noPin", noPin)
-					c.playAudio(ctx, c.s.res.wrongPin)
+					c.playAudio(ctx, c.cm.res.wrongPin)
 					c.closeWithTerm(ctx, stats.ClientError("wrong-pin"))
 					return disp, false, psrpc.NewErrorf(psrpc.PermissionDenied, "wrong pin")
 				}
-				c.playAudio(ctx, c.s.res.roomJoin)
+				c.playAudio(ctx, c.cm.res.roomJoin)
 				return disp, true, nil
 			}
 			// Gather pin numbers
 			pin += string(b.Digit)
 			if len(pin) > pinLimit {
-				c.playAudio(ctx, c.s.res.wrongPin)
+				c.playAudio(ctx, c.cm.res.wrongPin)
 				c.close(ctx, EndCall{
 					Status: callDropped,
 					Term:   stats.ClientError("wrong-pin"),
@@ -1750,14 +1758,14 @@ func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	if callDurFn := c.callDur; callDurFn != nil {
 		callDurFn()
 	}
-	c.s.cmu.Lock()
-	delete(c.s.byLocalTag, c.cc.ID())
-	c.s.cmu.Unlock()
+	c.cm.cmu.Lock()
+	delete(c.cm.byLocalTag, c.cc.ID())
+	c.cm.cmu.Unlock()
 
-	c.s.DeregisterTransferSIPParticipant(c.cc.ID())
+	c.cm.DeregisterTransferSIPParticipant(c.cc.ID())
 
 	// Call the handler asynchronously to avoid blocking
-	if h := c.s.handler; h != nil {
+	if h := c.cm.handler; h != nil {
 		if lastStatus := c.cc.lastCallStatus.Load(); lastStatus != nil {
 			c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 				info.CallStatusCode = &livekit.SIPStatus{
@@ -1925,14 +1933,14 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	}
 
 	treg := c.mon.StageDurTimer("lk-reg-transfer")
-	err := c.s.RegisterTransferSIPParticipant(LocalTag(c.cc.ID()), c)
+	err := c.cm.RegisterTransferSIPParticipant(LocalTag(c.cc.ID()), c)
 	treg()
 	if err != nil {
 		return err
 	}
 
 	tconn := c.mon.StageDurTimer("lk-connect")
-	err = c.lkRoom.Connect(ctx, c.s.conf, rconf)
+	err = c.lkRoom.Connect(ctx, c.cm.conf, rconf)
 	tconn()
 	if err != nil {
 		return err
@@ -1954,7 +1962,7 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 		return err
 	}
 
-	if audioInProcessor := c.s.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
+	if audioInProcessor := c.cm.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
 		inboundAudio = audioInProcessor(inboundAudio)
 	}
 	if old := c.media.WriteInboundAudioTo(inboundAudio); old != nil {
@@ -2074,7 +2082,8 @@ func (c *inboundCall) transferCall(ctx context.Context, transferTo string, heade
 	return transferID, nil
 }
 
-func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction, src netip.AddrPort) (*sipInbound, error) {
 	sipCallIDHdr := invite.CallID()
 	if sipCallIDHdr == nil {
 		return nil, errors.New("no Call-ID header in INVITE")
@@ -2106,9 +2115,9 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	toTag, ok := toHdr.Params.Get("tag")
 	if !ok || toTag == "" {
 		// Check if the call-ID + from tag is in the provisional invites cache
-		s.cmu.Lock()
-		cachedTag, ok := s.provisionalInvites.Get([2]string{sipCallID, fromTag})
-		s.cmu.Unlock()
+		cm.cmu.Lock()
+		cachedTag, ok := cm.provisionalInvites.Get([2]string{sipCallID, fromTag})
+		cm.cmu.Unlock()
 		if ok && cachedTag != "" {
 			// Use the cached tag to reuse the originally assigned SCL ID
 			toTag = string(cachedTag)
@@ -2120,8 +2129,8 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 	}
 
 	legTr := legTransportFromReq(invite)
-	contact := s.ContactURI(legTr)
-	log := s.log.WithValues(
+	contact := cm.ContactURI(legTr)
+	log := cm.log.WithValues(
 		"callID", toTag,
 		"sipCallID", sipCallID,
 		"fromIP", src.Addr().String(),
@@ -2134,7 +2143,7 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 		"direction", "inbound",
 	)
 	c := &sipInbound{
-		s:         s,
+		cm:        cm,
 		id:        LocalTag(toTag),
 		invite:    invite,
 		inviteTx:  inviteTx,
@@ -2161,7 +2170,7 @@ func (s *Server) newInbound(invite *sip.Request, inviteTx sip.ServerTransaction,
 
 type sipInbound struct {
 	log        logger.Logger
-	s          *Server
+	cm         *callManager
 	id         LocalTag // SCL
 	tag        RemoteTag
 	sipCallID  string
@@ -2297,8 +2306,8 @@ func (c *sipInbound) RespondAndDrop(status sip.StatusCode, reason string) {
 	// Cache the response so a retry reusing the same Call-ID + From-tag
 	// (e.g. provider failover after a 4xx) gets the cached reply replayed
 	// instead of running through the handler again.
-	if c.s != nil && c.s.rejectedInvites != nil && status >= 300 && c.sipCallID != "" {
-		c.s.rejectedInvites.Add(
+	if c.cm != nil && c.cm.rejectedInvites != nil && status >= 300 && c.sipCallID != "" {
+		c.cm.rejectedInvites.Add(
 			[2]string{c.sipCallID, string(c.tag)},
 			rejectedInviteResponse{status: status, reason: reason},
 		)
@@ -2379,7 +2388,7 @@ func (c *sipInbound) StartRinging() bool {
 	tx := c.inviteTx
 	cancels := tx.Cancels()
 	go func() {
-		ticker := time.NewTicker(c.s.conf.SIPRingingInterval)
+		ticker := time.NewTicker(c.cm.conf.SIPRingingInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -2421,7 +2430,7 @@ func (c *sipInbound) Cancelled() <-chan struct{} {
 }
 
 func (c *sipInbound) addExtraHeaders(r *sip.Response) {
-	if c.s.conf.AddRecordRoute {
+	if c.cm.conf.AddRecordRoute {
 		// Other in-dialog requests should be sent to this instance as well.
 		recordRoute := c.contact.Address.Clone()
 		if recordRoute.UriParams == nil {
@@ -2574,7 +2583,7 @@ func (c *sipInbound) inviteConnOpen() bool {
 	if c.legTr == TransportUDP {
 		return false
 	}
-	conn, err := c.s.sipSrv.TransportLayer().GetConnection(string(c.legTr), c.inviteOk.Destination())
+	conn, err := c.cm.tr.transportLayer().GetConnection(string(c.legTr), c.inviteOk.Destination())
 	if err != nil {
 		return false
 	}
@@ -2625,8 +2634,8 @@ func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
 		ProtocolName:    "SIP",
 		ProtocolVersion: "2.0",
 		Transport:       req.Transport(),
-		Host:            c.s.sconf.SignalingIP.String(), // This can be rewritten by transport layer
-		Port:            c.s.conf.SIPPort,               // This can be rewritten by transport layer
+		Host:            c.cm.sconf.SignalingIP.String(), // This can be rewritten by transport layer
+		Port:            c.cm.conf.SIPPort,               // This can be rewritten by transport layer
 		Params:          sip.NewParams(),
 	}
 	// NOTE: Consider length of branch configurable
@@ -2728,11 +2737,11 @@ func (c *sipInbound) sendStatus(ctx context.Context, result Result, headers map[
 }
 
 func (c *sipInbound) WriteRequest(req *sip.Request) error {
-	return c.s.sipSrv.TransportLayer().WriteMsg(req)
+	return c.cm.tr.transportLayer().WriteMsg(req)
 }
 
 func (c *sipInbound) Transaction(req *sip.Request) (sip.ClientTransaction, error) {
-	return c.s.sipSrv.TransactionLayer().Request(req)
+	return c.cm.tr.transactionLayer().Request(req)
 }
 
 func (c *sipInbound) newReferReq(transferTo string, headers map[string]string) (*sip.Request, error) {
@@ -2768,7 +2777,7 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 		return err
 	}
 
-	_, err = sendRefer(ctx, c, req, c.s.closing.Watch())
+	_, err = sendRefer(ctx, c, req, c.cm.closing.Watch())
 	if err != nil {
 		return err
 	}
