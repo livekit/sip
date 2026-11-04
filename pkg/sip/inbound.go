@@ -2380,12 +2380,6 @@ func (c *sipInbound) Processing() bool {
 	return false
 }
 
-func (c *sipInbound) sendRinging() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.respond(sip.StatusRinging, "Ringing")
-}
-
 func (c *sipInbound) attachTag() {
 	// Set the SIP tag for following requests from us to remote (e.g. BYE).
 	c.to.Params.Add("tag", string(c.id))
@@ -2397,7 +2391,7 @@ func (c *sipInbound) StartRinging() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.attachTag()
-	sent := c.sendRinging()
+	sent := c.respond(sip.StatusRinging, "Ringing")
 	stop := make(chan struct{})
 	c.ringing = stop
 	tx := c.inviteTx
@@ -2418,7 +2412,7 @@ func (c *sipInbound) StartRinging() bool {
 			case <-ticker.C:
 			}
 			c.mu.Lock()
-			c.sendRinging()
+			c.respond(sip.StatusRinging, "Ringing")
 			c.mu.Unlock()
 		}
 	}()
