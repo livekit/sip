@@ -577,6 +577,12 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
+		// The SDK reports the start of a resume with OnSignalReconnecting and the
+		// start of a full reconnect with OnReconnecting. A resume that fails
+		// escalates to a full reconnect and fires both. OnReconnected ends both.
+		OnSignalReconnecting: func() {
+			r.onReconnecting()
+		},
 		OnReconnecting: func() {
 			r.onReconnecting()
 		},
@@ -612,13 +618,20 @@ func recoveryKind(resumed bool) string {
 // recovering. Audio published until onReconnected may be dropped: a reconnect
 // detaches our track from its peer connection while the connection is rebuilt,
 // and writes to a detached track are discarded without an error.
+//
+// When a resume fails and escalates to a full reconnect, this runs a second
+// time before onReconnected. Keep the first state: its start time is when the
+// gap began, and its SID is the one from before the recovery.
 func (r *Room) onReconnecting() {
 	var sid string
 	if room := r.room.Load(); room != nil {
 		sid = room.LocalParticipant.SID()
 	}
-	r.reconnect.Store(&reconnectState{startedAt: time.Now(), sid: sid})
 	r.stats.Recovering.Store(true)
+	if !r.reconnect.CompareAndSwap(nil, &reconnectState{startedAt: time.Now(), sid: sid}) {
+		r.roomLog.Infow("resume failed, reconnecting to room", "participantID", sid)
+		return
+	}
 	r.roomLog.Infow("lost connection to room, recovering", "participantID", sid)
 }
 
