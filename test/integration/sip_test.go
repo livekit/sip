@@ -102,9 +102,10 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+	manager := sip.NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
 		return sip.NewRPCStateHandler(psrpcCli)
-	}, nonces)
+	})
+	sipsrv, err := sip.NewService(conf, mon, log, manager)
 	if err != nil {
 		t.Fatal(err)
 	}

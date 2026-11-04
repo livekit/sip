@@ -1100,7 +1100,7 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, newTestNonces(t), WithGetRoom(cfg.GetRoom))
 	manager.SetHandler(cfg.Handler)
 	t.Cleanup(srv.Stop)
-	t.Cleanup(manager.stop)
+	t.Cleanup(manager.Stop)
 
 	h.Client = client
 	h.Server = srv

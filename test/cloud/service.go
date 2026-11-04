@@ -27,9 +27,8 @@ func NewService(t testing.TB, conf *IntegrationConfig, bus psrpc.MessageBus) (*s
 	if err != nil {
 		return nil, err
 	}
-	sipsrv, err := sip.NewService("", conf.Config, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
-		return sip.NewRPCStateHandler(psrpcClient)
-	}, nonces)
+	manager := sip.NewCallManager("", conf.Config, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+	sipsrv, err := sip.NewService("", conf.Config, mon, log, nonces, manager)
 	if err != nil {
 		return nil, err
 	}

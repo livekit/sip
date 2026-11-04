@@ -81,7 +81,7 @@ type Service struct {
 	srv     *Server
 	closers []io.Closer
 
-	manager *callManager
+	manager CallManager
 }
 
 // GetStateHandler returns the per-call StateHandler that CallState forwards
@@ -91,7 +91,7 @@ type Service struct {
 // is the SIPCallInfo that NewCallState will own immediately after.
 type GetStateHandler func(projectID string, obs *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) StateHandler
 
-func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getStateHandler GetStateHandler, sealer sealer.Sealer, opts ...ServerOption) (*Service, error) {
+func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, sealer sealer.Sealer, manager CallManager, opts ...ServerOption) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -109,19 +109,18 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	}
 	cli := NewClient(conf, log)
 	s := &Service{
-		conf: conf,
-		log:  log,
-		mon:  mon,
-		cli:  cli,
-		srv:  NewServer(conf, log, opts...),
+		conf:    conf,
+		log:     log,
+		mon:     mon,
+		cli:     cli,
+		srv:     NewServer(conf, log, opts...),
+		manager: manager,
 	}
 	var err error
 	s.sconf, err = GetServiceConfig(s.conf)
 	if err != nil {
 		return nil, err
 	}
-	s.manager = newCallManager(s.srv, cli, region, conf, s.sconf, log, mon, getStateHandler, sealer)
-
 	const placeholder = "${IP}"
 	if strings.Contains(s.conf.SIPHostname, placeholder) {
 		s.conf.SIPHostname = strings.ReplaceAll(
@@ -178,33 +177,11 @@ func sampleMap[K comparable, V any](limit int, m map[K]V, sample func(v V) strin
 }
 
 func (s *Service) ActiveCalls() ActiveCalls {
-	st := ActiveCalls{}
-
-	s.manager.cmu.RLock()
-	samples, total := sampleMap(5, s.manager.activeCalls, func(v *outboundCall) string {
-		if v == nil || v.cc == nil {
-			return "<nil>"
-		}
-		return string(v.cc.id)
-	})
-	st.Outbound = total
-	st.SampleIDs = append(st.SampleIDs, samples...)
-
-	samples, total = sampleMap(5, s.manager.byLocalTag, func(v *inboundCall) string {
-		if v == nil || v.cc == nil {
-			return "<nil>"
-		}
-		return string(v.cc.id)
-	})
-	st.Inbound = total
-	st.SampleIDs = append(st.SampleIDs, samples...)
-	s.manager.cmu.RUnlock()
-
-	return st
+	return s.manager.ActiveCalls()
 }
 
 func (s *Service) Stop() {
-	s.manager.stop()
+	s.manager.Stop()
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
@@ -297,6 +274,7 @@ func (s *Service) Start() error {
 	if err != nil {
 		return err
 	}
+	s.manager.Start(s.srv, s.cli, s.sconf)
 	if err := s.cli.Start(ua, s.sconf); err != nil {
 		return err
 	}
