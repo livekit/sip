@@ -41,12 +41,13 @@ type Sealer interface {
 	// aad is not part of the output: Open must be given the same aad.
 	// The result is self-contained: it carries everything Open needs besides the key and aad.
 	// Sealing the same input twice gives different results.
-	// dst and plain must not overlap.
+	// dst, including its spare capacity, must not overlap plain or aad.
 	Seal(dst, plain, aad []byte) ([]byte, error)
 
 	// Open authenticates and decrypts sealed, a value returned by Seal, and appends the plaintext to dst.
 	// It returns ErrInvalid if sealed was not produced by Seal with an accepted key and the same aad.
-	// dst and sealed must not overlap.
+	// dst, including its spare capacity, must not overlap sealed or aad. This holds even when
+	// the value opens: a failed attempt with an earlier key may clear dst's spare capacity.
 	Open(dst, sealed, aad []byte) ([]byte, error)
 
 	// Overhead is the number of bytes Seal adds to the plaintext.
