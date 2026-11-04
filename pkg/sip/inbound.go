@@ -927,11 +927,16 @@ func (c *inboundCall) mediaTimeout(ctx context.Context) error {
 	return nil // logged as a warning in close
 }
 
-func (c *inboundCall) dispatchAttributes() map[string]string {
-	if c.sigTs.InviteTime.IsZero() {
-		return nil
+// dispatchAttributes returns the call times for the participant. Zero times are left out.
+func (c *inboundCall) dispatchAttributes(pinEnteredAt time.Time) map[string]string {
+	attrs := make(map[string]string)
+	if !c.sigTs.InviteTime.IsZero() {
+		maps.Copy(attrs, lksip.InviteTimeAttributes(c.sigTs.InviteTime))
 	}
-	return lksip.InviteTimeAttributes(c.sigTs.InviteTime)
+	if !pinEnteredAt.IsZero() {
+		maps.Copy(attrs, lksip.PinEnteredTimeAttributes(pinEnteredAt))
+	}
+	return attrs
 }
 
 func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkID string, conf *config.Config) error {
@@ -959,7 +964,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		Call:            c.call,
 		Pin:             "",
 		NoPin:           false,
-		ExtraAttributes: c.dispatchAttributes(),
+		ExtraAttributes: c.dispatchAttributes(time.Time{}),
 	})
 	dispDur := tdisp()
 	dispEv := lookupEvent(EventCallDispatched, time.Now(), dispDur, dispatchResultName(disp.Result))
@@ -1590,13 +1595,14 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 				noPin = pin == ""
 
 				c.log().Infow("Checking Pin for SIP call", "pin", pin, "noPin", noPin)
+				// from here on the caller waits on us, not on their own input
 				dispStart := time.Now()
 				disp = c.cm.handler.DispatchCall(ctx, &CallInfo{
 					TrunkID:         trunkID,
 					Call:            c.call,
 					Pin:             pin,
 					NoPin:           noPin,
-					ExtraAttributes: c.dispatchAttributes(),
+					ExtraAttributes: c.dispatchAttributes(dispStart),
 				})
 				dispEv := lookupEvent(EventCallDispatched, time.Now(), time.Since(dispStart), dispatchResultName(disp.Result))
 				dispEv.DispatchRuleID = disp.DispatchRuleID
