@@ -87,10 +87,6 @@ func hashPassword(password string) string {
 	return hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter hash
 }
 
-func generateNonce(sipCallID string) string {
-	return fmt.Sprintf("%d-%s", time.Now().UnixMicro(), sipCallID)
-}
-
 type inboundCallInfo struct {
 	sync.Mutex
 	cseq        uint32
@@ -229,30 +225,36 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 		_ = tx.Respond(newResponse(req, 100, "", nil))
 	}
 
-	// Extract SIP Call ID for tracking in-progress invites
 	sipCallID := ""
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	inviteState := cm.getInvite(sipCallID)
-	log = log.WithValues("inviteStateSipCallID", sipCallID)
+	log = log.WithValues("sipCallID", sipCallID)
 
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
-		inviteState.challenge = digest.Challenge{
+		nonce, err := issueDigestNonce(cm.sealer, sipCallID, time.Now())
+		if err != nil {
+			log.Errorw("Failed to issue digest nonce", err)
+			res := newResponse(req, sip.StatusInternalServerError, "Internal error", nil)
+			if err := tx.Respond(res); err != nil {
+				return false, false, nil
+			}
+			return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
+		}
+		chal := digest.Challenge{
 			Realm:     auth.Realm,
-			Nonce:     generateNonce(sipCallID),
+			Nonce:     nonce,
 			Algorithm: "MD5",
 		}
-
 		log.Debugw("Created digest challenge",
-			"realm", inviteState.challenge.Realm,
-			"nonce", inviteState.challenge.Nonce,
-			"algorithm", inviteState.challenge.Algorithm,
+			"realm", chal.Realm,
+			"nonce", chal.Nonce,
+			"algorithm", chal.Algorithm,
 		)
 
 		res := newResponse(req, 407, "Unauthorized", nil)
-		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", inviteState.challenge.String()))
+		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", chal.String()))
 		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
 		if err := tx.Respond(res); err != nil {
 			return false, true, nil
@@ -291,26 +293,28 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
-	// Check if we have a valid challenge state
-	if inviteState.challenge.Realm == "" {
-		log.Warnw("No challenge state found for authentication attempt", errors.New("missing challenge state"),
-			"sipCallID", sipCallID,
-			"expectedRealm", auth.Realm,
-		)
+	// The nonce proves its own origin, so the challenge may have been sent by another server.
+	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
+		log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
 		res := newResponse(req, 401, "Bad credentials", nil)
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
 		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
+	chal := digest.Challenge{
+		Realm:     auth.Realm,
+		Nonce:     cred.Nonce,
+		Algorithm: "MD5",
+	}
 
 	log.Debugw("Computing digest response",
-		"challengeRealm", inviteState.challenge.Realm,
-		"challengeNonce", inviteState.challenge.Nonce,
-		"challengeAlgorithm", inviteState.challenge.Algorithm,
+		"challengeRealm", chal.Realm,
+		"challengeNonce", chal.Nonce,
+		"challengeAlgorithm", chal.Algorithm,
 	)
 
-	digCred, err := digest.Digest(&inviteState.challenge, digest.Options{
+	digCred, err := digest.Digest(&chal, digest.Options{
 		Method:   req.Method.String(),
 		URI:      cred.URI,
 		Username: cred.Username,
@@ -648,11 +652,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 				state.EmitSignalingEvent(inviteResponseEvent(EventTryingSent, tryingTime, int(sip.StatusTrying), cc.InviteCSeq()))
 			}
 		}
-		sipCallID := ""
-		if h := req.CallID(); h != nil {
-			sipCallID = h.Value()
-		}
-		inviteState := cm.getInvite(sipCallID)
+		inviteState := cm.getInvite(cc.SIPCallID())
 		// New INVITE supersedes any pending 407-challenge timer for this Call-ID.
 		inviteState.authResolved.Store(true)
 

@@ -30,6 +30,7 @@ import (
 	"github.com/livekit/sipgo/transport"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/stats"
 )
 
@@ -65,6 +66,7 @@ type callManager struct {
 
 	imu               sync.Mutex
 	inProgressInvites []*inProgressInvite
+	sealer            sealer.Sealer
 
 	closing            core.Fuse
 	cmu                sync.RWMutex
@@ -102,7 +104,7 @@ func WithGetRoom(fn GetRoomFunc) CallManagerOption {
 	}
 }
 
-func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...CallManagerOption) *callManager {
+func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, sealer sealer.Sealer, options ...CallManagerOption) *callManager {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -115,6 +117,7 @@ func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Co
 		conf:               conf,
 		sconf:              sconf,
 		getStateHandler:    getStateHandler,
+		sealer:             sealer,
 		getRoom:            DefaultGetRoomFunc,
 		byLocalTag:         make(map[LocalTag]*inboundCall),
 		activeCalls:        make(map[LocalTag]*outboundCall),
