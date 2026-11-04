@@ -129,24 +129,40 @@ func (c *inboundCallInfo) countInvite(log logger.Logger, req *sip.Request) {
 	}
 }
 
-func (c *inboundCallInfo) setChallengeTimer(timeout time.Duration, cb func()) error {
-	if timeout > 0 && cb == nil {
-		return errors.New("callback is required")
-	}
-	if timeout == 0 && cb != nil {
-		return errors.New("callback unnecessary")
-	}
+// startChallengeTimer calls fire after d unless stopChallengeTimer or another
+// startChallengeTimer comes first. It replaces any pending timer.
+func (c *inboundCallInfo) startChallengeTimer(d time.Duration, fire func()) {
 	c.Lock()
 	defer c.Unlock()
+	c.stopChallengeTimerLocked()
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
+		// The timer may have fired just as it was stopped or replaced: only the current one fires.
+		c.Lock()
+		current := c.challengeTimer == t
+		if current {
+			c.challengeTimer = nil
+		}
+		c.Unlock()
+		if current {
+			fire()
+		}
+	})
+	c.challengeTimer = t
+}
+
+// stopChallengeTimer cancels the pending timer, if any.
+func (c *inboundCallInfo) stopChallengeTimer() {
+	c.Lock()
+	defer c.Unlock()
+	c.stopChallengeTimerLocked()
+}
+
+func (c *inboundCallInfo) stopChallengeTimerLocked() {
 	if c.challengeTimer != nil {
 		c.challengeTimer.Stop()
-	}
-	if timeout == 0 {
 		c.challengeTimer = nil
-	} else {
-		c.challengeTimer = time.AfterFunc(timeout, cb)
 	}
-	return nil
 }
 
 // TODO(alexfish): Move this into manager.go
@@ -623,7 +639,8 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 			}
 		}
 		callInfo := cm.getCallInfo(cc.ID())
-		callInfo.setChallengeTimer(0, nil) // stop any pending timer
+		// A new INVITE supersedes the pending challenge.
+		callInfo.stopChallengeTimer()
 		callInfo.countInvite(log, req)
 		if ok, challenge, sentStatus := cm.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
 			if sentStatus != nil {
@@ -644,9 +661,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 				stateRef := state
 				state = nil
 				challengedAt := time.Now()
-
-				// Same termination the challenge was counted under in processInvite.
-				callInfo.setChallengeTimer(authChallengeTimeout, func() {
+				callInfo.startChallengeTimer(authChallengeTimeout, func() {
 					log.Infow("auth challenge timed out without authenticated retry; finalizing call as error",
 						"timeout", authChallengeTimeout)
 					stateRef.Update(func(info *livekit.SIPCallInfo) {
@@ -665,7 +680,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 					if sentStatus != nil {
 						statusCode = int(sentStatus.Code)
 					}
-
+					// Same termination the challenge was counted under in processInvite.
 					stateRef.EmitSignalingEvent(callEndedEvent(challengedAt, stats.ClientError("unauthorized"), statusCode))
 				})
 			}
@@ -2154,22 +2169,23 @@ func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransa
 }
 
 type sipInbound struct {
-	log        logger.Logger
-	cm         *callManager
-	id         LocalTag // SCL
-	tag        RemoteTag
-	sipCallID  string
-	invite     *sip.Request
-	inviteCSeq uint32
-	inviteTx   sip.ServerTransaction
-	contact    *sip.ContactHeader
-	cancelled  chan struct{}
-	from       *sip.FromHeader
-	to         *sip.ToHeader
-	legTr      Transport
-	tr         Transport // Transport used between LK SIP and the provider
-	referDone  chan error
-	src        netip.AddrPort
+	log         logger.Logger
+	cm          *callManager
+	id          LocalTag // SCL
+	tag         RemoteTag
+	sipCallID   string
+	invite      *sip.Request
+	inviteCSeq  uint32
+	inviteTx    sip.ServerTransaction
+	contact     *sip.ContactHeader
+	cancelled   chan struct{}
+	from        *sip.FromHeader
+	to          *sip.ToHeader
+	legTr       Transport
+	tr          Transport // Transport used between LK SIP and the provider
+	referDone   chan error
+	src         netip.AddrPort
+	sipInviteAt time.Time // INVITE received; set at creation
 
 	mu              sync.RWMutex
 	lastSDP         []byte
@@ -2179,7 +2195,6 @@ type sipInbound struct {
 	ringing         chan struct{}
 	acked           core.Fuse
 	ack             atomic.Pointer[sip.Request] // non-nil once acked is broken
-	sipInviteAt     time.Time                   // INVITE received; guarded by mu
 	sipTryingAt     time.Time                   // first 100 Trying for the INVITE; guarded by mu
 	sipOkAt         time.Time                   // first 200 OK for the INVITE; guarded by mu
 	okSending       atomic.Bool                 // the first 200 OK write started; an ACK before it is premature
@@ -2210,8 +2225,6 @@ func (c *sipInbound) Source() netip.AddrPort {
 }
 
 func (c *sipInbound) InviteAt() time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.sipInviteAt
 }
 
@@ -2373,11 +2386,15 @@ func (c *sipInbound) RemoteHeaders() Headers {
 func (c *sipInbound) Processing() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.sipTryingAt.IsZero() {
-		c.sipTryingAt = time.Now()
-		return c.respond(sip.StatusTrying, "Processing")
+	if !c.sipTryingAt.IsZero() {
+		return false
 	}
-	return false
+	now := time.Now()
+	if !c.respond(sip.StatusTrying, "Processing") {
+		return false
+	}
+	c.sipTryingAt = now
+	return true
 }
 
 func (c *sipInbound) attachTag() {

@@ -40,8 +40,7 @@ import (
 )
 
 const (
-	UserAgent   = "LiveKit"
-	digestLimit = 500
+	UserAgent = "LiveKit"
 )
 
 const (
