@@ -373,7 +373,7 @@ func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemotePa
 	log.Debugw("subscribing to a track")
 	r.stats.TrackSubscribes.Add(1)
 	if err := pub.SetSubscribed(true); err != nil {
-		log.Errorw("cannot subscribe to the track", err)
+		log.Warnw("cannot subscribe to the track", err)
 		return
 	}
 	r.subscribed.Break()

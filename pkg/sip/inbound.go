@@ -430,7 +430,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 
 	cc, err = cm.newInbound(req, tx, src)
 	if err != nil {
-		cm.log.Errorw("invalid invite", err)
+		cm.log.Warnw("invalid invite", err)
 		if !cm.conf.HideInboundPort {
 			r := newResponse(req, sip.StatusBadRequest, "", nil)
 			r.AppendHeader(sip.HeaderClone(allowHeader))
@@ -467,12 +467,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		}
 		existing.log().Infow("reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		if err := existing.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
-			log.Errorw("failed to update inbound call SDP", err)
-			if ok := errors.As(err, &SDPError{}); ok {
-				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
-			} else {
-				cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
-			}
+			cc.RejectReinvite(log, "failed to update inbound call SDP", err)
 			return nil
 		}
 		// TODO(alexfish): Reply with the new SDP.
@@ -490,18 +485,13 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 	if oc != nil && oc.cc.InviteCSeq() < newCSeq {
 		localSDP, err := oc.media.GetLocalSDP()
 		if err != nil || len(localSDP) == 0 {
-			oc.log().Errorw("outbound call does not have an SDP", err)
+			oc.log().Warnw("outbound call does not have an SDP", err)
 			cc.RejectAsKeepAlive(statusRequestPending, "Request Pending")
 			return nil
 		}
 		oc.log().Infow("accepting reinvite", "content-length", req.ContentLength(), "cseq", cc.InviteCSeq())
 		if err := oc.updateRemoteFromSDP(sdpBodyFromRequest(req)); err != nil {
-			log.Errorw("failed to update outbound call SDP", err)
-			if ok := errors.As(err, &SDPError{}); ok {
-				cc.RejectAsKeepAlive(sip.StatusBadRequest, "Bad Request")
-			} else {
-				cc.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
-			}
+			cc.RejectReinvite(log, "failed to update outbound call SDP", err)
 			return nil
 		}
 		oc.cc.RecordInvite(newCSeq)
@@ -2454,6 +2444,28 @@ func (c *sipInbound) AcceptAsKeepAlive(sdp []byte) {
 
 func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
 	c.respond(status, reason)
+}
+
+// RejectReinvite replies to a re-INVITE whose SDP could not be applied.
+// An SDPError means the peer offered something we do not support (for example
+// a T.38 m=image offer, or no common codec or SRTP profile). That is expected
+// peer behavior, so reply 488 and log at Warn. Other errors are ours: reply 500
+// and log at Error.
+func (c *sipInbound) RejectReinvite(log logger.Logger, msg string, err error) {
+	if e := (SDPError{}); !errors.As(err, &e) {
+		log.Errorw(msg, err)
+		c.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
+		return
+	}
+	log.Warnw(msg, err)
+	reason := "Invalid SDP"
+	switch {
+	case errors.Is(err, sdp.ErrNoCommonMedia):
+		reason = "No Acceptable Codec"
+	case errors.Is(err, sdp.ErrNoCommonCrypto):
+		reason = "No Acceptable Encryption Profile"
+	}
+	c.RejectAsKeepAlive(sip.StatusNotAcceptableHere, reason)
 }
 
 // TODO(alexfish): Remove this function in favor once re-invites are
