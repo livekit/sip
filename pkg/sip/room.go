@@ -577,8 +577,14 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
+		// The SDK reports the start of a resume with OnSignalReconnecting and the
+		// start of a full reconnect with OnReconnecting. A resume that fails
+		// escalates to a full reconnect and fires both. OnReconnected ends both.
+		OnSignalReconnecting: func() {
+			r.onReconnecting("resume")
+		},
 		OnReconnecting: func() {
-			r.onReconnecting()
+			r.onReconnecting("reconnect")
 		},
 		OnReconnected: func() {
 			r.onReconnected()
@@ -612,14 +618,24 @@ func recoveryKind(resumed bool) string {
 // recovering. Audio published until onReconnected may be dropped: a reconnect
 // detaches our track from its peer connection while the connection is rebuilt,
 // and writes to a detached track are discarded without an error.
-func (r *Room) onReconnecting() {
+//
+// kind is the recovery the SDK starts: "resume" or "reconnect". It is only
+// logged. Whether the recovery ends as a resume is decided in onReconnected.
+//
+// This can run more than once before onReconnected, for example when a resume
+// escalates to a full reconnect. Keep the first state: its start time is when
+// the gap began, and its SID is the one from before the recovery.
+func (r *Room) onReconnecting(kind string) {
 	var sid string
 	if room := r.room.Load(); room != nil {
 		sid = room.LocalParticipant.SID()
 	}
-	r.reconnect.Store(&reconnectState{startedAt: time.Now(), sid: sid})
 	r.stats.Recovering.Store(true)
-	r.roomLog.Infow("lost connection to room, recovering", "participantID", sid)
+	if !r.reconnect.CompareAndSwap(nil, &reconnectState{startedAt: time.Now(), sid: sid}) {
+		r.roomLog.Infow("still recovering, new attempt", "kind", kind, "participantID", sid)
+		return
+	}
+	r.roomLog.Infow("lost connection to room, recovering", "kind", kind, "participantID", sid)
 }
 
 // onReconnected runs when the SDK recovers the signal connection, either by
