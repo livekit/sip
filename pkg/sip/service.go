@@ -212,7 +212,7 @@ func (s *Service) Start() error {
 	}
 	startupSuccessful := false
 	defer func() {
-		if !started {
+		if !startupSuccessful {
 			s.mon.Stop()
 		}
 	}()
