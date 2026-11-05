@@ -182,14 +182,96 @@ func (cm *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
 	return c
 }
 
+func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request, auth InboundAuth) Result {
+	h := req.GetHeader("Proxy-Authorization")
+	if h == nil {
+		return Result{Code: sip.StatusProxyAuthRequired}
+	}
+	credentials := h.Value()
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+
+	log.Debugw("Found Proxy-Authorization header, parsing credentials")
+	cred, err := digest.ParseCredentials(credentials)
+	if err != nil {
+		log.Warnw("Failed to parse Proxy-Authorization credentials", err,
+			"headerValue", credentials,
+		)
+		return Result{Code: 401, Status: "Bad credentials"}
+	}
+
+	// Set credURI and credUsername in logger early to avoid repetitive logging
+	log = log.WithValues("credURI", cred.URI, "credUsername", cred.Username)
+
+	log.Debugw("Parsed credentials successfully", "cred", cred)
+
+	// Validate that the username in the request matches the expected username
+	if cred.Username != auth.Username {
+		log.Warnw("Authentication failed - username mismatch", errors.New("username mismatch"),
+			"expectedUsername", auth.Username,
+			"receivedUsername", cred.Username,
+		)
+		return Result{Code: 401, Status: "Unauthorized"}
+	}
+
+	// The nonce proves its own origin, so the challenge may have been sent by another server.
+	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
+		if err == errDigestNonceExpired {
+			return Result{Code: sip.StatusProxyAuthRequired, Status: "Bad credentials"}
+		}
+		log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
+		return Result{Code: 401, Status: "Bad credentials"}
+	}
+
+	chal := digest.Challenge{
+		Realm:     auth.Realm,
+		Nonce:     cred.Nonce,
+		Algorithm: "MD5",
+	}
+	log.Debugw("Computing digest response",
+		"challengeRealm", chal.Realm,
+		"challengeNonce", chal.Nonce,
+		"challengeAlgorithm", chal.Algorithm,
+	)
+
+	digCred, err := digest.Digest(&chal, digest.Options{
+		Method:   "INVITE",
+		URI:      cred.URI,
+		Username: cred.Username,
+		Password: auth.Password,
+	})
+
+	if err != nil {
+		log.Warnw("Failed to compute digest response", err)
+		return Result{Code: 401, Status: "Bad credentials"}
+	}
+
+	log.Debugw("Digest computation completed",
+		"expectedResponse", digCred.Response,
+		"receivedResponse", cred.Response,
+		"responsesMatch", cred.Response == digCred.Response,
+	)
+
+	if cred.Response != digCred.Response {
+		log.Warnw("Authentication failed - response mismatch", errors.New("response mismatch"),
+			"expectedResponse", digCred.Response,
+			"receivedResponse", cred.Response,
+		)
+		return Result{Code: 401, Status: "Unauthorized"}
+	}
+
+	log.Infow("SIP invite authentication successful")
+	return Result{Code: 200, Status: "OK"}
+}
+
 // handleInviteAuth performs SIP digest authentication on an inbound INVITE.
-// The challenge return value distinguishes the normal digest handshake (where we
-// just sent the initial 407 with no credentials yet provided and expect the
-// client to retry) from a hard auth failure. Callers should treat
-// (ok=false, challenge=true) as non-terminal so it doesn't end up recorded as
-// a finalized error state.
+// Returns a Result and an optional Header to attach to responses.
+// Result.Code: StatusOK means authenticated, or no need in auth. Any other code
+// is the response the caller must send, with the header appended if non-nil.
 // TODO(alexfish): Move this into manager.go
-func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx sip.ServerTransaction, from string, auth InboundAuth) (ok bool, challenge bool, sentStatus *Result) {
+func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, auth InboundAuth) (Result, sip.Header) {
 	if auth.Realm == "" {
 		auth.Realm = UserAgent
 	}
@@ -204,140 +286,42 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 
 	if auth.Username == "" || auth.Password == "" {
 		log.Debugw("Skipping authentication - no credentials provided")
-		return true, false, nil
+		return Result{Code: sip.StatusOK}, nil
 	}
 
-	if cm.conf.HideInboundPort {
-		// We will send password request anyway, so might as well signal that the progress is made.
-		log.Debugw("Sending processing response due to HideInboundPort config")
-		_ = tx.Respond(newResponse(req, 100, "", nil))
+	result := cm.validateAuthroziation(log, req, auth)
+	switch result.Code {
+	case sip.StatusOK:
+		return result, nil // Success!
+	case sip.StatusProxyAuthRequired:
+		// Re-challenge, fall through
+	default: // Explicit failure otherwise
+		return result, nil
 	}
+
+	log.Infow("No valid auth found, issuing a new challenge")
 
 	sipCallID := ""
 	if h := req.CallID(); h != nil {
 		sipCallID = h.Value()
 	}
-	log = log.WithValues("sipCallID", sipCallID)
 
-	h := req.GetHeader("Proxy-Authorization")
-	if h == nil {
-		nonce, err := issueDigestNonce(cm.sealer, sipCallID, time.Now())
-		if err != nil {
-			log.Errorw("Failed to issue digest nonce", err)
-			res := newResponse(req, sip.StatusInternalServerError, "Internal error", nil)
-			if err := tx.Respond(res); err != nil {
-				return false, false, nil
-			}
-			return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
-		}
-		chal := digest.Challenge{
-			Realm:     auth.Realm,
-			Nonce:     nonce,
-			Algorithm: "MD5",
-		}
-		log.Debugw("Created digest challenge",
-			"realm", chal.Realm,
-			"nonce", chal.Nonce,
-			"algorithm", chal.Algorithm,
-		)
-
-		res := newResponse(req, 407, "Unauthorized", nil)
-		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", chal.String()))
-		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
-		if err := tx.Respond(res); err != nil {
-			return false, true, nil
-		}
-		return false, true, &Result{Code: res.StatusCode, Status: res.Reason}
-	}
-
-	log.Debugw("Found Proxy-Authorization header, parsing credentials")
-	cred, err := digest.ParseCredentials(h.Value())
+	nonce, err := issueDigestNonce(cm.sealer, sipCallID, time.Now())
 	if err != nil {
-		log.Warnw("Failed to parse Proxy-Authorization credentials", err,
-			"headerValue", h.Value(),
-		)
-		res := newResponse(req, 401, "Bad credentials", nil)
-		if err := tx.Respond(res); err != nil {
-			return false, false, nil
-		}
-		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
-	}
-
-	// Set credURI and credUsername in logger early to avoid repetitive logging
-	log = log.WithValues("credURI", cred.URI, "credUsername", cred.Username)
-
-	log.Debugw("Parsed credentials successfully", "cred", cred)
-
-	// Validate that the username in the request matches the expected username
-	if cred.Username != auth.Username {
-		log.Warnw("Authentication failed - username mismatch", errors.New("username mismatch"),
-			"expectedUsername", auth.Username,
-			"receivedUsername", cred.Username,
-		)
-		res := newResponse(req, 401, "Unauthorized", nil)
-		if err := tx.Respond(res); err != nil {
-			return false, false, nil
-		}
-		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
-	}
-
-	// The nonce proves its own origin, so the challenge may have been sent by another server.
-	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
-		log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
-		res := newResponse(req, 401, "Bad credentials", nil) // TODO: Consider re-challenging
-		if err := tx.Respond(res); err != nil {
-			return false, false, nil
-		}
-		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
+		log.Errorw("Failed to issue digest nonce", err)
+		return Result{Code: sip.StatusInternalServerError, Status: "Internal error"}, nil
 	}
 	chal := digest.Challenge{
 		Realm:     auth.Realm,
-		Nonce:     cred.Nonce,
+		Nonce:     nonce,
 		Algorithm: "MD5",
 	}
-
-	log.Debugw("Computing digest response",
-		"challengeRealm", chal.Realm,
-		"challengeNonce", chal.Nonce,
-		"challengeAlgorithm", chal.Algorithm,
+	log.Debugw("Created digest challenge",
+		"realm", chal.Realm,
+		"nonce", chal.Nonce,
+		"algorithm", chal.Algorithm,
 	)
-
-	digCred, err := digest.Digest(&chal, digest.Options{
-		Method:   req.Method.String(),
-		URI:      cred.URI,
-		Username: cred.Username,
-		Password: auth.Password,
-	})
-
-	if err != nil {
-		log.Warnw("Failed to compute digest response", err)
-		res := newResponse(req, 401, "Bad credentials", nil)
-		if err := tx.Respond(res); err != nil {
-			return false, false, nil
-		}
-		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
-	}
-
-	log.Debugw("Digest computation completed",
-		"expectedResponse", digCred.Response,
-		"receivedResponse", cred.Response,
-		"responsesMatch", cred.Response == digCred.Response,
-	)
-
-	if cred.Response != digCred.Response {
-		log.Warnw("Authentication failed - response mismatch", errors.New("response mismatch"),
-			"expectedResponse", digCred.Response,
-			"receivedResponse", cred.Response,
-		)
-		res := newResponse(req, 401, "Unauthorized", nil)
-		if err := tx.Respond(res); err != nil {
-			return false, false, nil
-		}
-		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
-	}
-
-	log.Infow("SIP invite authentication successful")
-	return true, false, nil
+	return Result{Code: sip.StatusProxyAuthRequired, Status: "Unauthorized"}, sip.NewHeader("Proxy-Authenticate", chal.String())
 }
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
@@ -642,24 +626,33 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		// A new INVITE supersedes the pending challenge.
 		callInfo.stopChallengeTimer()
 		callInfo.countInvite(log, req)
-		if ok, challenge, sentStatus := cm.handleInviteAuth(log, req, tx, from.User, r.Auth); !ok {
-			if sentStatus != nil {
-				cc.setLastStatus(sentStatus.Code, sentStatus.Status)
-				if !challenge {
-					// A final rejection, not a 407 challenge; handleInviteAuth responds on tx directly.
-					cc.emitRejected(sentStatus.Code, sentStatus.Status)
+		status, authHeader := cm.handleInviteAuth(log, req, r.Auth)
+		switch status.Code {
+		case sip.StatusOK:
+			// No issue encountered. Proceed with call setup. Don't send 200 here.
+		default: // Any kind of resposne we need to send
+			res := newResponse(req, status.Code, status.Status, nil)
+			if authHeader != nil {
+				res.AppendHeader(authHeader)
+			}
+			if err := tx.Respond(res); err == nil {
+				cc.setLastStatus(status.Code, status.Status)
+				if status.Code != sip.StatusProxyAuthRequired {
+					// A final rejection, not a 407 challenge.
+					cc.emitRejected(status.Code, status.Status)
 				}
 			}
+
 			// Store (call-ID + from tag) to (to tag) mapping
 			cm.cmu.Lock()
 			cm.provisionalInvites.Add([2]string{cc.SIPCallID(), string(cc.Tag())}, cc.ID())
 			cm.cmu.Unlock()
 			rejectInvite(stats.ClientError("unauthorized"))
-			if challenge {
-				// 407 sent: defer finalization to the timer or the next INVITE,
-				// not the deferred handler at the top of processInvite.
+
+			if status.Code == sip.StatusProxyAuthRequired {
+				// 407 sent: defer finalization to the timer or the next INVITE
 				stateRef := state
-				state = nil
+				state = nil // Prevents other deferred method from finalizing call
 				challengedAt := time.Now()
 				callInfo.startChallengeTimer(authChallengeTimeout, func() {
 					log.Infow("auth challenge timed out without authenticated retry; finalizing call as error",
@@ -669,25 +662,17 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 						info.Error = "auth challenge issued, no authenticated retry received"
 						// EndedAtNs reflects when the call effectively ended.
 						info.EndedAtNs = challengedAt.UnixNano()
-						if sentStatus != nil {
-							info.CallStatusCode = &livekit.SIPStatus{
-								Code:   livekit.SIPStatusCode(sentStatus.Code),
-								Status: sentStatus.Status,
-							}
+						info.CallStatusCode = &livekit.SIPStatus{
+							Code:   livekit.SIPStatusCode(status.Code),
+							Status: status.Status,
 						}
 					})
-					statusCode := 0
-					if sentStatus != nil {
-						statusCode = int(sentStatus.Code)
-					}
 					// Same termination the challenge was counted under in processInvite.
-					stateRef.EmitSignalingEvent(callEndedEvent(challengedAt, stats.ClientError("unauthorized"), statusCode))
+					stateRef.EmitSignalingEvent(callEndedEvent(challengedAt, stats.ClientError("unauthorized"), status.Code))
 				})
 			}
-			// handleInviteAuth will generate the SIP Response as needed
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
-		// ok
 	case AuthAccept:
 		cm.getCallInfo(cc.ID()).countInvite(log, req)
 		// ok
