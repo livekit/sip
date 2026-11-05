@@ -162,28 +162,27 @@ func (cm *callManager) ContactURI(tr Transport) URI {
 }
 
 func (cm *callManager) ActiveCalls() ActiveCalls {
-	st := ActiveCalls{}
-
 	cm.cmu.RLock()
-	defer cm.cmu.RUnlock()
-	samples, total := sampleMap(5, cm.activeCalls, func(v *outboundCall) string {
+	outboundSamples, outboundTotal := sampleMap(5, cm.activeCalls, func(v *outboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
 		return string(v.cc.id)
 	})
-	st.Outbound = total
-	st.SampleIDs = append(st.SampleIDs, samples...)
 
-	samples, total = sampleMap(5, cm.byLocalTag, func(v *inboundCall) string {
+	inboundSamples, inboundTotal := sampleMap(5, cm.byLocalTag, func(v *inboundCall) string {
 		if v == nil || v.cc == nil {
 			return "<nil>"
 		}
 		return string(v.cc.id)
 	})
-	st.Inbound = total
-	st.SampleIDs = append(st.SampleIDs, samples...)
-	return st
+	cm.cmu.RUnlock()
+
+	return ActiveCalls{
+		Inbound:   inboundTotal,
+		Outbound:  outboundTotal,
+		SampleIDs: append(outboundSamples, inboundSamples...),
+	}
 }
 
 // Stop shuts down all active calls.
