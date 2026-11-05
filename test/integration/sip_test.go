@@ -33,6 +33,7 @@ import (
 	sipgo "github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
@@ -97,9 +98,13 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	nonces, err := sealer.NewAESGCM([]string{utils.RandomSecret()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
 		return sip.NewRPCStateHandler(psrpcCli)
-	})
+	}, nonces)
 	if err != nil {
 		t.Fatal(err)
 	}

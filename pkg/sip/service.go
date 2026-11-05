@@ -42,6 +42,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
@@ -90,9 +91,12 @@ type Service struct {
 // is the SIPCallInfo that NewCallState will own immediately after.
 type GetStateHandler func(projectID string, obs *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) StateHandler
 
-func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getStateHandler GetStateHandler, opts ...ServerOption) (*Service, error) {
+func NewService(region string, conf *config.Config, mon *stats.Monitor, log logger.Logger, getStateHandler GetStateHandler, sealer sealer.Sealer, opts ...ServerOption) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
+	}
+	if sealer == nil {
+		return nil, errors.New("no sealer provided")
 	}
 	if conf.UDPMaxPayload > 0 {
 		transport.UDPMTUSize = conf.UDPMaxPayload
@@ -116,7 +120,7 @@ func NewService(region string, conf *config.Config, mon *stats.Monitor, log logg
 	if err != nil {
 		return nil, err
 	}
-	s.manager = newCallManager(s.srv, cli, region, conf, s.sconf, log, mon, getStateHandler)
+	s.manager = newCallManager(s.srv, cli, region, conf, s.sconf, log, mon, getStateHandler, sealer)
 
 	const placeholder = "${IP}"
 	if strings.Contains(s.conf.SIPHostname, placeholder) {

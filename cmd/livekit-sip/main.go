@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"os/signal"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/stats"
@@ -99,9 +101,14 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
+	// A per-process key: an authenticated retry must reach the server that sent the challenge.
+	sealer, err := sealer.NewAESGCM([]string{rand.Text()})
+	if err != nil {
+		return err
+	}
 	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
 		return sip.NewRPCStateHandler(psrpcClient)
-	})
+	}, sealer)
 	if err != nil {
 		return err
 	}

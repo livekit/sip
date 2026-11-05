@@ -27,8 +27,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/icholy/digest"
-
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -162,7 +160,6 @@ type Server struct {
 
 type inProgressInvite struct {
 	sipCallID    string
-	challenge    digest.Challenge
 	authResolved atomic.Bool
 }
 
