@@ -210,7 +210,7 @@ func (s *Service) Start() error {
 	if err := s.mon.Start(s.conf); err != nil {
 		return err
 	}
-	started := false
+	startupSuccessful := false
 	defer func() {
 		if !started {
 			s.mon.Stop()
@@ -314,7 +314,7 @@ func (s *Service) Start() error {
 	if err := s.srv.Start(ua, s.sconf, tlsConf, s.cli.OnRequest); err != nil {
 		return err
 	}
-	started = true
+	startupSuccessful = true
 	s.log.Debugw("sip service ready")
 	return nil
 }

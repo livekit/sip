@@ -29,7 +29,7 @@ type activeCallsCollector struct {
 func newActiveCallsCollector(nodeID string, snapshot func() (inbound, outbound int)) *activeCallsCollector {
 	return &activeCallsCollector{
 		desc: prometheus.NewDesc(
-			"livekit_sip_calls_handled",
+			"livekit_sip_calls_inprogress",
 			"Number of SIP calls currently tracked by this SIP process, including setup and connected calls until cleanup removes them.",
 			[]string{"dir"},
 			prometheus.Labels{"node_id": nodeID},
