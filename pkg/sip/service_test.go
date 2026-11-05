@@ -169,9 +169,10 @@ func testInvite(t *testing.T, h Handler, hidden bool, from, to string, test func
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager, serverOpts...)
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -388,9 +389,10 @@ func TestService_RejectedInviteCacheReplay(t *testing.T) {
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -490,9 +492,10 @@ func TestService_OnSessionEnd(t *testing.T) {
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -592,9 +595,10 @@ func TestService_Interceptors(t *testing.T) {
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager, WithInterceptors(sentinel, recorder.loggingInterceptor("a"), recorder.loggingInterceptor("b")))
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -695,9 +699,10 @@ func TestDigestAuthSimultaneousCalls(t *testing.T) {
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -906,9 +911,10 @@ func TestDigestAuthStandardFlow(t *testing.T) {
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	require.NotNil(t, s)
@@ -1110,9 +1116,10 @@ func TestSameCallIDForAuthFlow(t *testing.T) {
 		SIPPortListen:   sipPort,
 		RTPPort:         rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
-	manager := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	})
+	}, newTestNonces(t))
+	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	require.NotNil(t, s)

@@ -42,7 +42,6 @@ import (
 
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
-	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sip/version"
 )
@@ -91,12 +90,9 @@ type Service struct {
 // is the SIPCallInfo that NewCallState will own immediately after.
 type GetStateHandler func(projectID string, obs *rpc.SIPCallObservability, initial *livekit.SIPCallInfo) StateHandler
 
-func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, sealer sealer.Sealer, manager CallManager, opts ...ServerOption) (*Service, error) {
+func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, manager CallManager, opts ...ServerOption) (*Service, error) {
 	if log == nil {
 		log = logger.GetLogger()
-	}
-	if sealer == nil {
-		return nil, errors.New("no sealer provided")
 	}
 	if conf.UDPMaxPayload > 0 {
 		transport.UDPMTUSize = conf.UDPMaxPayload

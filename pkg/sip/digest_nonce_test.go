@@ -109,10 +109,10 @@ func TestDigestNonceWrongPayload(t *testing.T) {
 	require.ErrorIs(t, err, sealer.ErrInvalid)
 }
 
-func TestNewServiceRequiresNonces(t *testing.T) {
+func TestNewCallManagerRequiresNonces(t *testing.T) {
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
-	_, err = NewService("", &config.Config{}, mon, logger.NewTestLogger(t), nil, nil)
+	_, err = NewCallManager("", &config.Config{}, logger.NewTestLogger(t), mon, nil, nil)
 	require.Error(t, err)
 }
 
@@ -133,13 +133,17 @@ func startAuthService(t *testing.T, sipPort int, nonces sealer.Sealer, username,
 	require.NoError(t, err)
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
 	require.NoError(t, err)
-	s, err := NewService("", &config.Config{
+	conf := &config.Config{
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
-	}, mon, logger.NewTestLogger(t), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	}
+	log := logger.NewTestLogger(t)
+	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
 	}, nonces)
+	require.NoError(t, err)
+	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	t.Cleanup(s.Stop)
 	s.SetHandler(h)

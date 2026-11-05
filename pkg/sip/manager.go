@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
@@ -108,8 +109,11 @@ func WithGetRoom(fn GetRoomFunc) CallManagerOption {
 }
 
 // NewCallManager returns the default CallManager.
-func NewCallManager(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...CallManagerOption) CallManager {
-	return newCallManager(nil, nil, region, conf, nil, log, mon, getStateHandler, options...)
+func NewCallManager(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, sealer sealer.Sealer, options ...CallManagerOption) (CallManager, error) {
+	if sealer == nil {
+		return nil, errors.New("no sealer provided")
+	}
+	return newCallManager(nil, nil, region, conf, nil, log, mon, getStateHandler, sealer, options...), nil
 }
 
 func newCallManager(tr SIPTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, sealer sealer.Sealer, options ...CallManagerOption) *callManager {
