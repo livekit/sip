@@ -205,7 +205,7 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, aut
 		return Result{Code: sip.StatusOK}, nil
 	}
 
-	result := cm.validateAuthroziation(log, req, auth)
+	result, stale := cm.validateAuthorization(log, req, auth)
 	switch result.Code {
 	case sip.StatusOK:
 		return result, nil // Success!
@@ -231,6 +231,7 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, aut
 		Realm:     auth.Realm,
 		Nonce:     nonce,
 		Algorithm: "MD5",
+		Stale:     stale,
 	}
 	log.Debugw("Created digest challenge",
 		"realm", chal.Realm,
@@ -240,10 +241,10 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, aut
 	return Result{Code: sip.StatusProxyAuthRequired, Status: "Unauthorized"}, sip.NewHeader("Proxy-Authenticate", chal.String())
 }
 
-func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request, auth InboundAuth) Result {
+func (cm *callManager) validateAuthorization(log logger.Logger, req *sip.Request, auth InboundAuth) (result Result, stale bool) {
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
-		return Result{Code: sip.StatusProxyAuthRequired}
+		return Result{Code: sip.StatusProxyAuthRequired}, false
 	}
 	credentials := h.Value()
 	sipCallID := ""
@@ -257,7 +258,7 @@ func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request
 		log.Warnw("Failed to parse Proxy-Authorization credentials", err,
 			"headerValue", credentials,
 		)
-		return Result{Code: 401, Status: "Bad credentials"}
+		return Result{Code: sip.StatusUnauthorized, Status: "Bad credentials"}, false
 	}
 
 	// Set credURI and credUsername in logger early to avoid repetitive logging
@@ -271,16 +272,16 @@ func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request
 			"expectedUsername", auth.Username,
 			"receivedUsername", cred.Username,
 		)
-		return Result{Code: 401, Status: "Unauthorized"}
+		return Result{Code: sip.StatusUnauthorized, Status: "Unauthorized"}, false
 	}
 
 	// The nonce proves its own origin, so the challenge may have been sent by another server.
 	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
-		if err == errDigestNonceExpired {
-			return Result{Code: sip.StatusProxyAuthRequired, Status: "Bad credentials"}
+		if !errors.Is(err, errDigestNonceExpired) {
+			log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
+			return Result{Code: sip.StatusUnauthorized, Status: "Bad credentials"}, false
 		}
-		log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
-		return Result{Code: 401, Status: "Bad credentials"}
+		stale = true
 	}
 
 	chal := digest.Challenge{
@@ -303,7 +304,7 @@ func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request
 
 	if err != nil {
 		log.Warnw("Failed to compute digest response", err)
-		return Result{Code: 401, Status: "Bad credentials"}
+		return Result{Code: sip.StatusUnauthorized, Status: "Bad credentials"}, false
 	}
 
 	log.Debugw("Digest computation completed",
@@ -317,11 +318,16 @@ func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request
 			"expectedResponse", digCred.Response,
 			"receivedResponse", cred.Response,
 		)
-		return Result{Code: 401, Status: "Unauthorized"}
+		return Result{Code: sip.StatusUnauthorized, Status: "Unauthorized"}, false
+	}
+
+	if stale {
+		log.Infow("Authentication failed - stale nonce", "nonce", cred.Nonce)
+		return Result{Code: sip.StatusProxyAuthRequired, Status: "Expired nonce"}, true
 	}
 
 	log.Infow("SIP invite authentication successful")
-	return Result{Code: 200, Status: "OK"}
+	return Result{Code: sip.StatusOK, Status: "OK"}, false
 }
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
