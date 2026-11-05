@@ -63,10 +63,7 @@ type callManager struct {
 	tr              sipTransport
 	getStateHandler GetStateHandler
 	getRoom         GetRoomFunc
-
-	imu               sync.Mutex
-	inProgressInvites []*inProgressInvite
-	sealer            sealer.Sealer
+	sealer          sealer.Sealer
 
 	closing            core.Fuse
 	cmu                sync.RWMutex
