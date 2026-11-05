@@ -16,6 +16,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 
@@ -37,6 +38,12 @@ import (
 // CallManager coordinates the lifecycle of calls (signalling, media, teardown,
 // etc.)
 type CallManager interface {
+	// Lifecycle
+	Start(tr SIPTransport, cli *Client, sconf *ServiceConfig)
+	SetHandler(handler Handler)
+	ActiveCalls() ActiveCalls
+	Stop()
+
 	// SIP Handlers
 	HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
@@ -50,8 +57,8 @@ type CallManager interface {
 	TransferSIPParticipant(ctx context.Context, req *rpc.InternalTransferSIPParticipantRequest) (*rpc.InternalTransferSIPParticipantResponse, error)
 }
 
-// sipTransport is the part of Server that calls use to send SIP messages.
-type sipTransport interface {
+// SIPTransport can send SIP messages.
+type SIPTransport interface {
 	transportLayer() *transport.Layer
 	transactionLayer() *transaction.Layer
 }
@@ -60,7 +67,7 @@ type callManager struct {
 	log             logger.Logger
 	mon             *stats.Monitor
 	region          string
-	tr              sipTransport
+	tr              SIPTransport
 	getStateHandler GetStateHandler
 	getRoom         GetRoomFunc
 	sealer          sealer.Sealer
@@ -101,7 +108,15 @@ func WithGetRoom(fn GetRoomFunc) CallManagerOption {
 	}
 }
 
-func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, sealer sealer.Sealer, options ...CallManagerOption) *callManager {
+// NewCallManager returns the default CallManager.
+func NewCallManager(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, sealer sealer.Sealer, getStateHandler GetStateHandler, options ...CallManagerOption) (CallManager, error) {
+	if sealer == nil {
+		return nil, errors.New("no sealer provided")
+	}
+	return newCallManager(nil, nil, region, conf, nil, log, mon, sealer, getStateHandler, options...), nil
+}
+
+func newCallManager(tr SIPTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, sealer sealer.Sealer, getStateHandler GetStateHandler, options ...CallManagerOption) *callManager {
 	if log == nil {
 		log = logger.GetLogger()
 	}
@@ -121,7 +136,6 @@ func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Co
 		pendingTransfers:   make(map[LocalTag]*PendingTransfer),
 		provisionalInvites: expirable.NewLRU[[2]string, LocalTag](maxCallCache, nil, callCacheTTL),
 	}
-	// Initialize the rejected-invite replay cache unless explicitly disabled.
 	if !conf.DisableRejectedInviteCache {
 		s.rejectedInvites = expirable.NewLRU[[2]string, rejectedInviteResponse](maxCallCache, nil, callCacheTTL)
 	}
@@ -133,6 +147,12 @@ func newCallManager(tr sipTransport, cli *Client, region string, conf *config.Co
 	return s
 }
 
+func (cm *callManager) Start(tr SIPTransport, cli *Client, sconf *ServiceConfig) {
+	cm.tr = tr
+	cm.cli = cli
+	cm.sconf = sconf
+}
+
 func (cm *callManager) SetHandler(handler Handler) {
 	cm.handler = handler
 }
@@ -141,8 +161,32 @@ func (cm *callManager) ContactURI(tr Transport) URI {
 	return getContactURI(cm.conf, cm.sconf.SignalingIP, tr)
 }
 
-// stop shuts down all active calls.
-func (cm *callManager) stop() {
+func (cm *callManager) ActiveCalls() ActiveCalls {
+	cm.cmu.RLock()
+	outboundSamples, outboundTotal := sampleMap(5, cm.activeCalls, func(v *outboundCall) string {
+		if v == nil || v.cc == nil {
+			return "<nil>"
+		}
+		return string(v.cc.id)
+	})
+
+	inboundSamples, inboundTotal := sampleMap(5, cm.byLocalTag, func(v *inboundCall) string {
+		if v == nil || v.cc == nil {
+			return "<nil>"
+		}
+		return string(v.cc.id)
+	})
+	cm.cmu.RUnlock()
+
+	return ActiveCalls{
+		Inbound:   inboundTotal,
+		Outbound:  outboundTotal,
+		SampleIDs: append(outboundSamples, inboundSamples...),
+	}
+}
+
+// Stop shuts down all active calls.
+func (cm *callManager) Stop() {
 	ctx := context.Background()
 	cm.closing.Break()
 	cm.cmu.Lock()
