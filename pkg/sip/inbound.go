@@ -2389,11 +2389,10 @@ func (c *sipInbound) Processing() bool {
 	if !c.sipTryingAt.IsZero() {
 		return false
 	}
-	now := time.Now()
 	if !c.respond(sip.StatusTrying, "Processing") {
 		return false
 	}
-	c.sipTryingAt = now
+	c.sipTryingAt = time.Now()
 	return true
 }
 
