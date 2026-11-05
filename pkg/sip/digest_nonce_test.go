@@ -188,27 +188,44 @@ func TestDigestAuthAcrossServers(t *testing.T) {
 		defer cancel()
 		return getFinalResponseOrFail(t, ctx, tx)
 	}
-	answer := func(callID, retryAddr string) *sip.Response {
-		res := invite(challenger, callID, "")
-		require.Equal(t, sip.StatusCode(407), res.StatusCode)
+	respond := func(res *sip.Response, addr, pass string) string {
 		chal, err := digest.ParseChallenge(res.GetHeader("Proxy-Authenticate").Value())
 		require.NoError(t, err)
 		cred, err := digest.Digest(chal, digest.Options{
 			Method:   "INVITE",
-			URI:      "sip:agent@" + retryAddr,
+			URI:      "sip:agent@" + addr,
 			Username: username,
-			Password: password,
+			Password: pass,
 		})
 		require.NoError(t, err)
-		return invite(retryAddr, callID, cred.String())
+		return cred.String()
+	}
+	answer := func(callID, retryAddr, pass string) *sip.Response {
+		res := invite(challenger, callID, "")
+		require.Equal(t, sip.StatusCode(407), res.StatusCode)
+		return invite(retryAddr, callID, respond(res, retryAddr, pass))
+	}
+	authenticated := func(res *sip.Response) {
+		t.Helper()
+		// Authenticated, so the call proceeds to dispatch, which rejects it with no rule.
+		require.NotEqual(t, sip.StatusCode(401), res.StatusCode)
+		require.NotEqual(t, sip.StatusCode(407), res.StatusCode)
 	}
 
-	// Authenticated, so the call proceeds to dispatch, which rejects it with no rule.
-	res := answer("cross-server@test", peer)
-	require.NotEqual(t, sip.StatusCode(401), res.StatusCode)
-	require.NotEqual(t, sip.StatusCode(407), res.StatusCode)
+	authenticated(answer("cross-server@test", peer, password))
 
-	// A server with another key can't verify the challenge.
-	res = answer("other-key@test", stranger)
+	// A server with another key can't verify the nonce, but the response proves the password,
+	// so it re-challenges with its own nonce instead of failing the call.
+	res := answer("other-key@test", stranger, password)
+	require.Equal(t, sip.StatusCode(407), res.StatusCode)
+	chal, err := digest.ParseChallenge(res.GetHeader("Proxy-Authenticate").Value())
+	require.NoError(t, err)
+	require.True(t, chal.Stale)
+	authenticated(invite(stranger, "other-key@test", respond(res, stranger, password)))
+
+	// A wrong password fails, whether or not the nonce verifies.
+	res = answer("wrong-pass@test", peer, "wrong")
+	require.Equal(t, sip.StatusCode(401), res.StatusCode)
+	res = answer("wrong-pass-other-key@test", stranger, "wrong")
 	require.Equal(t, sip.StatusCode(401), res.StatusCode)
 }

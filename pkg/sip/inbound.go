@@ -219,8 +219,9 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 	}
 	log = log.WithValues("sipCallID", sipCallID)
 
-	h := req.GetHeader("Proxy-Authorization")
-	if h == nil {
+	// rechallenge sends a 407 with a fresh nonce. stale tells the client its credentials were
+	// right but the nonce wasn't, so it retries without asking for new ones (RFC 2617 §3.2.1).
+	rechallenge := func(stale bool) (bool, bool, *Result) {
 		nonce, err := issueDigestNonce(cm.sealer, sipCallID, time.Now())
 		if err != nil {
 			log.Errorw("Failed to issue digest nonce", err)
@@ -234,20 +235,26 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 			Realm:     auth.Realm,
 			Nonce:     nonce,
 			Algorithm: "MD5",
+			Stale:     stale,
 		}
 		log.Debugw("Created digest challenge",
 			"realm", chal.Realm,
 			"nonce", chal.Nonce,
 			"algorithm", chal.Algorithm,
+			"stale", chal.Stale,
 		)
-
 		res := newResponse(req, 407, "Unauthorized", nil)
 		res.AppendHeader(sip.NewHeader("Proxy-Authenticate", chal.String()))
-		log.Infow("No Proxy header found. Sending 407 Unauthorized response with Proxy-Authenticate header")
+		log.Infow("Sending 407 Unauthorized response with Proxy-Authenticate header", "stale", stale)
 		if err := tx.Respond(res); err != nil {
 			return false, true, nil
 		}
 		return false, true, &Result{Code: res.StatusCode, Status: res.Reason}
+	}
+
+	h := req.GetHeader("Proxy-Authorization")
+	if h == nil {
+		return rechallenge(false)
 	}
 
 	log.Debugw("Found Proxy-Authorization header, parsing credentials")
@@ -281,15 +288,6 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
 	}
 
-	// The nonce proves its own origin, so the challenge may have been sent by another server.
-	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
-		log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
-		res := newResponse(req, 401, "Bad credentials", nil) // TODO: Consider re-challenging
-		if err := tx.Respond(res); err != nil {
-			return false, false, nil
-		}
-		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
-	}
 	chal := digest.Challenge{
 		Realm:     auth.Realm,
 		Nonce:     cred.Nonce,
@@ -334,6 +332,13 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 			return false, false, nil
 		}
 		return false, false, &Result{Code: res.StatusCode, Status: res.Reason}
+	}
+
+	// The response proves the password, so a nonce we can't verify is only stale: re-challenge
+	// rather than fail the call. It may have expired, or been sealed by a server with other keys.
+	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
+		log.Warnw("Authentication nonce invalid, re-challenging", err, "nonce", cred.Nonce)
+		return rechallenge(true)
 	}
 
 	log.Infow("SIP invite authentication successful")
