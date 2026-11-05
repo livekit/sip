@@ -21,7 +21,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -117,8 +116,8 @@ func TestNewServiceRequiresNonces(t *testing.T) {
 	require.Error(t, err)
 }
 
-// startAuthService starts a service that requires digest auth, sealing nonces with nonces.
-func startAuthService(t *testing.T, nonces sealer.Sealer, username, password string) string {
+// startAuthService starts a service on sipPort that requires digest auth, sealing nonces with nonces.
+func startAuthService(t *testing.T, sipPort int, nonces sealer.Sealer, username, password string) string {
 	h := &TestHandler{
 		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
 			return AuthInfo{
@@ -130,7 +129,6 @@ func startAuthService(t *testing.T, nonces sealer.Sealer, username, password str
 			return CallDispatch{Result: DispatchNoRuleReject}
 		},
 	}
-	sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)
 	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
@@ -156,16 +154,19 @@ func TestDigestAuthAcrossServers(t *testing.T) {
 		username = "user"
 		password = "pass"
 	)
-	challenger := startAuthService(t, newTestSealer(t, "shared"), username, password)
-	peer := startAuthService(t, newTestSealer(t, "shared"), username, password)
-	stranger := startAuthService(t, newTestSealer(t, "other"), username, password)
+	// The servers run at once, so each needs its own port.
+	challenger := startAuthService(t, testPortSIPMin, newTestSealer(t, "shared"), username, password)
+	peer := startAuthService(t, testPortSIPMin+1, newTestSealer(t, "shared"), username, password)
+	stranger := startAuthService(t, testPortSIPMin+2, newTestSealer(t, "other"), username, password)
 
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)
 	ua, err := sipgo.NewUA(sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(logger.NewTestLogger(t)))))
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = ua.Close() })
 	client, err := sipgo.NewClient(ua)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
 	offer, err := sdp.NewOfferWith(defaultCodecs, localIP, 0xB0B, sdp.EncryptionNone)
 	require.NoError(t, err)
 	offerData, err := offer.SDP.Marshal()

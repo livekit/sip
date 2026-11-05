@@ -296,7 +296,7 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, tx 
 	// The nonce proves its own origin, so the challenge may have been sent by another server.
 	if err := checkDigestNonce(cm.sealer, cred.Nonce, sipCallID, time.Now()); err != nil {
 		log.Warnw("Authentication failed - invalid nonce", err, "nonce", cred.Nonce)
-		res := newResponse(req, 401, "Bad credentials", nil)
+		res := newResponse(req, 401, "Bad credentials", nil) // TODO: Consider re-challenging
 		if err := tx.Respond(res); err != nil {
 			return false, false, nil
 		}
