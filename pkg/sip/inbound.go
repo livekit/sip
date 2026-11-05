@@ -206,13 +206,8 @@ func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, aut
 	}
 
 	result, stale := cm.validateAuthorization(log, req, auth)
-	switch result.Code {
-	case sip.StatusOK:
-		return result, nil // Success!
-	case sip.StatusProxyAuthRequired:
-		// Re-challenge, fall through
-	default: // Explicit failure otherwise
-		return result, nil
+	if result.Code != sip.StatusProxyAuthRequired {
+		return result, nil // success or explicit failure
 	}
 
 	log.Infow("No valid auth found, issuing a new challenge")
