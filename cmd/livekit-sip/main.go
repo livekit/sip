@@ -106,9 +106,9 @@ func runService(ctx context.Context, c *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	manager, err := sip.NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+	manager, err := sip.NewCallManager("", conf, log, mon, sealer, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
 		return sip.NewRPCStateHandler(psrpcClient)
-	}, sealer)
+	})
 	if err != nil {
 		return err
 	}

@@ -501,8 +501,8 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		sconf,
 		log,
 		mon,
-		options.GetStateHandler,
 		newTestNonces(t),
+		options.GetStateHandler,
 		WithGetRoom(options.GetRoom),
 	)
 

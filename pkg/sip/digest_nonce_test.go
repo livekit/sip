@@ -139,9 +139,9 @@ func startAuthService(t *testing.T, sipPort int, nonces sealer.Sealer, username,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 	}
 	log := logger.NewTestLogger(t)
-	manager, err := NewCallManager("", conf, log, mon, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+	manager, err := NewCallManager("", conf, log, mon, nonces, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
-	}, nonces)
+	})
 	require.NoError(t, err)
 	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)

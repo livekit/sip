@@ -109,14 +109,14 @@ func WithGetRoom(fn GetRoomFunc) CallManagerOption {
 }
 
 // NewCallManager returns the default CallManager.
-func NewCallManager(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, sealer sealer.Sealer, options ...CallManagerOption) (CallManager, error) {
+func NewCallManager(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, sealer sealer.Sealer, getStateHandler GetStateHandler, options ...CallManagerOption) (CallManager, error) {
 	if sealer == nil {
 		return nil, errors.New("no sealer provided")
 	}
-	return newCallManager(nil, nil, region, conf, nil, log, mon, getStateHandler, sealer, options...), nil
+	return newCallManager(nil, nil, region, conf, nil, log, mon, sealer, getStateHandler, options...), nil
 }
 
-func newCallManager(tr SIPTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, sealer sealer.Sealer, options ...CallManagerOption) *callManager {
+func newCallManager(tr SIPTransport, cli *Client, region string, conf *config.Config, sconf *ServiceConfig, log logger.Logger, mon *stats.Monitor, sealer sealer.Sealer, getStateHandler GetStateHandler, options ...CallManagerOption) *callManager {
 	if log == nil {
 		log = logger.GetLogger()
 	}
