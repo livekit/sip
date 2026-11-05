@@ -182,6 +182,64 @@ func (cm *callManager) getCallInfo(id LocalTag) *inboundCallInfo {
 	return c
 }
 
+// handleInviteAuth performs SIP digest authentication on an inbound INVITE.
+// Returns a Result and an optional Header to attach to responses.
+// Result.Code: StatusOK means authenticated, or no need in auth. Any other code
+// is the response the caller must send, with the header appended if non-nil.
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, auth InboundAuth) (Result, sip.Header) {
+	if auth.Realm == "" {
+		auth.Realm = UserAgent
+	}
+	log = log.WithValues(
+		"username", auth.Username,
+		"passwordHash", hashPassword(auth.Password),
+		"method", req.Method.String(),
+		"uri", req.Recipient.String(),
+	)
+
+	log.Infow("Starting SIP invite authentication")
+
+	if auth.Username == "" || auth.Password == "" {
+		log.Debugw("Skipping authentication - no credentials provided")
+		return Result{Code: sip.StatusOK}, nil
+	}
+
+	result := cm.validateAuthroziation(log, req, auth)
+	switch result.Code {
+	case sip.StatusOK:
+		return result, nil // Success!
+	case sip.StatusProxyAuthRequired:
+		// Re-challenge, fall through
+	default: // Explicit failure otherwise
+		return result, nil
+	}
+
+	log.Infow("No valid auth found, issuing a new challenge")
+
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+
+	nonce, err := issueDigestNonce(cm.sealer, sipCallID, time.Now())
+	if err != nil {
+		log.Errorw("Failed to issue digest nonce", err)
+		return Result{Code: sip.StatusInternalServerError, Status: "Internal error"}, nil
+	}
+	chal := digest.Challenge{
+		Realm:     auth.Realm,
+		Nonce:     nonce,
+		Algorithm: "MD5",
+	}
+	log.Debugw("Created digest challenge",
+		"realm", chal.Realm,
+		"nonce", chal.Nonce,
+		"algorithm", chal.Algorithm,
+	)
+	return Result{Code: sip.StatusProxyAuthRequired, Status: "Unauthorized"}, sip.NewHeader("Proxy-Authenticate", chal.String())
+}
+
 func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request, auth InboundAuth) Result {
 	h := req.GetHeader("Proxy-Authorization")
 	if h == nil {
@@ -264,64 +322,6 @@ func (cm *callManager) validateAuthroziation(log logger.Logger, req *sip.Request
 
 	log.Infow("SIP invite authentication successful")
 	return Result{Code: 200, Status: "OK"}
-}
-
-// handleInviteAuth performs SIP digest authentication on an inbound INVITE.
-// Returns a Result and an optional Header to attach to responses.
-// Result.Code: StatusOK means authenticated, or no need in auth. Any other code
-// is the response the caller must send, with the header appended if non-nil.
-// TODO(alexfish): Move this into manager.go
-func (cm *callManager) handleInviteAuth(log logger.Logger, req *sip.Request, auth InboundAuth) (Result, sip.Header) {
-	if auth.Realm == "" {
-		auth.Realm = UserAgent
-	}
-	log = log.WithValues(
-		"username", auth.Username,
-		"passwordHash", hashPassword(auth.Password),
-		"method", req.Method.String(),
-		"uri", req.Recipient.String(),
-	)
-
-	log.Infow("Starting SIP invite authentication")
-
-	if auth.Username == "" || auth.Password == "" {
-		log.Debugw("Skipping authentication - no credentials provided")
-		return Result{Code: sip.StatusOK}, nil
-	}
-
-	result := cm.validateAuthroziation(log, req, auth)
-	switch result.Code {
-	case sip.StatusOK:
-		return result, nil // Success!
-	case sip.StatusProxyAuthRequired:
-		// Re-challenge, fall through
-	default: // Explicit failure otherwise
-		return result, nil
-	}
-
-	log.Infow("No valid auth found, issuing a new challenge")
-
-	sipCallID := ""
-	if h := req.CallID(); h != nil {
-		sipCallID = h.Value()
-	}
-
-	nonce, err := issueDigestNonce(cm.sealer, sipCallID, time.Now())
-	if err != nil {
-		log.Errorw("Failed to issue digest nonce", err)
-		return Result{Code: sip.StatusInternalServerError, Status: "Internal error"}, nil
-	}
-	chal := digest.Challenge{
-		Realm:     auth.Realm,
-		Nonce:     nonce,
-		Algorithm: "MD5",
-	}
-	log.Debugw("Created digest challenge",
-		"realm", chal.Realm,
-		"nonce", chal.Nonce,
-		"algorithm", chal.Algorithm,
-	)
-	return Result{Code: sip.StatusProxyAuthRequired, Status: "Unauthorized"}, sip.NewHeader("Proxy-Authenticate", chal.String())
 }
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
