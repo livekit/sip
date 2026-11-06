@@ -468,7 +468,7 @@ func startOutboundCall(t *testing.T, req *rpc.InternalCreateSIPParticipantReques
 	t.Helper()
 	states := &recordingStateHandler{}
 	h := NewTestSIP(t, TestSIPConfig{GetIOClient: states.GetStateHandler()})
-	go func() { _, _ = h.Client.CreateSIPParticipant(t.Context(), req) }()
+	go func() { _, _ = h.manager.CreateSIPParticipant(t.Context(), req) }()
 	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
 	require.Equal(t, sip.INVITE, tr.req.Method)
 	return states, h, tr
@@ -498,9 +498,7 @@ func activeCall(t *testing.T, states *recordingStateHandler, h *testSIPHarness, 
 		last := states.Last()
 		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
 	}, time.Second, 10*time.Millisecond)
-	h.Client.cmu.Lock()
-	defer h.Client.cmu.Unlock()
-	return h.Client.activeCalls[LocalTag(callID)]
+	return h.manager.getActiveCall(LocalTag(callID))
 }
 
 func TestOutboundSignalingEventsAnswered(t *testing.T) {
@@ -570,7 +568,7 @@ func TestOutboundSignalingEventsRemoteBye(t *testing.T) {
 		bye.AppendHeader(tr.req.CallID())
 		bye.AppendHeader(&sip.CSeqHeader{SeqNo: 7, MethodName: sip.BYE})
 		bye.AppendHeader(sip.NewHeader("Reason", `Q.850;cause=16;text="Normal call clearing"`))
-		require.True(t, h.Client.OnRequest(bye, &testSIPServerTransaction{
+		require.True(t, h.manager.onOutboundBye(bye, &testSIPServerTransaction{
 			log: logger.GetLogger(), req: bye, responses: make(chan *sip.Response, 1), done: make(chan struct{}),
 		}))
 	}
@@ -624,9 +622,7 @@ func TestOutboundSignalingEventsNotAnswered(t *testing.T) {
 				require.Eventually(t, func() bool {
 					return slices.Contains(states.EventTypes(), EventProvisionalReceived)
 				}, time.Second, 10*time.Millisecond)
-				h.Client.cmu.Lock()
-				call := h.Client.activeCalls[LocalTag(states.Events()[0].CallID)]
-				h.Client.cmu.Unlock()
+				call := h.manager.getActiveCall(LocalTag(states.Events()[0].CallID))
 				call.lkRoom.(*testRoom).room.stopped.Break()
 			},
 			want: EventCancelSent, reason: "hangup",

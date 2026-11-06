@@ -429,14 +429,14 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		if c.sessionDur != nil {
 			c.sessionDur()
 		}
+		// Before stopSIP, which can wait for the BYE transaction.
+		c.state.EmitSignalingEvent(callEndedEvent(endedAt, end.Term, c.cc.finalStatusCode()))
 
 		// Send BYE _before_ closing media/room connection.
 		// This ensures participant attributes are still available for
 		// attributes_to_headers mapping in the setHeaders callback.
 		// See: https://github.com/livekit/sip/issues/404
 		c.stopSIP(ctx, end.Term, end.Headers)
-		// Emitted after stopSIP, with the end time taken before it.
-		c.state.EmitSignalingEvent(callEndedEvent(endedAt, end.Term, c.cc.finalStatusCode()))
 		if c.media != nil {
 			c.media.Close()
 		}
@@ -1351,7 +1351,6 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 
 	cseq := requestCSeq(req)
-	sentAt := time.Now()
 	tx, err := c.cli.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
@@ -1383,8 +1382,6 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		}
 	}
 
-	resp, err := sipResponse(ctx, tx, c.closing.Watch(), setState)
-	if err != nil && resp == nil && (ctx.Err() != nil || c.closing.IsBroken()) {
 	// Report the first response with each 1xx code; the caller holds c.mu.
 	onResponse := func(code sip.StatusCode, hdrs Headers) {
 		if code < 200 && !c.provisional[code] {
@@ -1401,7 +1398,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	resp, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
 	if err != nil && resp == nil && (ctx.Err() != nil || c.closing.IsBroken()) {
 		// sipResponse sent a CANCEL.
-		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelReason(ctx, c.c.closing.IsBroken())})
+		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelReason(ctx, c.closing.IsBroken())})
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
 		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx)
