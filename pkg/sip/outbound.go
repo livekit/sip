@@ -82,6 +82,8 @@ type outboundCall struct {
 	jitterBuf bool
 	projectID string
 
+	byeReceived atomic.Bool // EventByeReceived was emitted
+
 	mu         sync.RWMutex
 	mon        *stats.CallMonitor
 	sessionDur func() time.Duration
@@ -122,6 +124,18 @@ func (cm *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config
 	call.cc = cm.newOutbound(log, id, sipConf.uri, sipConf.to, sipConf.from, contact, call.setAttrsToHeaders)
 	log = log.WithValues("jitterBuf", call.jitterBuf, "sipCallID", call.cc.callID)
 	call.setLog(log)
+	call.cc.emit = state.EmitSignalingEvent
+	// The SIP Call-ID is fixed from here on; set it now so the setup events carry it.
+	sipCallID := call.cc.SIPCallID()
+	state.DeferUpdate(func(info *livekit.SIPCallInfo) {
+		info.SipCallId = sipCallID
+		// Set callidfull in participant attributes for backwards compatibility
+		if info.ParticipantAttributes == nil {
+			info.ParticipantAttributes = make(map[string]string)
+		}
+		info.ParticipantAttributes[AttrSIPCallIDFull] = sipCallID
+	})
+	state.EmitSignalingEvent(SignalingEvent{Type: EventCallRequested, Time: now})
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
 		call.cc.routeHeaders = conf.OutboundRouteHeaders
 	}
@@ -420,6 +434,8 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		if c.sessionDur != nil {
 			c.sessionDur()
 		}
+		// Before stopSIP, which can wait for the BYE transaction.
+		c.state.EmitSignalingEvent(callEndedEvent(endedAt, end.Term, c.cc.finalStatusCode()))
 
 		// Send BYE _before_ closing media/room connection.
 		// This ensures participant attributes are still available for
@@ -628,30 +644,37 @@ func (c *outboundCall) connectMedia() {
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, setState sipRespFunc) (*sip.Response, error) {
+// sipResponse waits for the final response to tx. If ctx ends or stop closes
+// first, it sends a CANCEL and says why in cancelled: "timeout" (ctx ended with
+// ErrSIPRequestTimeout), "hangup" (ctx ended otherwise) or "shutdown" (stop).
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc) (_ *sip.Response, cancelled string, _ error) {
 	cnt := 0
 	for {
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
+			cancelled = "hangup"
+			if errors.Is(context.Cause(ctx), ErrSIPRequestTimeout) {
+				cancelled = "timeout"
+			}
 			// NOTE: psrpc.Canceled does not auto-retry, whereas psrpc.DeadlineExceeded does
 			// As long as that is the case, avoid psrpc.DeadlineExceeded to prevent hammering of destination.
-			return nil, psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout)
+			return nil, cancelled, psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout)
 		case <-stop:
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
+			return nil, "shutdown", psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
-			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+			return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 		case res := <-tx.Responses():
 			if res == nil {
-				return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+				return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 			}
 			status := res.StatusCode
-			if setState != nil {
-				setState(res.StatusCode, res.Headers())
+			if onResponse != nil {
+				onResponse(res.StatusCode, res.Headers())
 			}
 			if status/100 != 1 { // != 1xx
-				return res, nil
+				return res, "", nil
 			}
 			// continue
 			cnt++
@@ -663,8 +686,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 var cancelResponseGrace = 5 * time.Second
 
 // watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
-// the answered call is not orphaned. It owns tx and terminates it when done.
-func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction) {
+// the answered call is not orphaned. onAnswered, if set, is called with the 2xx.
+// It owns tx and terminates it when done.
+func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction, onAnswered func(*sip.Response)) {
 	defer tx.Terminate()
 	timer := time.NewTimer(cancelResponseGrace)
 	defer timer.Stop()
@@ -679,6 +703,9 @@ func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeader
 				continue // provisional; keep waiting
 			case 2:
 				log.Infow("cancelled INVITE answered; sending ACK and BYE")
+				if onAnswered != nil {
+					onAnswered(res)
+				}
 				applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
 				_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
 				bye := sip.NewByeRequest(req, res, nil)
@@ -803,17 +830,6 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
 	})
-	// Update SIPCallInfo with the SIP Call-ID after Invite
-	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
-		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-			info.SipCallId = sipCallID
-			// Set callidfull in participant attributes for backwards compatibility
-			if info.ParticipantAttributes == nil {
-				info.ParticipantAttributes = make(map[string]string)
-			}
-			info.ParticipantAttributes[AttrSIPCallIDFull] = sipCallID
-		})
-	}
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
 		var e *livekit.SIPStatus
@@ -976,6 +992,24 @@ type sipOutbound struct {
 	referCseq        uint32
 	referDone        chan error
 	latestInviteCSeq uint32
+
+	emit        func(SignalingEvent)    // reports signaling events; nil if not set
+	provisional map[sip.StatusCode]bool // 1xx codes already reported
+	finalStatus int                     // final response to the INVITE, 0 if none
+}
+
+func (c *sipOutbound) emitEvent(ev SignalingEvent) {
+	if c.emit != nil {
+		c.emit(ev)
+	}
+}
+
+// finalStatusCode returns the final response to the INVITE: 200 if answered,
+// the failure status if it failed, or 0 if none arrived.
+func (c *sipOutbound) finalStatusCode() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.finalStatus
 }
 
 func (c *sipOutbound) From() sip.Uri {
@@ -1055,7 +1089,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) ([]byte, error) {
+func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) (_ []byte, retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Invite")
 	defer span.End()
 	c.mu.Lock()
@@ -1067,8 +1101,31 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 		authHeaderRespName string
 		req                *sip.Request
 		resp               *sip.Response
+		respAt             time.Time
 		err                error
 	)
+	// A final non-2xx response fails the INVITE, and so does a 401/407 we
+	// can't answer. resp is nil when no final response arrived; it is the 200
+	// when the call fails after the answer.
+	defer func() {
+		if retErr == nil || resp == nil || resp.StatusCode == sip.StatusOK {
+			return
+		}
+		c.finalStatus = int(resp.StatusCode)
+		if resp.StatusCode < 300 {
+			// TODO: an unexpected 2xx sets up a dialog on the remote side, but we
+			// neither ACK nor hang it up. ACK and BYE it, or treat it as a 200.
+			return // we reject an unexpected 2xx; the remote side didn't fail the call
+		}
+		c.emitEvent(SignalingEvent{
+			Type:       EventFailed,
+			Time:       respAt,
+			SIPMethod:  string(sip.INVITE),
+			StatusCode: int(resp.StatusCode),
+			CSeq:       requestCSeq(req),
+			Reason:     messageCause(resp),
+		})
+	}()
 	if keys := maps.Keys(headers); len(keys) != 0 {
 		sort.Strings(keys)
 		for _, key := range keys {
@@ -1086,6 +1143,14 @@ authLoop:
 		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
 		if err != nil {
 			return nil, err
+		}
+		respAt = time.Now()
+		switch resp.StatusCode {
+		case sip.StatusOK:
+			c.finalStatus = int(resp.StatusCode)
+			c.emitEvent(SignalingEvent{Type: EventAnsweredReceived, Time: respAt, SIPMethod: string(sip.INVITE), StatusCode: int(resp.StatusCode), CSeq: requestCSeq(req)})
+		case sip.StatusUnauthorized, sip.StatusProxyAuthRequired:
+			c.emitEvent(SignalingEvent{Type: EventAuthChallenged, Time: respAt, SIPMethod: string(sip.INVITE), StatusCode: int(resp.StatusCode), CSeq: requestCSeq(req)})
 		}
 		var authHeaderName string
 		switch resp.StatusCode {
@@ -1210,7 +1275,11 @@ func (c *sipOutbound) AckInviteOK(ctx context.Context) error {
 	if c.invite == nil || c.inviteOk == nil {
 		return psrpc.NewErrorf(psrpc.Canceled, "call already closed")
 	}
-	return c.cli.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil))
+	if err := c.cli.sipCli.WriteRequest(sip.NewAckRequest(c.invite, c.inviteOk, nil)); err != nil {
+		return err
+	}
+	c.emitEvent(SignalingEvent{Type: EventAckSent, Time: time.Now(), SIPMethod: string(sip.ACK), CSeq: requestCSeq(c.invite)})
+	return nil
 }
 
 // resolveDest resolves the request URI up front so the INVITE carries an
@@ -1292,10 +1361,13 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		req.PrependHeader(sip.NewHeader("Route", route))
 	}
 
+	cseq := requestCSeq(req)
 	tx, err := c.cli.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
 	}
+	// Timed after TransactionRequest, which may first connect over TCP/TLS.
+	c.emitEvent(SignalingEvent{Type: EventInviteSent, Time: time.Now(), SIPMethod: string(sip.INVITE), CSeq: cseq, Transport: Transport(strings.ToLower(req.Transport()))})
 	handedOff := false
 	defer func() {
 		if !handedOff {
@@ -1321,11 +1393,27 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		}
 	}
 
-	resp, err := sipResponse(ctx, tx, c.closing.Watch(), setState)
-	if err != nil && resp == nil && (ctx.Err() != nil || c.closing.IsBroken()) {
+	// Report the first response with each 1xx code; the caller holds c.mu.
+	onResponse := func(code sip.StatusCode, hdrs Headers) {
+		if code < 200 && !c.provisional[code] {
+			if c.provisional == nil {
+				c.provisional = make(map[sip.StatusCode]bool)
+			}
+			c.provisional[code] = true
+			c.emitEvent(SignalingEvent{Type: EventProvisionalReceived, Time: time.Now(), SIPMethod: string(sip.INVITE), StatusCode: int(code), CSeq: cseq})
+		}
+		if setState != nil {
+			setState(code, hdrs)
+		}
+	}
+	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
+	if cancelled != "" {
+		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelled})
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
-		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx)
+		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx, func(res *sip.Response) {
+			c.emitEvent(SignalingEvent{Type: EventLateAnswerReceived, Time: time.Now(), SIPMethod: string(sip.INVITE), StatusCode: int(res.StatusCode), CSeq: cseq})
+		})
 	}
 	return req, resp, err
 }
@@ -1361,14 +1449,24 @@ func (c *sipOutbound) sendBye(ctx context.Context, headers map[string]string) {
 	for k, v := range headers {
 		r.AppendHeader(sip.NewHeader(k, v))
 	}
+	ev := SignalingEvent{Type: EventByeSent, Time: time.Now(), SIPMethod: string(sip.BYE)}
 	if c.closing.IsBroken() {
 		// do not wait for a response
 		_ = c.WriteRequest(r)
+		ev.CSeq = requestCSeq(r)
+		c.emitEvent(ev)
 		return
 	}
 	c.setCSeq(r)
 	c.drop()
-	sendBye(ctx, c.log, c, r)
+	ev.CSeq = requestCSeq(r)
+	res, err := sendBye(ctx, c.log, c, r)
+	ev.Duration = time.Since(ev.Time)
+	ev.Result = byeOutcome(res, err)
+	if res != nil {
+		ev.StatusCode = int(res.StatusCode)
+	}
+	c.emitEvent(ev)
 }
 
 func (c *sipOutbound) sendCancel(ctx context.Context, headers map[string]string) {

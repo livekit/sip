@@ -291,7 +291,7 @@ func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Reque
 		return nil, err
 	}
 	defer tx.Terminate()
-	res, err := sipResponse(ctx, tx, nil, nil)
+	res, _, err := sipResponse(ctx, tx, nil, nil)
 	if err != nil {
 		log.Infow("no response to BYE", "error", err)
 		return nil, err
@@ -386,7 +386,7 @@ func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan s
 	defer tx.Terminate()
 
 	ctx = context.WithoutCancel(ctx)
-	resp, err := sipResponse(ctx, tx, stop, nil)
+	resp, _, err := sipResponse(ctx, tx, stop, nil)
 	if err != nil {
 		return nil, err
 	}
