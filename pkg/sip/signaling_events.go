@@ -147,9 +147,9 @@ type SignalingEvent struct {
 	// SIP message details, set when the event corresponds to a SIP message.
 	SIPMethod string
 	// StatusCode is the SIP status of the response. On EventCallEnded it is the
-	// final response to the INVITE, sent (inbound) or received (outbound): 200
-	// for every answered call, however it ended later. Result and Reason say
-	// how the call ended.
+	// final response to the INVITE, sent (inbound) or received (outbound), or 0 if
+	// there was none (e.g. a cancelled or dropped INVITE): 200 for every answered
+	// call, however it ended later. Result and Reason say how the call ended.
 	StatusCode int
 	CSeq       uint32
 	Transport  Transport

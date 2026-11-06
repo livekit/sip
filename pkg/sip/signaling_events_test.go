@@ -581,6 +581,14 @@ func TestOutboundSignalingEventsRemoteBye(t *testing.T) {
 	require.Equal(t, uint32(7), bye.CSeq)
 }
 
+// A 2xx other than 200 fails the call on our side, but is not a rejection.
+func TestOutboundSignalingEventsUnexpected2xx(t *testing.T) {
+	states, _, tr := startOutboundCall(t, MinimalCreateSIPParticipantRequest())
+	respond(t, tr, sip.StatusCode(202))
+	evs := waitEventTypes(t, states, []SignalingEventType{EventCallRequested, EventInviteSent, EventCallEnded})
+	require.Equal(t, 202, evs[2].StatusCode)
+}
+
 func TestOutboundSignalingEventsNotAnswered(t *testing.T) {
 	cases := []struct {
 		name   string
