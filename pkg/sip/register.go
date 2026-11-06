@@ -52,9 +52,8 @@ const (
 	registerTimeout = 32 * time.Second
 	// unregisterTimeout bounds the un-REGISTER we send on shutdown, which delays it.
 	unregisterTimeout = 5 * time.Second
-	// keepaliveTimeout bounds one OPTIONS keepalive exchange. Keepalives share the goroutine
-	// that refreshes the registration, so this must stay well below registerMinRefreshMargin:
-	// a registrar that stops answering must not be able to delay a refresh past the expiry.
+	// keepaliveTimeout bounds the single outstanding OPTIONS worker. Missed ticks
+	// are coalesced while it waits; it cannot block registration or expiry handling.
 	keepaliveTimeout = 3 * time.Second
 
 	// A refresh is sent this long before the registration expires, so a failure leaves
@@ -135,7 +134,8 @@ type registrant struct {
 	nonceCount int
 	observedMu sync.Mutex
 	observed   string
-	// uncertain means a nonzero REGISTER might have applied but its response was lost.
+	// uncertain means a nonzero REGISTER might still have a binding: its response
+	// was lost, or rewritten Contacts prevent identifying our binding's lifetime.
 	// Owned by the REGISTER worker, read by run only after joining it.
 	uncertain bool
 	// bound records that the registrar has accepted a binding that has not been removed, so
@@ -308,8 +308,12 @@ func (r *registrant) run() {
 	}
 	var registering chan registrationResult
 	var pinging chan struct{}
+	var possiblyBound bool
 	// Only this owner updates binding/state. Workers cannot postpone lapse handling.
 	accept := func(result registrationResult) {
+		// The result joins the worker before this read. Keep a separate owner-side
+		// snapshot so OPTIONS never reads uncertainty while REGISTER mutates it.
+		possiblyBound = r.uncertain
 		if result.err == nil {
 			r.bound, r.granted, r.boundUntil = true, result.granted, time.Now().Add(result.granted)
 		}
@@ -376,9 +380,9 @@ func (r *registrant) run() {
 			last := r.State()
 			r.bound, r.granted, r.boundUntil = false, 0, time.Time{}
 			r.setState(RegistrationState{Error: last.Error})
-			r.log.Warnw("SIP registration lapsed; inbound calls will not arrive", last.Error)
+			r.log.Warnw("SIP registration lifetime elapsed; binding is no longer confirmed", last.Error)
 		case <-keepalive:
-			if r.stop.IsBroken() || !r.stillBound() || pinging != nil {
+			if r.stop.IsBroken() || (!r.stillBound() && !possiblyBound) || pinging != nil {
 				continue
 			}
 			// A slow OPTIONS must not postpone registration/expiry either. Bounded
@@ -474,12 +478,14 @@ func (r *registrant) registerOnce(timeout time.Duration, expires time.Duration) 
 		r.uncertain = wasUncertain
 		switch resp.StatusCode {
 		case sip.StatusOK:
-			r.uncertain = false
 			r.logObservedAddress(resp)
+			// A conservative estimate from other Contacts schedules early refresh,
+			// but cannot prove our rewritten binding has expired or was removed.
+			_, identified := ownContactExpiry(resp, &r.contact)
+			r.uncertain = expires > 0 && !identified
 			granted := grantedExpiry(resp, &r.contact, expires)
 			if expires > 0 && granted <= 0 {
-				// A 200 that grants nothing means the binding was not created after all.
-				return 0, errors.New("registrar accepted the REGISTER but granted no binding")
+				return 0, errors.New("registrar accepted REGISTER but no positive binding lifetime could be confirmed")
 			}
 			return granted, nil
 		case sip.StatusUnauthorized, sip.StatusProxyAuthRequired:
@@ -685,12 +691,16 @@ func (r *registrant) logObservedAddress(resp *sip.Response) {
 }
 
 // grantedExpiry reports the lifetime the registrar granted, preferring the most specific
-// source: the expires parameter on our own binding, then the shortest binding it listed,
-// then the Expires header, then the value we asked for. The second step covers registrars that
-// rewrite the Contact to the address they observed, which stops it matching ours. A global
-// Expires value must never override a shorter binding-specific lifetime. Underestimating the
-// lifetime only costs an early refresh, while overestimating lets the binding lapse.
+// source: our identified binding's explicit expiry or global default, then the
+// shortest binding listed, then the Expires header, then the requested value.
+// The shortest binding covers rewritten Contacts that no longer match ours; a
+// global value cannot override a shorter explicit expiry in that case. An estimate
+// from other Contacts is not proof of our binding's removal: uncertain keeps its
+// mapping alive and makes shutdown withdraw it even after this estimate lapses.
 func grantedExpiry(resp *sip.Response, contact *sip.Uri, requested time.Duration) time.Duration {
+	if d, ok := ownContactExpiry(resp, contact); ok {
+		return d
+	}
 	var shortest time.Duration
 	haveBindingExpiry := false
 	for _, h := range resp.GetHeaders("Contact") {
@@ -698,17 +708,9 @@ func grantedExpiry(resp *sip.Response, contact *sip.Uri, requested time.Duration
 		if !ok {
 			continue
 		}
-		v, ok := c.Params.Get("expires")
+		d, ok := contactExpiry(c)
 		if !ok {
 			continue
-		}
-		sec, err := strconv.Atoi(v)
-		if err != nil || sec < 0 {
-			continue
-		}
-		d := time.Duration(sec) * time.Second
-		if sameContact(&c.Address, contact) {
-			return d
 		}
 		if !haveBindingExpiry || d < shortest {
 			shortest, haveBindingExpiry = d, true
@@ -721,6 +723,34 @@ func grantedExpiry(resp *sip.Response, contact *sip.Uri, requested time.Duration
 		return d
 	}
 	return requested
+}
+
+// A global Expires applies to our identified Contact only when that Contact has
+// no explicit expires parameter. Other devices' shorter lifetimes cannot replace it.
+func ownContactExpiry(resp *sip.Response, contact *sip.Uri) (time.Duration, bool) {
+	for _, h := range resp.GetHeaders("Contact") {
+		c, ok := h.(*sip.ContactHeader)
+		if !ok || !sameContact(&c.Address, contact) {
+			continue
+		}
+		if _, present := c.Params.Get("expires"); present {
+			return contactExpiry(c)
+		}
+		return headerSeconds(resp, "Expires")
+	}
+	return 0, false
+}
+
+func contactExpiry(c *sip.ContactHeader) (time.Duration, bool) {
+	v, ok := c.Params.Get("expires")
+	if !ok {
+		return 0, false
+	}
+	sec, err := strconv.Atoi(v)
+	if err != nil || sec < 0 {
+		return 0, false
+	}
+	return time.Duration(sec) * time.Second, true
 }
 
 func sameContact(a, b *sip.Uri) bool {

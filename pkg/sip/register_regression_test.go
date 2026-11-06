@@ -117,6 +117,14 @@ func TestRegistrantsStopTogether(t *testing.T) {
 	})
 	require.Eventually(t, func() bool { return withdrawing.Load() }, time.Second, 10*time.Millisecond)
 	require.Eventually(t, func() bool { return r2.stop.IsBroken() }, 200*time.Millisecond, 10*time.Millisecond, "second account must stop promptly, not wait for first account's unregister timeout")
+	require.Eventually(t, func() bool {
+		for _, req := range second.received() {
+			if req.Method == sip.REGISTER && req.GetHeader("Expires").Value() == "0" {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 5*time.Millisecond, "the second account must also send its withdrawal before the shared deadline")
 }
 
 // An unanswered refresh must not leave the gauge/state true after granted expiry.
@@ -229,4 +237,134 @@ func TestRegistrantConcurrentStopJoinsWorkers(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, withdrawals, "one owner must withdraw only once")
+}
+
+// The minimum of several rewritten Contacts is a refresh hint, not proof that
+// our longer-lived binding has disappeared when another device's binding lapses.
+func ambiguousBindingRegistrar(t *testing.T, siblingExpiry string) (*testRegistrar, *atomic.Int32, *atomic.Int32) {
+	var registrations, options, withdrawals atomic.Int32
+	reg := newTestRegistrar(t, func(req *sip.Request) *sip.Response {
+		resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		if req.Method == sip.OPTIONS {
+			options.Add(1)
+			return resp
+		}
+		if req.GetHeader("Expires").Value() == "0" {
+			withdrawals.Add(1)
+			return resp
+		}
+		if registrations.Add(1) > 1 {
+			return sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
+		}
+		rewritten := cloneURI(req.Contact().Address)
+		rewritten.Host, rewritten.Port = "203.0.113.8", 44500
+		resp.AppendHeader(&sip.ContactHeader{Address: rewritten, Params: sip.HeaderParams{{K: "expires", V: "600"}}})
+		sibling := cloneURI(rewritten)
+		sibling.Host = "203.0.113.9"
+		resp.AppendHeader(&sip.ContactHeader{Address: sibling, Params: sip.HeaderParams{{K: "expires", V: siblingExpiry}}})
+		resp.AppendHeader(sip.NewHeader("Expires", "600"))
+		return resp
+	})
+	return reg, &options, &withdrawals
+}
+
+func TestRegistrantWithdrawsAmbiguousRewrittenBinding(t *testing.T) {
+	for _, expiry := range []string{"0", "1"} {
+		t.Run("sibling expiry "+expiry, func(t *testing.T) {
+			reg, _, withdrawals := ambiguousBindingRegistrar(t, expiry)
+			r, _ := newTestRegistrant(t, reg.addr, config.SIPRegistrationConfig{})
+			r.Start()
+			t.Cleanup(r.Stop)
+			require.Eventually(t, func() bool { return r.State().Error != nil && !r.State().Registered }, 3*time.Second, 5*time.Millisecond)
+			r.Stop()
+			require.EqualValues(t, 1, withdrawals.Load(), "a sibling's expiry cannot prove our rewritten binding is gone")
+			reqs := reg.received()
+			first, last := reqs[0], reqs[len(reqs)-1]
+			require.Equal(t, "0", last.GetHeader("Expires").Value())
+			require.Equal(t, first.Contact().Address.String(), last.Contact().Address.String())
+			require.Equal(t, first.CallID().Value(), last.CallID().Value())
+			require.Greater(t, last.CSeq().SeqNo, first.CSeq().SeqNo)
+		})
+	}
+}
+
+func TestRegistrantKeepsAmbiguousBindingAlive(t *testing.T) {
+	for _, expiry := range []string{"0", "1"} {
+		t.Run("sibling expiry "+expiry, func(t *testing.T) {
+			reg, options, _ := ambiguousBindingRegistrar(t, expiry)
+			r, _ := newTestRegistrant(t, reg.addr, config.SIPRegistrationConfig{Keepalive: 20 * time.Millisecond})
+			r.Start()
+			t.Cleanup(r.Stop)
+			require.Eventually(t, func() bool { return r.State().Error != nil && !r.State().Registered }, 3*time.Second, 5*time.Millisecond)
+			before := options.Load()
+			require.Eventually(t, func() bool { return options.Load() >= before+3 }, 500*time.Millisecond, 5*time.Millisecond,
+				"keep the possibly-live binding reachable after the conservative refresh estimate lapses")
+		})
+	}
+}
+
+func TestRegistrantIdentifiedContactClearsUncertainty(t *testing.T) {
+	var requests atomic.Int32
+	reg := newTestRegistrar(t, func(req *sip.Request) *sip.Response {
+		resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		contact := cloneURI(req.Contact().Address)
+		if requests.Add(1) == 1 {
+			contact.Host = "203.0.113.8"
+		}
+		resp.AppendHeader(&sip.ContactHeader{Address: contact, Params: sip.HeaderParams{{K: "expires", V: "1"}}})
+		return resp
+	})
+	r, _ := newTestRegistrant(t, reg.addr, config.SIPRegistrationConfig{})
+	_, err := r.registerOnce(time.Second, time.Minute)
+	require.NoError(t, err)
+	require.True(t, r.uncertain)
+	granted, err := r.registerOnce(time.Second, time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, time.Second, granted)
+	require.False(t, r.uncertain, "an identified current binding resolves the earlier uncertainty")
+}
+
+func TestGrantedExpiryOwnContactUsesGlobalDefaultBeforeSibling(t *testing.T) {
+	contact := sip.Uri{Scheme: "sip", User: "alice", Host: "127.0.0.1", Port: 15060}
+	req := sip.NewRequest(sip.REGISTER, sip.Uri{Scheme: "sip", Host: "127.0.0.1"})
+	req.AppendHeader(&sip.FromHeader{Params: sip.NewParams()})
+	req.AppendHeader(&sip.ToHeader{Params: sip.NewParams()})
+	resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	sibling := cloneURI(contact)
+	sibling.Host = "203.0.113.9"
+	resp.AppendHeader(&sip.ContactHeader{Address: sibling, Params: sip.HeaderParams{{K: "expires", V: "0"}}})
+	resp.AppendHeader(&sip.ContactHeader{Address: contact})
+	resp.AppendHeader(sip.NewHeader("Expires", "600"))
+	require.Equal(t, 600*time.Second, grantedExpiry(resp, &contact, time.Minute))
+	_, identified := ownContactExpiry(resp, &contact)
+	require.True(t, identified)
+}
+
+func TestRegistrantConfirmedLapseStopsKeepaliveAndWithdrawal(t *testing.T) {
+	var registrations, options, withdrawals atomic.Int32
+	reg := newTestRegistrar(t, func(req *sip.Request) *sip.Response {
+		resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+		if req.Method == sip.OPTIONS {
+			options.Add(1)
+			return resp
+		}
+		if req.GetHeader("Expires").Value() == "0" {
+			withdrawals.Add(1)
+			return resp
+		}
+		if registrations.Add(1) > 1 {
+			return sip.NewResponseFromRequest(req, sip.StatusServiceUnavailable, "Service Unavailable", nil)
+		}
+		resp.AppendHeader(&sip.ContactHeader{Address: cloneURI(req.Contact().Address), Params: sip.HeaderParams{{K: "expires", V: "1"}}})
+		return resp
+	})
+	r, _ := newTestRegistrant(t, reg.addr, config.SIPRegistrationConfig{Keepalive: 20 * time.Millisecond})
+	r.Start()
+	t.Cleanup(r.Stop)
+	require.Eventually(t, func() bool { return r.State().Error != nil && !r.State().Registered }, 3*time.Second, 5*time.Millisecond)
+	before := options.Load()
+	require.Never(t, func() bool { return options.Load() > before+1 }, 200*time.Millisecond, 5*time.Millisecond,
+		"only an already-in-flight OPTIONS may complete after the identified binding lapses")
+	r.Stop()
+	require.Zero(t, withdrawals.Load(), "the known expired binding does not need withdrawal")
 }
