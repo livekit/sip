@@ -43,6 +43,7 @@ import (
 
 type sipServiceStopFunc func()
 type sipServiceActiveCallsFunc func() sip.ActiveCalls
+type sipServiceDrainFunc func()
 
 type Service struct {
 	conf *config.Config
@@ -59,10 +60,17 @@ type Service struct {
 
 	sipServiceStop        sipServiceStopFunc
 	sipServiceActiveCalls sipServiceActiveCallsFunc
+	sipServiceDrain       sipServiceDrainFunc
 
 	mon      *stats.Monitor
 	shutdown core.Fuse
 	killed   atomic.Bool
+}
+
+// SetSIPServiceDrain registers a hook run once shutdown starts and before the service waits
+// for active calls to finish, for work that should stop new calls from arriving.
+func (s *Service) SetSIPServiceDrain(fn sipServiceDrainFunc) {
+	s.sipServiceDrain = fn
 }
 
 func NewService(
@@ -185,6 +193,10 @@ func (s *Service) Run() error {
 	<-s.shutdown.Watch()
 	s.log.Infow("shutting down")
 	s.DeregisterCreateSIPParticipantTopic()
+	if s.sipServiceDrain != nil {
+		// Stop attracting new inbound calls before waiting for the current ones to finish.
+		s.sipServiceDrain()
+	}
 
 	if !s.killed.Load() {
 		shutdownTicker := time.NewTicker(5 * time.Second)

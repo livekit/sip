@@ -38,6 +38,7 @@ func NewService(t testing.TB, conf *IntegrationConfig, bus psrpc.MessageBus) (*s
 		return nil, err
 	}
 	svc := service.NewService(conf.Config, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
+	svc.SetSIPServiceDrain(sipsrv.StopRegistrations)
 	sipsrv.SetHandler(svc)
 
 	if err = sipsrv.Start(); err != nil {
