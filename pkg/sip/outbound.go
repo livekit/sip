@@ -129,6 +129,11 @@ func (cm *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config
 	sipCallID := call.cc.SIPCallID()
 	state.DeferUpdate(func(info *livekit.SIPCallInfo) {
 		info.SipCallId = sipCallID
+		// Set callidfull in participant attributes for backwards compatibility
+		if info.ParticipantAttributes == nil {
+			info.ParticipantAttributes = make(map[string]string)
+		}
+		info.ParticipantAttributes[AttrSIPCallIDFull] = sipCallID
 	})
 	state.EmitSignalingEvent(SignalingEvent{Type: EventCallRequested, Time: now})
 	if sipConf.featureFlags[outboundRouteHeadersFeatureFlag] == "true" {
@@ -818,17 +823,6 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
 	})
-	// Update SIPCallInfo with the SIP Call-ID after Invite
-	if sipCallID := c.cc.SIPCallID(); sipCallID != "" {
-		c.state.DeferUpdate(func(info *livekit.SIPCallInfo) {
-			info.SipCallId = sipCallID
-			// Set callidfull in participant attributes for backwards compatibility
-			if info.ParticipantAttributes == nil {
-				info.ParticipantAttributes = make(map[string]string)
-			}
-			info.ParticipantAttributes[AttrSIPCallIDFull] = sipCallID
-		})
-	}
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
 		var e *livekit.SIPStatus
