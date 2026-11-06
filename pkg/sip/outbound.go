@@ -674,8 +674,9 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 var cancelResponseGrace = 5 * time.Second
 
 // watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
-// the answered call is not orphaned. It owns tx and terminates it when done.
-func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction) {
+// the answered call is not orphaned. onAnswered, if set, is called with the 2xx.
+// It owns tx and terminates it when done.
+func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction, onAnswered func(*sip.Response)) {
 	defer tx.Terminate()
 	timer := time.NewTimer(cancelResponseGrace)
 	defer timer.Stop()
@@ -690,6 +691,9 @@ func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeader
 				continue // provisional; keep waiting
 			case 2:
 				log.Infow("cancelled INVITE answered; sending ACK and BYE")
+				if onAnswered != nil {
+					onAnswered(res)
+				}
 				applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
 				_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
 				bye := sip.NewByeRequest(req, res, nil)
@@ -1405,7 +1409,9 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelReason(ctx, c.closing.IsBroken())})
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
-		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx)
+		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx, func(res *sip.Response) {
+			c.emitEvent(SignalingEvent{Type: EventLateAnswerReceived, Time: time.Now(), SIPMethod: string(sip.INVITE), StatusCode: int(res.StatusCode), CSeq: cseq})
+		})
 	}
 	return req, resp, err
 }

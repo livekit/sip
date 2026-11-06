@@ -589,6 +589,21 @@ func TestOutboundSignalingEventsUnexpected2xx(t *testing.T) {
 	require.Equal(t, 202, evs[2].StatusCode)
 }
 
+// The callee answers after our CANCEL: the call still ends unanswered.
+func TestOutboundSignalingEventsLateAnswer(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	req.RingingTimeout = durationpb.New(300 * time.Millisecond)
+	states, _, tr := startOutboundCall(t, req)
+	waitCallEnded(t, states)
+	require.NoError(t, tr.transaction.SendResponse(sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))))
+
+	evs := waitEventTypes(t, states, []SignalingEventType{
+		EventCallRequested, EventInviteSent, EventCancelSent, EventCallEnded, EventLateAnswerReceived,
+	})
+	require.Equal(t, 200, evs[4].StatusCode)
+	require.Equal(t, tr.req.CSeq().SeqNo, evs[4].CSeq)
+}
+
 func TestOutboundSignalingEventsNotAnswered(t *testing.T) {
 	cases := []struct {
 		name   string

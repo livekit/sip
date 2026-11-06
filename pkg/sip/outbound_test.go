@@ -340,7 +340,7 @@ func TestWatchCancelledInvite(t *testing.T) {
 				tx.responses <- r
 			}
 			cli := newTestSIPClient(logger.NewTestLogger(t), nil)
-			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
+			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx, nil)
 			require.Equal(t, tt.want, cli.requestMethods("call-123"))
 		})
 	}
@@ -350,7 +350,7 @@ func TestWatchCancelledInvite(t *testing.T) {
 		cancelResponseGrace = 10 * time.Millisecond
 		tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response), done: make(chan struct{})}
 		cli := newTestSIPClient(logger.NewTestLogger(t), nil)
-		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx)
+		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx, nil)
 		require.Empty(t, cli.requestMethods("call-123"))
 	})
 }

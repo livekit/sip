@@ -98,9 +98,13 @@ const (
 	// Reason says why: "timeout" (no answer within the ringing timeout),
 	// "shutdown" (the service is stopping) or "hangup" (the call was ended).
 	// The call ends without waiting for the final response to the cancelled
-	// INVITE (usually 487), so EventCallEnded has StatusCode 0. A 200 that races
-	// the CANCEL is acknowledged and hung up at once, and gets no events.
+	// INVITE (usually 487), so EventCallEnded has StatusCode 0. A 2xx that races
+	// the CANCEL gets EventLateAnswerReceived.
 	EventCancelSent SignalingEventType = "sip.cancel.sent"
+	// EventLateAnswerReceived: a 2xx arrived for an INVITE we had cancelled. It
+	// is acknowledged and hung up at once (no EventAckSent or EventByeSent), and
+	// the call never joins the room. It comes after EventCallEnded.
+	EventLateAnswerReceived SignalingEventType = "sip.late_answer.received"
 )
 
 // Both directions.
