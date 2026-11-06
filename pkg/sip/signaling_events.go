@@ -15,7 +15,6 @@
 package sip
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -264,18 +263,6 @@ func requestCSeq(req *sip.Request) uint32 {
 		return h.SeqNo
 	}
 	return 0
-}
-
-// cancelReason says why an outbound INVITE was cancelled, for EventCancelSent.
-func cancelReason(ctx context.Context, shuttingDown bool) string {
-	switch {
-	case shuttingDown:
-		return "shutdown"
-	case errors.Is(context.Cause(ctx), ErrSIPRequestTimeout):
-		return "timeout"
-	default:
-		return "hangup"
-	}
 }
 
 // inviteResponseEvent builds an event for a response sent to the INVITE.

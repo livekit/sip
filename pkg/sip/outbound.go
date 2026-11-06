@@ -644,30 +644,37 @@ func (c *outboundCall) connectMedia() {
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc) (*sip.Response, error) {
+// sipResponse waits for the final response to tx. If ctx ends or stop closes
+// first, it sends a CANCEL and says why in cancelled: "timeout" (ctx ended with
+// ErrSIPRequestTimeout), "hangup" (ctx ended otherwise) or "shutdown" (stop).
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc) (_ *sip.Response, cancelled string, _ error) {
 	cnt := 0
 	for {
 		select {
 		case <-ctx.Done():
 			_ = tx.Cancel()
+			cancelled = "hangup"
+			if errors.Is(context.Cause(ctx), ErrSIPRequestTimeout) {
+				cancelled = "timeout"
+			}
 			// NOTE: psrpc.Canceled does not auto-retry, whereas psrpc.DeadlineExceeded does
 			// As long as that is the case, avoid psrpc.DeadlineExceeded to prevent hammering of destination.
-			return nil, psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout)
+			return nil, cancelled, psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout)
 		case <-stop:
 			_ = tx.Cancel()
-			return nil, psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
+			return nil, "shutdown", psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
-			return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+			return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 		case res := <-tx.Responses():
 			if res == nil {
-				return nil, psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+				return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 			}
 			status := res.StatusCode
 			if onResponse != nil {
 				onResponse(res.StatusCode, res.Headers())
 			}
 			if status/100 != 1 { // != 1xx
-				return res, nil
+				return res, "", nil
 			}
 			// continue
 			cnt++
@@ -1106,6 +1113,8 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 		}
 		c.finalStatus = int(resp.StatusCode)
 		if resp.StatusCode < 300 {
+			// TODO: an unexpected 2xx sets up a dialog on the remote side, but we
+			// neither ACK nor hang it up. ACK and BYE it, or treat it as a 200.
 			return // we reject an unexpected 2xx; the remote side didn't fail the call
 		}
 		c.emitEvent(SignalingEvent{
@@ -1397,10 +1406,9 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 			setState(code, hdrs)
 		}
 	}
-	resp, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
-	if err != nil && resp == nil && (ctx.Err() != nil || c.closing.IsBroken()) {
-		// sipResponse sent a CANCEL.
-		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelReason(ctx, c.closing.IsBroken())})
+	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
+	if cancelled != "" {
+		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelled})
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
 		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx, func(res *sip.Response) {

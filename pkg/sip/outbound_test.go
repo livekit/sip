@@ -299,9 +299,10 @@ func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, err := sipResponse(ctx, tx, nil, nil)
+	res, cancelled, err := sipResponse(ctx, tx, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, res)
+	require.Equal(t, "hangup", cancelled)
 	require.Len(t, tx.cancels, 1, "CANCEL should be sent")
 }
 
