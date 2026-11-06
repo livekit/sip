@@ -345,6 +345,42 @@ func TestMediaPortHold(t *testing.T) {
 	}
 }
 
+// RFC 3264 §8.4: an offer with c=0.0.0.0 means no RTP or RTCP should be sent to the peer.
+// Unlike TestMediaPortHold, this needs no renegotiation: only the destination changes.
+func TestMediaPortHoldZeroAddress(t *testing.T) {
+	m1, m2 := newMediaPair(t, nil, nil, "", RoomSampleRate)
+
+	recv1 := &recvBuffer{}
+	m1.WriteInboundAudioTo(recv1)
+	recv2 := &recvBuffer{}
+	m2.WriteInboundAudioTo(recv2)
+	requireAudioFlows(t, m1, recv2)
+
+	base, err := m2.GenerateOffer()
+	require.NoError(t, err)
+	held := strings.ReplaceAll(string(base), "c=IN IP4 2.2.2.2", "c=IN IP4 0.0.0.0")
+	require.NotEqual(t, string(base), held)
+	_, err = m1.GenerateAnswer([]byte(held))
+	require.NoError(t, err)
+
+	require.True(t, m1.RemoteAddr().Addr().IsUnspecified(), "held port kept a destination: %v", m1.RemoteAddr())
+	time.Sleep(100 * time.Millisecond) // drain frames already in flight
+	sent := recv2.count()
+	writeFrames(m1, 10)
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, sent, recv2.count(), "held port kept sending")
+
+	// The peer may keep sending while held.
+	requireAudioFlows(t, m2, recv1)
+
+	// Resume with the original offer.
+	_, err = m1.GenerateAnswer(base)
+	require.NoError(t, err)
+	require.Equal(t, m2.Port(), int(m1.RemoteAddr().Port()))
+	require.False(t, m1.RemoteAddr().Addr().IsUnspecified(), "destination not restored")
+	requireAudioFlows(t, m1, recv2)
+}
+
 var policyToString = map[sdp.Encryption]string{
 	sdp.EncryptionNone:    "none",
 	sdp.EncryptionAllow:   "allow",
