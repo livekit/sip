@@ -952,3 +952,30 @@ func TestRegistrantReportsLapsedBinding(t *testing.T) {
 	}, 10*time.Second, 20*time.Millisecond, "the lapsed binding was still reported as live")
 	require.Error(t, r.State().Error)
 }
+
+// RFC 3261 section 7.3.1 makes Contact parameter names case-insensitive.
+// Exercise the actual SIP serializer/parser, including a rewritten Contact.
+func TestRegistrantContactExpiryCapitalization(t *testing.T) {
+	for _, name := range []string{"expires", "Expires", "ExPiReS"} {
+		for _, rewritten := range []bool{false, true} {
+			t.Run(name+" rewritten "+strconv.FormatBool(rewritten), func(t *testing.T) {
+				reg := newTestRegistrar(t, func(req *sip.Request) *sip.Response {
+					resp := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+					contact := cloneURI(req.Contact().Address)
+					if rewritten {
+						contact.Host = "203.0.113.7"
+						contact.Port = 40000
+					}
+					resp.AppendHeader(&sip.ContactHeader{Address: contact, Params: sip.HeaderParams{{K: name, V: "60"}}})
+					resp.AppendHeader(sip.NewHeader("Expires", "600"))
+					return resp
+				})
+				r, _ := newTestRegistrant(t, reg.addr, config.SIPRegistrationConfig{})
+				granted, err := r.registerOnce(time.Second, 10*time.Minute)
+				require.NoError(t, err)
+				require.Equal(t, time.Minute, granted, "Contact lifetime must win over the longer global Expires")
+				require.Equal(t, rewritten, r.uncertain, "rewritten bindings remain eligible for best-effort withdrawal")
+			})
+		}
+	}
+}

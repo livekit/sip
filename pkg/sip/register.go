@@ -735,7 +735,7 @@ func ownContactExpiry(resp *sip.Response, contact *sip.Uri) (time.Duration, bool
 		if !ok || !sameContact(&c.Address, contact) {
 			continue
 		}
-		if _, present := c.Params.Get("expires"); present {
+		if _, present := contactExpiryParam(c); present {
 			return contactExpiry(c)
 		}
 		return headerSeconds(resp, "Expires")
@@ -743,8 +743,19 @@ func ownContactExpiry(resp *sip.Response, contact *sip.Uri) (time.Duration, bool
 	return 0, false
 }
 
+// Contact parameter names are case-insensitive (RFC 3261 section 7.3.1).
+// sipgo preserves their wire spelling and HeaderParams.Get is case-sensitive.
+func contactExpiryParam(c *sip.ContactHeader) (string, bool) {
+	for _, param := range c.Params {
+		if strings.EqualFold(param.K, "expires") {
+			return param.V, true
+		}
+	}
+	return "", false
+}
+
 func contactExpiry(c *sip.ContactHeader) (time.Duration, bool) {
-	v, ok := c.Params.Get("expires")
+	v, ok := contactExpiryParam(c)
 	if !ok {
 		return 0, false
 	}
