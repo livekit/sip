@@ -23,10 +23,8 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/frostbyte73/core"
 	"golang.org/x/exp/maps"
 
 	esip "github.com/emiago/sipgo/sip"
@@ -50,6 +48,10 @@ import (
 type SIPClient interface {
 	TransactionRequest(req *sip.Request, options ...sipgo.ClientRequestOption) (sip.ClientTransaction, error)
 	WriteRequest(req *sip.Request, options ...sipgo.ClientRequestOption) error
+	// ResolveAddrPreferSRV resolves a request URI to one address, trying SRV
+	// before a plain host lookup. port is the port from the URI, or 0 when it
+	// carries none. A port given there suppresses SRV.
+	ResolveAddrPreferSRV(ctx context.Context, network, host string, port int, sipScheme string) (netip.AddrPort, error)
 	Close() error
 }
 
@@ -60,22 +62,13 @@ func DefaultGetSipClientFunc(ua *sipgo.UserAgent, options ...sipgo.ClientOption)
 }
 
 type Client struct {
-	conf   *config.Config
-	sconf  *ServiceConfig
-	log    logger.Logger
-	region string
-	mon    *stats.Monitor
+	conf  *config.Config
+	sconf *ServiceConfig
+	log   logger.Logger
 
 	sipCli SIPClient
 
-	closing     core.Fuse
-	cmu         sync.Mutex
-	activeCalls map[LocalTag]*outboundCall
-
-	handler         Handler
-	getStateHandler GetStateHandler
-	getSipClient    GetSipClientFunc
-	getRoom         GetRoomFunc
+	getSipClient GetSipClientFunc
 }
 
 type ClientOption func(c *Client)
@@ -88,27 +81,14 @@ func WithGetSipClient(fn GetSipClientFunc) ClientOption {
 	}
 }
 
-func WithGetRoomClient(fn GetRoomFunc) ClientOption {
-	return func(c *Client) {
-		if fn != nil {
-			c.getRoom = fn
-		}
-	}
-}
-
-func NewClient(region string, conf *config.Config, log logger.Logger, mon *stats.Monitor, getStateHandler GetStateHandler, options ...ClientOption) *Client {
+func NewClient(conf *config.Config, log logger.Logger, options ...ClientOption) *Client {
 	if log == nil {
 		log = logger.GetLogger()
 	}
 	c := &Client{
-		conf:            conf,
-		log:             log,
-		region:          region,
-		mon:             mon,
-		getStateHandler: getStateHandler,
-		getSipClient:    DefaultGetSipClientFunc,
-		getRoom:         DefaultGetRoomFunc,
-		activeCalls:     make(map[LocalTag]*outboundCall),
+		conf:         conf,
+		log:          log,
+		getSipClient: DefaultGetSipClientFunc,
 	}
 	for _, option := range options {
 		option(c)
@@ -144,40 +124,29 @@ func (c *Client) Start(agent *sipgo.UserAgent, sc *ServiceConfig) error {
 }
 
 func (c *Client) Stop() {
-	ctx := context.Background()
-	ctx, span := Tracer.Start(ctx, "sip.Client.Stop")
+	_, span := Tracer.Start(context.Background(), "sip.Client.Stop")
 	defer span.End()
-	c.closing.Break()
-	c.cmu.Lock()
-	calls := maps.Values(c.activeCalls)
-	c.activeCalls = make(map[LocalTag]*outboundCall)
-	c.cmu.Unlock()
-	for _, call := range calls {
-		call.Close(ctx)
-	}
 	if c.sipCli != nil {
 		c.sipCli.Close()
 	}
-}
-
-func (c *Client) SetHandler(handler Handler) {
-	c.handler = handler
 }
 
 func (c *Client) ContactURI(tr Transport) URI {
 	return getContactURI(c.conf, c.sconf.SignalingIP, tr)
 }
 
-func (c *Client) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
-	ctx, span := Tracer.Start(ctx, "Client.CreateSIPParticipant")
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) CreateSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (*rpc.InternalCreateSIPParticipantResponse, error) {
+	ctx, span := Tracer.Start(ctx, "sip.callManager.CreateSIPParticipant")
 	defer span.End()
-	return c.createSIPParticipant(ctx, req)
+	return cm.createSIPParticipant(ctx, req)
 }
 
-func (c *Client) getActiveCall(tag LocalTag) *outboundCall {
-	c.cmu.Lock()
-	defer c.cmu.Unlock()
-	return c.activeCalls[tag]
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) getActiveCall(tag LocalTag) *outboundCall {
+	cm.cmu.RLock()
+	defer cm.cmu.RUnlock()
+	return cm.activeCalls[tag]
 }
 
 func setUriTransport(p *sip.Uri, tr livekit.SIPTransport) {
@@ -307,13 +276,41 @@ func buildFromHeader(u *livekit.SIPNamedDest, legacyName *string, legacyUser, le
 	return h, nil
 }
 
-func buildToHeader(u *livekit.SIPNamedDest, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
+// isSIPUserToken protects against CreateSIPParticipantRequest being instantiated
+// directly as a composite literal instead of calling its constructor (in that case,
+// validation isn't run). This uses the same character set as
+// livekit.CreateSIPParticipantRequest. It must stay identical to that set to prevent
+// rejecting values accepted by the API.
+// TODO TEL-895: Move this to a shared util instead
+func isSIPUserToken(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case strings.ContainsRune("-.!%*_+`'~", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func buildToHeader(u *livekit.SIPNamedDest, userOverride, legacyUser, legacyAddr string, tr livekit.SIPTransport) (*sip.ToHeader, error) {
 	if u != nil && legacyUser != "" {
 		return nil, errors.New("cannot use both CallTo and SipToHeader")
 	}
 	su, err := buildFromToURI(u, legacyUser, legacyAddr, tr)
 	if err != nil {
 		return nil, err
+	}
+	if userOverride != "" {
+		// Validation is already done in the constructor, but check again here
+		// in case request was built directly without using the constructor
+		if !isSIPUserToken(userOverride) {
+			return nil, errors.New("to user override should be a phone number or SIP user, not a full SIP URI")
+		}
+		su.User = userOverride
 	}
 	h := &sip.ToHeader{
 		Address: *su,
@@ -329,7 +326,7 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid request URI: %w", err))
 	}
-	to, err := buildToHeader(req.SipToHeader, req.CallTo, req.Address, req.Transport)
+	to, err := buildToHeader(req.SipToHeader, req.ToUserOverride, req.CallTo, req.Address, req.Transport)
 	if err != nil {
 		return nil, nil, nil, psrpc.NewError(psrpc.InvalidArgument, fmt.Errorf("invalid To header: %w", err))
 	}
@@ -344,23 +341,24 @@ func buildOutboundHeaders(req *rpc.InternalCreateSIPParticipantRequest, defaultH
 	return uri, from, to, nil
 }
 
-func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
-	if c.mon.Health() != stats.HealthOK {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) createSIPParticipant(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) (resp *rpc.InternalCreateSIPParticipantResponse, retErr error) {
+	if cm.mon.Health() != stats.HealthOK {
 		return nil, siperrors.ErrUnavailable
 	}
 	req.Upgrade()
 	if req.RoomName == "" {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "room name must be set")
 	}
-	defaultHost := c.ContactURI(TransportFrom(req.Transport)).GetHost()
-	log := c.log
+	defaultHost := cm.ContactURI(TransportFrom(req.Transport)).GetHost()
+	log := cm.log
 	if req.ProjectId != "" {
 		log = log.WithValues("projectID", req.ProjectId)
 	}
 	if req.SipTrunkId != "" {
 		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
-	mconf, err := newMediaConfig(req.Media, c.conf.MediaTimeout)
+	mconf, err := newMediaConfig(req.Media, cm.conf.MediaTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -385,8 +383,8 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	)
 
 	req.ParticipantAttributes = maps.Clone(req.ParticipantAttributes) // shallow clone - string/string map. Needed to avoid mutating psrpc req
-	initial := c.createSIPCallInfo(uri, from, to, req)
-	state := NewCallState(c.getStateHandler(req.ProjectId, req.Observability, initial), initial)
+	initial := cm.createSIPCallInfo(uri, from, to, req)
+	state := NewCallState(cm.getStateHandler(req.ProjectId, req.Observability, initial), initial)
 
 	defer func() {
 		state.Update(func(info *livekit.SIPCallInfo) {
@@ -420,7 +418,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		user:            req.Username,
 		pass:            req.Password,
 		dtmf:            req.Dtmf,
-		dialtone:        req.PlayDialtone,
+		dialtone:        req.Dialtone,
 		headers:         maps.Clone(req.Headers), // shallow clone - string/string map. Needed to avoid mutating psrpc req
 		includeHeaders:  req.IncludeHeaders,
 		headersToAttrs:  req.HeadersToAttributes,
@@ -432,7 +430,7 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 		mediaConfig:     mconf,
 	}
 	log.Infow("Creating SIP participant")
-	call, err := c.newCall(ctx, tid, c.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
+	call, err := cm.newCall(ctx, tid, cm.conf, log, LocalTag(req.SipCallId), roomConf, sipConf, state, req.ProjectId)
 	if err != nil {
 		return nil, err
 	}
@@ -468,14 +466,15 @@ func (c *Client) createSIPParticipant(ctx context.Context, req *rpc.InternalCrea
 	return info, nil
 }
 
-func (c *Client) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
 	toUri := ConvertURI(&to.Address)
 	fromUri := ConvertURI(&from.Address)
-	fromUri.Addr = netip.AddrPortFrom(c.sconf.SignalingIP, uint16(c.conf.SIPPort))
+	fromUri.Addr = netip.AddrPortFrom(cm.sconf.SignalingIP, uint16(cm.conf.SIPPort))
 
 	callInfo := &livekit.SIPCallInfo{
 		CallId:                req.SipCallId,
-		Region:                c.region,
+		Region:                cm.region,
 		TrunkId:               req.SipTrunkId,
 		RoomName:              req.RoomName,
 		ParticipantIdentity:   req.ParticipantIdentity,
@@ -486,34 +485,37 @@ func (c *Client) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.T
 		CreatedAtNs:           time.Now().UnixNano(),
 		MediaEncryption:       req.MediaEncryption.String(),
 		EnabledFeatures:       req.EnabledFeatures,
+		ProviderInfo:          req.ProviderInfo,
 	}
 
 	return callInfo
 }
 
-func (c *Client) OnRequest(req *sip.Request, tx sip.ServerTransaction) bool {
-	switch req.Method {
-	default:
-		return false
-	case "BYE":
-		return c.onBye(req, tx)
-	case "NOTIFY":
-		return c.onNotify(req, tx)
-	}
-}
-
-func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	ctx := context.Background()
-	ctx, span := Tracer.Start(ctx, "sip.Client.onBye")
+	ctx, span := Tracer.Start(ctx, "sip.callManager.onOutboundBye")
 	defer span.End()
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
-	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	cm.cmu.RLock()
+	call := cm.activeCalls[tag]
+	cm.cmu.RUnlock()
 	if call == nil {
 		return false
 	}
-	call.log.Infow("BYE from remote")
+	receivedAt := time.Now()
+	call.log().Infow("BYE from remote")
+	// A peer can send a second BYE before close removes the call. It hung up
+	// once, so report it once.
+	if call.byeReceived.CompareAndSwap(false, true) {
+		call.state.EmitSignalingEvent(SignalingEvent{
+			Type:      EventByeReceived,
+			Time:      receivedAt,
+			SIPMethod: string(sip.BYE),
+			CSeq:      requestCSeq(req),
+			Reason:    messageCause(req),
+		})
+	}
 	go func(call *outboundCall) {
 		call.cc.AcceptBye(req, tx)
 		call.CloseWith(ctx, EndCall{
@@ -525,11 +527,12 @@ func (c *Client) onBye(req *sip.Request, tx sip.ServerTransaction) bool {
 	return true
 }
 
-func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) onOutboundNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 	tag, _ := GetLocalTagUAS(req)
-	c.cmu.Lock()
-	call := c.activeCalls[tag]
-	c.cmu.Unlock()
+	cm.cmu.RLock()
+	call := cm.activeCalls[tag]
+	cm.cmu.RUnlock()
 	if call == nil {
 		return false
 	}
@@ -539,15 +542,17 @@ func (c *Client) onNotify(req *sip.Request, tx sip.ServerTransaction) bool {
 
 		code, msg := sipCodeAndMessageFromError(err)
 
-		tx.Respond(sip.NewResponseFromRequest(req, code, msg, nil))
+		tx.Respond(newResponse(req, code, msg, nil))
 	}()
 	return true
 }
 
-func (c *Client) RegisterTransferSIPParticipant(sipCallID string, o *outboundCall) error {
-	return c.handler.RegisterTransferSIPParticipantTopic(sipCallID)
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) RegisterOutboundTransferSIPParticipant(sipCallID string, o *outboundCall) error {
+	return cm.handler.RegisterTransferSIPParticipantTopic(sipCallID)
 }
 
-func (c *Client) DeregisterTransferSIPParticipant(sipCallID string) {
-	c.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) DeregisterOutboundTransferSIPParticipant(sipCallID string) {
+	cm.handler.DeregisterTransferSIPParticipantTopic(sipCallID)
 }

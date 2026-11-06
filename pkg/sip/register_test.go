@@ -527,6 +527,14 @@ func TestParseRegistrarURI(t *testing.T) {
 	}
 }
 
+func TestParseRegistrarURIRedactsInvalidInput(t *testing.T) {
+	for _, input := range []string{"sip:alice:test-only-secret@", "sip:alice:test-only-secret@host:bad-port"} {
+		_, err := parseRegistrarURI(input)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "test-only-secret", "startup errors must not echo credentials pasted into the registrar URI")
+	}
+}
+
 func TestRegistrantDefaultsAORDomainToRegistrar(t *testing.T) {
 	localIP, err := config.GetLocalIP()
 	require.NoError(t, err)

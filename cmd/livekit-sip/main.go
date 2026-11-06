@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"os/signal"
@@ -28,11 +29,12 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/tracer/jaeger"
-	"github.com/livekit/psrpc"
+	"github.com/livekit/psrpc/pkg/bus/redisbus"
 	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/errors"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/stats"
@@ -80,7 +82,7 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	bus := psrpc.NewRedisMessageBus(rc)
+	bus := redisbus.New(rc, conf.PSRPC.BusOptions()...)
 	psrpcClient, err := rpc.NewIOInfoClient(bus,
 		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
 	)
@@ -99,7 +101,18 @@ func runService(ctx context.Context, c *cli.Command) error {
 		return err
 	}
 
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcClient) })
+	// A per-process key: an authenticated retry must reach the server that sent the challenge.
+	sealer, err := sealer.NewAESGCM([]string{rand.Text()})
+	if err != nil {
+		return err
+	}
+	manager, err := sip.NewCallManager("", conf, log, mon, sealer, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+		return sip.NewRPCStateHandler(psrpcClient)
+	})
+	if err != nil {
+		return err
+	}
+	sipsrv, err := sip.NewService(conf, mon, log, manager)
 	if err != nil {
 		return err
 	}

@@ -139,9 +139,8 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 		samplesPerFrame = uint32(sampleRate / rtp.DefFramesPerSec) // 160 samples per 20ms frame
 	)
 
-	log := logger.GetLogger()
-
 	t.Run("no gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 		_, _, err := tester.SendSignalFrames(10, 100, 1000)
 		require.NoError(t, err)
@@ -150,6 +149,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("single frame gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		nextSeq := uint16(100)
@@ -165,6 +165,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("handful of frames gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		nextSeq := uint16(100)
@@ -180,6 +181,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("large gap that's not filled", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		nextSeq := uint16(100)
@@ -195,6 +197,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("timestamp wrap-around no gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		// Start near wrap-around
@@ -207,6 +210,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("timestamp wrap-around with gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		// 2 signal + 3 silence (across wrap-around) + 2 signal = 7 total
@@ -223,6 +227,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("sequence wrap-around no gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		// Start near sequence wrap-around
@@ -235,6 +240,7 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 
 	t.Run("sequence wrap-around with gap", func(t *testing.T) {
+		log := logger.NewTestLogger(t)
 		tester := newSilenceSuppressionTester(sampleRate, log)
 
 		// Start near sequence wrap-around
@@ -251,8 +257,6 @@ func TestSilenceSuppressionHandling(t *testing.T) {
 	})
 }
 func TestSilenceSuppressionDifferentCodecs(t *testing.T) {
-	log := logger.GetLogger()
-
 	testCases := []struct {
 		name        string
 		clockRate   int
@@ -287,6 +291,7 @@ func TestSilenceSuppressionDifferentCodecs(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			log := logger.NewTestLogger(t)
 			tester := newSilenceSuppressionTester(tc.sampleRate, log, WithClockRate(tc.clockRate))
 			tsPerFrame := uint32(tc.clockRate / rtp.DefFramesPerSec)
 

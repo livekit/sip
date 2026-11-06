@@ -217,10 +217,11 @@ func parseRegistrarURI(s string) (sip.Uri, error) {
 	}
 	var u sip.Uri
 	if err := esip.ParseUri(s, &u); err != nil {
-		return sip.Uri{}, fmt.Errorf("invalid registrar %q: %w", s, err)
+		// Both the input and the parser error may contain URI credentials.
+		return sip.Uri{}, errors.New("invalid registrar URI")
 	}
 	if u.Host == "" {
-		return sip.Uri{}, fmt.Errorf("invalid registrar %q: no host", s)
+		return sip.Uri{}, errors.New("invalid registrar URI: no host")
 	}
 	// The Request-URI of a REGISTER names the registrar, never a user on it.
 	u.User, u.Password = "", ""
@@ -597,7 +598,8 @@ func (r *registrant) roundtrip(ctx context.Context, stop <-chan struct{}, req *s
 		return nil, err
 	}
 	defer tx.Terminate()
-	return sipResponse(ctx, tx, stop, nil)
+	resp, _, err := sipResponse(ctx, tx, stop, nil)
+	return resp, err
 }
 
 // setChallenge stores the challenge from a 401 or 407 so the next request can answer it.

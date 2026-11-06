@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -43,7 +44,7 @@ func TestClassifyInviteError(t *testing.T) {
 		{"401 Unauthorized", sipStatusErr(401), callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"403 Forbidden", sipStatusErr(403), callRejected, stats.ClientError("forbidden"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"404 Not Found", sipStatusErr(404), callUnavailable, stats.ClientError("not-found"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
-		{"407 Proxy Auth Required", sipStatusErr(407), callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED, false},
+		{"407 Proxy Authentication Required", sipStatusErr(407), callRejected, stats.ClientError("auth-required"), livekit.DisconnectReason_USER_REJECTED, false},
 		{"408 Request Timeout", sipStatusErr(408), callUnavailable, stats.ClientError("request-timeout"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 		{"480 Temporarily Unavailable", sipStatusErr(480), callUnavailable, stats.ClientError("unavailable"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 		{"486 Busy Here", sipStatusErr(486), callRejected, stats.ClientError("busy"), livekit.DisconnectReason_USER_REJECTED, false},
@@ -54,7 +55,7 @@ func TestClassifyInviteError(t *testing.T) {
 		{"487 Request Terminated (4xx catch-all)", sipStatusErr(487), callRejected, stats.ClientError("client-error-487"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
 
 		// 5xx upstream server error
-		{"500 Internal Server Error", sipStatusErr(500), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
+		{"500 Server Internal Error", sipStatusErr(500), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 		{"503 Service Unavailable", sipStatusErr(503), callDropped, stats.UpstreamError("upstream-server-error-503"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// 5xx with a trunk rate-limit body: customer-side, reclassified as client_error
@@ -64,17 +65,17 @@ func TestClassifyInviteError(t *testing.T) {
 		{"500 generic body is not a rate limit", sipStatusBodyErr(500, "Service Unavailable"), callDropped, stats.UpstreamError("upstream-server-error-500"), livekit.DisconnectReason_SIP_TRUNK_FAILURE, true},
 
 		// 6xx global decline
-		{"600 Global Busy Everywhere", sipStatusErr(600), callRejected, stats.ClientError("global-decline-600"), livekit.DisconnectReason_USER_REJECTED, false},
-		{"603 Global Decline", sipStatusErr(603), callRejected, stats.ClientError("global-decline-603"), livekit.DisconnectReason_USER_REJECTED, false},
+		{"600 Busy Everywhere", sipStatusErr(600), callRejected, stats.ClientError("global-decline-600"), livekit.DisconnectReason_USER_REJECTED, false},
+		{"603 Decline", sipStatusErr(603), callRejected, stats.ClientError("global-decline-603"), livekit.DisconnectReason_USER_REJECTED, false},
 
 		// Carrier permanent block (Twilio 32203) — distinct from a normal 603 decline
 		{"Twilio 32203 carrier block", carrierBlockedError{status: &livekit.SIPStatus{Code: 603, Status: "Decline"}, provider: "twilio", providerCode: 32203}, callRejected, stats.ClientError("carrier-blocked"), livekit.DisconnectReason_USER_REJECTED, true},
 		{"Twilio 32203 carrier block (wrapped)", fmt.Errorf("INVITE blocked by carrier: %w", carrierBlockedError{status: &livekit.SIPStatus{Code: 603, Status: "Decline"}, provider: "twilio", providerCode: 32203}), callRejected, stats.ClientError("carrier-blocked"), livekit.DisconnectReason_USER_REJECTED, true},
 
 		// SDP errors
-		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_MEDIA_FAILURE, true},
-		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_MEDIA_FAILURE, true},
-		{"SDP other", SDPError{Err: errors.New("bad sdp")}, callRejected, stats.ClientError("sdp-error"), livekit.DisconnectReason_MEDIA_FAILURE, true},
+		{"SDP no common media", SDPError{Err: sdp.ErrNoCommonMedia}, callRejected, stats.ClientError("no-common-codec"), livekit.DisconnectReason_USER_REJECTED, true},
+		{"SDP no common crypto", SDPError{Err: sdp.ErrNoCommonCrypto}, callRejected, stats.ClientError("encryption-required"), livekit.DisconnectReason_USER_REJECTED, true},
+		{"SDP other", SDPError{Err: errors.New("bad sdp")}, callRejected, stats.ClientError("sdp-error"), livekit.DisconnectReason_USER_REJECTED, true},
 
 		// Sentinel-based errors
 		{"SIP request timeout (no answer)", psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout), callUnavailable, stats.ClientError("no-answer"), livekit.DisconnectReason_USER_UNAVAILABLE, false},
@@ -165,6 +166,65 @@ func TestCarrierBlockFromResponse(t *testing.T) {
 	require.Nil(t, carrierBlockFromResponse(resp, st))
 }
 
+func TestSIPStatusFromResponse(t *testing.T) {
+	// No body or provider header -> reason phrase.
+	st := sipStatusFromResponse(sip.NewResponse(403, "Forbidden"))
+	require.Equal(t, livekit.SIPStatusCode(403), st.Code)
+	require.Equal(t, "Forbidden", st.Status)
+
+	// X-Twilio-Error replaces the generic reason on any final status, e.g. a 403
+	// for bad trunk credentials.
+	resp := sip.NewResponse(403, "Forbidden")
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32202 Authentication failure - bad user credentials"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, livekit.SIPStatusCode(403), st.Code)
+	require.Equal(t, "32202 Authentication failure - bad user credentials", st.Status)
+	res := classifyInviteError(fmt.Errorf("unexpected status from INVITE response: %w", st))
+	require.Equal(t, stats.ClientError("forbidden"), res.Term)
+
+	// The body is ignored, with or without the header.
+	resp = sip.NewResponse(503, "Service Unavailable")
+	resp.SetBody([]byte("some carrier body"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, "Service Unavailable", st.Status)
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32011 Error forwarding call"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, "32011 Error forwarding call", st.Status)
+
+	// A 5xx reason phrase reaches the CPS matching.
+	resp = sip.NewResponse(503, "CPS limit exceeded")
+	resp.SetBody([]byte("some carrier body"))
+	st = sipStatusFromResponse(resp)
+	require.Equal(t, "CPS limit exceeded", st.Status)
+	res = classifyInviteError(fmt.Errorf("unexpected status from INVITE response: %w", st))
+	require.Equal(t, stats.ClientError("cps-limit-exceeded"), res.Term)
+}
+
+func TestAuthError(t *testing.T) {
+	resp := sip.NewResponse(407, "Proxy Authentication Required")
+	resp.AppendHeader(sip.NewHeader("X-Twilio-Error", "32202 Authentication failure - bad user credentials"))
+	for _, sentinel := range []error{ErrAuthMaxRetry, ErrAuthMissingCreds, ErrAuthNoHeader} {
+		err := authError(sentinel, resp)
+		require.ErrorIs(t, err, sentinel)
+		require.Contains(t, err.Error(), "407")
+		require.Contains(t, err.Error(), "32202 Authentication failure")
+		code, ok := psrpc.GetErrorCode(err)
+		require.True(t, ok)
+		require.Equal(t, psrpc.FailedPrecondition, code)
+		// Classification is unchanged: still an auth failure, not a 407 SIPStatus bucket.
+		_, isStatus := errors.AsType[*livekit.SIPStatus](err)
+		require.False(t, isStatus)
+		res := classifyInviteError(err)
+		require.Equal(t, stats.ClientError("auth-failed"), res.Term)
+		require.Equal(t, livekit.DisconnectReason_USER_REJECTED, res.Reason)
+	}
+
+	// No response yet -> bare sentinel.
+	err := authError(ErrAuthMaxRetry, nil)
+	require.ErrorIs(t, err, ErrAuthMaxRetry)
+	require.Equal(t, stats.ClientError("auth-failed"), classifyInviteError(err).Term)
+}
+
 func TestInviteFailure_AfterInvite(t *testing.T) {
 	// Post-INVITE: server-side failures downgrade to a non-retryable code;
 	// client/upstream errors are left as-is. Term is always preserved.
@@ -215,6 +275,38 @@ func TestClassifyInviteError_ReturnErrWrap(t *testing.T) {
 			var psErr psrpc.Error
 			require.True(t, errors.As(res.returnErr, &psErr), "returnErr should be a psrpc.Error")
 			require.Equal(t, tc.wantCode, psErr.Code())
+		})
+	}
+}
+
+// The post-ACK abort check in sipSignal returns the context cause. A ringing
+// timeout landing there must classify like one that beats the 200 OK, and a
+// caller-side cancel must stay a cancel.
+func TestClassifyInviteError_AbortAfterAnswer(t *testing.T) {
+	timedOut, cancel := context.WithTimeoutCause(context.Background(), time.Nanosecond, ErrSIPRequestTimeout)
+	defer cancel()
+	<-timedOut.Done()
+	canceled, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+
+	cases := []struct {
+		name       string
+		ctx        context.Context
+		wantStatus CallStatus
+		wantTerm   stats.Termination
+	}{
+		{"ringing timeout", timedOut, callUnavailable, stats.ClientError("no-answer")},
+		{"caller cancel", canceled, callRejected, stats.ClientError("canceled")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := classifyInviteError(psrpc.NewError(psrpc.Canceled, context.Cause(tc.ctx))).afterInvite()
+			require.Equal(t, tc.wantStatus, res.Status)
+			require.Equal(t, tc.wantTerm, res.Term)
+			require.Nil(t, res.Report)
+			var psErr psrpc.Error
+			require.True(t, errors.As(res.returnErr, &psErr))
+			require.Equal(t, psrpc.Canceled, psErr.Code(), "must not downgrade to FailedPrecondition")
 		})
 	}
 }

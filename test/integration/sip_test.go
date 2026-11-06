@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -27,11 +28,12 @@ import (
 	"github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils"
-	"github.com/livekit/psrpc"
+	"github.com/livekit/psrpc/pkg/bus/redisbus"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	sipgo "github.com/livekit/sipgo/sip"
 
 	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/siptest"
@@ -66,6 +68,7 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		ApiSecret:          lk.ApiSecret,
 		WsUrl:              lk.WsUrl,
 		Redis:              lk.Redis,
+		PSRPC:              rpc.DefaultPSRPCConfig,
 		SIPPort:            sipPort,
 		SIPPortListen:      sipPort,
 		ListenIP:           local.String(),
@@ -78,12 +81,12 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 		JaegerURL:          os.Getenv("JAEGER_URL"),
 	}
 	_ = conf.InitLogger()
-	log := logger.GetLogger()
+	log := logger.NewTestLogger(t)
 	if conf.JaegerURL != "" {
 		jaeger.Configure(t.Context(), conf.JaegerURL, conf.ServiceName)
 	}
 
-	bus := psrpc.NewRedisMessageBus(rc)
+	bus := redisbus.New(rc, conf.PSRPC.BusOptions()...)
 	psrpcCli, err := rpc.NewIOInfoClient(bus,
 		otelpsrpc.ClientOptions(otelpsrpc.Config{}),
 	)
@@ -95,7 +98,17 @@ func runSIPServer(t testing.TB, lk *LiveKit) *SIPServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sipsrv, err := sip.NewService("", conf, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler { return sip.NewRPCStateHandler(psrpcCli) })
+	nonces, err := sealer.NewAESGCM([]string{utils.RandomSecret()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := sip.NewCallManager("", conf, log, mon, nonces, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+		return sip.NewRPCStateHandler(psrpcCli)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sipsrv, err := sip.NewService(conf, mon, log, manager)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +288,9 @@ func runClientWithCodec(t testing.TB, conf *NumberConfig, ip netip.Addr, id, num
 
 	err = cli.Dial(conf.SIP.Address, conf.SIP.Host, conf.Number, headers)
 	if err != nil {
+		if e, ok := errors.AsType[*livekit.SIPStatus](err); ok {
+			t.Error("SIP Status:", e)
+		}
 		t.Fatal(err)
 	}
 	if conf.Pin != "" || forcePin {
@@ -753,8 +769,8 @@ func TestSIPJoinRoomIndividual(t *testing.T) {
 
 func TestSIPAudio(t *testing.T) {
 	for _, codec := range []string{
-		g711.ULawSDPNameAndRate,
-		g722.SDPNameAndRate,
+		g711.ULawSDPNameOnly,
+		g722.SDPNameOnly,
 	} {
 		codec := codec
 		t.Run(codec, func(t *testing.T) {
@@ -788,7 +804,7 @@ func TestSIPAudio(t *testing.T) {
 						if i == 0 {
 							// Make first client always use the same codec.
 							// This way we can see how different codecs interact.
-							codec = g711.ULawSDPNameAndRate
+							codec = g711.ULawSDPNameOnly
 						}
 						wg.Add(1)
 						go func() {

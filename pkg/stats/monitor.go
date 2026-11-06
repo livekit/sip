@@ -16,6 +16,7 @@ package stats
 
 import (
 	"errors"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -72,9 +73,13 @@ type Monitor struct {
 	durCall                  *prometheus.HistogramVec
 	durJoin                  *prometheus.HistogramVec
 	durCheck                 *prometheus.HistogramVec
+	durSetup                 *prometheus.HistogramVec
 	durStage                 *prometheus.HistogramVec
 	cpuLoad                  prometheus.Gauge
 	sdpSize                  *prometheus.HistogramVec
+	sdpParsed                *prometheus.CounterVec
+	sdpParseErrors           *prometheus.CounterVec
+	codecOffered             *prometheus.CounterVec
 	nodeAvailable            prometheus.GaugeFunc
 	transfersTotal           *prometheus.CounterVec
 	transfersSucceeded       *prometheus.CounterVec
@@ -147,7 +152,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_accepted",
 		Help:        "Number of accepted SIP INVITE requests (that matched a trunk and passed auth)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to"}))
+	}, []string{"dir", "to", "provider"}))
 
 	m.inviteErr = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -155,7 +160,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "invite_error",
 		Help:        "Number of rejected SIP INVITE requests",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "reason"}))
+	}, []string{"dir", "to", "provider", "reason"}))
 
 	m.callsActive = mustRegister(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -163,7 +168,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "calls_active",
 		Help:        "Number of currently active SIP calls",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to"}))
+	}, []string{"dir", "to", "provider"}))
 
 	m.registrationsActive = mustRegister(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -179,7 +184,7 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Name:        "calls_terminated",
 		Help:        "Number of calls terminated by SIP bridge, labeled with result classification (success | server_error | client_error)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
-	}, []string{"dir", "to", "result", "reason"}))
+	}, []string{"dir", "to", "provider", "result", "reason"}))
 
 	m.callsTerminationFailures = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   "livekit",
@@ -231,7 +236,16 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SIP room join duration (from INVITE to mixed room audio)",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     durBucketsOp,
-	}, []string{"dir"}))
+	}, []string{"dir", "provider"}))
+
+	m.durSetup = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "dur_setup_sec",
+		Help:        "Call setup duration: from INVITE to either 200 OK (outcome=answered) or to close without ever answering (outcome=abandoned).",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+		Buckets:     durBucketsOp,
+	}, []string{"dir", "outcome"}))
 
 	m.durStage = mustRegister(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   "livekit",
@@ -249,7 +263,31 @@ func (m *Monitor) Start(conf *config.Config) error {
 		Help:        "SDP size in bytes",
 		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
 		Buckets:     sizeBuckets,
-	}, []string{"type"}))
+	}, []string{"type", "source"}))
+
+	m.sdpParsed = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "sdp_parsed_total",
+		Help:        "Number of SDP bodies parsed successfully during SDP negotiation",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider", "reinvite"}))
+
+	m.sdpParseErrors = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "sdp_parse_errors_total",
+		Help:        "Total number of SDP parses that resulted in an error",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider", "reason"}))
+
+	m.codecOffered = mustRegister(m, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace:   "livekit",
+		Subsystem:   "sip",
+		Name:        "codec_offered_total",
+		Help:        "Number of SDP bodies that advertised a given audio codec",
+		ConstLabels: prometheus.Labels{"node_id": conf.NodeID},
+	}, []string{"dir", "provider", "codec", "reinvite"}))
 
 	m.nodeAvailable = mustRegister(m, prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace:   "livekit",
@@ -362,12 +400,32 @@ func (m *Monitor) NewCall(dir CallDir, fromHost, toHost string) *CallMonitor {
 }
 
 type CallMonitor struct {
-	m          *Monitor
-	dir        string
-	fromHost   string
-	toHost     string
-	started    atomic.Bool
-	terminated atomic.Bool
+	m        *Monitor
+	dir      string
+	fromHost string
+	toHost   string
+	provider atomic.Pointer[string]
+	// CallEnd decrements the same calls_active series that CallStart incremented.
+	providerRecordedAtCallStart atomic.Pointer[string]
+	started                     atomic.Bool
+	terminated                  atomic.Bool
+}
+
+// ProviderUnknown is used when there is no provider information
+const ProviderUnknown = "unknown"
+
+func (c *CallMonitor) SetProvider(provider string) {
+	if provider == "" {
+		return
+	}
+	c.provider.Store(&provider)
+}
+
+func (c *CallMonitor) providerLabel() string {
+	if p := c.provider.Load(); p != nil {
+		return *p
+	}
+	return ProviderUnknown
 }
 
 func (c *CallMonitor) labelsShort(l prometheus.Labels) prometheus.Labels {
@@ -391,7 +449,7 @@ func (c *CallMonitor) InviteReq() {
 }
 
 func (c *CallMonitor) InviteAccept() {
-	c.m.inviteAccept.With(c.labels(nil)).Inc()
+	c.m.inviteAccept.With(c.labels(prometheus.Labels{"provider": c.providerLabel()})).Inc()
 }
 
 // InviteErrorShort records a SIP INVITE rejection that occurred before a call
@@ -399,11 +457,12 @@ func (c *CallMonitor) InviteAccept() {
 // counter (kept for back-compat) and routes through CallTerminate so the
 // unified calls_terminated counter has consistent classification.
 func (c *CallMonitor) InviteErrorShort(t Termination) {
-	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": t.Reason, "to": "unknown"})).Inc()
+	c.m.inviteErr.With(c.labelsShort(prometheus.Labels{"reason": t.Reason, "to": "unknown", "provider": c.providerLabel()})).Inc()
 	c.m.callsTerminated.With(c.labelsShort(prometheus.Labels{
-		"to":     "unknown",
-		"result": string(t.Result),
-		"reason": t.Reason,
+		"to":       "unknown",
+		"provider": c.providerLabel(),
+		"result":   string(t.Result),
+		"reason":   t.Reason,
 	})).Inc()
 }
 
@@ -411,21 +470,23 @@ func (c *CallMonitor) InviteErrorShort(t Termination) {
 // by outbound INVITE failure paths where CallTerminate also fires for the same
 // call, so this only writes to the legacy invite_error counter.
 func (c *CallMonitor) InviteError(reason string) {
-	c.m.inviteErr.With(c.labels(prometheus.Labels{"reason": reason})).Inc()
+	c.m.inviteErr.With(c.labels(prometheus.Labels{"reason": reason, "provider": c.providerLabel()})).Inc()
 }
 
 func (c *CallMonitor) CallStart() {
 	if !c.started.CompareAndSwap(false, true) {
 		return
 	}
-	c.m.callsActive.With(c.labels(nil)).Inc()
+	p := c.providerLabel()
+	c.providerRecordedAtCallStart.Store(&p)
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": p})).Inc()
 }
 
 func (c *CallMonitor) CallEnd() {
 	if !c.started.CompareAndSwap(true, false) {
 		return
 	}
-	c.m.callsActive.With(c.labels(nil)).Dec()
+	c.m.callsActive.With(c.labels(prometheus.Labels{"provider": *c.providerRecordedAtCallStart.Load()})).Dec()
 }
 
 func (c *CallMonitor) CallTerminate(t Termination) {
@@ -433,8 +494,9 @@ func (c *CallMonitor) CallTerminate(t Termination) {
 		return
 	}
 	c.m.callsTerminated.With(c.labels(prometheus.Labels{
-		"result": string(t.Result),
-		"reason": t.Reason,
+		"provider": c.providerLabel(),
+		"result":   string(t.Result),
+		"reason":   t.Reason,
 	})).Inc()
 }
 
@@ -479,12 +541,34 @@ func (c *CallMonitor) CheckDur() func(dt time.Duration) {
 }
 
 func (c *CallMonitor) JoinDur() func() time.Duration {
-	t1 := prometheus.NewTimer(c.m.durJoin.With(c.labelsShort(nil))).ObserveDuration
+	start := time.Now()
 	t2 := c.StageDurTimer("invite-to-dispatch")
 	return func() time.Duration {
 		t2()
-		return t1()
+		dt := time.Since(start)
+		// Inbound calls set the provider after the timer starts, so read it here.
+		c.m.durJoin.With(c.labelsShort(prometheus.Labels{"provider": c.providerLabel()})).Observe(dt.Seconds())
+		return dt
 	}
+}
+
+type SetupOutcome string
+
+const (
+	// SetupAnswered means we got as far as answering the call. Almost always
+	// that means the 200 OK was sent; a few failure paths inside Accept() still
+	// land here.
+	SetupAnswered SetupOutcome = "answered"
+	// SetupAbandoned means the call closed before we ever tried to answer:
+	// caller CANCEL, a hangup while still ringing, or a setup failure.
+	SetupAbandoned SetupOutcome = "abandoned"
+)
+
+// SetupDur records how long call setup lasted, measured from the INVITE.
+func (c *CallMonitor) SetupDur(outcome SetupOutcome, dt time.Duration) {
+	c.m.durSetup.With(c.labelsShort(prometheus.Labels{
+		"outcome": string(outcome),
+	})).Observe(dt.Seconds())
 }
 
 func (c *CallMonitor) StageDur(stage string) prometheus.Observer {
@@ -497,12 +581,51 @@ func (c *CallMonitor) StageDurTimer(stage string) func() time.Duration {
 	return prometheus.NewTimer(c.StageDur(stage)).ObserveDuration
 }
 
-func (c *CallMonitor) SDPSize(sz int, isOffer bool) {
+// PeerSDP increments SDP count and each individual codec from the SDP body.
+// Should be called before codec selection such that failed negotiations are still counted
+func (c *CallMonitor) PeerSDP(names []string, reinvite bool) {
+	provider := c.providerLabel()
+	c.m.sdpParsed.With(prometheus.Labels{"dir": c.dir, "provider": provider, "reinvite": strconv.FormatBool(reinvite)}).Inc()
+	for _, name := range names {
+		c.m.codecOffered.With(prometheus.Labels{
+			"dir":      c.dir,
+			"provider": provider,
+			"codec":    name,
+			"reinvite": strconv.FormatBool(reinvite),
+		}).Inc()
+	}
+}
+
+func (c *CallMonitor) SDPSize(sz int, isOffer bool, isFromRemote bool) {
 	typ := "answer"
 	if isOffer {
 		typ = "offer"
 	}
-	c.m.sdpSize.WithLabelValues(typ).Observe(float64(sz))
+	source := "local"
+	if isFromRemote {
+		source = "remote"
+	}
+	c.m.sdpSize.WithLabelValues(typ, source).Observe(float64(sz))
+}
+
+// SDPParsePanic increments a counter denoting the number of times a panic has
+// occurred during SDP parsing.
+func (c *CallMonitor) SDPParsePanic() {
+	c.m.sdpParseErrors.With(prometheus.Labels{
+		"dir":      c.dir,
+		"provider": c.providerLabel(),
+		"reason":   "panic",
+	}).Inc()
+}
+
+// SDPParseError increments a counter denoting the number of times a non-panic
+// error has occurred during SDP parsing.
+func (c *CallMonitor) SDPParseError() {
+	c.m.sdpParseErrors.With(prometheus.Labels{
+		"dir":      c.dir,
+		"provider": c.providerLabel(),
+		"reason":   "other",
+	}).Inc()
 }
 
 // RegistrationActive records whether a SIP registration currently has a binding. Inbound calls

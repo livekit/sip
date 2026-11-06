@@ -17,7 +17,7 @@ package sip
 // Register supported audio codecs
 import (
 	"errors"
-	"fmt"
+	"slices"
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
@@ -35,16 +35,40 @@ var defaultCodecs = msdk.NewCodecSet()
 
 func init() {
 	defaultCodecs.SetEnabledMap(map[string]bool{
-		g711.ALawSDPNameAndRate: true,
-		g711.ULawSDPNameAndRate: true,
-		g722.SDPNameAndRate:     true,
-		amrwb.SDPNameAndRate:    false, // optional
-		dtmf.SDPNameAndRate:     true,
+		dtmf.SDPNameOnly:     true,
+		g711.ALawSDPNameOnly: true,
+		g711.ULawSDPNameOnly: true,
+		g722.SDPNameOnly:     true,
+		amrwb.SDPNameOnly:    false, // optional
 	})
 }
 
 func DefaultCodecs() *msdk.CodecSet {
 	return defaultCodecs
+}
+
+// Metric label used for advertised codecs that are not part of the internal
+// codec set, since their name is dropped during SDP parsing and to keep the
+// label bounded
+const codecOther = "other"
+
+func peerCodecNames(d sdp.MediaDesc) []string {
+	names := make([]string, 0, len(d.Audio)+len(d.Data)+len(d.Unknown))
+	add := func(list []sdp.CodecInfo) {
+		for _, c := range list {
+			name := c.Info.SDPFullName()
+			if c.Info.Name == "" {
+				name = "other"
+			}
+			if !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+	}
+	add(d.Audio)
+	add(d.Data)
+	add(d.Unknown)
+	return names
 }
 
 func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*sipMediaConfig, error) {
@@ -62,16 +86,18 @@ func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*s
 		mediaTimeout = m.MediaTimeout.AsDuration()
 	}
 	return &sipMediaConfig{
-		Encryption:   enc,
-		Codecs:       s,
-		MediaTimeout: mediaTimeout,
+		Encryption:          enc,
+		Codecs:              s,
+		MediaTimeout:        mediaTimeout,
+		DropAudioDuringDTMF: m.DropAudioDuringDtmf,
 	}, nil
 }
 
 type sipMediaConfig struct {
-	Encryption   sdp.Encryption
-	Codecs       *msdk.CodecSet
-	MediaTimeout time.Duration
+	Encryption          sdp.Encryption
+	Codecs              *msdk.CodecSet
+	MediaTimeout        time.Duration
+	DropAudioDuringDTMF bool
 }
 
 func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
@@ -90,22 +116,11 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 			return nil, errors.New("no codec name specified")
 		}
 		rate := codec.Rate
-		if rate == 0 {
-			// Set default rate
-			switch name {
-			case g711.ALawSDPNameOnly, g711.ULawSDPNameOnly:
-				rate = 8000
-			case g722.SDPNameOnly:
-				rate = 8000 // actually 16000, it's a know bug in the spec
-			case amrwb.SDPNameOnly:
-				rate = 16000
-			default:
-				return nil, fmt.Errorf("sample rate not specified for codec: %q", name)
-			}
-		}
-		name = fmt.Sprintf("%s/%d", name, rate)
 		s.SetEnabled(name, true)
+		_ = rate // TODO: we only support fixed rate codecs so far; add whitelist for codec configs later
 	}
-	s.SetEnabled(dtmf.SDPNameAndRate, true)
+	// TODO: AMR-WB is temporarily blocked.
+	s.SetEnabled(amrwb.SDPNameOnly, false)
+	s.SetEnabled(dtmf.SDPNameOnly, true)
 	return s, nil
 }

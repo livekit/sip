@@ -77,13 +77,25 @@ func checkSIPAttrs(t TB, exp, got map[string]string) (_, _ map[string]string) {
 }
 
 type SIPOutboundTestParams struct {
-	TrunkOut string            // trunk ID for outbound call
-	RoomOut  string            // room for outbound call
-	AttrsOut map[string]string // expected attributes for outbound participants
-	TrunkIn  string            // trunk ID for inbound call
-	RuleIn   string            // rule ID for inbound call
-	AttrsIn  map[string]string // expected attributes for inbound participants
-	NoDMTF   bool              // do not test DTMF
+	TrunkOut    string            // trunk ID for outbound call
+	NumberOut   string            // number for outbound call (LK phone numbers)
+	RoomOut     string            // room for outbound call
+	AttrsOut    map[string]string // expected attributes for outbound participants
+	HeadersOut  map[string]string // headers for outbound call
+	NumberIn    string            // number for inbound call (LK phone numbers)
+	NumberInExp string            // expected inbound number, as seen in the inbound call
+	TrunkIn     string            // trunk ID for inbound call
+	RuleIn      string            // rule ID for inbound call
+	AttrsIn     map[string]string // expected attributes for inbound participants
+	NoDMTF      bool              // do not test DTMF
+}
+
+type SIPTransferTestParams struct {
+	TransferIn  bool   // transfer the inbound leg instead of the outbound leg
+	NumberTo    string // number to transfer to
+	NumberToExp string // expected transfer number, as seen in the new inbound call
+	TrunkTo     string // trunk ID for the new inbound call
+	RuleTo      string // rule ID for the new inbound call
 }
 
 func loadVal[T any](ptr *atomic.Pointer[T]) T {
@@ -95,33 +107,63 @@ func loadVal[T any](ptr *atomic.Pointer[T]) T {
 	return *p
 }
 
-func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundTestParams) {
+// SIPOutboundCall is an established call between the outbound and inbound rooms of TestSIPOutbound.
+type SIPOutboundCall struct {
+	Start          time.Time
+	RoomOut        string
+	RoomIn         string
+	IdentityOut    string
+	IdentityIn     string
+	CallIDOut      string
+	CallIDIn       string
+	ParticipantOut *Participant
+	ParticipantIn  *Participant
+	DataOut        <-chan lksdk.DataPacket
+	DataIn         <-chan lksdk.DataPacket
+}
+
+// TestSIPOutbound returns the call, which stays up until the test ends.
+func TestSIPOutbound(t TB, ctx context.Context, lkOut, lkIn *LiveKit, params SIPOutboundTestParams) *SIPOutboundCall {
 	start := time.Now()
-	defer t.Logf("+%.3fs: TestSIPOutbound took", secSince(start))
+	defer func() { t.Logf("+%.3fs: TestSIPOutbound took", secSince(start)) }()
 
 	t.Logf("+%.3fs: getting trunk info", secSince(start))
 
-	trsOut, err := lkOut.SIP.GetSIPOutboundTrunksByIDs(ctx, []string{params.TrunkOut})
-	require.NoError(t, err)
-	trOut := trsOut[0]
-	require.NotNil(t, trOut, "trunk not found")
-	require.NotEmpty(t, trOut.Numbers, "no trunk numbers for outbound")
-	numOut := trOut.Numbers[0]
-	t.Logf("+%.3fs: using outbound trunk %q (%s, num: %s)", secSince(start), trOut.Name, trOut.SipTrunkId, numOut)
+	numOut := params.NumberOut
+	if numOut == "" {
+		trsOut, err := lkOut.SIP.GetSIPOutboundTrunksByIDs(ctx, []string{params.TrunkOut})
+		require.NoError(t, err)
+		trOut := trsOut[0]
+		require.NotNil(t, trOut, "trunk not found")
+		require.NotEmpty(t, trOut.Numbers, "no trunk numbers for outbound")
+		numOut = trOut.Numbers[0]
+		t.Logf("+%.3fs: using outbound trunk %q (%s, num: %s)", secSince(start), trOut.Name, trOut.SipTrunkId, numOut)
+	} else {
+		t.Logf("+%.3fs: using outbound number %q", secSince(start), numOut)
+	}
 
-	trsIn, err := lkIn.SIP.GetSIPInboundTrunksByIDs(ctx, []string{params.TrunkIn})
-	require.NoError(t, err)
-	trIn := trsIn[0]
-	require.NotNil(t, trIn, "trunk not found")
-	require.NotEmpty(t, trIn.Numbers, "no trunk numbers for inbound")
-	numIn := trIn.Numbers[0]
-	t.Logf("+%.3fs: using inbound trunk %q (%s, num: %s)", secSince(start), trIn.Name, trIn.SipTrunkId, numIn)
+	numIn := params.NumberIn
+	if numIn == "" {
+		trsIn, err := lkIn.SIP.GetSIPInboundTrunksByIDs(ctx, []string{params.TrunkIn})
+		require.NoError(t, err)
+		trIn := trsIn[0]
+		require.NotNil(t, trIn, "trunk not found")
+		require.NotEmpty(t, trIn.Numbers, "no trunk numbers for inbound")
+		numIn = trIn.Numbers[0]
+		t.Logf("+%.3fs: using inbound trunk %q (%s, num: %s)", secSince(start), trIn.Name, trIn.SipTrunkId, numIn)
+	} else {
+		t.Logf("+%.3fs: using inbound number %q (%s)", secSince(start), numIn, params.TrunkIn)
+	}
 
 	rulesIn, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, []string{params.RuleIn})
 	require.NoError(t, err)
 	ruleIn := rulesIn[0]
 	require.NotNil(t, ruleIn, "rule not found")
-	require.True(t, len(ruleIn.TrunkIds) == 0 || slices.Contains(ruleIn.TrunkIds, trIn.SipTrunkId), "selected rule doesn't match the trunk")
+	if params.NumberIn == "" {
+		require.True(t, len(ruleIn.TrunkIds) == 0 || slices.Contains(ruleIn.TrunkIds, params.TrunkIn), "selected rule doesn't match the trunk")
+	} else {
+		require.True(t, len(ruleIn.TrunkIds) > 0 && slices.Contains(ruleIn.TrunkIds, params.TrunkIn), "selected rule doesn't have a number associated with it")
+	}
 	ruleDir, ok := ruleIn.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleDirect)
 	require.True(t, ok, "unsupported dispatch rule type %T", ruleIn.Rule.Rule)
 	rule := ruleDir.DispatchRuleDirect
@@ -284,12 +326,14 @@ Check logs for call:
 	t.Logf("+%.3fs: creating sip participant", secSince(start))
 	r := lkOut.CreateSIPParticipant(t, &livekit.CreateSIPParticipantRequest{
 		SipTrunkId:          params.TrunkOut,
+		SipNumber:           params.NumberOut,
 		SipCallTo:           numIn,
 		RoomName:            params.RoomOut,
 		ParticipantIdentity: outIdentity,
 		ParticipantName:     outName,
 		ParticipantMetadata: outMeta,
 		Dtmf:                roomPin,
+		Headers:             params.HeadersOut,
 	})
 	t.Logf("+%.3fs: outbound call ID: %s", secSince(start), r.SipCallId)
 
@@ -304,7 +348,9 @@ Check logs for call:
 		"sip.callStatus":       "active",
 		"sip.trunkPhoneNumber": numOut,
 		"sip.phoneNumber":      numIn,
-		"sip.trunkID":          params.TrunkOut,
+	}
+	if params.TrunkOut != "" {
+		expAttrsOut["sip.trunkID"] = params.TrunkOut
 	}
 	for k, v := range params.AttrsOut {
 		expAttrsOut[k] = v
@@ -323,13 +369,17 @@ Check logs for call:
 	t.Logf("+%.3fs: waiting for inbound participant to become ready", secSince(start))
 	readyIn.Wait()
 
-	t.Logf("+%.3fs: asserting outbound room", secSince(start))
+	t.Logf("+%.3fs: asserting inbound room", secSince(start))
+	numInExp := numIn
+	if params.NumberInExp != "" {
+		numInExp = params.NumberInExp
+	}
 	expAttrsIn := map[string]string{
 		"sip.callID":           AttrTestAny, // special case
 		"sip.callTag":          AttrTestAny, // special case
 		"sip.callIDFull":       AttrTestAny, // special case
 		"sip.callStatus":       "active",
-		"sip.trunkPhoneNumber": numIn,
+		"sip.trunkPhoneNumber": numInExp,
 		"sip.phoneNumber":      numOut,
 		"sip.trunkID":          params.TrunkIn,
 		"sip.ruleID":           params.RuleIn,
@@ -358,6 +408,19 @@ Check logs for call:
 
 		t.Logf("+%.3fs: retesting audio", secSince(start))
 		CheckAudioForParticipants(t, ctx, pOut, pIn)
+	}
+	return &SIPOutboundCall{
+		Start:          start,
+		RoomOut:        params.RoomOut,
+		RoomIn:         roomIn,
+		IdentityOut:    outIdentity,
+		IdentityIn:     inIdentity,
+		CallIDOut:      loadVal(&callIDOut),
+		CallIDIn:       loadVal(&callIDIn),
+		ParticipantOut: pOut,
+		ParticipantIn:  pIn,
+		DataOut:        dataOut,
+		DataIn:         dataIn,
 	}
 }
 
@@ -729,6 +792,118 @@ func getRoomFromIndividualRule(ctx context.Context, lk *LiveKit, rule *livekit.S
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// TestSIPTransfer runs TestSIPOutbound, then transfers one leg of the call to NumberTo.
+// The transfer target must route to a direct dispatch rule on lkIn.
+func TestSIPTransfer(t TB, ctx context.Context, lkOut, lkIn *LiveKit, outboundParams SIPOutboundTestParams, transferParams SIPTransferTestParams) {
+	rulesTo, err := lkIn.SIP.GetSIPDispatchRulesByIDs(ctx, []string{transferParams.RuleTo})
+	require.NoError(t, err)
+	ruleTo := rulesTo[0]
+	require.NotNil(t, ruleTo, "transfer rule not found")
+	ruleDir, ok := ruleTo.Rule.Rule.(*livekit.SIPDispatchRule_DispatchRuleDirect)
+	require.True(t, ok, "unsupported transfer dispatch rule type %T", ruleTo.Rule.Rule)
+	roomTo := ruleDir.DispatchRuleDirect.RoomName
+	t.Cleanup(func() {
+		_, _ = lkIn.Rooms.DeleteRoom(context.Background(), &livekit.DeleteRoomRequest{Room: roomTo})
+	})
+
+	c := TestSIPOutbound(t, ctx, lkOut, lkIn, outboundParams)
+	start := c.Start
+
+	lkLeg, roomLeg, identityLeg, callIDLeg := lkOut, c.RoomOut, c.IdentityOut, c.CallIDOut
+	participantKept, dataKept := c.ParticipantIn, c.DataIn
+	if transferParams.TransferIn {
+		lkLeg, roomLeg, identityLeg, callIDLeg = lkIn, c.RoomIn, c.IdentityIn, c.CallIDIn
+		participantKept, dataKept = c.ParticipantOut, c.DataOut
+	}
+	var callIDTo string
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		t.Errorf(`SIP call connected, but transfer to %s failed.
+
+Check logs for calls:
+@callID:%s (transferred leg)
+@callID:%s (transfer target)
+
+Possible causes:
+- Carrier rejected the REFER
+- Carrier could not reach the transfer target
+- Transfer target has no dispatch rule`,
+			transferParams.NumberTo, callIDLeg, callIDTo,
+		)
+	}()
+
+	// Inbound calls keep ringing until a participant joins the room, so join before transferring.
+	t.Logf("+%.3fs: connecting transfer target participant", secSince(start))
+	const identityTest = "test_probe"
+	dataTo := make(chan lksdk.DataPacket, 20)
+	participantTo := lkIn.ConnectParticipant(t, roomTo, identityTest, &RoomParticipantCallback{
+		RoomCallback: lksdk.RoomCallback{
+			ParticipantCallback: lksdk.ParticipantCallback{
+				OnDataPacket: func(data lksdk.DataPacket, params lksdk.DataReceiveParams) {
+					select {
+					case dataTo <- data:
+					default:
+					}
+				},
+			},
+		},
+	})
+
+	t.Logf("+%.3fs: transferring %s in room %s to %s", secSince(start), identityLeg, roomLeg, transferParams.NumberTo)
+	_, err = lkLeg.SIP.TransferSIPParticipant(ctx, &livekit.TransferSIPParticipantRequest{
+		RoomName:            roomLeg,
+		ParticipantIdentity: identityLeg,
+		TransferTo:          "tel:" + transferParams.NumberTo,
+	})
+	require.NoError(t, err)
+
+	t.Logf("+%.3fs: asserting transferred leg left the room", secSince(start))
+	lkLeg.ExpectParticipants(t, ctx, roomLeg, []ParticipantInfo{
+		{Identity: identityTest, Kind: livekit.ParticipantInfo_STANDARD},
+	})
+
+	t.Logf("+%.3fs: asserting transfer target room %s", secSince(start), roomTo)
+	numToExp := transferParams.NumberTo
+	if transferParams.NumberToExp != "" {
+		numToExp = transferParams.NumberToExp
+	}
+	pSIP := expectSIPParticipant(t, ctx, lkIn, roomTo)
+	callIDTo = pSIP.Attributes[livekit.AttrSIPCallID]
+	t.Logf("+%.3fs: transfer target participant %s (%s)", secSince(start), pSIP.Identity, callIDTo)
+	require.Equal(t, numToExp, pSIP.Attributes[livekit.AttrSIPPrefix+"trunkPhoneNumber"])
+	require.Equal(t, transferParams.TrunkTo, pSIP.Attributes[livekit.AttrSIPTrunkID])
+	require.Equal(t, transferParams.RuleTo, pSIP.Attributes[livekit.AttrSIPPrefix+"ruleID"])
+
+	t.Logf("+%.3fs: testing audio after transfer", secSince(start))
+	CheckAudioForParticipants(t, ctx, participantKept, participantTo)
+	if !outboundParams.NoDMTF {
+		t.Logf("+%.3fs: testing dtmf after transfer", secSince(start))
+		CheckDTMFForParticipants(t, ctx, participantKept, participantTo, dataKept, dataTo)
+	}
+}
+
+// expectSIPParticipant waits for an active SIP participant in the room.
+// The caller number on a transferred call depends on the carrier, so the identity is not checked.
+func expectSIPParticipant(t TB, ctx context.Context, lk *LiveKit, room string) *livekit.ParticipantInfo {
+	ticker := time.NewTicker(time.Second / 4)
+	defer ticker.Stop()
+	for {
+		for _, p := range lk.RoomParticipants(t, room) {
+			if p.Kind == livekit.ParticipantInfo_SIP && p.Attributes[livekit.AttrSIPCallStatus] == "active" {
+				return p
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for SIP participant in room %s", room)
+			return nil
+		case <-ticker.C:
 		}
 	}
 }

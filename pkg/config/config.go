@@ -27,7 +27,9 @@ import (
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/logger/medialogutils"
+	"github.com/livekit/protocol/logger/zaputil"
 	"github.com/livekit/protocol/redis"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils/guid"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -116,6 +118,11 @@ type TLSConfig struct {
 	// Note: Only applies to TLS 1.0-1.2; TLS 1.3 cipher suites are not configurable.
 	CipherSuites []string `yaml:"cipher_suites"`
 
+	// WarnOnly disables enforcement of MinVersion, MaxVersion and CipherSuites.
+	// Instead, a warning is logged for each handshake that negotiates a version or cipher suite outside of them.
+	// Useful to check which connections would be affected before enforcing a stricter policy.
+	WarnOnly bool `yaml:"warn_only"`
+
 	// ALPNProtocols is an optional list of ALPN protocol names for TLS negotiation.
 	// If not provided, defaults to ["sip"]. Set to an empty list to disable ALPN.
 	// Some providers (e.g. Meta) reject the "sip" ALPN and require it to be disabled.
@@ -131,6 +138,8 @@ type Config struct {
 	ApiKey    string             `yaml:"api_key"`    // required (env LIVEKIT_API_KEY)
 	ApiSecret string             `yaml:"api_secret"` // required (env LIVEKIT_API_SECRET)
 	WsUrl     string             `yaml:"ws_url"`     // required (env LIVEKIT_WS_URL)
+
+	PSRPC rpc.PSRPCConfig `yaml:"psrpc,omitempty"`
 
 	HealthPort           int                 `yaml:"health_port"`
 	PrometheusPort       int                 `yaml:"prometheus_port"`
@@ -162,16 +171,16 @@ type Config struct {
 	MediaUseExternalIP bool   `yaml:"media_use_external_ip"`
 	MediaNAT1To1IP     string `yaml:"media_nat_1_to_1_ip"`
 
-	MediaTimeout         time.Duration   `yaml:"media_timeout"`
-	MediaTimeoutInitial  time.Duration   `yaml:"media_timeout_initial"`
-	SymmetricRTP         bool            `yaml:"symmetric_rtp"`
+	MediaTimeout        time.Duration `yaml:"media_timeout"`
+	MediaTimeoutInitial time.Duration `yaml:"media_timeout_initial"`
+	SymmetricRTP        bool          `yaml:"symmetric_rtp"`
 	// RTPDrainingIdleTimeout / RTPDrainingDuration control how long a closed call's RTP
 	// port is kept bound and draining before it can be reallocated. Set to a negative
 	// value to disable. Zero uses the defaults.
-	RTPDrainingIdleTimeout time.Duration `yaml:"rtp_draining_idle_timeout"`
-	RTPDrainingDuration    time.Duration `yaml:"rtp_draining_duration"`
-	IgnoreLocalAddrInSDP bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
-	Codecs               map[string]bool `yaml:"codecs"`
+	RTPDrainingIdleTimeout time.Duration   `yaml:"rtp_draining_idle_timeout"`
+	RTPDrainingDuration    time.Duration   `yaml:"rtp_draining_duration"`
+	IgnoreLocalAddrInSDP   bool            `yaml:"ignore_local_addr_in_sdp"` // enable symmetric RTP if local IP is specified in SDP
+	Codecs                 map[string]bool `yaml:"codecs"`
 
 	// HideInboundPort controls how SIP endpoint responds to unverified inbound requests.
 	// Setting it to true makes SIP server silently drop INVITE requests if it gets a negative Auth or Dispatch response.
@@ -193,6 +202,9 @@ type Config struct {
 	ServiceName string `yaml:"-"`
 	NodeID      string // Do not provide, will be overwritten
 	JaegerURL   string `yaml:"jaeger_url"` // for tracing
+	// LoggerTee duplicates the log stream InitLogger builds. Set it before
+	// Init; the zero value is a no-op.
+	LoggerTee zaputil.Tee `yaml:"-"`
 
 	// Experimental, these option might go away without notice.
 	Experimental struct {
@@ -207,6 +219,7 @@ func NewConfig(confString string) (*Config, error) {
 		ApiSecret:   os.Getenv("LIVEKIT_API_SECRET"),
 		WsUrl:       os.Getenv("LIVEKIT_WS_URL"),
 		ServiceName: "sip",
+		PSRPC:       rpc.DefaultPSRPCConfig,
 	}
 	if confString != "" {
 		if err := yaml.Unmarshal([]byte(confString), conf); err != nil {
@@ -306,7 +319,7 @@ func (c *Config) initRegistrations() error {
 }
 
 func (c *Config) InitLogger(values ...interface{}) error {
-	zl, err := logger.NewZapLogger(&c.Logging)
+	zl, err := logger.NewZapLogger(&c.Logging, logger.WithTee(c.LoggerTee))
 	if err != nil {
 		return err
 	}

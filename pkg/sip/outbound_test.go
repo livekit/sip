@@ -16,7 +16,9 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -26,33 +28,8 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
-	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
 )
-
-// recordingSIPClient is a SIPClient that records the requests written to it.
-type recordingSIPClient struct {
-	reqs []*sip.Request
-}
-
-func (c *recordingSIPClient) TransactionRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
-	return nil, nil
-}
-
-func (c *recordingSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) error {
-	c.reqs = append(c.reqs, req)
-	return nil
-}
-
-func (c *recordingSIPClient) Close() error { return nil }
-
-func (c *recordingSIPClient) methods() []sip.RequestMethod {
-	var m []sip.RequestMethod
-	for _, r := range c.reqs {
-		m = append(m, r.Method)
-	}
-	return m
-}
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	// Make sure the ACK doesn't carry over initial Route header.
@@ -67,7 +44,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	addedRouteURI := sip.Uri{Host: "added-header.com", UriParams: sip.HeaderParams{{"lr", ""}}}
 	initialRouteHeader := sip.RouteHeader{Address: initialRouteURI}
 	addedRouteHeader := sip.RouteHeader{Address: addedRouteURI}
-	client := NewOutboundTestClient(t, TestClientConfig{})
+	h := NewTestSIP(t, TestSIPConfig{})
 	req := MinimalCreateSIPParticipantRequest()
 	req.Headers = map[string]string{
 		"Route": initialRouteHeader.Value(),
@@ -75,7 +52,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { // Allow test to continue
-		_, err := client.CreateSIPParticipant(ctx, req)
+		_, err := h.manager.CreateSIPParticipant(ctx, req)
 		if err != nil && ctx.Err() == nil {
 			// Only log error if context wasn't cancelled
 			t.Logf("CreateSIPParticipant error: %v", err)
@@ -83,28 +60,9 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	}()
 
 	t.Log("Waiting for INVITE to be sent")
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
 
-	var sipClient *testSIPClient
-	select {
-	case sipClient = <-createdClients:
-		t.Cleanup(func() { _ = sipClient.Close() })
-	case <-time.After(100 * time.Millisecond):
-		cancel()
-		require.Fail(t, "expected client to be created")
-		return
-	}
-
-	var tr *transactionRequest
-	select {
-	case tr = <-sipClient.transactions:
-		t.Cleanup(func() { tr.transaction.Terminate() })
-	case <-time.After(500 * time.Millisecond):
-		cancel()
-		require.Fail(t, "expected transaction request to be created")
-		return
-	}
-
-	fmt.Println("Received INVITE, validating")
+	t.Log("Received INVITE, validating")
 
 	require.NotNil(t, tr)
 	require.NotNil(t, tr.req)
@@ -116,8 +74,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 
 	t.Log("INVITE okay, sending fake response")
 
-	minimalSDP := []byte("v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n")
-	response := sip.NewSDPResponseFromRequest(tr.req, minimalSDP)
+	response := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
 	require.NotNil(t, response, "NewSDPResponseFromRequest returned nil")
 	response.RemoveHeader("Record-Route")
 	rr1 := sip.RecordRouteHeader{Address: addedRouteURI}
@@ -127,17 +84,7 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 	tr.transaction.SendResponse(response)
 
 	t.Log("Wait for ACK to be sent")
-
-	// Make sure ACK is okay
-	var ackReq *sipRequest
-	select {
-	case ackReq = <-sipClient.requests:
-		// All good
-	case <-time.After(100 * time.Millisecond):
-		cancel()
-		require.Fail(t, "expected ACK request to be created")
-		return
-	}
+	ackReq := h.WaitRequest(t, time.Second, req.SipCallId, "")
 
 	t.Log("Received ACK, validating")
 
@@ -155,7 +102,6 @@ func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
 }
 
 const (
-	testMinimalSDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 5004 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
 	// Simulates sipgo caching a DNS-resolved transport target on the INVITE.
 	testInviteCachedDestination = "10.0.0.1:5060"
 	testInviteTargetHost        = "sip.example.com"
@@ -166,41 +112,24 @@ const (
 // 200 OK is delivered to the transaction.
 func waitOutboundINVITEAndACK(
 	t *testing.T,
-	clientCfg TestClientConfig,
+	clientCfg TestSIPConfig,
 	participantReq *rpc.InternalCreateSIPParticipantRequest,
 	mutate func(tr *transactionRequest, resp *sip.Response),
-) (*testSIPClient, *transactionRequest, *sipRequest) {
+) (*testSIPHarness, *transactionRequest, *sipRequest) {
 
-	client := NewOutboundTestClient(t, clientCfg)
+	h := NewTestSIP(t, clientCfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	go func() {
-		_, err := client.CreateSIPParticipant(ctx, participantReq)
+		_, err := h.manager.CreateSIPParticipant(ctx, participantReq)
 		if err != nil && ctx.Err() == nil {
 			t.Logf("CreateSIPParticipant error: %v", err)
 			t.Fail()
 		}
 	}()
 
-	var sipClient *testSIPClient
-	select {
-	case sipClient = <-createdClients:
-		t.Cleanup(func() { _ = sipClient.Close() })
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected test SIP client to be created")
-		return nil, nil, nil
-	}
-
-	var tr *transactionRequest
-	select {
-	case tr = <-sipClient.transactions:
-		t.Cleanup(func() { tr.transaction.Terminate() })
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected INVITE transaction")
-		return sipClient, nil, nil
-	}
-
+	tr := h.WaitTransaction(t, time.Second, participantReq.SipCallId, "")
 	require.Equal(t, sip.INVITE, tr.req.Method)
 
 	resp := sip.NewSDPResponseFromRequest(tr.req, []byte(testMinimalSDP))
@@ -208,31 +137,18 @@ func waitOutboundINVITEAndACK(
 	mutate(tr, resp)
 	require.NoError(t, tr.transaction.SendResponse(resp))
 
-	var ackReq *sipRequest
-	select {
-	case ackReq = <-sipClient.requests:
-	case <-time.After(500 * time.Millisecond):
-		require.Fail(t, "expected ACK request")
-		return sipClient, tr, nil
-	}
-
+	ackReq := h.WaitRequest(t, time.Second, participantReq.SipCallId, "")
 	require.Equal(t, sip.ACK, ackReq.req.Method)
-	return sipClient, tr, ackReq
+	return h, tr, ackReq
 }
 
 // answerBYE waits for the call to send a BYE and responds 200 OK.
 // If we don't explicitly answer the BYE, then a test might hang, as sipOutbound
 // expects a response before closing the call.
-func answerBYE(t *testing.T, sipClient *testSIPClient, timeout time.Duration) {
+func answerBYE(t *testing.T, h *testSIPHarness, timeout time.Duration, callID string) {
 	t.Helper()
 
-	var byeTx *transactionRequest
-	select {
-	case byeTx = <-sipClient.transactions:
-	case <-time.After(timeout):
-		require.Fail(t, "expected BYE transaction")
-		return
-	}
+	byeTx := h.WaitTransaction(t, timeout, callID, "")
 	require.Equal(t, sip.BYE, byeTx.req.Method)
 
 	resp := sip.NewResponseFromRequest(byeTx.req, 200, "OK", nil)
@@ -250,7 +166,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 		)
 		contactURI := sip.Uri{Host: contactHost, Port: contactPort}
 
-		_, _, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		_, _, ackReq := waitOutboundINVITEAndACK(t, TestSIPConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
 			require.Equal(t, testInviteTargetHost, tr.req.Recipient.Host)
 			tr.req.SetDestination(testInviteCachedDestination)
 			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
@@ -266,7 +182,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 	t.Run("unchanged contact keeps cached destination", func(t *testing.T) {
 		contactURI := sip.Uri{Host: testInviteTargetHost, Port: 5060}
 
-		_, _, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		_, _, ackReq := waitOutboundINVITEAndACK(t, TestSIPConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
 			tr.req.SetDestination(testInviteCachedDestination)
 			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
 		})
@@ -282,7 +198,7 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 		proxyURI := sip.Uri{Host: "proxy.example.com", Port: 5060, UriParams: sip.HeaderParams{{"lr", ""}}}
 		contactURI := sip.Uri{Host: testInviteTargetHost, Port: 5060}
 
-		_, _, ackReq := waitOutboundINVITEAndACK(t, TestClientConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
+		_, _, ackReq := waitOutboundINVITEAndACK(t, TestSIPConfig{}, MinimalCreateSIPParticipantRequest(), func(tr *transactionRequest, resp *sip.Response) {
 			tr.req.SetDestination(testInviteCachedDestination)
 			resp.AppendHeader(&sip.ContactHeader{Address: contactURI})
 			resp.AppendHeader(&sip.RecordRouteHeader{Address: proxyURI})
@@ -295,10 +211,86 @@ func TestOutboundACKDestinationAfterInviteResponse(t *testing.T) {
 	})
 }
 
+func TestOutboundProviderLabel(t *testing.T) {
+	joinMetric := "livekit_sip_dur_join_sec"
+	labels := map[string]string{"dir": "out", "provider": "internal/xyz_carrier"}
+	before := gatherHistogramCount(t, joinMetric, labels)
+
+	req := MinimalCreateSIPParticipantRequest()
+	req.ProviderInfo = &livekit.ProviderInfo{Name: "xyz_carrier", Type: livekit.ProviderType_PROVIDER_TYPE_INTERNAL}
+	waitOutboundINVITEAndACK(t, TestSIPConfig{}, req, func(*transactionRequest, *sip.Response) {})
+
+	// The join duration is recorded after the ACK is sent.
+	require.Eventually(t, func() bool {
+		return gatherHistogramCount(t, joinMetric, labels) == before+1
+	}, time.Second, 10*time.Millisecond)
+}
+
+// An answered call reports its end time when it ends.
+func TestOutboundCallReportsFullDuration(t *testing.T) {
+	states := &recordingStateHandler{}
+	req := MinimalCreateSIPParticipantRequest()
+	h, _, _ := waitOutboundINVITEAndACK(t, TestSIPConfig{GetIOClient: states.GetStateHandler()}, req,
+		func(*transactionRequest, *sip.Response) {})
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
+	}, time.Second, 10*time.Millisecond)
+
+	h.manager.cmu.RLock()
+	var call *outboundCall
+	for _, c := range h.manager.activeCalls {
+		call = c
+	}
+	h.manager.cmu.RUnlock()
+	require.NotNil(t, call)
+	go func() { _ = call.EndCall(context.Background(), nil) }()
+	answerBYE(t, h, time.Second, req.SipCallId)
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_DISCONNECTED
+	}, time.Second, 10*time.Millisecond)
+	last := states.Last()
+	require.NotZero(t, last.EndedAtNs)
+	require.GreaterOrEqual(t, last.EndedAtNs, last.StartedAtNs)
+	for _, u := range states.Updates() {
+		if u.EndedAtNs != 0 {
+			require.Equal(t, u.EndedAtNs, last.EndedAtNs, "end time must not move once reported")
+			break
+		}
+	}
+}
+
+// A failed call reports its end time on the first error update.
+func TestOutboundErrorReportsEndTime(t *testing.T) {
+	states := &recordingStateHandler{}
+	h := NewTestSIP(t, TestSIPConfig{GetIOClient: states.GetStateHandler()})
+	req := MinimalCreateSIPParticipantRequest()
+	go func() { _, _ = h.manager.CreateSIPParticipant(t.Context(), req) }()
+
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
+	require.Equal(t, sip.INVITE, tr.req.Method)
+	// 4xx/6xx are reported as rejections; a 5xx is what reaches SCS_ERROR.
+	require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, sip.StatusServiceUnavailable, "Service Unavailable", nil)))
+
+	firstErr := func() *livekit.SIPCallInfo {
+		for _, u := range states.Updates() {
+			if u.CallStatus == livekit.SIPCallStatus_SCS_ERROR {
+				return u
+			}
+		}
+		return nil
+	}
+	require.Eventually(t, func() bool { return firstErr() != nil }, time.Second, 10*time.Millisecond)
+	require.NotZero(t, firstErr().EndedAtNs, "first error update must carry the end time")
+}
+
 // sipResponse returns immediately on a cancelled context, sending a CANCEL.
 func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	tx := &testSIPClientTransaction{
-		log:       logger.GetLogger(),
+		log:       logger.NewTestLogger(t),
 		responses: make(chan *sip.Response),
 		cancels:   make(chan struct{}, 1),
 		done:      make(chan struct{}),
@@ -307,9 +299,10 @@ func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res, err := sipResponse(ctx, tx, nil, nil)
+	res, cancelled, err := sipResponse(ctx, tx, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, res)
+	require.Equal(t, "hangup", cancelled)
 	require.Len(t, tx.cancels, 1, "CANCEL should be sent")
 }
 
@@ -343,23 +336,23 @@ func TestWatchCancelledInvite(t *testing.T) {
 		{"non-2xx final", []*sip.Response{sip.NewResponse(sip.StatusRequestTerminated, "Terminated")}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			tx := &testSIPClientTransaction{log: logger.GetLogger(), responses: make(chan *sip.Response, len(tt.resps)), done: make(chan struct{})}
+			tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response, len(tt.resps)), done: make(chan struct{})}
 			for _, r := range tt.resps {
 				tx.responses <- r
 			}
-			cli := &recordingSIPClient{}
-			watchCancelledInvite(logger.GetLogger(), cli, nil, newInvite(), tx)
-			require.Equal(t, tt.want, cli.methods())
+			cli := newTestSIPClient(logger.NewTestLogger(t), nil)
+			watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx, nil)
+			require.Equal(t, tt.want, cli.requestMethods("call-123"))
 		})
 	}
 
 	t.Run("no answer within grace", func(t *testing.T) {
 		defer func(d time.Duration) { cancelResponseGrace = d }(cancelResponseGrace)
 		cancelResponseGrace = 10 * time.Millisecond
-		tx := &testSIPClientTransaction{log: logger.GetLogger(), responses: make(chan *sip.Response), done: make(chan struct{})}
-		cli := &recordingSIPClient{}
-		watchCancelledInvite(logger.GetLogger(), cli, nil, newInvite(), tx)
-		require.Empty(t, cli.methods())
+		tx := &testSIPClientTransaction{log: logger.NewTestLogger(t), responses: make(chan *sip.Response), done: make(chan struct{})}
+		cli := newTestSIPClient(logger.NewTestLogger(t), nil)
+		watchCancelledInvite(logger.NewTestLogger(t), cli, nil, newInvite(), tx, nil)
+		require.Empty(t, cli.requestMethods("call-123"))
 	})
 }
 
@@ -391,7 +384,7 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			ended := make(chan sessionEnd, 1)
 
-			clientCfg := TestClientConfig{Handler: &TestHandler{
+			clientCfg := TestSIPConfig{Handler: &TestHandler{
 				OnSessionEndFunc: func(_ context.Context, _ *CallIdentifier, state *CallState, reason string) {
 					ended <- sessionEnd{reason: reason, info: state.Info()}
 				},
@@ -400,11 +393,11 @@ func TestOutboundMaxCallDuration(t *testing.T) {
 			req := MinimalCreateSIPParticipantRequest()
 			req.WaitUntilAnswered = testCase.waitUntilAnswered
 			req.MaxCallDuration = durationpb.New(maxCallDuration)
-			sipClient, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
+			h, _, _ := waitOutboundINVITEAndACK(t, clientCfg, req,
 				func(tr *transactionRequest, resp *sip.Response) {})
-			require.NotNil(t, sipClient)
+			require.NotNil(t, h)
 
-			answerBYE(t, sipClient, maxCallDuration+waitSlack)
+			answerBYE(t, h, maxCallDuration+waitSlack, req.SipCallId)
 
 			select {
 			case end := <-ended:
@@ -658,4 +651,199 @@ func TestBuildOutboundHeaders(t *testing.T) {
 			`To: "User" <sip:333@sip.another.com;transport=tls>`,
 		)
 	})
+	t.Run("to user override", func(t *testing.T) {
+		req := newReq()
+		req.Address = "sip.test.com"
+		req.Number = "111"
+		req.CallTo = "222"
+		req.Transport = livekit.SIPTransport_SIP_TRANSPORT_TLS
+		req.ToUserOverride = "333"
+		expect(t, req,
+			`sip:222@sip.test.com;transport=tls`,
+			`From: "111" <sip:111@sip.default.test;transport=tls>`,
+			`To: <sip:333@sip.test.com;transport=tls>`,
+		)
+	})
+	t.Run("to user override with request uri override", func(t *testing.T) {
+		req := newReq()
+		req.Number = "111"
+		req.CallTo = "222"
+		req.SipRequestUri = uriVals(&livekit.SIPUri{
+			User: "999",
+			Host: "test12.test34.com",
+		})
+		req.Address = "sip.trunk.com"
+		req.ToUserOverride = "333"
+		// The To is still trunk-derived; only its user is replaced.
+		expect(t, req,
+			`sip:999@test12.test34.com`,
+			`From: "111" <sip:111@sip.default.test>`,
+			`To: <sip:333@sip.trunk.com>`,
+		)
+	})
+	t.Run("to user override rejects uri and injection", func(t *testing.T) {
+		for _, bad := range []string{
+			"333@sip.other.com",          // full user@host
+			"333;tag=x",                  // param terminator
+			"<333>",                      // angle brackets
+			"333\r\nEvil-Hdr: y",         // header injection
+			"3 33",                       // space
+			"333?Route=sip:evil.example", // '?' opens URI headers
+			"333:secret",                 // ':' makes the rest a password
+			"333&x=1",
+			"333/foo",
+			"333,x",
+			`333"x`,
+		} {
+			req := newReq()
+			req.Address = "sip.test.com"
+			req.Number = "111"
+			req.CallTo = "222"
+			req.ToUserOverride = bad
+			expectErr(t, req, "invalid To header: to user override should be a phone number or SIP user, not a full SIP URI")
+		}
+	})
+}
+
+// startInvite places an outbound call and returns the harness plus the INVITE
+// the client sent. Resolution itself is sipgo's contract and is tested there.
+// These tests pin the wiring: when we ask sipgo to resolve, and what we do with
+// the answer.
+func startInvite(t *testing.T, cfg TestSIPConfig, req *rpc.InternalCreateSIPParticipantRequest) (*testSIPHarness, *transactionRequest) {
+	t.Helper()
+	h := NewTestSIP(t, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		if _, err := h.manager.CreateSIPParticipant(ctx, req); err != nil && ctx.Err() == nil {
+			t.Logf("CreateSIPParticipant: %v", err)
+		}
+	}()
+
+	tr := h.WaitTransaction(t, 5*time.Second, req.SipCallId, "")
+	require.NotNil(t, tr)
+	require.NotNil(t, tr.req)
+	require.Equal(t, sip.INVITE, tr.req.Method)
+	return h, tr
+}
+
+const testResolvedAddr = "198.51.100.11:5006"
+
+func resolveToTestAddr(_, _ string, _ int, _ string) (netip.AddrPort, error) {
+	return netip.MustParseAddrPort(testResolvedAddr), nil
+}
+
+func resolveFails(_, _ string, _ int, _ string) (netip.AddrPort, error) {
+	return netip.AddrPort{}, errors.New("no such host")
+}
+
+var testProxyRoute = sip.RouteHeader{Address: sip.Uri{Host: "proxy.example.com", UriParams: sip.HeaderParams{{"lr", ""}}}}
+
+func TestOutboundPreferSRV(t *testing.T) {
+	cases := []struct {
+		name      string
+		address   string
+		preferSRV bool
+		route     bool
+		resolve   func(network, host string, port int, sipScheme string) (netip.AddrPort, error)
+		// wantResolve is nil when the call must not resolve at all.
+		wantResolve *resolveCall
+		wantDest    string
+	}{
+		{
+			name:        "flag on uses the resolved address",
+			address:     "trunk.example.com",
+			preferSRV:   true,
+			resolve:     resolveToTestAddr,
+			wantResolve: &resolveCall{network: "udp", host: "trunk.example.com", port: 0, sipScheme: "sip"},
+			wantDest:    testResolvedAddr,
+		},
+		{
+			// sipgo suppresses SRV when a port is set, so the port must reach it.
+			name:        "flag on passes the configured port",
+			address:     "trunk.example.com:5007",
+			preferSRV:   true,
+			resolve:     resolveToTestAddr,
+			wantResolve: &resolveCall{network: "udp", host: "trunk.example.com", port: 5007, sipScheme: "sip"},
+			wantDest:    testResolvedAddr,
+		},
+		{
+			name:        "resolution failure leaves the hostname",
+			address:     "trunk.example.com",
+			preferSRV:   true,
+			resolve:     resolveFails,
+			wantResolve: &resolveCall{network: "udp", host: "trunk.example.com", port: 0, sipScheme: "sip"},
+			wantDest:    "trunk.example.com:5060",
+		},
+		{
+			name:     "flag off does not resolve",
+			address:  "trunk.example.com",
+			resolve:  resolveToTestAddr,
+			wantDest: "trunk.example.com:5060",
+		},
+		{
+			// The request goes to the proxy, so resolving the request URI would
+			// pin the wrong address.
+			name:      "route header skips resolution",
+			address:   "trunk.example.com",
+			preferSRV: true,
+			route:     true,
+			resolve:   resolveToTestAddr,
+			wantDest:  "proxy.example.com:5060",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := MinimalCreateSIPParticipantRequest()
+			req.Address = tc.address
+			if tc.preferSRV {
+				req.FeatureFlags = map[string]string{outboundPreferSRVFeatureFlag: "true"}
+			}
+			if tc.route {
+				req.Headers = map[string]string{"Route": testProxyRoute.Value()}
+			}
+
+			h, tr := startInvite(t, TestSIPConfig{ResolveAddr: tc.resolve}, req)
+
+			calls := h.ResolveCalls()
+			if tc.wantResolve == nil {
+				require.Empty(t, calls)
+			} else {
+				require.Equal(t, []resolveCall{*tc.wantResolve}, calls)
+			}
+			require.Equal(t, tc.wantDest, tr.req.Destination())
+			// The request URI keeps the configured hostname, only the address changes.
+			require.Equal(t, "trunk.example.com", tr.req.Recipient.Host)
+		})
+	}
+}
+
+func uriWithParams(kv ...string) *sip.Uri {
+	u := &sip.Uri{Scheme: "sip", Host: "h.example.com", UriParams: sip.NewParams()}
+	for i := 0; i < len(kv); i += 2 {
+		u.UriParams.Add(kv[i], kv[i+1])
+	}
+	return u
+}
+
+func TestURITransport(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  *sip.Uri
+		want string
+	}{
+		{"defaults to udp", &sip.Uri{Scheme: "sip", Host: "h.example.com"}, "udp"},
+		{"sips means tls", &sip.Uri{Scheme: "sips", Host: "h.example.com"}, "tls"},
+		{"sips is matched case insensitively", &sip.Uri{Scheme: "SIPS", Host: "h.example.com"}, "tls"},
+		{"transport param wins", uriWithParams("transport", "tcp"), "tcp"},
+		{"transport param is lowercased", uriWithParams("transport", "TCP"), "tcp"},
+		{"transport param beats sips", &sip.Uri{Scheme: "sips", Host: "h.example.com", UriParams: sip.HeaderParams{{"transport", "tcp"}}}, "tcp"},
+		{"empty transport param falls through", uriWithParams("transport", ""), "udp"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, uriTransport(tc.uri))
+		})
+	}
 }

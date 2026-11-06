@@ -292,6 +292,9 @@ func AttrsToHeaders(attrs, attrToHdr, headers map[string]string) map[string]stri
 		if !ok {
 			continue
 		}
+		if err := livekit.ValidateHeaderValue(hdr, val); err != nil {
+			continue
+		}
 		headers[hdr] = val
 	}
 	return headers

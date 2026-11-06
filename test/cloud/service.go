@@ -1,30 +1,43 @@
 package cloud
 
 import (
+	"crypto/rand"
+	"testing"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/stats"
 )
 
-func NewService(conf *IntegrationConfig, bus psrpc.MessageBus) (*service.Service, error) {
+func NewService(t testing.TB, conf *IntegrationConfig, bus psrpc.MessageBus) (*service.Service, error) {
 	psrpcClient := NewIOTestClient(conf)
+	log := logger.NewTestLogger(t)
 
 	mon, err := stats.NewMonitor(conf.Config)
 	if err != nil {
 		return nil, err
 	}
 
-	sipsrv, err := sip.NewService("", conf.Config, mon, logger.GetLogger(), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+	nonces, err := sealer.NewAESGCM([]string{rand.Text()})
+	if err != nil {
+		return nil, err
+	}
+	manager, err := sip.NewCallManager("", conf.Config, log, mon, nonces, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
 		return sip.NewRPCStateHandler(psrpcClient)
 	})
 	if err != nil {
 		return nil, err
 	}
-	svc := service.NewService(conf.Config, logger.GetLogger(), sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
+	sipsrv, err := sip.NewService(conf.Config, mon, log, manager)
+	if err != nil {
+		return nil, err
+	}
+	svc := service.NewService(conf.Config, log, sipsrv, sipsrv.Stop, sipsrv.ActiveCalls, psrpcClient, bus, mon)
 	svc.SetSIPServiceDrain(sipsrv.StopRegistrations)
 	sipsrv.SetHandler(svc)
 

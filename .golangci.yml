@@ -11,5 +11,6 @@ linters:
         - "-ST1003" # initialism
         - "-SA1019" # allow using deprecated fields to guarantee backward compatibility
         - "-SA4006" # must overwrite context value when creating traces, etc
+        - "-SA4023" # marking err != nil conditions as always true; we don't care, it's semantically correct
         - "-ST1015" # default case could go first, if it helps readability
         - "-QF1008" # prefer calling methods explicitly on embedded structs
