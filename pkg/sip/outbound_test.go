@@ -299,6 +299,24 @@ func TestOutboundErrorReportsEndTime(t *testing.T) {
 	require.Equal(t, int(sip.StatusServiceUnavailable), ended.StatusCode)
 }
 
+// An auth failure carries no SIPStatus, but the call still ended on a received
+// final response.
+func TestOutboundAuthFailureReportsStatus(t *testing.T) {
+	states := &recordingStateHandler{}
+	h := NewTestSIP(t, TestSIPConfig{GetIOClient: states.GetStateHandler()})
+	req := MinimalCreateSIPParticipantRequest() // no credentials
+	go func() { _, _ = h.manager.CreateSIPParticipant(t.Context(), req) }()
+
+	tr := h.WaitTransaction(t, time.Second, req.SipCallId, "")
+	require.Equal(t, sip.INVITE, tr.req.Method)
+	require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, sip.StatusProxyAuthRequired, "Proxy Authentication Required", nil)))
+
+	ended := eventOf(t, waitCallEnded(t, states), EventCallEnded)
+	require.Equal(t, livekit.SIPCallDirection_SCD_OUTBOUND, ended.Direction)
+	require.Equal(t, "auth-failed", ended.Reason)
+	require.Equal(t, int(sip.StatusProxyAuthRequired), ended.StatusCode)
+}
+
 // sipResponse returns immediately on a cancelled context, sending a CANCEL.
 func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	tx := &testSIPClientTransaction{
