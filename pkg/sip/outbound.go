@@ -399,6 +399,7 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 		}
 		// Before stopSIP: an answered call's BYE can block until the transaction times out.
 		endedAt := time.Now()
+		statusCode := 0
 		c.state.Update(func(info *livekit.SIPCallInfo) {
 			if err := end.Report; err != nil && info.Error == "" {
 				info.Error = err.Error()
@@ -412,7 +413,12 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 			if info.EndedAtNs == 0 {
 				info.EndedAtNs = endedAt.UnixNano()
 			}
+			statusCode = int(info.CallStatusCode.GetCode())
 		})
+		if statusCode == 0 && !c.sigTs.AcceptTime.IsZero() {
+			statusCode = int(sip.StatusOK)
+		}
+		c.state.EmitSignalingEvent(callEndedEvent(endedAt, end.Term, statusCode))
 		c.mon.CallEnd()
 		if c.callDur != nil {
 			c.callDur()

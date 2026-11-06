@@ -29,6 +29,8 @@ import (
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo/sip"
+
+	"github.com/livekit/sip/pkg/stats"
 )
 
 func TestOutboundRouteHeaderWithRecordRoute(t *testing.T) {
@@ -261,6 +263,11 @@ func TestOutboundCallReportsFullDuration(t *testing.T) {
 			break
 		}
 	}
+
+	ended := eventOf(t, waitCallEnded(t, states), EventCallEnded)
+	require.Equal(t, livekit.SIPCallDirection_SCD_OUTBOUND, ended.Direction)
+	require.Equal(t, string(stats.ResultSuccess), ended.Result)
+	require.Equal(t, int(sip.StatusOK), ended.StatusCode)
 }
 
 // A failed call reports its end time on the first error update.
@@ -285,6 +292,11 @@ func TestOutboundErrorReportsEndTime(t *testing.T) {
 	}
 	require.Eventually(t, func() bool { return firstErr() != nil }, time.Second, 10*time.Millisecond)
 	require.NotZero(t, firstErr().EndedAtNs, "first error update must carry the end time")
+
+	ended := eventOf(t, waitCallEnded(t, states), EventCallEnded)
+	require.Equal(t, livekit.SIPCallDirection_SCD_OUTBOUND, ended.Direction)
+	require.Equal(t, string(stats.ResultUpstreamError), ended.Result)
+	require.Equal(t, int(sip.StatusServiceUnavailable), ended.StatusCode)
 }
 
 // sipResponse returns immediately on a cancelled context, sending a CANCEL.

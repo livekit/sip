@@ -109,8 +109,9 @@ type SignalingEvent struct {
 	// SIP message details, set when the event corresponds to a SIP message.
 	SIPMethod string
 	// StatusCode is the SIP status of the response. On EventCallEnded it is the
-	// final response sent to the INVITE: 200 for every answered call, however
-	// it ended later. Result and Reason say how the call ended.
+	// final response to the INVITE, sent for inbound and received for outbound:
+	// 200 for every answered call, however it ended later. Result and Reason say
+	// how the call ended.
 	StatusCode int
 	CSeq       uint32
 	Transport  Transport
@@ -207,7 +208,8 @@ func inviteResponseEvent(typ SignalingEventType, t time.Time, statusCode int, cs
 }
 
 // callEndedEvent builds EventCallEnded from the call's termination and the
-// final status sent for the INVITE (0 if none was sent).
+// final status of the INVITE (0 if there was none): sent by us for inbound,
+// received for outbound.
 func callEndedEvent(t time.Time, term stats.Termination, statusCode int) SignalingEvent {
 	return SignalingEvent{
 		Type:       EventCallEnded,
