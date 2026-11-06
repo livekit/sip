@@ -127,7 +127,7 @@ func NewService(conf *config.Config, mon *stats.Monitor, log logger.Logger, mana
 				"[", "", "]", "", ":", "-", // IPv6
 			).Replace(s.sconf.SignalingIP.String()),
 		)
-		addr, err := net.ResolveIPAddr("tcp4", s.conf.SIPHostname)
+		addr, err := net.ResolveIPAddr("ip4", s.conf.SIPHostname)
 		if err != nil {
 			log.Errorw("cannot resolve node hostname", err, "hostname", s.conf.SIPHostname)
 		} else {
