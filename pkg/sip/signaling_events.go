@@ -103,7 +103,7 @@ const (
 	EventCancelSent SignalingEventType = "sip.cancel.sent"
 	// EventLateAnswerReceived: a 2xx arrived for an INVITE we had cancelled. It
 	// is acknowledged and hung up at once (no EventAckSent or EventByeSent), and
-	// the call never joins the room. It comes after EventCallEnded.
+	// the call never joins the room. It can come before or after EventCallEnded.
 	EventLateAnswerReceived SignalingEventType = "sip.late_answer.received"
 )
 
