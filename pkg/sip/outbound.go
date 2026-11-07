@@ -644,10 +644,16 @@ func (c *outboundCall) connectMedia() {
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
+// provisionalRespFunc is invoked for each 1xx provisional response that carries
+// an SDP body (e.g. 183 Session Progress with early-media SDP). It lets the
+// caller connect the RTP pipeline ahead of the final 200 OK so early-media
+// audio (ringback, IVR announcements) reaches the LiveKit room during ringing.
+type provisionalRespFunc func(res *sip.Response)
+
 // sipResponse waits for the final response to tx. If ctx ends or stop closes
 // first, it sends a CANCEL and says why in cancelled: "timeout" (ctx ended with
 // ErrSIPRequestTimeout), "hangup" (ctx ended otherwise) or "shutdown" (stop).
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc) (_ *sip.Response, cancelled string, _ error) {
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc, onProvisional provisionalRespFunc) (_ *sip.Response, cancelled string, _ error) {
 	cnt := 0
 	for {
 		select {
@@ -673,11 +679,14 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			if onResponse != nil {
 				onResponse(res.StatusCode, res.Headers())
 			}
-			if status/100 != 1 { // != 1xx
-				return res, "", nil
+			if status/100 == 1 { // 1xx provisional
+				if onProvisional != nil && len(res.Body()) > 0 {
+					onProvisional(res)
+				}
+				cnt++
+				continue
 			}
-			// continue
-			cnt++
+			return res, "", nil
 		}
 	}
 }
@@ -816,6 +825,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	c.sessionDur = c.mon.SessionDur()
 
 	ringing := false
+	earlyMediaEnabled := featureFlagEnabled(c.sipConf.featureFlags, earlyMediaFeatureFlag)
 	sdpResp, err := c.cc.Invite(ctx, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
 		if code == sip.StatusOK {
 			return // is set separately
@@ -829,6 +839,20 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 			c.setStatus(CallRinging)
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
+	}, func(res *sip.Response) {
+		// Early media: a provisional response (e.g. 183 Session Progress)
+		// carries an SDP body. Connect the RTP pipeline now so ringback / IVR
+		// audio reaches the room before the final 200 OK.
+		if !earlyMediaEnabled {
+			return
+		}
+		if ct := res.GetHeader("Content-Type"); ct == nil || !strings.HasPrefix(ct.Value(), "application/sdp") {
+			return
+		}
+		if err := c.media.ProcessEarlyAnswer(res.Body()); err != nil {
+			c.log().Warnw("early media: failed to process provisional SDP", err,
+				"status", res.StatusCode)
+		}
 	})
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
@@ -1089,7 +1113,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) (_ []byte, retErr error) {
+func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc, onProvisional provisionalRespFunc) (_ []byte, retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Invite")
 	defer span.End()
 	c.mu.Lock()
@@ -1140,7 +1164,7 @@ authLoop:
 		if try >= 5 {
 			return nil, authError(ErrAuthMaxRetry, resp)
 		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState, onProvisional)
 		if err != nil {
 			return nil, err
 		}
@@ -1329,7 +1353,7 @@ func uriTransport(uri *sip.Uri) string {
 	return "udp"
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc, onProvisional provisionalRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, *c.uri)
@@ -1406,7 +1430,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 			setState(code, hdrs)
 		}
 	}
-	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
+	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse, onProvisional)
 	if cancelled != "" {
 		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelled})
 		// Cancelled: return now, but watch for a racing 2xx in the background.
