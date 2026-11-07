@@ -832,6 +832,29 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 	require.Equal(t, len(frame), port.len(), "audio not reconnected after DTMF")
 }
 
+func TestDTMFOutWriterUppercase(t *testing.T) {
+	const rate, eventsPT = 8000, 101
+	var buf msrtp.Buffer
+	sw := msrtp.NewSeqWriter(&buf, rate)
+	w := &dtmfOutWriter{
+		log:        logger.NewTestLogger(t),
+		pcmRate:    rate,
+		ctx:        context.Background(),
+		dtmfEvents: sw.NewManualStream(eventsPT),
+	}
+	require.NoError(t, w.WriteSample("AWd"))
+
+	var digits []byte
+	for _, p := range buf {
+		if p.Marker {
+			digits = append(digits, dtmf.CodeToChar(p.Payload[0]))
+		}
+	}
+	require.Equal(t, "ad", string(digits))
+
+	require.ErrorContains(t, w.WriteSample("E"), `invalid DTMF sample 'E' at position 0`)
+}
+
 func TestMediaPipelineDropAudioDuringDTMF(t *testing.T) {
 	cases := []struct {
 		name     string
