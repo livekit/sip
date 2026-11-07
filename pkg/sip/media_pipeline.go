@@ -25,6 +25,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode"
+	"unicode/utf8"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
@@ -507,12 +508,16 @@ func (w *dtmfOutWriter) WriteSample(sample string) error {
 	}
 	var errs []error
 	for i, digit := range sample {
+		if digit >= utf8.RuneSelf {
+			errs = append(errs, fmt.Errorf("invalid DTMF sample %q at position %d", digit, i))
+			continue
+		}
 		// Accept uppercase A-D and W.
-		lower := unicode.ToLower(digit)
+		lower := byte(unicode.ToLower(digit))
 		if lower == 'w' { // Supported pause
 			continue
 		}
-		if _, tones := dtmf.Tone(byte(lower)); len(tones) == 0 {
+		if _, tones := dtmf.Tone(lower); len(tones) == 0 {
 			errs = append(errs, fmt.Errorf("invalid DTMF sample %q at position %d", digit, i))
 		}
 	}

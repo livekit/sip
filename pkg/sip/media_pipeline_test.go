@@ -852,7 +852,12 @@ func TestDTMFOutWriterUppercase(t *testing.T) {
 	}
 	require.Equal(t, "ad", string(digits))
 
+	n := len(buf)
 	require.ErrorContains(t, w.WriteSample("E"), `invalid DTMF sample 'E' at position 0`)
+	// Cyrillic А and а must not pass as '0' after a byte conversion.
+	require.ErrorContains(t, w.WriteSample("А"), `invalid DTMF sample 'А' at position 0`)
+	require.ErrorContains(t, w.WriteSample("а"), `invalid DTMF sample 'а' at position 0`)
+	require.Len(t, buf, n, "no events for rejected digits")
 }
 
 func TestMediaPipelineDropAudioDuringDTMF(t *testing.T) {
