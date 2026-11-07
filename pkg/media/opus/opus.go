@@ -188,7 +188,13 @@ func (e *encoder) flush() error {
 	if len(e.inbuf) == 0 {
 		return nil
 	}
+	if n := len(e.inbuf); n < e.samples {
+		// Opus requires a complete frame; pad the final samples with silence.
+		e.inbuf = e.inbuf[:e.samples]
+		clear(e.inbuf[n:])
+	}
 	n, err := e.enc.Encode(e.inbuf, e.buf)
+	e.inbuf = e.inbuf[:0]
 	if err != nil {
 		return err
 	}
