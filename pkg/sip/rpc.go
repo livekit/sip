@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/livekit/roomrpc/siprpc"
 	"github.com/livekit/psrpc"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -95,19 +96,28 @@ type CallInterface interface {
 const MaxInfoBodySize = 64 << 10
 
 // sendInfoIgnore lists headers a caller may not set on an INFO request: they
-// identify the dialog or transaction, or are derived from the body.
+// identify the dialog or transaction, or are derived from the body. Compact
+// forms (RFC 3261 7.3.3) are included. livekit.ValidateHeaderName rejects the
+// rest of the generally forbidden headers.
 var sendInfoIgnore = map[string]struct{}{
 	"via":            {},
+	"v":              {},
 	"from":           {},
+	"f":              {},
 	"to":             {},
+	"t":              {},
 	"call-id":        {},
+	"i":              {},
 	"cseq":           {},
 	"contact":        {},
+	"m":              {},
 	"max-forwards":   {},
 	"route":          {},
 	"record-route":   {},
 	"content-type":   {},
+	"c":              {},
 	"content-length": {},
+	"l":              {},
 }
 
 // sendInfoRequest is the lk.sip.SendInfo request. Field names follow protojson
@@ -154,9 +164,18 @@ func rpcSendInfo(ctx context.Context, call CallInterface, r *sendInfoRequest) (*
 	if len(body) != 0 && contentType == "" {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "contentType is required when body is set")
 	}
-	for name := range r.Headers {
+	if err := livekit.ValidateHeaderValue("Content-Type", contentType); err != nil {
+		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid contentType: %v", err)
+	}
+	for name, value := range r.Headers {
 		if _, ok := sendInfoIgnore[strings.ToLower(strings.TrimSpace(name))]; ok {
 			return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "header %q cannot be set on INFO", name)
+		}
+		if err := livekit.ValidateHeaderName(name, true); err != nil {
+			return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid header: %v", err)
+		}
+		if err := livekit.ValidateHeaderValue(name, value); err != nil {
+			return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "invalid header: %v", err)
 		}
 	}
 	res, err := call.SendInfo(ctx, contentType, body, r.Headers)

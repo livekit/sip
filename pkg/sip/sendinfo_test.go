@@ -186,6 +186,12 @@ func TestSendInfoRequestValidation(t *testing.T) {
 		{"dialog header", `{"headers":{"Call-ID":"x"}}`, `"Call-ID" cannot be set`},
 		{"cseq header any case", `{"headers":{"cseq":"1 INFO"}}`, `"cseq" cannot be set`},
 		{"content type via headers", `{"body":"x","contentType":"text/plain","headers":{"Content-Type":"x"}}`, "cannot be set"},
+		{"compact call-id", `{"headers":{"i":"other-call"}}`, `"i" cannot be set`},
+		{"compact via", `{"headers":{"v":"SIP/2.0/UDP 10.0.0.9"}}`, `"v" cannot be set`},
+		{"crlf in header value", `{"headers":{"X-A":"b\r\nCall-ID: evil"}}`, "invalid header"},
+		{"crlf in header name", `{"headers":{"X-A\r\nCall-ID":"evil"}}`, "invalid header"},
+		{"forbidden header", `{"headers":{"Refer-To":"sip:x@y"}}`, "invalid header"},
+		{"crlf in content type", `{"body":"x","contentType":"text/plain\r\nX-Evil: 1"}`, "invalid contentType"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
