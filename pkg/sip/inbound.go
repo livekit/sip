@@ -1651,6 +1651,11 @@ func (c *inboundCall) EndCall(ctx context.Context, headers map[string]string) er
 	return nil
 }
 
+// SendInfo implements CallInterface.
+func (c *inboundCall) SendInfo(ctx context.Context, contentType string, body []byte, headers map[string]string) (*sip.Response, error) {
+	return c.cc.SendInfo(ctx, contentType, body, headers)
+}
+
 // close should only be called from handleInvite.
 func (c *inboundCall) close(ctx context.Context, end EndCall) {
 	termCtx, cancel := context.WithCancel(context.WithoutCancel(ctx)) // Do not use ctx cancellation
@@ -2816,6 +2821,22 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 	}
 
 	return waitReferResult(ctx, c.log, callDone, c.referDone)
+}
+
+// SendInfo sends a SIP INFO request on the established dialog and returns the
+// remote party's final response.
+func (c *sipInbound) SendInfo(ctx context.Context, contentType string, body []byte, headers map[string]string) (*sip.Response, error) {
+	c.mu.Lock()
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return nil, psrpc.NewErrorf(psrpc.FailedPrecondition, "can't send INFO on a non established call")
+	}
+	req := NewInfoRequest(c.invite, c.inviteOk, c.contact, contentType, body, c.fillHeaders(headers))
+	c.setCSeq(req)
+	c.swapSrcDst(req)
+	c.mu.Unlock()
+
+	return sendInfo(ctx, c, req, c.cm.closing.Watch())
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {

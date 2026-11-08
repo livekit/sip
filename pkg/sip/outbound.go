@@ -387,6 +387,11 @@ func (c *outboundCall) EndCall(ctx context.Context, headers map[string]string) e
 	return nil
 }
 
+// SendInfo implements CallInterface.
+func (c *outboundCall) SendInfo(ctx context.Context, contentType string, body []byte, headers map[string]string) (*sip.Response, error) {
+	return c.cc.sendInfo(ctx, contentType, body, headers)
+}
+
 func (c *outboundCall) printStats() {
 	c.stats.Log(c.log(), c.callStart)
 }
@@ -1500,6 +1505,28 @@ func (c *sipOutbound) Drop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.drop()
+}
+
+// sendInfo sends a SIP INFO request on the established dialog and returns the
+// remote party's final response.
+func (c *sipOutbound) sendInfo(ctx context.Context, contentType string, body []byte, headers map[string]string) (*sip.Response, error) {
+	c.mu.Lock()
+	if c.invite == nil || c.inviteOk == nil {
+		c.mu.Unlock()
+		return nil, psrpc.NewErrorf(psrpc.FailedPrecondition, "can't send INFO on a non established call")
+	}
+	if c.closing.IsBroken() {
+		c.mu.Unlock()
+		return nil, psrpc.NewErrorf(psrpc.FailedPrecondition, "can't send INFO on a hung up call")
+	}
+	if c.getHeaders != nil {
+		headers = c.getHeaders(headers)
+	}
+	req := NewInfoRequest(c.invite, c.inviteOk, c.contact, contentType, body, headers)
+	c.setCSeq(req)
+	c.mu.Unlock()
+
+	return sendInfo(ctx, c, req, c.closing.Watch())
 }
 
 func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, headers map[string]string, callDone <-chan struct{}) error {
