@@ -592,6 +592,9 @@ func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
 func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.wakeup == nil {
+		return // client closed; drop requests from goroutines that outlive the test
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
@@ -611,6 +614,9 @@ func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 func (w *testSIPClient) deliverReq(req *sipRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.wakeup == nil {
+		return // client closed; drop requests from goroutines that outlive the test
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
