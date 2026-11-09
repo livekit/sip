@@ -483,6 +483,11 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							offsetSamples := codecConfig.offsetSamples
 
 							writes := 1 + rampUpFrames
+							if resample {
+								// Each direction passes two predictable resamplers (to the codec rate and back),
+								// and each holds back up to one frame of look-ahead until more input arrives.
+								writes += 2
+							}
 							discard := rampUpFrames * packetSize
 							resampleMult := targetRate / info.SampleRate
 							offsetSamples *= resampleMult
@@ -510,8 +515,8 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							m1.Close()
 							m2.Close()
 
-							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:])
-							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:])
+							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:discard+packetSize])
+							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:discard+packetSize])
 						})
 					}
 
