@@ -515,6 +515,8 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							m1.Close()
 							m2.Close()
 
+							require.GreaterOrEqual(t, len(recv2), discard+packetSize, "A -> B received a short window")
+							require.GreaterOrEqual(t, len(recv1), discard+packetSize, "B -> A received a short window")
 							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:discard+packetSize])
 							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:discard+packetSize])
 						})
