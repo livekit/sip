@@ -363,14 +363,15 @@ func (c *Client) Dial(ip string, host string, number string, headers map[string]
 	if err = c.sipClient.WriteRequest(sip.NewAckRequest(req, resp, nil)); err != nil {
 		return err
 	}
-	ip, port, err := parseSDPAnswer(resp.Body())
+	var answer sdp.SessionDescription
+	if err = answer.Unmarshal(resp.Body()); err != nil {
+		return err
+	}
+	dst, err := lksdp.GetAudioDest(&answer, lksdp.GetAudio(&answer))
 	if err != nil {
 		return err
 	}
-	dstAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, port))
-	if err != nil {
-		return err
-	}
+	dstAddr := net.UDPAddrFromAddrPort(dst)
 	c.inviteReq = req
 	c.inviteResp = resp
 
@@ -617,20 +618,9 @@ func (c *Client) SendAudio(path string) error {
 		}
 	}
 
-	i := 0
 	w := c.audioOut.NewInput()
 	defer w.Close()
-
-	for range time.NewTicker(rtp.DefFrameDur).C {
-		if i >= len(audioFrames) {
-			break
-		}
-		if err = w.WriteSample(audioFrames[i]); err != nil {
-			return err
-		}
-		i++
-	}
-	return nil
+	return msdk.PlayAudio[msdk.PCM16Sample](context.Background(), w, rtp.DefFrameDur, audioFrames)
 }
 
 func (c *Client) SendSilence(ctx context.Context) error {
@@ -797,13 +787,4 @@ func getResponse(tx sip.ClientTransaction) (*sip.Response, error) {
 			}
 		}
 	}
-}
-
-func parseSDPAnswer(in []byte) (string, int, error) {
-	offer := sdp.SessionDescription{}
-	if err := offer.Unmarshal(in); err != nil {
-		return "", 0, err
-	}
-
-	return offer.ConnectionInformation.Address.Address, offer.MediaDescriptions[0].MediaName.Port.Value, nil
 }
