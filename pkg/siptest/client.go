@@ -634,8 +634,7 @@ func (c *Client) SendAudio(path string) error {
 }
 
 func (c *Client) SendSilence(ctx context.Context) error {
-	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	buf := make(msdk.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
+	buf := make(msdk.PCM16Sample, c.audioCodec.Info().SampleRate/rtp.DefFramesPerSec)
 	wr := c.audioOut.NewInput()
 	defer wr.Close()
 
@@ -662,8 +661,7 @@ const (
 // SendSignal generate an audio signal with a given value. It repeats the signal n times, each frame containing one signal.
 // If n <= 0, it will send the signal until the context is cancelled.
 func (c *Client) SendSignal(ctx context.Context, n int, val int) error {
-	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	signal := make(msdk.PCM16Sample, c.audioCodec.Info().SampleRate/framesPerSec)
+	signal := make(msdk.PCM16Sample, c.audioCodec.Info().SampleRate/rtp.DefFramesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	wr := c.audioOut.NewInput()
 	defer wr.Close()
@@ -698,8 +696,7 @@ func (c *Client) WaitSignals(ctx context.Context, vals []int, w io.WriteCloser) 
 		ws = webmm.NewPCM16Writer(w, sampleRate, 1, rtp.DefFrameDur)
 		defer ws.Close()
 	}
-	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	decoded := make(msdk.PCM16Sample, sampleRate/framesPerSec)
+	decoded := make(msdk.PCM16Sample, sampleRate/rtp.DefFramesPerSec)
 	dec := rtp.DecodePCM(msdk.NewPCM16BufferWriter(&decoded, sampleRate), c.audioCodec, c.audioType)
 	lastLog := time.Now()
 

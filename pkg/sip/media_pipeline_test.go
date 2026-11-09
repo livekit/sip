@@ -338,13 +338,13 @@ func (h *pipelineHarness) drainRemote() {
 
 func (h *pipelineHarness) roomFrame() msdk.PCM16Sample {
 	sampleRate := h.audioOut.SampleRate()
-	n := sampleRate / int(time.Second/msrtp.DefFrameDur)
+	n := sampleRate / msrtp.DefFramesPerSec
 	return tonePCM(sampleRate, n, 10000)
 }
 
 func (h *pipelineHarness) codecFrame() msdk.PCM16Sample {
 	rate := h.codec.Info().SampleRate
-	n := rate / int(time.Second/msrtp.DefFrameDur)
+	n := rate / msrtp.DefFramesPerSec
 	return tonePCM(rate, n, 12000)
 }
 
@@ -452,7 +452,7 @@ func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
 	if clock == 0 {
 		clock = h.codec.Info().SampleRate
 	}
-	samplesPerFrame := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	samplesPerFrame := uint32(clock / msrtp.DefFramesPerSec)
 	sample := h.codecFrame()
 	for i := uint16(0); i < 5; i++ {
 		h.injectAudio(0xA11CE, 1+i, samplesPerFrame+uint32(i)*samplesPerFrame, sample)
@@ -613,7 +613,7 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 	h := newPipelineHarness(t, RoomSampleRate)
 	cinfo := h.configureType(codec, 0, testAudioPT(codec), testDTMFPT, false)
 
-	silence := make(msdk.PCM16Sample, cinfo.Info.SampleRate/int(time.Second/msrtp.DefFrameDur))
+	silence := make(msdk.PCM16Sample, cinfo.Info.SampleRate/msrtp.DefFramesPerSec)
 	var encoded msrtp.Buffer
 	clock := cinfo.Info.RTPClockRate
 	if clock == 0 {
@@ -809,7 +809,7 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 	port := &pcmCollector{sampleRate: rate}
 	audioSwitch := msdk.NewWriteCloserSwitch[msdk.PCM16Sample](rate)
 	audioSwitch.Swap(port)
-	frame := make(msdk.PCM16Sample, rate/int(time.Second/msrtp.DefFrameDur))
+	frame := make(msdk.PCM16Sample, rate/msrtp.DefFramesPerSec)
 
 	// No audio, real or in-band DTMF, should be written while digits are sent.
 	frames := 0

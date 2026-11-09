@@ -457,7 +457,7 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							w1 := m1.GetOutboundAudioWriter()
 							w2 := m2.GetOutboundAudioWriter()
 
-							packetSize := targetRate / int(time.Second/rtp.DefFrameDur)
+							packetSize := targetRate / rtp.DefFramesPerSec
 							to2 := make(msdk.PCM16Sample, packetSize)
 							to1 := make(msdk.PCM16Sample, packetSize)
 							const (

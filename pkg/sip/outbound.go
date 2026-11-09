@@ -32,6 +32,7 @@ import (
 	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/tones"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -630,7 +631,7 @@ func (c *outboundCall) connectMedia() {
 	// double-closing later.
 	c.lkRoomIn = nil
 
-	rate := 8000
+	rate := rtp.DefClockRate
 	if mc := c.media.NegotiatedAudio(); mc != nil {
 		if d := mc.DTMF; d != nil {
 			rate = d.Info.RTPClockRate

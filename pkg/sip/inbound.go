@@ -1546,7 +1546,7 @@ func (c *inboundCall) pinPrompt(ctx context.Context, trunkID string) (disp CallD
 	}
 	c.log().Infow("Requesting Pin for SIP call", "dtmfRate", dtmfRate)
 	if dtmfRate == 0 {
-		dtmfRate = 8000
+		dtmfRate = rtp.DefClockRate
 	}
 	c.connectPinDTMF(dtmfRate)
 	const pinLimit = 16
@@ -1950,7 +1950,7 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 		c.log().Warnw("media port has unexpected inbound audio writer", nil)
 		old.Close()
 	}
-	rate := 8000
+	rate := rtp.DefClockRate
 	if mc := c.media.NegotiatedAudio(); mc != nil {
 		if d := mc.DTMF; d != nil {
 			rate = d.Info.RTPClockRate
