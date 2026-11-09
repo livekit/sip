@@ -561,7 +561,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					h = newLatencyRTPEntry(h, &outRecvLatencyEntry)
 					err := rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
-						log.Infow("room track rtp handler returned with failure", "error", err)
+						log.Warnw("room track rtp handler returned with failure", err)
 					}
 				}()
 			},
