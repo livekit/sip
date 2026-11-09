@@ -501,6 +501,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 		sconf,
 		log,
 		mon,
+		newTestNonces(t),
 		options.GetStateHandler,
 		WithGetRoom(options.GetRoom),
 	)
@@ -515,7 +516,7 @@ func NewServiceTest(t *testing.T, options *serviceTestConfig) *serviceTest {
 	err = cli.Start(nil, sconf)
 	require.NoError(t, err)
 	t.Cleanup(cli.Stop)
-	t.Cleanup(manager.stop)
+	t.Cleanup(manager.Stop)
 
 	addr := netip.AddrPortFrom(loopback, uint16(sipPort))
 

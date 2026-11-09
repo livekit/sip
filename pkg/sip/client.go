@@ -503,7 +503,19 @@ func (cm *callManager) onOutboundBye(req *sip.Request, tx sip.ServerTransaction)
 	if call == nil {
 		return false
 	}
+	receivedAt := time.Now()
 	call.log().Infow("BYE from remote")
+	// A peer can send a second BYE before close removes the call. It hung up
+	// once, so report it once.
+	if call.byeReceived.CompareAndSwap(false, true) {
+		call.state.EmitSignalingEvent(SignalingEvent{
+			Type:      EventByeReceived,
+			Time:      receivedAt,
+			SIPMethod: string(sip.BYE),
+			CSeq:      requestCSeq(req),
+			Reason:    messageCause(req),
+		})
+	}
 	go func(call *outboundCall) {
 		call.cc.AcceptBye(req, tx)
 		call.CloseWith(ctx, EndCall{

@@ -778,28 +778,30 @@ func TestMediaPortDTMFSameTimestamp(t *testing.T) {
 // zero against shared call totals. Assigning those counts rather than adding
 // them lets a later buffer replace, and even lower, the total.
 func TestJitterStatsAccumulateAcrossBuffers(t *testing.T) {
-	var lost, dropped, reordered, stray atomic.Uint64
+	var lost, dropped, reordered, stray, duplicate atomic.Uint64
 	targets := jitterStatsTargets{
 		Lost:      &lost,
 		Dropped:   &dropped,
 		Reordered: &reordered,
 		Stray:     &stray,
+		Duplicate: &duplicate,
 	}
 
 	first := &jitterStatsAccumulator{targets: targets}
 	first.onPacketLoss(50, 4)
-	first.onStats(&jitter.BufferStats{PacketsReordered: 7, PacketsStray: 3})
+	first.onStats(&jitter.BufferStats{PacketsReordered: 7, PacketsStray: 3, PacketsDuplicate: 2})
 	first.onPacketLoss(60, 5) // same buffer reporting its running total again
 
 	// A second buffer starts from zero and reports smaller numbers.
 	second := &jitterStatsAccumulator{targets: targets}
 	second.onPacketLoss(3, 1)
-	second.onStats(&jitter.BufferStats{PacketsReordered: 2, PacketsStray: 1})
+	second.onStats(&jitter.BufferStats{PacketsReordered: 2, PacketsStray: 1, PacketsDuplicate: 5})
 
 	require.Equal(t, uint64(63), lost.Load(), "totals must sum across buffers, not be replaced")
 	require.Equal(t, uint64(6), dropped.Load())
 	require.Equal(t, uint64(9), reordered.Load())
 	require.Equal(t, uint64(4), stray.Load())
+	require.Equal(t, uint64(7), duplicate.Load())
 }
 
 func TestDTMFOutWriterDropsAudio(t *testing.T) {
@@ -828,6 +830,34 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 
 	require.NoError(t, audioSwitch.WriteSample(frame))
 	require.Equal(t, len(frame), port.len(), "audio not reconnected after DTMF")
+}
+
+func TestDTMFOutWriterUppercase(t *testing.T) {
+	const rate, eventsPT = 8000, 101
+	var buf msrtp.Buffer
+	sw := msrtp.NewSeqWriter(&buf, rate)
+	w := &dtmfOutWriter{
+		log:        logger.NewTestLogger(t),
+		pcmRate:    rate,
+		ctx:        context.Background(),
+		dtmfEvents: sw.NewManualStream(eventsPT),
+	}
+	require.NoError(t, w.WriteSample("AWd"))
+
+	var digits []byte
+	for _, p := range buf {
+		if p.Marker {
+			digits = append(digits, dtmf.CodeToChar(p.Payload[0]))
+		}
+	}
+	require.Equal(t, "ad", string(digits))
+
+	n := len(buf)
+	require.ErrorContains(t, w.WriteSample("E"), `invalid DTMF sample 'E' at position 0`)
+	// Cyrillic А and а must not pass as '0' after a byte conversion.
+	require.ErrorContains(t, w.WriteSample("А"), `invalid DTMF sample 'А' at position 0`)
+	require.ErrorContains(t, w.WriteSample("а"), `invalid DTMF sample 'а' at position 0`)
+	require.Len(t, buf, n, "no events for rejected digits")
 }
 
 func TestMediaPipelineDropAudioDuringDTMF(t *testing.T) {

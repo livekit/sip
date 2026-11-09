@@ -592,6 +592,9 @@ func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
 func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.wakeup == nil {
+		return // client closed; drop requests from goroutines that outlive the test
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
@@ -611,6 +614,9 @@ func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 func (w *testSIPClient) deliverReq(req *sipRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.wakeup == nil {
+		return // client closed; drop requests from goroutines that outlive the test
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
@@ -1097,10 +1103,10 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 
 	srv := NewServer(cfg.Config, log)
 	srv.sconf = sconf
-	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoom(cfg.GetRoom))
+	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, newTestNonces(t), cfg.GetIOClient, WithGetRoom(cfg.GetRoom))
 	manager.SetHandler(cfg.Handler)
 	t.Cleanup(srv.Stop)
-	t.Cleanup(manager.stop)
+	t.Cleanup(manager.Stop)
 
 	h.Client = client
 	h.Server = srv
