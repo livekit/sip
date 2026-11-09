@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/rtp"
 	webmm "github.com/livekit/media-sdk/webm"
 	"github.com/livekit/protocol/livekit"
@@ -37,7 +38,6 @@ import (
 
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/sip/pkg/audiotest"
-	"github.com/livekit/sip/pkg/media/opus"
 )
 
 const (
@@ -299,7 +299,7 @@ func (p *Participant) newAudioTrack() (msdk.Writer[msdk.PCM16Sample], error) {
 	if err != nil {
 		return nil, err
 	}
-	return pw, nil
+	return msdk.FullFrames(pw, RoomSampleRate/rtp.DefFramesPerSec*channels), nil
 }
 
 const (
