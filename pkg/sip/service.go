@@ -295,7 +295,7 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 // CallForwardingInfo returns the caller ID data of a call on this node, with the
 // values of the requested INVITE headers. It returns NotFound if the call is not on this node.
 func (s *Service) CallForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error) {
-	return s.manager.callForwardingInfo(callID, headers)
+	return s.manager.CallForwardingInfo(callID, headers)
 }
 
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
@@ -336,7 +336,7 @@ type CallForwardingInfo struct {
 	Headers map[string]string
 }
 
-func (cm *callManager) callForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error) {
+func (cm *callManager) CallForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error) {
 	cm.cmu.RLock()
 	in := cm.byLocalTag[LocalTag(callID)]
 	out := cm.activeCalls[LocalTag(callID)]

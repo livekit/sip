@@ -1699,7 +1699,7 @@ func TestCallForwardingInfo(t *testing.T) {
 	invite.AppendHeader(sip.NewHeader("X-Other", "ignored"))
 
 	s := newServiceForAffinity(&config.Config{})
-	s.manager.byLocalTag["inbound"] = &inboundCall{
+	s.cm().byLocalTag["inbound"] = &inboundCall{
 		cc:        &sipInbound{id: "inbound", invite: invite},
 		projectID: "p_1",
 		call: &rpc.SIPCall{
@@ -1707,7 +1707,7 @@ func TestCallForwardingInfo(t *testing.T) {
 			To:   &livekit.SIPUri{User: "+15550001111"},
 		},
 	}
-	s.manager.activeCalls["outbound"] = &outboundCall{projectID: "p_1"}
+	s.cm().activeCalls["outbound"] = &outboundCall{projectID: "p_1"}
 
 	t.Run("inbound", func(t *testing.T) {
 		info, err := s.CallForwardingInfo("inbound", []string{"x-twilio-calltoken", "Identity"})

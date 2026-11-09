@@ -42,6 +42,7 @@ type CallManager interface {
 	Start(tr SIPTransport, cli *Client, sconf *ServiceConfig)
 	SetHandler(handler Handler)
 	ActiveCalls() ActiveCalls
+	CallForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error)
 	Stop()
 
 	// SIP Handlers
