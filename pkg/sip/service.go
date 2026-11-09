@@ -314,6 +314,12 @@ func (s *Service) TransferSIPParticipant(ctx context.Context, req *rpc.InternalT
 	return s.manager.TransferSIPParticipant(ctx, req)
 }
 
+// CallForwardingInfo returns the caller ID data of a call on this node, with the
+// values of the requested INVITE headers. It returns NotFound if the call is not on this node.
+func (s *Service) CallForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error) {
+	return s.manager.callForwardingInfo(callID, headers)
+}
+
 func (s *Service) CreateSIPParticipantAffinity(ctx context.Context, req *rpc.InternalCreateSIPParticipantRequest) float32 {
 	if len(s.conf.SIPTrunkIds) > 0 && !slices.Contains(s.conf.SIPTrunkIds, req.GetSipTrunkId()) {
 		return 0
@@ -339,6 +345,36 @@ func (cm *callManager) TransferSIPParticipant(ctx context.Context, req *rpc.Inte
 		Status:     livekit.SIPTransferStatus_STS_TRANSFER_SUCCESSFUL,
 		Reason:     livekit.SIPTransferReason_STR_COMPLETED,
 	}, nil
+}
+
+// CallForwardingInfo is the caller ID data of a live call, used to forward that caller ID on a new call.
+type CallForwardingInfo struct {
+	SIPCallID string
+	ProjectID string
+	Direction livekit.SIPCallDirection
+	From      string
+	To        string
+	// Requested headers that the INVITE of an inbound call has.
+	Headers map[string]string
+}
+
+func (cm *callManager) callForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error) {
+	cm.cmu.RLock()
+	in := cm.byLocalTag[LocalTag(callID)]
+	out := cm.activeCalls[LocalTag(callID)]
+	cm.cmu.RUnlock()
+
+	switch {
+	case in != nil:
+		return in.forwardingInfo(headers), nil
+	case out != nil:
+		return &CallForwardingInfo{
+			SIPCallID: callID,
+			ProjectID: out.projectID,
+			Direction: livekit.SIPCallDirection_SCD_OUTBOUND,
+		}, nil
+	}
+	return nil, psrpc.NewErrorf(psrpc.NotFound, "call %s not found", callID)
 }
 
 // transferError reports the outcome of a failed transfer on the error.
