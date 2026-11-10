@@ -338,13 +338,13 @@ func (h *pipelineHarness) drainRemote() {
 
 func (h *pipelineHarness) roomFrame() msdk.PCM16Sample {
 	sampleRate := h.audioOut.SampleRate()
-	n := sampleRate / int(time.Second/msrtp.DefFrameDur)
+	n := sampleRate / msrtp.DefFramesPerSec
 	return tonePCM(sampleRate, n, 10000)
 }
 
 func (h *pipelineHarness) codecFrame() msdk.PCM16Sample {
 	rate := h.codec.Info().SampleRate
-	n := rate / int(time.Second/msrtp.DefFrameDur)
+	n := rate / msrtp.DefFramesPerSec
 	return tonePCM(rate, n, 12000)
 }
 
@@ -452,7 +452,7 @@ func (h *pipelineHarness) testAudioFromPort(t *testing.T) {
 	if clock == 0 {
 		clock = h.codec.Info().SampleRate
 	}
-	samplesPerFrame := uint32(clock / int(time.Second/msrtp.DefFrameDur))
+	samplesPerFrame := uint32(clock / msrtp.DefFramesPerSec)
 	sample := h.codecFrame()
 	for i := uint16(0); i < 5; i++ {
 		h.injectAudio(0xA11CE, 1+i, samplesPerFrame+uint32(i)*samplesPerFrame, sample)
@@ -613,7 +613,7 @@ func TestMediaPipelineConcurrentSSRCPump(t *testing.T) {
 	h := newPipelineHarness(t, RoomSampleRate)
 	cinfo := h.configureType(codec, 0, testAudioPT(codec), testDTMFPT, false)
 
-	silence := make(msdk.PCM16Sample, cinfo.Info.SampleRate/int(time.Second/msrtp.DefFrameDur))
+	silence := make(msdk.PCM16Sample, cinfo.Info.SampleRate/msrtp.DefFramesPerSec)
 	var encoded msrtp.Buffer
 	clock := cinfo.Info.RTPClockRate
 	if clock == 0 {
@@ -778,28 +778,30 @@ func TestMediaPortDTMFSameTimestamp(t *testing.T) {
 // zero against shared call totals. Assigning those counts rather than adding
 // them lets a later buffer replace, and even lower, the total.
 func TestJitterStatsAccumulateAcrossBuffers(t *testing.T) {
-	var lost, dropped, reordered, stray atomic.Uint64
+	var lost, dropped, reordered, stray, duplicate atomic.Uint64
 	targets := jitterStatsTargets{
 		Lost:      &lost,
 		Dropped:   &dropped,
 		Reordered: &reordered,
 		Stray:     &stray,
+		Duplicate: &duplicate,
 	}
 
 	first := &jitterStatsAccumulator{targets: targets}
 	first.onPacketLoss(50, 4)
-	first.onStats(&jitter.BufferStats{PacketsReordered: 7, PacketsStray: 3})
+	first.onStats(&jitter.BufferStats{PacketsReordered: 7, PacketsStray: 3, PacketsDuplicate: 2})
 	first.onPacketLoss(60, 5) // same buffer reporting its running total again
 
 	// A second buffer starts from zero and reports smaller numbers.
 	second := &jitterStatsAccumulator{targets: targets}
 	second.onPacketLoss(3, 1)
-	second.onStats(&jitter.BufferStats{PacketsReordered: 2, PacketsStray: 1})
+	second.onStats(&jitter.BufferStats{PacketsReordered: 2, PacketsStray: 1, PacketsDuplicate: 5})
 
 	require.Equal(t, uint64(63), lost.Load(), "totals must sum across buffers, not be replaced")
 	require.Equal(t, uint64(6), dropped.Load())
 	require.Equal(t, uint64(9), reordered.Load())
 	require.Equal(t, uint64(4), stray.Load())
+	require.Equal(t, uint64(7), duplicate.Load())
 }
 
 func TestDTMFOutWriterDropsAudio(t *testing.T) {
@@ -807,7 +809,7 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 	port := &pcmCollector{sampleRate: rate}
 	audioSwitch := msdk.NewWriteCloserSwitch[msdk.PCM16Sample](rate)
 	audioSwitch.Swap(port)
-	frame := make(msdk.PCM16Sample, rate/int(time.Second/msrtp.DefFrameDur))
+	frame := make(msdk.PCM16Sample, rate/msrtp.DefFramesPerSec)
 
 	// No audio, real or in-band DTMF, should be written while digits are sent.
 	frames := 0
@@ -828,6 +830,34 @@ func TestDTMFOutWriterDropsAudio(t *testing.T) {
 
 	require.NoError(t, audioSwitch.WriteSample(frame))
 	require.Equal(t, len(frame), port.len(), "audio not reconnected after DTMF")
+}
+
+func TestDTMFOutWriterUppercase(t *testing.T) {
+	const rate, eventsPT = 8000, 101
+	var buf msrtp.Buffer
+	sw := msrtp.NewSeqWriter(&buf, rate)
+	w := &dtmfOutWriter{
+		log:        logger.NewTestLogger(t),
+		pcmRate:    rate,
+		ctx:        context.Background(),
+		dtmfEvents: sw.NewManualStream(eventsPT),
+	}
+	require.NoError(t, w.WriteSample("AWd"))
+
+	var digits []byte
+	for _, p := range buf {
+		if p.Marker {
+			digits = append(digits, dtmf.CodeToChar(p.Payload[0]))
+		}
+	}
+	require.Equal(t, "ad", string(digits))
+
+	n := len(buf)
+	require.ErrorContains(t, w.WriteSample("E"), `invalid DTMF sample 'E' at position 0`)
+	// Cyrillic А and а must not pass as '0' after a byte conversion.
+	require.ErrorContains(t, w.WriteSample("А"), `invalid DTMF sample 'А' at position 0`)
+	require.ErrorContains(t, w.WriteSample("а"), `invalid DTMF sample 'а' at position 0`)
+	require.Len(t, buf, n, "no events for rejected digits")
 }
 
 func TestMediaPipelineDropAudioDuringDTMF(t *testing.T) {

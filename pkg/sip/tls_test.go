@@ -118,16 +118,20 @@ func newTLSService(t *testing.T, tconf *config.TLSConfig) *Service {
 	t.Helper()
 	sipPort := mrand.Intn(testPortSIPMax-testPortSIPMin-1) + testPortSIPMin
 	tconf.Port, tconf.ListenPort = sipPort+1, sipPort+1
-	mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
-	require.NoError(t, err)
-	s, err := NewService("", &config.Config{
+	conf := &config.Config{
 		SIPPort:       sipPort,
 		SIPPortListen: sipPort,
 		RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
 		TLS:           tconf,
-	}, mon, logger.NewTestLogger(t), func(string, *rpc.SIPCallObservability, *livekit.SIPCallInfo) StateHandler {
+	}
+	mon, err := stats.NewMonitor(conf)
+	require.NoError(t, err)
+	log := logger.NewTestLogger(t)
+	manager, err := NewCallManager("", conf, log, mon, newTestNonces(t), func(string, *rpc.SIPCallObservability, *livekit.SIPCallInfo) StateHandler {
 		return NewRPCStateHandler(nil)
 	})
+	require.NoError(t, err)
+	s, err := NewService(conf, mon, log, manager)
 	require.NoError(t, err)
 	return s
 }

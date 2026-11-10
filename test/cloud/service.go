@@ -1,12 +1,14 @@
 package cloud
 
 import (
+	"crypto/rand"
 	"testing"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+	"github.com/livekit/sip/pkg/sealer"
 	"github.com/livekit/sip/pkg/service"
 	"github.com/livekit/sip/pkg/sip"
 	"github.com/livekit/sip/pkg/stats"
@@ -21,9 +23,17 @@ func NewService(t testing.TB, conf *IntegrationConfig, bus psrpc.MessageBus) (*s
 		return nil, err
 	}
 
-	sipsrv, err := sip.NewService("", conf.Config, mon, log, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
+	nonces, err := sealer.NewAESGCM([]string{rand.Text()})
+	if err != nil {
+		return nil, err
+	}
+	manager, err := sip.NewCallManager("", conf.Config, log, mon, nonces, func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) sip.StateHandler {
 		return sip.NewRPCStateHandler(psrpcClient)
 	})
+	if err != nil {
+		return nil, err
+	}
+	sipsrv, err := sip.NewService(conf.Config, mon, log, manager)
 	if err != nil {
 		return nil, err
 	}

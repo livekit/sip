@@ -371,27 +371,7 @@ func (r *testRoom) Participant() ParticipantInfo {
 func (r *testRoom) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
 	// For testing, we need to mock NewParticipantTrack since it requires a real LocalParticipant
 	// which we don't have in our mock lksdk.Room. Return a no-op writer.
-	return &noOpWriter{}, nil
-}
-
-// noOpWriter is a no-op implementation of msdk.WriteCloser for testing
-type noOpWriter struct{}
-
-func (w *noOpWriter) String() string {
-	return "noOpWriter"
-}
-
-func (w *noOpWriter) SampleRate() int {
-	return RoomSampleRate
-}
-
-func (w *noOpWriter) WriteSample(samples msdk.PCM16Sample) error {
-	// No-op for testing
-	return nil
-}
-
-func (w *noOpWriter) Close() error {
-	return nil
+	return msdk.NewFuncWriteCloser(RoomSampleRate, func(msdk.PCM16Sample) error { return nil }), nil
 }
 
 func (r *testRoom) NewTrack() *mixer.Input {
@@ -592,6 +572,9 @@ func (w *testSIPClient) FillRequestBlanks(req *sip.Request) {
 func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.wakeup == nil {
+		return // client closed; drop requests from goroutines that outlive the test
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
@@ -611,6 +594,9 @@ func (w *testSIPClient) deliverTx(txReq *transactionRequest) {
 func (w *testSIPClient) deliverReq(req *sipRequest) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.wakeup == nil {
+		return // client closed; drop requests from goroutines that outlive the test
+	}
 	ch := w.wakeup
 	w.wakeup = make(chan struct{})
 	defer close(ch)
@@ -1097,10 +1083,10 @@ func NewTestSIP(t testing.TB, cfg TestSIPConfig) *testSIPHarness {
 
 	srv := NewServer(cfg.Config, log)
 	srv.sconf = sconf
-	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, cfg.GetIOClient, WithGetRoom(cfg.GetRoom))
+	manager := newCallManager(srv, client, cfg.Region, cfg.Config, sconf, log, cfg.Monitor, newTestNonces(t), cfg.GetIOClient, WithGetRoom(cfg.GetRoom))
 	manager.SetHandler(cfg.Handler)
 	t.Cleanup(srv.Stop)
-	t.Cleanup(manager.stop)
+	t.Cleanup(manager.Stop)
 
 	h.Client = client
 	h.Server = srv

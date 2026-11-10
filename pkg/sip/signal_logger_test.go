@@ -17,7 +17,6 @@ package sip
 import (
 	"fmt"
 	"math/rand/v2"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -28,40 +27,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockPCM16Writer is a simple mock implementation of PCM16Writer for testing
-type mockPCM16Writer struct {
-	sampleRate int
-	samples    []msdk.PCM16Sample
-	closed     atomic.Bool
-}
-
-func newMockPCM16Writer(sampleRate int) *mockPCM16Writer {
-	return &mockPCM16Writer{
-		sampleRate: sampleRate,
-		samples:    make([]msdk.PCM16Sample, 0),
-	}
-}
-
-func (m *mockPCM16Writer) String() string {
-	return "mockPCM16Writer"
-}
-
-func (m *mockPCM16Writer) SampleRate() int {
-	return m.sampleRate
-}
-
-func (m *mockPCM16Writer) Close() error {
-	m.closed.Store(true)
-	return nil
-}
-
-func (m *mockPCM16Writer) WriteSample(sample msdk.PCM16Sample) error {
-	m.samples = append(m.samples, sample)
-	return nil
-}
-
 func TestSignalLogger_initialization(t *testing.T) {
-	next := newMockPCM16Writer(48000)
+	next := msdk.NewFuncWriteCloser(RoomSampleRate, func(msdk.PCM16Sample) error { return nil })
 
 	t.Run("default initialization", func(t *testing.T) {
 		log := logger.NewTestLogger(t)
@@ -106,13 +73,13 @@ func TestSignalLogger_initialization(t *testing.T) {
 	})
 }
 
-func newTestLogger(t *testing.T, opts ...SignalLoggerOption) (*SignalLogger, *mockPCM16Writer) {
-	next := newMockPCM16Writer(48000)
+func newTestLogger(t *testing.T, opts ...SignalLoggerOption) *SignalLogger {
+	next := msdk.NewFuncWriteCloser(RoomSampleRate, func(msdk.PCM16Sample) error { return nil })
 	out, err := NewSignalLogger(logger.NewTestLogger(t), "incoming", next, opts...)
 	sl, ok := out.(*SignalLogger)
 	require.True(t, ok)
 	require.NoError(t, err)
-	return sl, next
+	return sl
 }
 
 func writer(t *testing.T, sl *SignalLogger, array []msdk.PCM16Sample, count int, wait bool) error {
@@ -131,7 +98,7 @@ func writer(t *testing.T, sl *SignalLogger, array []msdk.PCM16Sample, count int,
 }
 
 func testTransition(t *testing.T, first, second []msdk.PCM16Sample, firstCount, secondCount int, wait bool, opts ...SignalLoggerOption) *SignalLogger {
-	sl, _ := newTestLogger(t, opts...)
+	sl := newTestLogger(t, opts...)
 	require.NoError(t, writer(t, sl, first, firstCount, wait))
 	require.Equal(t, uint64(firstCount), sl.framesProcessed)
 	require.NoError(t, writer(t, sl, second, secondCount, wait))
@@ -174,7 +141,7 @@ func TestSignalLogger_WriteSample(t *testing.T) {
 	}
 
 	t.Run("not_printing_on_first_10_frames", func(t *testing.T) {
-		sl, _ := newTestLogger(t)
+		sl := newTestLogger(t)
 
 		require.NoError(t, writer(t, sl, silenceFrames, 5, false))
 		require.NoError(t, writer(t, sl, signalFrames, 3, false))

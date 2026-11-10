@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/dtmf"
@@ -218,6 +219,7 @@ func (p *mediaPortPipeline) setupInput(mc *sdp.MediaConfig, audioToRoom msdk.PCM
 			Reordered:        &p.conf.stats.JitterBufferPacketsReordered,
 			SequenceRestarts: &p.conf.stats.JitterBufferSequenceRestarts,
 			Stray:            &p.conf.stats.JitterBufferPacketsStray,
+			Duplicate:        &p.conf.stats.JitterBufferPacketsDuplicate,
 		})...)
 	}
 	// Stream stats go before the jitter buffer, so they see the network arrival
@@ -505,11 +507,15 @@ func (w *dtmfOutWriter) WriteSample(sample string) error {
 	}
 	var errs []error
 	for i, digit := range sample {
-		if digit == 'w' { // Supported pause
+		if digit >= utf8.RuneSelf {
+			errs = append(errs, fmt.Errorf("invalid DTMF sample %q at position %d", digit, i))
+			continue
+		}
+		if digit == 'w' || digit == 'W' { // Supported pause
 			continue
 		}
 		if _, tones := dtmf.Tone(byte(digit)); len(tones) == 0 {
-			errs = append(errs, fmt.Errorf("invalid DTMF sample %v at position %d", digit, i))
+			errs = append(errs, fmt.Errorf("invalid DTMF sample %q at position %d", digit, i))
 		}
 	}
 	if len(errs) > 0 {

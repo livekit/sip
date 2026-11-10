@@ -24,10 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"sync/atomic"
 	"time"
-
-	"github.com/icholy/digest"
 
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/protocol/livekit"
@@ -43,8 +40,7 @@ import (
 )
 
 const (
-	UserAgent   = "LiveKit"
-	digestLimit = 500
+	UserAgent = "LiveKit"
 )
 
 const (
@@ -158,12 +154,6 @@ type Server struct {
 	conf         *config.Config
 	sconf        *ServiceConfig
 	interceptors []HandlerInterceptor
-}
-
-type inProgressInvite struct {
-	sipCallID    string
-	challenge    digest.Challenge
-	authResolved atomic.Bool
 }
 
 type rejectedInviteResponse struct {

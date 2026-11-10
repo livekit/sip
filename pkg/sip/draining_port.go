@@ -20,6 +20,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/logger"
 )
 
@@ -37,7 +38,7 @@ func DrainPort(log logger.Logger, conn *net.UDPConn, idleTimeout, maxDuration ti
 		idleTimeout = maxDuration + (1 * time.Second)
 	}
 
-	buf := make([]byte, 1500)
+	buf := make([]byte, rtp.MTUSize)
 	var packets uint64
 	var maxDeadline time.Time
 	var lastPacket time.Time

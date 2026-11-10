@@ -32,6 +32,7 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/mixer"
+	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -39,7 +40,6 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media/opus"
 )
 
 // errRoomClosed is returned when the room handle is gone, which happens once the
@@ -71,6 +71,7 @@ type RoomStatsSnapshot struct {
 	JitterBufferPacketsReordered uint64 `json:"jitter_buffer_packets_reordered"`
 	JitterBufferSequenceRestarts uint64 `json:"jitter_buffer_sequence_restarts"`
 	JitterBufferPacketsStray     uint64 `json:"jitter_buffer_packets_stray"`
+	JitterBufferPacketsDuplicate uint64 `json:"jitter_buffer_packets_duplicate"`
 
 	TrackSubscribes uint64 `json:"track_subscribes"`
 	Resumes         uint64 `json:"resumes"`
@@ -115,6 +116,7 @@ type RoomStats struct {
 	JitterBufferPacketsReordered atomic.Uint64
 	JitterBufferSequenceRestarts atomic.Uint64
 	JitterBufferPacketsStray     atomic.Uint64
+	JitterBufferPacketsDuplicate atomic.Uint64
 
 	LatencyOutRecv LatencyStats // measures track recv → opus decode → mixer input.
 
@@ -148,6 +150,7 @@ func (s *RoomStats) Load() RoomStatsSnapshot {
 		JitterBufferPacketsReordered: s.JitterBufferPacketsReordered.Load(),
 		JitterBufferSequenceRestarts: s.JitterBufferSequenceRestarts.Load(),
 		JitterBufferPacketsStray:     s.JitterBufferPacketsStray.Load(),
+		JitterBufferPacketsDuplicate: s.JitterBufferPacketsDuplicate.Load(),
 
 		TrackSubscribes: s.TrackSubscribes.Load(),
 		Resumes:         s.Resumes.Load(),
@@ -373,7 +376,7 @@ func (r *Room) subscribeTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemotePa
 	log.Debugw("subscribing to a track")
 	r.stats.TrackSubscribes.Add(1)
 	if err := pub.SetSubscribed(true); err != nil {
-		log.Errorw("cannot subscribe to the track", err)
+		log.Warnw("cannot subscribe to the track", err)
 		return
 	}
 	r.subscribed.Break()
@@ -550,6 +553,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 							Reordered:        &r.stats.JitterBufferPacketsReordered,
 							SequenceRestarts: &r.stats.JitterBufferSequenceRestarts,
 							Stray:            &r.stats.JitterBufferPacketsStray,
+							Duplicate:        &r.stats.JitterBufferPacketsDuplicate,
 						})...)
 					}
 
@@ -557,7 +561,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					h = newLatencyRTPEntry(h, &outRecvLatencyEntry)
 					err := rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
-						log.Infow("room track rtp handler returned with failure", "error", err)
+						log.Warnw("room track rtp handler returned with failure", err)
 					}
 				}()
 			},
@@ -577,8 +581,14 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 				r.roomLog.Infow("track unsubscribed", "participant", rp.Identity(), "participantID", rp.SID(), "trackID", track.ID(), "trackName", pub.Name())
 			},
 		},
+		// The SDK reports the start of a resume with OnSignalReconnecting and the
+		// start of a full reconnect with OnReconnecting. A resume that fails
+		// escalates to a full reconnect and fires both. OnReconnected ends both.
+		OnSignalReconnecting: func() {
+			r.onReconnecting("resume")
+		},
 		OnReconnecting: func() {
-			r.onReconnecting()
+			r.onReconnecting("reconnect")
 		},
 		OnReconnected: func() {
 			r.onReconnected()
@@ -612,14 +622,24 @@ func recoveryKind(resumed bool) string {
 // recovering. Audio published until onReconnected may be dropped: a reconnect
 // detaches our track from its peer connection while the connection is rebuilt,
 // and writes to a detached track are discarded without an error.
-func (r *Room) onReconnecting() {
+//
+// kind is the recovery the SDK starts: "resume" or "reconnect". It is only
+// logged. Whether the recovery ends as a resume is decided in onReconnected.
+//
+// This can run more than once before onReconnected, for example when a resume
+// escalates to a full reconnect. Keep the first state: its start time is when
+// the gap began, and its SID is the one from before the recovery.
+func (r *Room) onReconnecting(kind string) {
 	var sid string
 	if room := r.room.Load(); room != nil {
 		sid = room.LocalParticipant.SID()
 	}
-	r.reconnect.Store(&reconnectState{startedAt: time.Now(), sid: sid})
 	r.stats.Recovering.Store(true)
-	r.roomLog.Infow("lost connection to room, recovering", "participantID", sid)
+	if !r.reconnect.CompareAndSwap(nil, &reconnectState{startedAt: time.Now(), sid: sid}) {
+		r.roomLog.Infow("still recovering, new attempt", "kind", kind, "participantID", sid)
+		return
+	}
+	r.roomLog.Infow("lost connection to room, recovering", "kind", kind, "participantID", sid)
 }
 
 // onReconnected runs when the SDK recovers the signal connection, either by
@@ -789,12 +809,20 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	}); err != nil {
 		return nil, err
 	}
-	ow := msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
-	pw, err := opus.Encode(ow, channels, r.log)
+	pw, err := newOpusTrackWriter(msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur), r.log)
 	if err != nil {
 		return nil, err
 	}
 	return newMediaWriterCount(pw, &r.stats.PublishedFrames, &r.stats.PublishedSamples), nil
+}
+
+// Opus encodes each write as one packet, so a SIP ptime other than 20 ms is cut into the track's 20 ms frames first.
+func newOpusTrackWriter(w opus.Writer, log logger.Logger) (msdk.PCM16Writer, error) {
+	pw, err := opus.Encode(w, channels, log)
+	if err != nil {
+		return nil, err
+	}
+	return msdk.FullFrames(pw, w.SampleRate()/rtp.DefFramesPerSec*channels), nil
 }
 
 func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {

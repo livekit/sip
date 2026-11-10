@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/opus"
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -110,20 +114,25 @@ func (f *reconnectFixture) join(t *testing.T) {
 	f.published.Store(0) // only count what happens from here on
 }
 
-// reconnectEscalated simulates a failed resume escalating to a reconnect, where
-// the SDK skips OnRestarting.
+// reconnectEscalated simulates a failed resume escalating to a reconnect. The
+// SDK announces the resume, then the restart, then joins again.
 func (f *reconnectFixture) reconnectEscalated() {
 	f.sdk.OnResuming()
-	f.sdk.OnRoomJoined(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo(), &livekit.ServerInfo{}, nil)
-	f.sdk.OnRestarted(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo())
+	f.restart()
 }
 
-// reconnectServerInitiated simulates the server asking for a reconnect directly,
-// where OnRestarting does run.
+// reconnectServerInitiated simulates the server asking for a reconnect directly.
 func (f *reconnectFixture) reconnectServerInitiated() {
+	f.restart()
+}
+
+// restart is the SDK's order of handler calls for a full reconnect: the join
+// response, then the restored session, then the connection being up.
+func (f *reconnectFixture) restart() {
 	f.sdk.OnRestarting()
 	f.sdk.OnRoomJoined(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo(), &livekit.ServerInfo{}, nil)
 	f.sdk.OnRestarted(testRoomInfo(), testLocalInfo("PA_sip_2"), testRemoteInfo())
+	f.sdk.OnRestartConnected()
 }
 
 // TestRoomReconnect covers what happens to a call when the SIP pod loses
@@ -138,33 +147,28 @@ func (f *reconnectFixture) reconnectServerInitiated() {
 // So "clearing participants" below means dropping our own view of them, not
 // removing anyone from the room. There are two ways to reach a reconnect:
 //
-//	  1- server-initiated: the reconnect is attempted right away, affected participants
-//			drop their participant map, and then rebuild it from the OnRoomJoined
-//			snapshot and re-announce their tracks.
+//	  1- server-initiated: the reconnect is attempted right away.
 //	  2- resume-then-escalate: resume is first attempted. If it fails, then switch
-//			to a reconnect, and the stale participant map survives so no tracks are
-//			announced.
+//			to a reconnect.
+//
+// On both paths the SDK fires OnRestarting, which drops the participant map.
+// The map is then rebuilt from the OnRoomJoined snapshot, and the remote tracks
+// are announced again.
 func TestRoomReconnect(t *testing.T) {
-	t.Run("escalated reconnect does not re-announce tracks from remote participants", func(t *testing.T) {
-		f := newReconnectFixture(t)
-		f.join(t)
+	for name, reconnect := range map[string]func(*reconnectFixture){
+		"escalated":        (*reconnectFixture).reconnectEscalated,
+		"server initiated": (*reconnectFixture).reconnectServerInitiated,
+	} {
+		t.Run(name+" reconnect re-announces tracks from remote participants", func(t *testing.T) {
+			f := newReconnectFixture(t)
+			f.join(t)
 
-		f.reconnectEscalated()
+			reconnect(f)
 
-		require.EqualValues(t, 0, f.published.Load(),
-			"OnTrackPublished must not re-fire on the escalated path")
-	})
-
-	// The other path does re-announce, which is why lost audio is intermittent.
-	t.Run("server initiated reconnect re-announces tracks from remote participants", func(t *testing.T) {
-		f := newReconnectFixture(t)
-		f.join(t)
-
-		f.reconnectServerInitiated()
-
-		require.EqualValues(t, 1, f.published.Load(),
-			"OnTrackPublished is expected to re-fire when OnRestarting cleared the participants")
-	})
+			require.EqualValues(t, 1, f.published.Load(),
+				"OnTrackPublished is expected to re-fire when OnRestarting cleared the participants")
+		})
+	}
 
 	// However the reconnect was reached, SIP must re-issue its subscriptions.
 	t.Run("resubscribes after escalated reconnect", func(t *testing.T) {
@@ -345,4 +349,36 @@ func TestRoomCloseWaitsForReconnectSubscriptions(t *testing.T) {
 			t.Fatal("Close did not finish after reconnect work completed")
 		}
 	}
+}
+
+// A SIP peer can send any ptime, but every packet on the room track must be one 20 ms Opus frame.
+func TestOpusTrackWriterSends20msFrames(t *testing.T) {
+	const ptime = 30 * time.Millisecond
+	pkts := &opusPackets{}
+	w, err := newOpusTrackWriter(pkts, logger.GetLogger())
+	require.NoError(t, err)
+	frame := make(msdk.PCM16Sample, int(RoomSampleRate*ptime/time.Second))
+	for range 4 {
+		require.NoError(t, w.WriteSample(frame))
+	}
+	require.Len(t, pkts.got, int(4*ptime/rtp.DefFrameDur))
+
+	var out msdk.PCM16Sample
+	dec, err := opus.Decode(msdk.NewPCM16BufferWriter(&out, RoomSampleRate), channels, logger.GetLogger())
+	require.NoError(t, err)
+	for _, p := range pkts.got {
+		before := len(out)
+		require.NoError(t, dec.WriteSample(p))
+		require.Equal(t, RoomSampleRate/rtp.DefFramesPerSec, len(out)-before)
+	}
+}
+
+type opusPackets struct{ got []opus.Sample }
+
+func (s *opusPackets) String() string  { return "opusPackets" }
+func (s *opusPackets) SampleRate() int { return RoomSampleRate }
+func (s *opusPackets) Close() error    { return nil }
+func (s *opusPackets) WriteSample(p opus.Sample) error {
+	s.got = append(s.got, slices.Clone(p))
+	return nil
 }
