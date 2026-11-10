@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +23,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/opus"
+	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	lksdk "github.com/livekit/server-sdk-go/v2"
@@ -345,4 +349,36 @@ func TestRoomCloseWaitsForReconnectSubscriptions(t *testing.T) {
 			t.Fatal("Close did not finish after reconnect work completed")
 		}
 	}
+}
+
+// A SIP peer can send any ptime, but every packet on the room track must be one 20 ms Opus frame.
+func TestOpusTrackWriterSends20msFrames(t *testing.T) {
+	const ptime = 30 * time.Millisecond
+	pkts := &opusPackets{}
+	w, err := newOpusTrackWriter(pkts, logger.GetLogger())
+	require.NoError(t, err)
+	frame := make(msdk.PCM16Sample, int(RoomSampleRate*ptime/time.Second))
+	for range 4 {
+		require.NoError(t, w.WriteSample(frame))
+	}
+	require.Len(t, pkts.got, int(4*ptime/rtp.DefFrameDur))
+
+	var out msdk.PCM16Sample
+	dec, err := opus.Decode(msdk.NewPCM16BufferWriter(&out, RoomSampleRate), channels, logger.GetLogger())
+	require.NoError(t, err)
+	for _, p := range pkts.got {
+		before := len(out)
+		require.NoError(t, dec.WriteSample(p))
+		require.Equal(t, RoomSampleRate/rtp.DefFramesPerSec, len(out)-before)
+	}
+}
+
+type opusPackets struct{ got []opus.Sample }
+
+func (s *opusPackets) String() string  { return "opusPackets" }
+func (s *opusPackets) SampleRate() int { return RoomSampleRate }
+func (s *opusPackets) Close() error    { return nil }
+func (s *opusPackets) WriteSample(p opus.Sample) error {
+	s.got = append(s.got, slices.Clone(p))
+	return nil
 }

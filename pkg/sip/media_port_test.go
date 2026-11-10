@@ -457,7 +457,7 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							w1 := m1.GetOutboundAudioWriter()
 							w2 := m2.GetOutboundAudioWriter()
 
-							packetSize := targetRate / int(time.Second/rtp.DefFrameDur)
+							packetSize := targetRate / rtp.DefFramesPerSec
 							to2 := make(msdk.PCM16Sample, packetSize)
 							to1 := make(msdk.PCM16Sample, packetSize)
 							const (
@@ -483,6 +483,11 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							offsetSamples := codecConfig.offsetSamples
 
 							writes := 1 + rampUpFrames
+							if resample {
+								// Each direction passes two predictable resamplers (to the codec rate and back),
+								// and each holds back up to one frame of look-ahead until more input arrives.
+								writes += 2
+							}
 							discard := rampUpFrames * packetSize
 							resampleMult := targetRate / info.SampleRate
 							offsetSamples *= resampleMult
@@ -510,8 +515,10 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							m1.Close()
 							m2.Close()
 
-							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:])
-							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:])
+							require.GreaterOrEqual(t, len(recv2), discard+packetSize, "A -> B received a short window")
+							require.GreaterOrEqual(t, len(recv1), discard+packetSize, "B -> A received a short window")
+							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:discard+packetSize])
+							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:discard+packetSize])
 						})
 					}
 

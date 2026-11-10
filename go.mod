@@ -7,9 +7,8 @@ require (
 	github.com/frostbyte73/core v0.1.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/icholy/digest v1.2.0
-	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.1.2-0.20261105031541-b90a99c2cae6
+	github.com/livekit/media-sdk v0.1.2-0.20261109223659-f3c313dec151
 	github.com/livekit/mediatransportutil v0.0.0-20261103164426-a2ee44bcc302
 	github.com/livekit/protocol v1.53.2
 	github.com/livekit/psrpc v0.8.2
@@ -27,15 +26,16 @@ require (
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e
 	google.golang.org/protobuf v1.36.12
-	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
+	github.com/jfreymuth/oggvorbis v1.0.5 // indirect
 	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect
 	github.com/pion/stun/v4 v4.0.1 // indirect
 	github.com/pion/transport/v5 v5.1.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
+	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302 // indirect
 )
 
 require (

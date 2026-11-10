@@ -32,6 +32,7 @@ import (
 	"github.com/livekit/media-sdk/dtmf"
 	"github.com/livekit/media-sdk/g711"
 	"github.com/livekit/media-sdk/mixer"
+	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -39,7 +40,6 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/livekit/sip/pkg/config"
-	"github.com/livekit/sip/pkg/media/opus"
 )
 
 // errRoomClosed is returned when the room handle is gone, which happens once the
@@ -561,7 +561,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 					h = newLatencyRTPEntry(h, &outRecvLatencyEntry)
 					err := rtp.HandleLoop(track, h)
 					if err != nil && !errors.Is(err, io.EOF) {
-						log.Infow("room track rtp handler returned with failure", "error", err)
+						log.Warnw("room track rtp handler returned with failure", err)
 					}
 				}()
 			},
@@ -809,12 +809,20 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	}); err != nil {
 		return nil, err
 	}
-	ow := msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur)
-	pw, err := opus.Encode(ow, channels, r.log)
+	pw, err := newOpusTrackWriter(msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur), r.log)
 	if err != nil {
 		return nil, err
 	}
 	return newMediaWriterCount(pw, &r.stats.PublishedFrames, &r.stats.PublishedSamples), nil
+}
+
+// Opus encodes each write as one packet, so a SIP ptime other than 20 ms is cut into the track's 20 ms frames first.
+func newOpusTrackWriter(w opus.Writer, log logger.Logger) (msdk.PCM16Writer, error) {
+	pw, err := opus.Encode(w, channels, log)
+	if err != nil {
+		return nil, err
+	}
+	return msdk.FullFrames(pw, w.SampleRate()/rtp.DefFramesPerSec*channels), nil
 }
 
 func (r *Room) SendData(data lksdk.DataPacket, opts ...lksdk.DataPublishOption) error {

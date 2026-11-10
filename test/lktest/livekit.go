@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	msdk "github.com/livekit/media-sdk"
+	"github.com/livekit/media-sdk/opus"
 	"github.com/livekit/media-sdk/rtp"
 	webmm "github.com/livekit/media-sdk/webm"
 	"github.com/livekit/protocol/livekit"
@@ -37,7 +38,6 @@ import (
 
 	"github.com/livekit/media-sdk/mixer"
 	"github.com/livekit/sip/pkg/audiotest"
-	"github.com/livekit/sip/pkg/media/opus"
 )
 
 const (
@@ -299,7 +299,7 @@ func (p *Participant) newAudioTrack() (msdk.Writer[msdk.PCM16Sample], error) {
 	if err != nil {
 		return nil, err
 	}
-	return pw, nil
+	return msdk.FullFrames(pw, RoomSampleRate/rtp.DefFramesPerSec*channels), nil
 }
 
 const (
@@ -312,8 +312,7 @@ func (p *Participant) SendSignal(ctx context.Context, n int, val int) error {
 	// Code below assumes a round number of RTP frames fit into 1 sec.
 	var _ = [1]struct{}{}[time.Second%rtp.DefFrameDur]
 
-	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	signal := make(msdk.PCM16Sample, RoomSampleRate/framesPerSec)
+	signal := make(msdk.PCM16Sample, RoomSampleRate/rtp.DefFramesPerSec)
 	audiotest.GenSignal(signal, []audiotest.Wave{{Ind: val, Amp: signalAmp}})
 	sid, id := p.Room.LocalParticipant.SID(), p.Room.LocalParticipant.Identity()
 	p.t.Log("sending signal", "sid", sid, "id", id, "len", len(signal), "n", n, "sig", val)
@@ -349,8 +348,7 @@ func (p *Participant) WaitSignals(ctx context.Context, vals []int, w io.WriteClo
 	// Code below assumes a round number of RTP frames fit into 1 sec.
 	var _ = [1]struct{}{}[time.Second%rtp.DefFrameDur]
 
-	const framesPerSec = int(time.Second / rtp.DefFrameDur)
-	buf := make(msdk.PCM16Sample, RoomSampleRate/framesPerSec)
+	buf := make(msdk.PCM16Sample, RoomSampleRate/rtp.DefFramesPerSec)
 	sid, id := p.Room.LocalParticipant.SID(), p.Room.LocalParticipant.Identity()
 	for {
 		n, err := p.AudioIn.ReadSample(buf)

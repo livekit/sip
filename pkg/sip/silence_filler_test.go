@@ -44,14 +44,6 @@ func WithClockRate(clockRate int) silenceSuppressionTesterOption {
 	}
 }
 
-type nopCloser struct {
-	*SilenceSuppressionTester
-}
-
-func (s nopCloser) Close() error {
-	return nil
-}
-
 func newSilenceSuppressionTester(audioSampleRate int, log logger.Logger, options ...silenceSuppressionTesterOption) *SilenceSuppressionTester {
 	tester := &SilenceSuppressionTester{
 		audioSampleRate:       audioSampleRate,
@@ -64,7 +56,7 @@ func newSilenceSuppressionTester(audioSampleRate int, log logger.Logger, options
 	for _, option := range options {
 		option(tester)
 	}
-	tester.gapFiller = newSilenceFiller(tester, nopCloser{tester}, tester.clockRate, tester.audioSampleRate, log)
+	tester.gapFiller = newSilenceFiller(tester, msdk.NopCloser[msdk.PCM16Sample](tester), tester.clockRate, tester.audioSampleRate, log)
 	return tester
 }
 

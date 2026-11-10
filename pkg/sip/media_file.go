@@ -16,8 +16,7 @@ package sip
 
 import (
 	msdk "github.com/livekit/media-sdk"
-
-	"github.com/livekit/sip/res"
+	"github.com/livekit/media-sdk/res"
 )
 
 type mediaRes struct {
@@ -28,7 +27,7 @@ type mediaRes struct {
 
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) initMediaRes() {
-	cm.res.enterPin = res.ReadOggAudioFile(res.EnterPinOgg)
-	cm.res.roomJoin = res.ReadOggAudioFile(res.RoomJoinOgg)
-	cm.res.wrongPin = res.ReadOggAudioFile(res.WrongPinOgg)
+	cm.res.enterPin = res.ReadOggAudioFile(res.EnterPinOgg, res.SampleRate, channels)
+	cm.res.roomJoin = res.ReadOggAudioFile(res.RoomJoinOgg, res.SampleRate, channels)
+	cm.res.wrongPin = res.ReadOggAudioFile(res.WrongPinOgg, res.SampleRate, channels)
 }

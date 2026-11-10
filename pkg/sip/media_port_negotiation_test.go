@@ -60,7 +60,7 @@ func (b *recvBuffer) count() int {
 }
 
 func roomFrame() msdk.PCM16Sample {
-	frame := make(msdk.PCM16Sample, RoomSampleRate/int(time.Second/rtp.DefFrameDur))
+	frame := make(msdk.PCM16Sample, RoomSampleRate/rtp.DefFramesPerSec)
 	for i := range frame {
 		if (i/40)%2 == 0 {
 			frame[i] = 8000
