@@ -1710,7 +1710,7 @@ func TestCallForwardingInfo(t *testing.T) {
 	s.cm().activeCalls["outbound"] = &outboundCall{projectID: "p_1"}
 
 	t.Run("inbound", func(t *testing.T) {
-		info, err := s.CallForwardingInfo("inbound", []string{"x-twilio-calltoken", "Identity"})
+		info, err := s.GetSIPCallForwardingInfo("inbound", []string{"x-twilio-calltoken", "Identity"})
 		require.NoError(t, err)
 		require.Equal(t, &CallForwardingInfo{
 			SIPCallID: "inbound",
@@ -1723,7 +1723,7 @@ func TestCallForwardingInfo(t *testing.T) {
 	})
 
 	t.Run("outbound", func(t *testing.T) {
-		info, err := s.CallForwardingInfo("outbound", []string{"Identity"})
+		info, err := s.GetSIPCallForwardingInfo("outbound", []string{"Identity"})
 		require.NoError(t, err)
 		require.Equal(t, &CallForwardingInfo{
 			SIPCallID: "outbound",
@@ -1733,7 +1733,7 @@ func TestCallForwardingInfo(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		_, err := s.CallForwardingInfo("missing", nil)
+		_, err := s.GetSIPCallForwardingInfo("missing", nil)
 		code, _ := psrpc.GetErrorCode(err)
 		require.Equal(t, psrpc.NotFound, code)
 	})
