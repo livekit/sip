@@ -510,8 +510,12 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 							m1.Close()
 							m2.Close()
 
-							checkPCM(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:])
-							checkPCM(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:])
+							check := checkPCM
+							if info.SDPName() == "PCMU" || info.SDPName() == "PCMA" {
+								check = checkPacedPCM
+							}
+							check(t, "A -> B", to2[:packetSize-offsetSamples], recv2[discard+offsetSamples:])
+							check(t, "B -> A", to1[:packetSize-offsetSamples], recv1[discard+offsetSamples:])
 						})
 					}
 
@@ -519,6 +523,18 @@ func TestMediaPortAudioRoundTrip(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+// Clocked G711 keeps producing silence when RTP stops. Preserve the existing
+// signal-fidelity assertion and check the added tail independently.
+func checkPacedPCM(t testing.TB, name string, exp, got msdk.PCM16Sample) {
+	t.Helper()
+	require.GreaterOrEqual(t, len(got), len(exp))
+	checkPCM(t, name, exp, got[:len(exp)])
+	peak := max(math.Abs(float64(slices.Min(exp))), math.Abs(float64(slices.Max(exp))))
+	for _, sample := range got[len(exp):] {
+		require.LessOrEqual(t, math.Abs(float64(sample)), peak*0.1, "%s: non-silent playout tail", name)
 	}
 }
 
@@ -598,6 +614,10 @@ func TestPipelineChains(t *testing.T) {
 				RoomSampleRate, RoomSampleRate, sampleRate, codecName, sampleRate, codecName, clockRate)
 			audioInChain := fmt.Sprintf("StatsHandler(%s/%d) -> SilenceFiller(25) -> RTP(%d) -> ByteDecoder -> %s(decode) -> Resample(%d->%d) -> LatencyExit -> WriteCloserSwitch(nil)",
 				codecName, clockRate, payloadType, codecName, sampleRate, RoomSampleRate)
+			if codecName == "PCMU" || codecName == "PCMA" {
+				audioInChain = fmt.Sprintf("StatsHandler(%s/%d) -> Playout(%s/%d,60ms,200ms) -> Resample(%d->%d) -> WriteCloserSwitch(nil)",
+					codecName, clockRate, codecName, clockRate, sampleRate, RoomSampleRate)
+			}
 			dtmfOutChain := "WriteCloserSwitch(-1) -> dtmfOutWriter(dtmfAudio: false)"
 			dtmfInChain := fmt.Sprintf("StatsHandler(telephone-event/%d) -> HandlerFunc", clockRate)
 			assert.Equal(t, audioOutChain, mp.GetOutboundAudioWriter().String(), "out audio chain mismatch")
