@@ -809,7 +809,7 @@ func (r *Room) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16S
 	}); err != nil {
 		return nil, err
 	}
-	pw, err := newOpusTrackWriter(msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur), r.log)
+	pw, err := newOpusTrackWriter(msdk.FromSampleWriter[opus.Sample](track, sampleRate, rtp.DefFrameDur, msdk.WithSampleCopy(false)), r.log)
 	if err != nil {
 		return nil, err
 	}
