@@ -878,6 +878,24 @@ func (cm *callManager) newInboundCall(
 	return c
 }
 
+func (c *inboundCall) forwardingInfo(headers []string) *CallForwardingInfo {
+	info := &CallForwardingInfo{
+		SIPCallID: string(c.cc.ID()),
+		ProjectID: c.projectID,
+		Direction: livekit.SIPCallDirection_SCD_INBOUND,
+		From:      c.call.GetFrom().GetUser(),
+		To:        c.call.GetTo().GetUser(),
+		Headers:   make(map[string]string),
+	}
+	remote := c.cc.RemoteHeaders()
+	for _, name := range headers {
+		if h := remote.GetHeader(name); h != nil {
+			info.Headers[name] = h.Value()
+		}
+	}
+	return info
+}
+
 func (c *inboundCall) setLog(log logger.Logger) {
 	c.logPtr.Store(&log)
 }
