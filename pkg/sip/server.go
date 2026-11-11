@@ -154,6 +154,8 @@ type Server struct {
 	conf         *config.Config
 	sconf        *ServiceConfig
 	interceptors []HandlerInterceptor
+
+	uaOpts []sipgo.UserAgentOption
 }
 
 type rejectedInviteResponse struct {
@@ -170,6 +172,11 @@ func WithInterceptors(interceptors ...HandlerInterceptor) ServerOption {
 	return func(s *Server) {
 		s.interceptors = interceptors
 	}
+}
+
+// WithUserAgentOptions adds options to the sipgo user agent built for this server.
+func WithUserAgentOptions(opts ...sipgo.UserAgentOption) ServerOption {
+	return func(s *Server) { s.uaOpts = append(s.uaOpts, opts...) }
 }
 
 func NewServer(conf *config.Config, log logger.Logger, options ...ServerOption) *Server {
@@ -280,11 +287,14 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 	s.sconf = sc
 	s.log.Infow("server starting", "local", s.sconf.SignalingIPLocal, "external", s.sconf.SignalingIP)
 
+	uaOpts := []sipgo.UserAgentOption{
+		sipgo.WithUserAgent(UserAgent),
+		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+	}
+	uaOpts = append(uaOpts, s.uaOpts...)
+
 	if agent == nil {
-		ua, err := sipgo.NewUA(
-			sipgo.WithUserAgent(UserAgent),
-			sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
-		)
+		ua, err := sipgo.NewUA(uaOpts...)
 		if err != nil {
 			return err
 		}
@@ -302,6 +312,7 @@ func (s *Server) Start(agent *sipgo.UserAgent, sc *ServiceConfig, tlsConf *tls.C
 	s.sipSrv.OnOptions(s.wrapHandler(manager.HandleOptions))
 	s.sipSrv.OnInvite(s.wrapHandler(manager.HandleInvite))
 	s.sipSrv.OnAck(s.wrapHandler(manager.HandleAck))
+	s.sipSrv.OnCancel(s.wrapHandler(manager.HandleCancel))
 	s.sipSrv.OnBye(s.wrapHandler(manager.HandleBye))
 	s.sipSrv.OnNotify(s.wrapHandler(manager.HandleNotify))
 	s.sipSrv.OnNoRoute(s.wrapHandler(manager.HandleNoRoute))
