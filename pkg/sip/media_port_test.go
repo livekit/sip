@@ -233,7 +233,7 @@ func newTestPort(t testing.TB, log logger.Logger, conn UDPConn, opts *MediaOptio
 	t.Helper()
 	mp, err := NewMediaPortWith(log, newTestCallMonitor(t), conn, opts, rate)
 	require.NoError(t, err)
-	t.Cleanup(mp.Close)
+	t.Cleanup(mp.CloseWait)
 	return mp.(*mediaPort)
 }
 
