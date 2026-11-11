@@ -2021,6 +2021,115 @@ func TestRetransmission(t *testing.T) {
 	})
 }
 
+func TestCancel(t *testing.T) {
+	st := NewServiceTest(t, nil)
+
+	// sipgo's client keys a CANCEL as its INVITE and swallows the CANCEL's 200. Cancelling
+	// tests drop their INVITE client tx and send the CANCEL statelessly, so both the 200
+	// and the 487 arrive unmatched and are routed here by Call-ID.
+	var sinkMu sync.Mutex
+	sinks := make(map[string]chan *sip.Response)
+	st.TestUA.UA.TransactionLayer().UnhandledResponseHandler(func(_ *slog.Logger, res *sip.Response) {
+		sinkMu.Lock()
+		ch := sinks[res.CallID().Value()]
+		sinkMu.Unlock()
+		if ch != nil {
+			select {
+			case ch <- res:
+			default:
+			}
+		}
+	})
+	responses := func(callID string) <-chan *sip.Response {
+		ch := make(chan *sip.Response, 16)
+		sinkMu.Lock()
+		sinks[callID] = ch
+		sinkMu.Unlock()
+		return ch
+	}
+	// expect skips anything else, such as 180 retransmissions.
+	expect := func(t *testing.T, ch <-chan *sip.Response, code sip.StatusCode, method sip.RequestMethod) *sip.Response {
+		t.Helper()
+		timeout := time.After(5 * time.Millisecond)
+		for {
+			select {
+			case res := <-ch:
+				if res.StatusCode == code && res.CSeq().MethodName == method {
+					return res
+				}
+			case <-timeout:
+				require.FailNow(t, "timeout", "waiting for %d to %s", code, method)
+			}
+		}
+	}
+
+	t.Run("not-found", func(t *testing.T) {
+		t.Parallel()
+		t.Log("Expecting no answer whatsoever")
+
+		call := newTestCall(st.TestUA, false)
+		req := call.NewRequest(sip.CANCEL)
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		t.Cleanup(tx.Terminate)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		defer cancel()
+		expectNoResponseTimeout(t, ctx, tx)
+	})
+
+	t.Run("found-ringing", func(t *testing.T) {
+		t.Parallel()
+		t.Log("Expecting 200 for the CANCEL and 487 for the INVITE")
+
+		call := newTestCall(st.TestUA, false)
+		req, _, err := call.Invite(nil)
+		require.NoError(t, err)
+		req.AppendHeader(sip.NewHeader(testRingForeverHeader, "true"))
+		sink := responses(call.callID)
+
+		tx, err := st.TestUA.Client.TransactionRequest(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { tx.Terminate() })
+
+		cancelReq := sip.NewCancelRequest(req)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		defer cancel()
+		resp := getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(100), resp.StatusCode, "Expecting 100 Trying")
+		t.Cleanup(func() {
+			st.TestUA.Client.WriteRequest(cancelReq)
+		})
+		resp = getResponseOrFailTimeout(t, ctx, tx)
+		require.Equal(t, sip.StatusCode(180), resp.StatusCode, "Expecting 180 Ringing")
+		_, ok := resp.To().Params.Get("tag")
+		require.True(t, ok, "remote tag should be present")
+		require.NotNil(t, resp.Contact())
+
+		t.Log("Call waiting on room, cancelling")
+
+		tx.Terminate()
+		require.NoError(t, st.TestUA.Client.WriteRequest(cancelReq))
+		expect(t, sink, sip.StatusOK, sip.CANCEL)
+		res := expect(t, sink, sip.StatusRequestTerminated, sip.INVITE)
+		require.NoError(t, st.TestUA.Client.WriteRequest(sip.NewAckRequest(req, res, nil)))
+	})
+
+	t.Run("found-answered", func(t *testing.T) {
+		t.Parallel()
+		t.Log("Expecting 200 for the CANCEL")
+
+		// The CANCEL must carry the INVITE's Via to match its transaction. The client adds
+		// that Via to this same request when it sends it.
+		var invite *sip.Request
+		testCall, _ := st.CreateInboundCall(t, func(req *sip.Request, _ *sip.Response) { invite = req })
+		sink := responses(testCall.callID)
+
+		require.NoError(t, st.TestUA.Client.WriteRequest(sip.NewCancelRequest(invite)))
+		expect(t, sink, sip.StatusOK, sip.CANCEL)
+	})
+}
+
 // audioCapture is a msdk.PCM16Writer that counts the non-silent samples
 // written to it.
 type audioCapture struct {
