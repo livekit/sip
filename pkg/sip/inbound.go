@@ -2296,8 +2296,7 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(&typ)
 	}
 	r.AppendHeader(sip.HeaderClone(allowHeader))
-	if status >= 200 {
-		// For an ACK to error statuses.
+	if status > sip.StatusTrying { // Anything establishing early dialog must have contact
 		r.AppendHeader(c.contact)
 	}
 	c.addExtraHeaders(r)
