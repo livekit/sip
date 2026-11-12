@@ -32,6 +32,8 @@ import (
 	"github.com/livekit/protocol/livekit"
 )
 
+const OpusSDPName = "opus/48000/2"
+
 var defaultCodecs = msdk.NewCodecSet()
 
 func init() {
@@ -40,6 +42,7 @@ func init() {
 		g711.ULawSDPNameAndRate: true,
 		g722.SDPNameAndRate:     true,
 		amrwb.SDPNameAndRate:    false, // optional
+		OpusSDPName:             true,  // Meta WhatsApp Calling; registered in media_codecs_opus.go
 		dtmf.SDPNameAndRate:     true,
 	})
 }
