@@ -4,13 +4,13 @@ go 1.26.8
 
 require (
 	cloud.google.com/go/kms v1.36.1
-	github.com/at-wat/ebml-go v0.19.3
+	github.com/at-wat/ebml-go v0.19.4
 	github.com/frostbyte73/core v0.1.1
 	github.com/googleapis/gax-go/v2 v2.27.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/icholy/digest v1.2.0
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.1.2-0.20261109223659-f3c313dec151
+	github.com/livekit/media-sdk v0.1.2-0.20261110211843-756e3cfaa8dd
 	github.com/livekit/mediatransportutil v0.0.0-20261103164426-a2ee44bcc302
 	github.com/livekit/protocol v1.53.2
 	github.com/livekit/psrpc v0.8.2
@@ -18,9 +18,9 @@ require (
 	github.com/livekit/sipgo v0.13.2-0.20261106192933-b339eb131743
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
-	github.com/pion/rtp v1.10.5
+	github.com/pion/rtp v1.10.6
 	github.com/pion/sdp/v3 v3.0.20
-	github.com/pion/webrtc/v4 v4.2.24
+	github.com/pion/webrtc/v4 v4.2.25
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sirupsen/logrus v1.10.2
 	github.com/stretchr/testify v1.12.1
@@ -56,7 +56,7 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 // indirect
 	buf.build/go/protovalidate v1.2.0 // indirect
 	buf.build/go/protoyaml v0.7.0 // indirect
-	cel.dev/expr v0.25.2 // indirect
+	cel.dev/expr v0.25.3 // indirect
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29 // indirect
@@ -76,7 +76,7 @@ require (
 	github.com/docker/cli v29.2.0+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v1.5.0
+	github.com/emiago/sipgo v1.6.0
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gammazero/deque v1.2.2 // indirect
@@ -112,13 +112,13 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opencontainers/runc v1.3.6 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
-	github.com/pion/dtls/v3 v3.1.13 // indirect
+	github.com/pion/dtls/v3 v3.1.15 // indirect
 	github.com/pion/ice/v4 v4.4.8 // indirect
 	github.com/pion/interceptor v0.1.49 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.2.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.19 // indirect
+	github.com/pion/rtcp v1.2.20 // indirect
 	github.com/pion/sctp v1.12.0 // indirect
 	github.com/pion/srtp/v3 v3.1.3 // indirect
 	github.com/pion/stun/v3 v3.1.7 // indirect
@@ -156,5 +156,5 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261012220534-4341edf3f941 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 )
