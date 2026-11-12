@@ -864,6 +864,8 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		return err
 	}
 	c.sigTs.AckTime = time.Now()
+	// The dialog is established: the remote side answered and this side sent the ACK.
+	c.state.EmitDialog(c.cc.Dialog())
 	joinDur()
 
 	if ctx.Err() != nil {
@@ -993,6 +995,8 @@ type sipOutbound struct {
 	referCseq        uint32
 	referDone        chan error
 	latestInviteCSeq uint32
+	remoteSDP        []byte // SDP of the last accepted re-INVITE
+	localSDP         []byte // SDP this side answered the last accepted re-INVITE with
 
 	emit        func(SignalingEvent)    // reports signaling events; nil if not set
 	provisional map[sip.StatusCode]bool // 1xx codes already reported
