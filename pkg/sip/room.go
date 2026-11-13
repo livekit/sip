@@ -526,7 +526,7 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 						}
 					}
 					if agentAudio != nil && rp.Kind() == lksdk.ParticipantAgent {
-						out = newAgentAudioDetector(out, r.outboundAudio, agentAudio, rp.SID(), track.ID())
+						out = newAgentAudioDetector(out, r.outboundAudio, agentAudio, rp.SID(), pub.SID())
 					}
 
 					codec := track.Codec()
