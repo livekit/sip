@@ -197,6 +197,12 @@ const (
 	// Room identity reported by the testRoom fake.
 	testRoomName = "test-room"
 	testRoomSID  = "test-room-sid"
+
+	// testRingForeverHeader on an inbound INVITE keeps that call ringing. The
+	// default TestHandler dispatch maps it to testRingForeverAttr, which is how
+	// testRoom.Connect sees it.
+	testRingForeverHeader = "X-Test-Ring-Forever"
+	testRingForeverAttr   = "test.ring_forever"
 )
 
 // testRoom is a mock Room implementation that skips actual LiveKit connection
@@ -250,13 +256,11 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 
 	// Create a minimal lksdk.Room without connecting
 	sdkRoom := lksdk.NewRoom(nil)
+	sdkRoom.SetLogger(newRoomOverrideLogger(log))
 	room.room.Store(sdkRoom)
 
-	// Set ready immediately (skip connection)
+	// Set ready immediately (skip connection). Subscribed is decided in Connect.
 	room.ready.Break()
-	if !cfg.ringForever {
-		room.subscribed.Break()
-	}
 	resolve.Resolve()
 
 	// Drive the SDK room through a join so Name() and SID() report values, as
@@ -294,6 +298,10 @@ func (r *testRoom) Connect(_ context.Context, conf *config.Config, rconf RoomCon
 		Identity: partConf.Identity,
 		Name:     partConf.Name,
 	})
+	_, ringForever := partConf.Attributes[testRingForeverAttr]
+	if !r.cfg.ringForever && !ringForever {
+		r.room.subscribed.Break()
+	}
 	// Skip actual connection - room is already set up
 	return nil
 }
@@ -931,7 +939,7 @@ func (h *testSIPHarness) WaitRequest(tb testing.TB, timeout time.Duration, callI
 	return res
 }
 
-// Handle delivers req to the package as sipgo would: INVITE/ACK/BYE/NOTIFY/OPTIONS
+// Handle delivers req to the package as sipgo would: INVITE/ACK/CANCEL/BYE/NOTIFY/OPTIONS
 // hit the CallManager handlers, anything else goes to HandleNoRoute.
 // Dispatch runs in a goroutine because inbound Accept blocks until ACK.
 func (h *testSIPHarness) Handle(req *sip.Request) *testSIPServerTransaction {
@@ -961,6 +969,8 @@ func (h *testSIPHarness) dispatch(req *sip.Request, tx sip.ServerTransaction) {
 		h.manager.HandleInvite(log, req, tx)
 	case sip.ACK:
 		h.manager.HandleAck(log, req, tx)
+	case sip.CANCEL:
+		h.manager.HandleCancel(log, req, tx)
 	case sip.BYE:
 		h.manager.HandleBye(log, req, tx)
 	case sip.NOTIFY:

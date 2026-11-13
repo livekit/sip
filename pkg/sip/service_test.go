@@ -81,15 +81,23 @@ func getFinalResponseOrFail(t *testing.T, ctx context.Context, tx sip.ClientTran
 	return res
 }
 
-func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
+func expectNoResponseTimeout(t *testing.T, ctx context.Context, tx sip.ClientTransaction) {
+	t.Helper()
 	select {
 	case res := <-tx.Responses():
 		t.Fatal("unexpected result:", res)
-	case <-time.After(time.Second / 2):
+	case <-ctx.Done():
 		// ok
 	case <-tx.Done():
 		// ok
 	}
+}
+
+func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	expectNoResponseTimeout(t, ctx, tx)
 }
 
 type TestHandler struct {
@@ -122,7 +130,8 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 				Name:     identity,
 			},
 		},
-		FeatureFlags: h.FeatureFlags,
+		HeadersToAttributes: map[string]string{testRingForeverHeader: testRingForeverAttr},
+		FeatureFlags:        h.FeatureFlags,
 	}
 }
 
