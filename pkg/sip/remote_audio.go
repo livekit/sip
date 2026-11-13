@@ -49,8 +49,14 @@ func (d *remoteAudioDetector) Close() error {
 }
 
 func (d *remoteAudioDetector) WriteSample(sample msdk.PCM16Sample) error {
-	if !d.done.Load() && rmsToDBFS(sample) > voiceThresholdDBFS && d.done.CompareAndSwap(false, true) {
-		d.report(time.Now())
+	voice := !d.done.Load() && rmsToDBFS(sample) > voiceThresholdDBFS
+	t := time.Now()
+	if err := d.next.WriteSample(sample); err != nil {
+		return err
 	}
-	return d.next.WriteSample(sample)
+	// Report only a frame that the room writer accepted.
+	if voice && d.done.CompareAndSwap(false, true) {
+		d.report(t)
+	}
+	return nil
 }

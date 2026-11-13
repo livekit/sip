@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -22,15 +23,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// agentAudioSink counts the frames written to it.
+// agentAudioSink counts the frames written to it. If err is set, it rejects
+// every frame with err.
 type agentAudioSink struct {
 	frames int
+	err    error
 }
 
-func (s *agentAudioSink) String() string                     { return "agentAudioSink" }
-func (s *agentAudioSink) SampleRate() int                    { return RoomSampleRate }
-func (s *agentAudioSink) Close() error                       { return nil }
-func (s *agentAudioSink) WriteSample(msdk.PCM16Sample) error { s.frames++; return nil }
+func (s *agentAudioSink) String() string  { return "agentAudioSink" }
+func (s *agentAudioSink) SampleRate() int { return RoomSampleRate }
+func (s *agentAudioSink) Close() error    { return nil }
+func (s *agentAudioSink) WriteSample(msdk.PCM16Sample) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.frames++
+	return nil
+}
 
 // agentAudioFrame returns a 20 ms frame with every sample at level.
 func agentAudioFrame(level int16) msdk.PCM16Sample {
@@ -70,6 +79,11 @@ func TestAgentAudioDetector(t *testing.T) {
 
 	require.NoError(t, d.WriteSample(agentAudioFrame(quiet)))
 	require.Empty(t, reports, "no report for a frame below the threshold")
+
+	mixIn.err = errors.New("write failed")
+	require.Error(t, d.WriteSample(agentAudioFrame(loud)))
+	require.Empty(t, reports, "no report for a frame the mixer rejected")
+	mixIn.err = nil
 
 	before := time.Now()
 	require.NoError(t, d.WriteSample(agentAudioFrame(loud)))

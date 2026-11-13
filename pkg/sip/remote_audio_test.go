@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -28,6 +29,11 @@ func TestRemoteAudioDetector(t *testing.T) {
 
 	require.NoError(t, d.WriteSample(agentAudioFrame(100)))
 	require.Empty(t, reports, "no report for a frame below the threshold")
+
+	room.err = errors.New("write failed")
+	require.Error(t, d.WriteSample(agentAudioFrame(10000)))
+	require.Empty(t, reports, "no report for a frame the room writer rejected")
+	room.err = nil
 
 	before := time.Now()
 	require.NoError(t, d.WriteSample(agentAudioFrame(10000)))

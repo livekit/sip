@@ -66,23 +66,27 @@ func (d *agentAudioDetector) Close() error {
 }
 
 func (d *agentAudioDetector) WriteSample(sample msdk.PCM16Sample) error {
-	d.check(sample)
-	return d.next.WriteSample(sample)
+	voice := d.isFirstVoice(sample)
+	t := time.Now()
+	if err := d.next.WriteSample(sample); err != nil {
+		return err
+	}
+	// Report only a frame that the mixer accepted.
+	if voice && d.rep.reported.CompareAndSwap(false, true) {
+		d.rep.report(t, d.participantID, d.trackID)
+	}
+	return nil
 }
 
-func (d *agentAudioDetector) check(sample msdk.PCM16Sample) {
+// isFirstVoice tells if the frame can be the room's first agent audio frame.
+func (d *agentAudioDetector) isFirstVoice(sample msdk.PCM16Sample) bool {
 	if d.rep.reported.Load() {
-		return
+		return false
 	}
 	// Before the room output is connected (inbound: before the 200 OK), the
 	// mixer drops the audio, so the caller hears nothing of it.
 	if d.output.Get() == nil {
-		return
+		return false
 	}
-	if rmsToDBFS(sample) <= voiceThresholdDBFS {
-		return
-	}
-	if d.rep.reported.CompareAndSwap(false, true) {
-		d.rep.report(time.Now(), d.participantID, d.trackID)
-	}
+	return rmsToDBFS(sample) > voiceThresholdDBFS
 }
