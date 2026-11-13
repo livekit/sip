@@ -28,7 +28,7 @@ import (
 type remoteAudioDetector struct {
 	next   msdk.PCM16Writer
 	report func(t time.Time)
-	// done is atomic: the RTP loop and the jitter buffer timer both write.
+	// done is atomic so the detector does not depend on the caller to serialize writes.
 	done atomic.Bool
 }
 

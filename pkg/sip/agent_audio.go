@@ -47,7 +47,6 @@ type agentAudioDetector struct {
 	rep           *agentAudioReporter
 	participantID string
 	trackID       string
-	done          bool // the room has reported; read only by the track's goroutine
 }
 
 func newAgentAudioDetector(next msdk.PCM16Writer, output *msdk.WriteCloserSwitch[msdk.PCM16Sample], rep *agentAudioReporter, participantID, trackID string) *agentAudioDetector {
@@ -67,15 +66,12 @@ func (d *agentAudioDetector) Close() error {
 }
 
 func (d *agentAudioDetector) WriteSample(sample msdk.PCM16Sample) error {
-	if !d.done {
-		d.check(sample)
-	}
+	d.check(sample)
 	return d.next.WriteSample(sample)
 }
 
 func (d *agentAudioDetector) check(sample msdk.PCM16Sample) {
 	if d.rep.reported.Load() {
-		d.done = true
 		return
 	}
 	// Before the room output is connected (inbound: before the 200 OK), the
@@ -86,7 +82,6 @@ func (d *agentAudioDetector) check(sample msdk.PCM16Sample) {
 	if rmsToDBFS(sample) <= voiceThresholdDBFS {
 		return
 	}
-	d.done = true
 	if d.rep.reported.CompareAndSwap(false, true) {
 		d.rep.report(time.Now(), d.participantID, d.trackID)
 	}
