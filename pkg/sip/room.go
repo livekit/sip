@@ -272,6 +272,9 @@ type RoomConfig struct {
 	RoomConfig       *livekit.RoomConfiguration
 	JitterBuf        bool
 	LogSignalChanges bool
+	// OnAgentAudio, if set, is called once, for the first agent audio frame
+	// that goes to the SIP side.
+	OnAgentAudio AgentAudioFunc
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -469,6 +472,10 @@ func (r *Room) setParticipantFromRoom() {
 // newRoomCallback builds the LiveKit room callback for this SIP participant.
 // Separate from Connect so tests can build it without joining a room.
 func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.RoomCallback {
+	var agentAudio *agentAudioReporter
+	if rconf.OnAgentAudio != nil {
+		agentAudio = newAgentAudioReporter(rconf.OnAgentAudio)
+	}
 	return &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
 			log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID())
@@ -517,6 +524,9 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 							log.Errorw("cannot create signal logger", err)
 							return
 						}
+					}
+					if agentAudio != nil && rp.Kind() == lksdk.ParticipantAgent {
+						out = newAgentAudioDetector(out, r.outboundAudio, agentAudio, rp.SID(), track.ID())
 					}
 
 					codec := track.Codec()
