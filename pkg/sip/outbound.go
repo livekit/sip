@@ -42,6 +42,7 @@ import (
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
+	"github.com/livekit/sipgo/transport"
 
 	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
@@ -398,6 +399,8 @@ func (c *outboundCall) close(ctx context.Context, end EndCall) bool {
 	done := false
 	c.stopped.Once(func() {
 		done = true
+		// A cancel request gets its result before the participant leaves.
+		c.cc.outcome.settleAtClose()
 		c.stats.Closed.Store(true)
 		log := c.log().WithValues("status", end.Status, "result", string(end.Term.Result), "reason", end.Term.Reason)
 		defer func() {
@@ -526,6 +529,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	}
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
+	attrs[AttrSIPCancelIfUnanswered] = "true"
 	lkNew.Participant.Attributes = attrs
 	r := getRoom(c.log(), &c.stats.Room)
 	if err := r.Connect(ctx, c.cm.conf, lkNew); err != nil {
@@ -545,6 +549,19 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 		return err
 	}
 	if err := registerCallRPC(c.lkRoom, c); err != nil {
+		return err
+	}
+	// The RPC and the result attribute use the SDK room directly (it is safe for
+	// concurrent use).
+	lk := c.lkRoom.Room()
+	log := c.log()
+	c.cc.outcome.setPublisher(func(res CancelResult) {
+		log.Infow("CancelIfUnanswered result", "result", res)
+		if lk != nil {
+			lk.LocalParticipant.SetAttributes(map[string]string{AttrSIPCancelResult: string(res)})
+		}
+	})
+	if err := registerCancelIfUnansweredRPC(log, c.lkRoom, lk, c.cc.outcome, c.cc.timers.replyWait); err != nil {
 		return err
 	}
 	return nil
@@ -690,41 +707,7 @@ var cancelResponseGrace = 5 * time.Second
 // the answered call is not orphaned. onAnswered, if set, is called with the 2xx.
 // It owns tx and terminates it when done.
 func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction, onAnswered func(*sip.Response)) {
-	defer tx.Terminate()
-	timer := time.NewTimer(cancelResponseGrace)
-	defer timer.Stop()
-	for {
-		select {
-		case res := <-tx.Responses():
-			if res == nil {
-				return
-			}
-			switch res.StatusCode / 100 {
-			case 1:
-				continue // provisional; keep waiting
-			case 2:
-				log.Infow("cancelled INVITE answered; sending ACK and BYE")
-				if onAnswered != nil {
-					onAnswered(res)
-				}
-				applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
-				_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
-				bye := sip.NewByeRequest(req, res, nil)
-				bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
-				if getHeaders != nil {
-					for k, v := range getHeaders(nil) {
-						bye.AppendHeader(sip.NewHeader(k, v))
-					}
-				}
-				_ = cli.WriteRequest(bye)
-			}
-			return
-		case <-tx.Done():
-			return
-		case <-timer.C:
-			return
-		}
-	}
+	watchCancelledInviteFrom(log, cli, getHeaders, req, tx, startRespPump(tx.Responses(), tx.Done()), onAnswered)
 }
 
 func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination, headers map[string]string) {
@@ -777,6 +760,14 @@ func (c *outboundCall) setExtraAttrs(hdrToAttr map[string]string, opts livekit.S
 		} else {
 			c.log().Warnw("could not set attributes on nil room", nil, "attrs", extra)
 		}
+	}
+}
+
+// ackBeforeHangup ACKs the 2xx when the call fails after the answer but before
+// its regular ACK, so the BYE that follows ends a confirmed dialog (RFC 3261 §13.2.2.4).
+func (c *outboundCall) ackBeforeHangup(ctx context.Context) {
+	if err := c.cc.AckInviteOK(ctx); err != nil {
+		c.log().Infow("could not ACK the answer before hanging up", "error", err)
 	}
 }
 
@@ -854,6 +845,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 
 	err = c.media.ProcessAnswer(sdpResp)
 	if err != nil {
+		c.ackBeforeHangup(ctx)
 		return err
 	}
 
@@ -866,9 +858,12 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	c.sigTs.AckTime = time.Now()
 	joinDur()
 
-	if ctx.Err() != nil {
+	if ctx.Err() != nil && !c.cc.outcome.isRequested() {
 		// Aborted while the callee answered: the 200 is ACKed, so error out to
 		// tear the dialog down with a BYE instead of leaking a zombie call.
+		// After a CancelIfUnanswered request the answer is kept: the ringing
+		// timeout no longer applies, and a room disconnect ends the call in
+		// waitClose (BYE after ACK).
 		//
 		// Report the cause, not ctx.Err(). The ringing timeout races the 200 OK:
 		// if it fires first, sipResponse returns ErrSIPRequestTimeout and the call
@@ -967,6 +962,8 @@ func (cm *callManager) newOutbound(log logger.Logger, id LocalTag, uri *sip.Uri,
 		referDone:  make(chan error), // Do not buffer the channel to avoid reading a result for an old request
 		nextCSeq:   1,
 		getHeaders: getHeaders,
+		outcome:    newInviteOutcome(),
+		timers:     defaultCancelTimers,
 	}
 }
 
@@ -997,6 +994,13 @@ type sipOutbound struct {
 	emit        func(SignalingEvent)    // reports signaling events; nil if not set
 	provisional map[sip.StatusCode]bool // 1xx codes already reported
 	finalStatus int                     // final response to the INVITE, 0 if none
+
+	// outcome is shared with the CancelIfUnanswered RPC. It never takes mu.
+	outcome *inviteOutcome
+	timers  cancelTimers
+	// inviteOnWire is true while an INVITE may be pending on the wire without a
+	// final response (guarded by mu, which Invite holds).
+	inviteOnWire bool
 }
 
 func (c *sipOutbound) emitEvent(ev SignalingEvent) {
@@ -1095,6 +1099,18 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 	defer span.End()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		// A 2xx was settled as answered when it arrived. Otherwise: if no INVITE
+		// is left without a final response, the call was not answered.
+		if c.inviteOnWire {
+			c.outcome.settle(CancelResultUnconfirmed)
+		} else {
+			c.outcome.settle(CancelResultCancelled)
+		}
+	}()
 
 	var (
 		sipHeaders         Headers
@@ -1146,10 +1162,17 @@ authLoop:
 			return nil, err
 		}
 		respAt = time.Now()
-		switch resp.StatusCode {
-		case sip.StatusOK:
+		if resp.StatusCode/100 == 2 {
+			// Any 2xx answers the INVITE (RFC 3261 §13.2.2.4), not only 200.
 			c.finalStatus = int(resp.StatusCode)
 			c.emitEvent(SignalingEvent{Type: EventAnsweredReceived, Time: respAt, SIPMethod: string(sip.INVITE), StatusCode: int(resp.StatusCode), CSeq: requestCSeq(req)})
+			break authLoop
+		}
+		if c.outcome.isRequested() {
+			// Proven not answered. Do not retry (e.g. with auth) after a cancel request.
+			return nil, cancelIfUnansweredError{result: CancelResultCancelled, cause: sipStatusFromResponse(resp)}
+		}
+		switch resp.StatusCode {
 		case sip.StatusUnauthorized, sip.StatusProxyAuthRequired:
 			c.emitEvent(SignalingEvent{Type: EventAuthChallenged, Time: respAt, SIPMethod: string(sip.INVITE), StatusCode: int(resp.StatusCode), CSeq: requestCSeq(req)})
 		}
@@ -1363,6 +1386,11 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 	}
 
 	cseq := requestCSeq(req)
+	// Send gate: once a cancel request was taken, no INVITE is sent any more.
+	if !c.outcome.openSend() {
+		return nil, nil, cancelIfUnansweredError{result: CancelResultCancelled}
+	}
+	c.inviteOnWire = true
 	tx, err := c.cli.sipCli.TransactionRequest(req)
 	if err != nil {
 		return nil, nil, err
@@ -1407,12 +1435,22 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 			setState(code, hdrs)
 		}
 	}
-	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
-	if cancelled != "" {
+	// One reader drains the transaction for its whole life (see respPump).
+	pump := startRespPump(tx.Responses(), tx.Done())
+	resp, cancelled, err := c.waitInviteResponse(ctx, tx, pump, transport.IsReliable(req.Transport()), cseq, onResponse)
+	if resp != nil {
+		c.inviteOnWire = false // final response received
+		if resp.StatusCode/100 == 2 {
+			c.outcome.settle(CancelResultAnswered)
+			// Keep the transaction until Timer M to ACK every 2xx retransmission.
+			handedOff = true
+			go c.watchAcceptedInvite(c.cli.sipCli, tx, pump, req.Clone(), resp, dialogACK(req, resp))
+		}
+	} else if cancelled != "" {
 		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelled})
 		// Cancelled: return now, but watch for a racing 2xx in the background.
 		handedOff = true
-		go watchCancelledInvite(c.log, c.cli.sipCli, c.getHeaders, req, tx, func(res *sip.Response) {
+		go watchCancelledInviteFrom(c.log, c.cli.sipCli, c.getHeaders, req, tx, pump, func(res *sip.Response) {
 			c.emitEvent(SignalingEvent{Type: EventLateAnswerReceived, Time: time.Now(), SIPMethod: string(sip.INVITE), StatusCode: int(res.StatusCode), CSeq: cseq})
 		})
 	}
