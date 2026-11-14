@@ -270,7 +270,7 @@ func (c *sipOutbound) watchAcceptedInvite(cli SIPClient, tx sip.ClientTransactio
 				}
 			} else {
 				c.log.Infow("INVITE answered by another dialog; sending ACK and BYE for it", "toTag", tag)
-				forks[tag] = ackAndBye(c.log, cli, nil, req, res)
+				forks[tag] = ackAndBye(c.log, cli, nil, req, res, true)
 			}
 		}
 		next := pump.notify
@@ -299,7 +299,9 @@ func dialogACK(invite *sip.Request, res *sip.Response) *sip.Request {
 
 // ackAndBye ACKs the 2xx res and hangs up the dialog it established. It returns the ACK.
 // Write errors are logged; the next retransmission is ACKed again.
-func ackAndBye(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, invite *sip.Request, res *sip.Response) *sip.Request {
+// With byeTx the BYE is a client transaction (retransmitted on UDP, its
+// response read in the background), so a lost BYE does not leave the dialog up.
+func ackAndBye(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, invite *sip.Request, res *sip.Response, byeTx bool) *sip.Request {
 	dreq := invite.Clone()
 	applyInviteResponse(dreq, res) // route ACK/BYE to the answering Contact
 	ack := sip.NewAckRequest(dreq, res, nil)
@@ -313,10 +315,42 @@ func ackAndBye(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, invi
 			bye.AppendHeader(sip.NewHeader(k, v))
 		}
 	}
-	if err := cli.WriteRequest(bye); err != nil {
-		log.Warnw("failed to send BYE for an INVITE 2xx", err)
+	if !byeTx {
+		if err := cli.WriteRequest(bye); err != nil {
+			log.Warnw("failed to send BYE for an INVITE 2xx", err)
+		}
+		return ack
 	}
+	tx, err := cli.TransactionRequest(bye)
+	if err != nil {
+		log.Warnw("failed to send BYE for a forked INVITE 2xx", err)
+		return ack
+	}
+	go awaitFinal(log, tx)
 	return ack
+}
+
+// awaitFinal reads a non-INVITE client transaction until its final response
+// or its end (Timer F), then terminates it.
+func awaitFinal(log logger.Logger, tx sip.ClientTransaction) {
+	defer tx.Terminate()
+	resps, done := tx.Responses(), tx.Done()
+	for {
+		select {
+		case <-done:
+			return
+		case r, ok := <-resps:
+			if !ok || r == nil {
+				return
+			}
+			if r.StatusCode >= 200 {
+				if r.StatusCode >= 300 {
+					log.Infow("BYE for a forked INVITE 2xx was rejected", "status", r.StatusCode)
+				}
+				return
+			}
+		}
+	}
 }
 
 // watchCancelledInviteFrom catches 2xx responses racing with our CANCEL: each
@@ -345,7 +379,7 @@ func watchCancelledInviteFrom(log logger.Logger, cli SIPClient, getHeaders setHe
 				if onAnswered != nil {
 					onAnswered(res)
 				}
-				acks[tag] = ackAndBye(log, cli, getHeaders, req, res)
+				acks[tag] = ackAndBye(log, cli, getHeaders, req, res, false)
 			}
 		}
 		next := pump.notify
