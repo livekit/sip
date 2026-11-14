@@ -2507,20 +2507,13 @@ func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
 // peer behavior, so reply 488 and log at Warn. Other errors are ours: reply 500
 // and log at Error.
 func (c *sipInbound) RejectReinvite(log logger.Logger, msg string, err error) {
-	if e := (SDPError{}); !errors.As(err, &e) {
+	code, reason := reinviteRejection(err)
+	if code == sip.StatusInternalServerError {
 		log.Errorw(msg, err)
-		c.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
-		return
+	} else {
+		log.Warnw(msg, err)
 	}
-	log.Warnw(msg, err)
-	reason := "Invalid SDP"
-	switch {
-	case errors.Is(err, sdp.ErrNoCommonMedia):
-		reason = "No Acceptable Codec"
-	case errors.Is(err, sdp.ErrNoCommonCrypto):
-		reason = "No Acceptable Encryption Profile"
-	}
-	c.RejectAsKeepAlive(sip.StatusNotAcceptableHere, reason)
+	c.RejectAsKeepAlive(code, reason)
 }
 
 // TODO(alexfish): Remove this function in favor once re-invites are
