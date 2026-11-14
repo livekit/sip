@@ -100,6 +100,13 @@ const (
 	// INVITE (usually 487), so EventCallEnded has StatusCode 0. A 2xx that races
 	// the CANCEL gets EventLateAnswerReceived.
 	EventCancelSent SignalingEventType = "sip.cancel.sent"
+	// EventCancelRequested: an lk.sip.CancelIfUnanswered request reached the
+	// INVITE transaction after a provisional response (Reason
+	// "cancel_if_unanswered"). The transaction sends a CANCEL unless the INVITE
+	// already has a final response. The call keeps waiting for that response: a
+	// 2xx is the answer (EventAnsweredReceived, the call continues), a non-2xx
+	// ends it (EventFailed).
+	EventCancelRequested SignalingEventType = "sip.cancel.requested"
 	// EventLateAnswerReceived: a 2xx arrived for an INVITE we had cancelled. It
 	// is acknowledged and hung up at once (no EventAckSent or EventByeSent), and
 	// the call never joins the room. It can come before or after EventCallEnded.
