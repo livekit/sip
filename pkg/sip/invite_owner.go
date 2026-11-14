@@ -147,7 +147,9 @@ func (c *sipOutbound) waitInviteResponse(ctx context.Context, tx sip.ClientTrans
 		cancelSent = true
 		_ = tx.Cancel()
 		c.log.Infow("CancelIfUnanswered: CANCEL sent")
-		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: "cancel_if_unanswered"})
+		// sipgo ignores Cancel once the INVITE has a final response, so this
+		// reports the request handed to the transaction, not a CANCEL on the wire.
+		c.emitEvent(SignalingEvent{Type: EventCancelRequested, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: "cancel_if_unanswered"})
 		deadline = time.NewTimer(c.timers.cancelTimeout)
 		deadlineC = deadline.C
 		if !reliable && c.timers.retransmit > 0 {
