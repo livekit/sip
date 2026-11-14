@@ -469,10 +469,14 @@ func TestInviteOKRetransmissionsAreAckedPerDialog(t *testing.T) {
 	// A 2xx from a second dialog (fork) is ACKed and that dialog alone is hung up.
 	c.send(sip.StatusOK, "OK", "uas-2")
 	reqs = c.requests(300 * time.Millisecond)
-	require.Equal(t, []sip.RequestMethod{sip.ACK, sip.BYE}, methodsOf(reqs))
-	for _, r := range reqs {
-		require.Equal(t, "uas-2", toTagOfRequest(r))
-	}
+	require.Equal(t, []sip.RequestMethod{sip.ACK}, methodsOf(reqs))
+	require.Equal(t, "uas-2", toTagOfRequest(reqs[0]))
+	bye := c.nextTransaction(time.Second)
+	require.NotNil(t, bye, "the fork's BYE is a client transaction")
+	require.Equal(t, sip.BYE, bye.req.Method)
+	require.Equal(t, "uas-2", toTagOfRequest(bye.req))
+	res := sip.NewResponseFromRequest(bye.req, sip.StatusOK, "OK", nil)
+	require.Eventually(t, func() bool { return bye.transaction.SendResponse(res) == nil }, time.Second, time.Millisecond)
 }
 
 
@@ -535,14 +539,26 @@ func (t *stubInviteTx) Cancel() error {
 	return nil
 }
 
-// lockedSIPClient records requests written outside of transactions (goroutine-safe).
+// lockedSIPClient records requests written outside of transactions and
+// transaction requests (goroutine-safe). Transactions get a stub that answers 200.
 type lockedSIPClient struct {
 	mu   sync.Mutex
 	reqs []*sip.Request
+	txs  []*sip.Request
 }
 
 func (r *lockedSIPClient) TransactionRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
-	return nil, errors.New("not supported")
+	r.mu.Lock()
+	r.txs = append(r.txs, req)
+	r.mu.Unlock()
+	tx := &stubInviteTx{responses: make(chan *sip.Response, 1), done: make(chan struct{})}
+	tx.responses <- sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+	return tx, nil
+}
+func (r *lockedSIPClient) transactions() []*sip.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*sip.Request(nil), r.txs...)
 }
 func (r *lockedSIPClient) WriteRequest(req *sip.Request, _ ...sipgo.ClientRequestOption) error {
 	r.mu.Lock()
@@ -777,10 +793,13 @@ func TestAcceptedInviteHandlesResponsesQueuedBeforeEnd(t *testing.T) {
 	cli := &lockedSIPClient{}
 	c.watchAcceptedInvite(cli, tx, pump, req, first, dialogACK(req, first))
 	reqs := cli.written()
-	require.Equal(t, []sip.RequestMethod{sip.ACK, sip.BYE}, methodsOf(reqs))
-	for _, r := range reqs {
-		require.Equal(t, "uas-2", toTagOfRequest(r))
-	}
+	require.Equal(t, []sip.RequestMethod{sip.ACK}, methodsOf(reqs))
+	require.Equal(t, "uas-2", toTagOfRequest(reqs[0]))
+	require.Eventually(t, func() bool { return len(cli.transactions()) == 1 }, time.Second, time.Millisecond,
+		"the fork's BYE is a client transaction, so it is retransmitted and answered")
+	bye := cli.transactions()[0]
+	require.Equal(t, sip.BYE, bye.Method)
+	require.Equal(t, "uas-2", toTagOfRequest(bye))
 }
 
 // A 2xx retransmission is ACKed at once, also before the call sent its own first
