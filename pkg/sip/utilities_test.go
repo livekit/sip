@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -209,6 +210,24 @@ const (
 type testRoom struct {
 	room *Room
 	cfg  *testRoomConfig
+
+	rpcMu sync.Mutex
+	rpcs  map[string]lksdk.RpcHandlerCtxFunc
+	attrs map[string]string // participant attributes passed to Connect
+}
+
+// rpcHandler returns the participant RPC handler registered for method, if any.
+func (r *testRoom) rpcHandler(method string) lksdk.RpcHandlerCtxFunc {
+	r.rpcMu.Lock()
+	defer r.rpcMu.Unlock()
+	return r.rpcs[method]
+}
+
+// connectAttrs returns the participant attributes the room was connected with.
+func (r *testRoom) connectAttrs() map[string]string {
+	r.rpcMu.Lock()
+	defer r.rpcMu.Unlock()
+	return r.attrs
 }
 
 var _ RoomInterface = (*testRoom)(nil)
@@ -293,6 +312,9 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 func (r *testRoom) Connect(_ context.Context, conf *config.Config, rconf RoomConfig) error {
 	// Update participant info from config
 	partConf := rconf.Participant
+	r.rpcMu.Lock()
+	r.attrs = maps.Clone(partConf.Attributes)
+	r.rpcMu.Unlock()
 	r.room.p.Store(&ParticipantInfo{
 		RoomName: rconf.RoomName,
 		Identity: partConf.Identity,
@@ -387,6 +409,12 @@ func (r *testRoom) NewTrack() *mixer.Input {
 }
 
 func (r *testRoom) RegisterRpcCtxMethod(method string, handler lksdk.RpcHandlerCtxFunc) error {
+	r.rpcMu.Lock()
+	if r.rpcs == nil {
+		r.rpcs = make(map[string]lksdk.RpcHandlerCtxFunc)
+	}
+	r.rpcs[method] = handler
+	r.rpcMu.Unlock()
 	return r.room.RegisterRpcCtxMethod(method, handler)
 }
 

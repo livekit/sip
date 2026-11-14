@@ -582,11 +582,19 @@ func TestOutboundSignalingEventsRemoteBye(t *testing.T) {
 }
 
 // A 2xx other than 200 fails the call on our side, but is not a rejection.
-func TestOutboundSignalingEventsUnexpected2xx(t *testing.T) {
-	states, _, tr := startOutboundCall(t, MinimalCreateSIPParticipantRequest())
+// Any 2xx answers the INVITE (RFC 3261 §13.2.2.4). This one carries no SDP
+// answer, so the call is ACKed and then hung up.
+func TestOutboundSignalingEventsNon200Answer(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	states, h, tr := startOutboundCall(t, req)
 	respond(t, tr, sip.StatusCode(202))
-	evs := waitEventTypes(t, states, []SignalingEventType{EventCallRequested, EventInviteSent, EventCallEnded})
-	require.Equal(t, 202, evs[2].StatusCode)
+	answerBYE(t, h, 2*time.Second, req.SipCallId)
+	want := []SignalingEventType{EventCallRequested, EventInviteSent, EventAnsweredReceived, EventAckSent, EventCallEnded}
+	require.Eventually(t, func() bool {
+		got := eventTypes(eventsByTime(states))
+		return len(got) >= len(want) && slices.Equal(got[:len(want)], want) // EventByeSent may follow
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Equal(t, 202, eventsByTime(states)[2].StatusCode)
 }
 
 // The callee answers after our CANCEL: the call still ends unanswered.
