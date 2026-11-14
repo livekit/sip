@@ -970,15 +970,16 @@ func TestCancelIfUnansweredEventIsARequest(t *testing.T) {
 	}
 	req := stubInvite()
 	tx := newStubInviteTx(t, 10)
+	// The crossing 200 is passed up while Cancel runs: sipgo ignores that Cancel.
+	tx.onCancel = func() { tx.responses <- stubResponse(req, sip.StatusOK, "uas-1") }
 	pump := startRespPump(tx.Responses(), tx.Done())
-	tx.responses <- stubResponse(req, sip.StatusRinging, "uas-1")
-	tx.responses <- stubResponse(req, sip.StatusOK, "uas-1") // already Accepted in sipgo
-	time.Sleep(20 * time.Millisecond)
 	c.outcome.request()
+	tx.responses <- stubResponse(req, sip.StatusRinging, "uas-1")
 	r := <-runWaitInvite(c, context.Background(), tx, pump, true)
 	require.NoError(t, r.err)
 	require.Equal(t, sip.StatusOK, r.res.StatusCode)
 	mu.Lock()
 	defer mu.Unlock()
+	require.Contains(t, evs, EventCancelRequested)
 	require.NotContains(t, evs, EventCancelSent)
 }
