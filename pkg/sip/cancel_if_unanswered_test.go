@@ -954,3 +954,31 @@ func TestCancelIfUnansweredSettlesWhenTheCallEndsBeforeAnyInvite(t *testing.T) {
 	require.Equal(t, []CancelResult{CancelResultCancelled}, published)
 	require.False(t, roomGone, "the result is published before the participant leaves")
 }
+
+// The request event reports the hand-off to the transaction, never a CANCEL
+// on the wire: sipgo ignores Cancel once the INVITE has a final response.
+func TestCancelIfUnansweredEventIsARequest(t *testing.T) {
+	c := newStubOutbound(t)
+	var (
+		mu  sync.Mutex
+		evs []SignalingEventType
+	)
+	c.emit = func(ev SignalingEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		evs = append(evs, ev.Type)
+	}
+	req := stubInvite()
+	tx := newStubInviteTx(t, 10)
+	pump := startRespPump(tx.Responses(), tx.Done())
+	tx.responses <- stubResponse(req, sip.StatusRinging, "uas-1")
+	tx.responses <- stubResponse(req, sip.StatusOK, "uas-1") // already Accepted in sipgo
+	time.Sleep(20 * time.Millisecond)
+	c.outcome.request()
+	r := <-runWaitInvite(c, context.Background(), tx, pump, true)
+	require.NoError(t, r.err)
+	require.Equal(t, sip.StatusOK, r.res.StatusCode)
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotContains(t, evs, EventCancelSent)
+}
