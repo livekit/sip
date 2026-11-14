@@ -18,7 +18,58 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/livekit/sip/pkg/config"
+	"github.com/livekit/sip/pkg/tlskey"
 )
+
+type keyLogFile struct {
+	*os.File
+	done chan struct{}
+}
+
+func openKeyLog(path string) (*keyLogFile, error) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	k := &keyLogFile{File: f, done: make(chan struct{})}
+	go k.syncEvery(30 * time.Second)
+	return k, nil
+}
+
+func (k *keyLogFile) syncEvery(d time.Duration) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			_ = k.File.Sync()
+		case <-k.done:
+			return
+		}
+	}
+}
+
+func (k *keyLogFile) Close() error {
+	close(k.done)
+	return k.File.Close()
+}
+
+// checkTLS13 adds the configuration fix to tlskey.CheckTLS13: with warn_only, ApplyPolicy leaves max_version unenforced.
+func checkTLS13(tconf *config.TLSConfig, c *tls.Config) error {
+	err := tlskey.CheckTLS13(c)
+	if err == nil {
+		return nil
+	}
+	if tconf.WarnOnly {
+		return fmt.Errorf("%w; set tls.max_version: tls1.2 and unset tls.warn_only, which leaves it unenforced", err)
+	}
+	return fmt.Errorf("%w; set tls.max_version: tls1.2", err)
+}
 
 func ConfigureTLS(c *tls.Config) {
 	// We can't use default cert verification, because SIP headers usually specify IP address instead of a hostname.

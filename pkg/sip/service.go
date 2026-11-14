@@ -24,7 +24,6 @@ import (
 	"maps"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -43,6 +42,7 @@ import (
 	"github.com/livekit/sip/pkg/config"
 	siperrors "github.com/livekit/sip/pkg/errors"
 	"github.com/livekit/sip/pkg/stats"
+	"github.com/livekit/sip/pkg/tlskey"
 	"github.com/livekit/sip/version"
 )
 
@@ -181,16 +181,26 @@ func (s *Service) Stop() {
 	s.cli.Stop()
 	s.srv.Stop()
 	s.mon.Stop()
+	s.closeAll()
+}
+
+func (s *Service) closeAll() {
 	for _, c := range s.closers {
 		_ = c.Close()
 	}
+	s.closers = nil
 }
 
 func (s *Service) SetHandler(handler Handler) {
 	s.manager.SetHandler(handler)
 }
 
-func (s *Service) Start() error {
+func (s *Service) Start() (err error) {
+	defer func() {
+		if err != nil {
+			s.closeAll()
+		}
+	}()
 	s.log.Debugw("starting sip service", "version", version.Version)
 	for name, enabled := range s.conf.Codecs {
 		if enabled {
@@ -232,27 +242,29 @@ func (s *Service) Start() error {
 		}
 		var certs []tls.Certificate
 		for _, c := range tconf.Certs {
-			cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			var cert tls.Certificate
+			var err error
+			if c.KeyURI != "" {
+				cert, err = tlskey.Load(context.Background(), c.CertFile, c.KeyURI)
+			} else {
+				cert, err = tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+			}
 			if err != nil {
 				return err
+			}
+			if cl, ok := cert.PrivateKey.(io.Closer); ok {
+				s.closers = append(s.closers, cl)
 			}
 			certs = append(certs, cert)
 		}
 		var keyLog io.Writer
 		if tconf.KeyLog != "" {
-			f, err := os.OpenFile(tconf.KeyLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			f, err := openKeyLog(tconf.KeyLog)
 			if err != nil {
 				return err
 			}
 			s.closers = append(s.closers, f)
 			keyLog = f
-			go func() {
-				ticker := time.NewTicker(30 * time.Second)
-				defer ticker.Stop()
-				for range ticker.C {
-					f.Sync()
-				}
-			}()
 		}
 		tlsConf = &tls.Config{
 			NextProtos:   tlsALPNProtocols(tconf.ALPNProtocols),
@@ -261,6 +273,9 @@ func (s *Service) Start() error {
 		}
 
 		if err := tconf.ApplyPolicy(s.log, tlsConf); err != nil {
+			return err
+		}
+		if err := checkTLS13(tconf, tlsConf); err != nil {
 			return err
 		}
 
