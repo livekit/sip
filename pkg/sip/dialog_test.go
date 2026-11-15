@@ -108,12 +108,21 @@ func TestInboundDialog(t *testing.T) {
 	require.Equal(t, []byte("remote-late-offer"), c.Dialog().RemoteSDP)
 	c.invite.SetBody([]byte("remote-offer"))
 
-	c.acceptedReinvite(9, []byte("remote-reoffer"))
+	c.acceptedReinvite(nil, 9, []byte("remote-reoffer"))
 	prev := d.Version
+	target := c.Dialog().RemoteTarget
 	d = c.Dialog()
 	require.Greater(t, d.Version, prev)
 	require.Equal(t, uint32(9), d.RemoteCSeq)
 	require.Equal(t, []byte("remote-reoffer"), d.RemoteSDP)
+	require.Equal(t, target, d.RemoteTarget, "a re-INVITE without a Contact keeps the target")
+
+	// A re-INVITE from another server of the remote side moves the target.
+	c.acceptedReinvite(dialogTestReinvite(t, "sip:+15550100@198.51.100.7:5070"), 10, nil)
+	d = c.Dialog()
+	require.Equal(t, uint32(10), d.RemoteCSeq)
+	require.Equal(t, []byte("remote-reoffer"), d.RemoteSDP)
+	require.Equal(t, "sip:+15550100@198.51.100.7:5070", d.RemoteTarget)
 }
 
 func TestOutboundDialog(t *testing.T) {
@@ -165,11 +174,25 @@ func TestOutboundDialog(t *testing.T) {
 	}, d)
 
 	c.RecordInvite(5)
-	c.acceptedReinvite([]byte("remote-reoffer"), []byte("local-reanswer"))
+	target := c.Dialog().RemoteTarget
+	c.acceptedReinvite(nil, []byte("remote-reoffer"), []byte("local-reanswer"))
 	d = c.Dialog()
 	require.Equal(t, uint32(5), d.RemoteCSeq)
 	require.Equal(t, []byte("remote-reoffer"), d.RemoteSDP)
 	require.Equal(t, []byte("local-reanswer"), d.LocalSDP)
+	require.Equal(t, target, d.RemoteTarget, "a re-INVITE without a Contact keeps the target")
+
+	// A re-INVITE from another server of the remote side moves the target.
+	c.acceptedReinvite(dialogTestReinvite(t, "sip:+15550100@198.51.100.7:5070"), nil, nil)
+	require.Equal(t, "sip:+15550100@198.51.100.7:5070", c.Dialog().RemoteTarget)
+}
+
+// dialogTestReinvite is a re-INVITE with the given Contact.
+func dialogTestReinvite(t *testing.T, contact string) *sip.Request {
+	t.Helper()
+	req := sip.NewRequest(sip.INVITE, dialogTestURI(t, "sip:+15550111@sip.example.com"))
+	req.AppendHeader(&sip.ContactHeader{Address: dialogTestURI(t, contact)})
+	return req
 }
 
 type dialogRecorder struct {

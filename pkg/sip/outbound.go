@@ -997,6 +997,7 @@ type sipOutbound struct {
 	latestInviteCSeq uint32
 	remoteSDP        []byte // SDP of the last accepted re-INVITE
 	localSDP         []byte // SDP this side answered the last accepted re-INVITE with
+	remoteTarget     string // Contact of the last accepted re-INVITE that had one
 
 	emit        func(SignalingEvent)    // reports signaling events; nil if not set
 	provisional map[sip.StatusCode]bool // 1xx codes already reported

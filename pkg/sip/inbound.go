@@ -480,7 +480,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		}
 		// TODO(alexfish): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
-		existing.cc.acceptedReinvite(cc.InviteCSeq(), sdpBodyFromRequest(req))
+		existing.cc.acceptedReinvite(req, cc.InviteCSeq(), sdpBodyFromRequest(req))
 		existing.state.EmitDialog(existing.cc.Dialog())
 		return nil
 	}
@@ -507,7 +507,7 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		oc.cc.RecordInvite(newCSeq)
 		// TODO(alexfish): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(localSDP)
-		oc.cc.acceptedReinvite(sdpBodyFromRequest(req), localSDP)
+		oc.cc.acceptedReinvite(req, sdpBodyFromRequest(req), localSDP)
 		oc.state.EmitDialog(oc.cc.Dialog())
 		return nil
 	}
@@ -2222,6 +2222,7 @@ type sipInbound struct {
 	nextRequestCSeq uint32
 	remoteCSeq      uint32 // highest CSeq of an accepted re-INVITE
 	remoteSDP       []byte // SDP of the last accepted re-INVITE
+	remoteTarget    string // Contact of the last accepted re-INVITE that had one
 	referCseq       uint32
 	ringing         chan struct{}
 	acked           core.Fuse

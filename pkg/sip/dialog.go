@@ -172,9 +172,12 @@ func (c *sipInbound) Dialog() *Dialog {
 	if c.from != nil {
 		d.RemoteURI = c.from.Address.String()
 	}
-	// The remote target is the Contact of the INVITE; c.contact is this
-	// side's own. Without a Contact, requests go to the From address.
-	if h := c.invite.Contact(); h != nil {
+	// The remote target is the Contact of the INVITE, or of a later
+	// re-INVITE; c.contact is this side's own. Without a Contact, requests
+	// go to the From address.
+	if c.remoteTarget != "" {
+		d.RemoteTarget = c.remoteTarget
+	} else if h := c.invite.Contact(); h != nil {
 		d.RemoteTarget = h.Address.String()
 	} else if c.from != nil {
 		d.RemoteTarget = c.from.Address.String()
@@ -182,15 +185,32 @@ func (c *sipInbound) Dialog() *Dialog {
 	return d
 }
 
-// acceptedReinvite records the CSeq and SDP of a re-INVITE this side
-// accepted from the remote side.
-func (c *sipInbound) acceptedReinvite(cseq uint32, sdp []byte) {
+// acceptedReinvite records the CSeq, the SDP and the Contact of a re-INVITE
+// this side accepted from the remote side.
+func (c *sipInbound) acceptedReinvite(req *sip.Request, cseq uint32, sdp []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.remoteCSeq = max(c.remoteCSeq, cseq)
 	if len(sdp) != 0 {
 		c.remoteSDP = slices.Clone(sdp)
 	}
+	if target := refreshedTarget(req); target != "" {
+		c.remoteTarget = target
+	}
+}
+
+// refreshedTarget returns the Contact URI of a re-INVITE, which replaces the
+// remote target of the dialog (RFC 3261 section 12.2.2), or "" without one.
+// A remote side that moved, for example to another of its servers, is only
+// reachable at the new target.
+func refreshedTarget(req *sip.Request) string {
+	if req == nil {
+		return ""
+	}
+	if h := req.Contact(); h != nil && h.Address.Host != "" {
+		return h.Address.String()
+	}
+	return ""
 }
 
 // Dialog returns the dialog of an outbound call, nil before it was answered.
@@ -230,7 +250,9 @@ func (c *sipOutbound) Dialog() *Dialog {
 	if c.to != nil {
 		d.RemoteURI = c.to.Address.String()
 	}
-	if h := c.inviteOk.Contact(); h != nil {
+	if c.remoteTarget != "" {
+		d.RemoteTarget = c.remoteTarget
+	} else if h := c.inviteOk.Contact(); h != nil {
 		d.RemoteTarget = h.Address.String()
 	} else if c.uri != nil {
 		d.RemoteTarget = c.uri.String()
@@ -238,12 +260,15 @@ func (c *sipOutbound) Dialog() *Dialog {
 	return d
 }
 
-// acceptedReinvite records the SDPs of a re-INVITE this side accepted from
-// the remote side: the one it sent and the one this side answered with.
-// RecordInvite records its CSeq.
-func (c *sipOutbound) acceptedReinvite(remote, local []byte) {
+// acceptedReinvite records the SDPs and the Contact of a re-INVITE this side
+// accepted from the remote side: the SDP it sent and the one this side
+// answered with. RecordInvite records its CSeq.
+func (c *sipOutbound) acceptedReinvite(req *sip.Request, remote, local []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if target := refreshedTarget(req); target != "" {
+		c.remoteTarget = target
+	}
 	if len(remote) != 0 {
 		c.remoteSDP = slices.Clone(remote)
 	}
