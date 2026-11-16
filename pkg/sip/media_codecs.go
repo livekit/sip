@@ -18,6 +18,7 @@ package sip
 import (
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	_ "github.com/livekit/media-sdk/all"
@@ -71,12 +72,12 @@ func peerCodecNames(d sdp.MediaDesc) []string {
 	return names
 }
 
-func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration) (*sipMediaConfig, error) {
+func newMediaConfig(m *livekit.SIPMediaConfig, defaultTimeout time.Duration, featureFlags map[string]string) (*sipMediaConfig, error) {
 	enc, err := sdpEncryption(m.Encryption)
 	if err != nil {
 		return nil, err
 	}
-	s, err := codecSet(m)
+	s, err := codecSet(m, featureFlagEnabled(featureFlags, enableAmrWb))
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +101,7 @@ type sipMediaConfig struct {
 	DropAudioDuringDTMF bool
 }
 
-func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
+func codecSet(m *livekit.SIPMediaConfig, allowAmrWb bool) (*msdk.CodecSet, error) {
 	var s *msdk.CodecSet
 	if m.OnlyListedCodecs {
 		if len(m.Codecs) == 0 {
@@ -116,8 +117,21 @@ func codecSet(m *livekit.SIPMediaConfig) (*msdk.CodecSet, error) {
 			return nil, errors.New("no codec name specified")
 		}
 		rate := codec.Rate
+		if strings.EqualFold(amrwb.SDPNameOnly, strings.Split(name, "/")[0]) && !allowAmrWb {
+			continue
+		}
 		s.SetEnabled(name, true)
 		_ = rate // TODO: we only support fixed rate codecs so far; add whitelist for codec configs later
+	}
+	audio := false
+	for _, codec := range s.ListEnabled() {
+		if codec != nil && codec.Info().Kind == msdk.Audio {
+			audio = true
+			break
+		}
+	}
+	if !audio {
+		return nil, errors.New("no available audio codecs")
 	}
 	s.SetEnabled(dtmf.SDPNameOnly, true)
 	return s, nil
