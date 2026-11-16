@@ -81,15 +81,23 @@ func getFinalResponseOrFail(t *testing.T, ctx context.Context, tx sip.ClientTran
 	return res
 }
 
-func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
+func expectNoResponseTimeout(t *testing.T, ctx context.Context, tx sip.ClientTransaction) {
+	t.Helper()
 	select {
 	case res := <-tx.Responses():
 		t.Fatal("unexpected result:", res)
-	case <-time.After(time.Second / 2):
+	case <-ctx.Done():
 		// ok
 	case <-tx.Done():
 		// ok
 	}
+}
+
+func expectNoResponse(t *testing.T, tx sip.ClientTransaction) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	expectNoResponseTimeout(t, ctx, tx)
 }
 
 type TestHandler struct {
@@ -122,7 +130,8 @@ func (h TestHandler) DispatchCall(ctx context.Context, info *CallInfo) CallDispa
 				Name:     identity,
 			},
 		},
-		FeatureFlags: h.FeatureFlags,
+		HeadersToAttributes: map[string]string{testRingForeverHeader: testRingForeverAttr},
+		FeatureFlags:        h.FeatureFlags,
 	}
 }
 
@@ -1691,4 +1700,50 @@ func newTransferRefusalService(t *testing.T, provider *livekit.ProviderInfo) *Se
 		state: NewCallState(nil, &livekit.SIPCallInfo{ProviderInfo: provider, CallDirection: livekit.SIPCallDirection_SCD_OUTBOUND}),
 	}
 	return s
+}
+
+func TestCallForwardingInfo(t *testing.T) {
+	invite := sip.NewRequest(sip.INVITE, sip.Uri{User: "+15550001111", Host: "example.com"})
+	invite.AppendHeader(sip.NewHeader("X-Twilio-CallToken", "token"))
+	invite.AppendHeader(sip.NewHeader("X-Other", "ignored"))
+
+	s := newServiceForAffinity(&config.Config{})
+	s.cm().byLocalTag["inbound"] = &inboundCall{
+		cc:        &sipInbound{id: "inbound", invite: invite},
+		projectID: "p_1",
+		call: &rpc.SIPCall{
+			From: &livekit.SIPUri{User: "+15550002222"},
+			To:   &livekit.SIPUri{User: "+15550001111"},
+		},
+	}
+	s.cm().activeCalls["outbound"] = &outboundCall{projectID: "p_1"}
+
+	t.Run("inbound", func(t *testing.T) {
+		info, err := s.GetSIPCallForwardingInfo("inbound", []string{"x-twilio-calltoken", "Identity"})
+		require.NoError(t, err)
+		require.Equal(t, &CallForwardingInfo{
+			SIPCallID: "inbound",
+			ProjectID: "p_1",
+			Direction: livekit.SIPCallDirection_SCD_INBOUND,
+			From:      "+15550002222",
+			To:        "+15550001111",
+			Headers:   map[string]string{"x-twilio-calltoken": "token"},
+		}, info)
+	})
+
+	t.Run("outbound", func(t *testing.T) {
+		info, err := s.GetSIPCallForwardingInfo("outbound", []string{"Identity"})
+		require.NoError(t, err)
+		require.Equal(t, &CallForwardingInfo{
+			SIPCallID: "outbound",
+			ProjectID: "p_1",
+			Direction: livekit.SIPCallDirection_SCD_OUTBOUND,
+		}, info)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		_, err := s.GetSIPCallForwardingInfo("missing", nil)
+		code, _ := psrpc.GetErrorCode(err)
+		require.Equal(t, psrpc.NotFound, code)
+	})
 }

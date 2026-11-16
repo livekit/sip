@@ -690,17 +690,34 @@ func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
+// HandleCancel runs for a CANCEL that did not match an INVITE transaction.
+// Where a matching CANCEL is answered by the tx, these are unexpected CANCEL mesages.
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleCancel(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	tag, _ := GetLocalTagUAS(req)
+	sipCallID := ""
+	if h := req.CallID(); h != nil {
+		sipCallID = h.Value()
+	}
+	toHost := ""
+	if h := req.To(); h != nil {
+		toHost = h.Address.Host
+	}
+	cm.log.Infow("Unmatched CANCEL from remote", "callID", tag, "sipCallID", sipCallID, "toHost", toHost)
+}
+
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	// Never respond, by convention.
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
-		return
+		return // 2xx ACK requests are a separate tx, and must have to tag
 	}
 	cm.cmu.RLock()
 	c := cm.byLocalTag[tag]
 	cm.cmu.RUnlock()
 	if c == nil {
-		return
+		return // Not found
 	}
 	c.log().Infow("ACK from remote")
 	c.cc.AcceptAck(req, tx)
@@ -876,6 +893,24 @@ func (cm *callManager) newInboundCall(
 	c.sigTs.InviteTime = cc.InviteAt()
 	c.sigTs.TryingTime = cc.TryingAt()
 	return c
+}
+
+func (c *inboundCall) forwardingInfo(headers []string) *CallForwardingInfo {
+	info := &CallForwardingInfo{
+		SIPCallID: string(c.cc.ID()),
+		ProjectID: c.projectID,
+		Direction: livekit.SIPCallDirection_SCD_INBOUND,
+		From:      c.call.GetFrom().GetUser(),
+		To:        c.call.GetTo().GetUser(),
+		Headers:   make(map[string]string),
+	}
+	remote := c.cc.RemoteHeaders()
+	for _, name := range headers {
+		if h := remote.GetHeader(name); h != nil {
+			info.Headers[name] = h.Value()
+		}
+	}
+	return info
 }
 
 func (c *inboundCall) setLog(log logger.Logger) {
@@ -2278,8 +2313,7 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(&typ)
 	}
 	r.AppendHeader(sip.HeaderClone(allowHeader))
-	if status >= 200 {
-		// For an ACK to error statuses.
+	if status > sip.StatusTrying { // Anything establishing early dialog must have contact
 		r.AppendHeader(c.contact)
 	}
 	c.addExtraHeaders(r)
@@ -2405,11 +2439,10 @@ func (c *sipInbound) StartRinging() bool {
 			select {
 			case <-stop:
 				return
-			case r := <-cancels:
-				receivedAt := time.Now()
+			case <-cancels:
+				now := time.Now()
+				c.emit(SignalingEvent{Type: EventCancelReceived, Time: now, SIPMethod: string(sip.CANCEL), CSeq: c.inviteCSeq})
 				close(c.cancelled) // Other goroutines will respond to the primary INVITE
-				_ = tx.Respond(newResponse(r, sip.StatusOK, "", nil))
-				c.emit(SignalingEvent{Type: EventCancelReceived, Time: receivedAt, SIPMethod: string(sip.CANCEL), CSeq: c.inviteCSeq})
 				return
 			case <-ticker.C:
 			}

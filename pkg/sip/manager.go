@@ -42,11 +42,13 @@ type CallManager interface {
 	Start(tr SIPTransport, cli *Client, sconf *ServiceConfig)
 	SetHandler(handler Handler)
 	ActiveCalls() ActiveCalls
+	GetCallForwardingInfo(callID string, headers []string) (*CallForwardingInfo, error)
 	Stop()
 
 	// SIP Handlers
 	HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
+	HandleCancel(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
