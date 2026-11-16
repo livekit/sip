@@ -989,7 +989,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	if disp.MediaConfig == nil {
 		disp.MediaConfig = &livekit.SIPMediaConfig{}
 	}
-	mconf, err := newMediaConfig(disp.MediaConfig, c.cm.conf.MediaTimeout)
+	mconf, err := newMediaConfig(disp.MediaConfig, c.cm.conf.MediaTimeout, disp.FeatureFlags)
 	if err != nil {
 		c.log().Errorw("Cannot create media config", err)
 		c.cc.RespondAndDrop(sip.StatusInternalServerError, "")

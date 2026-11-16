@@ -1,8 +1,6 @@
 package sip
 
-import (
-	"strconv"
-)
+import "strconv"
 
 const (
 	signalLoggingFeatureFlag        = "sip.signal_logging"
