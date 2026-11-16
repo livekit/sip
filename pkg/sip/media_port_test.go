@@ -31,6 +31,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/livekit/media-sdk/dtmf"
+	"github.com/livekit/media-sdk/g711"
 	msdk "github.com/livekit/media-sdk"
 	"github.com/livekit/media-sdk/rtp"
 	"github.com/livekit/media-sdk/sdp"
@@ -396,6 +398,127 @@ func TestMediaPortEarlyAnswer(t *testing.T) {
 	// Negotiated audio should be available.
 	audio := mp.NegotiatedAudio()
 	require.NotNil(t, audio, "NegotiatedAudio must be set after final answer")
+}
+
+// ProcessEarlyAnswer must not arm the media timeout: a carrier that sends 183
+// SDP but no early RTP would otherwise break the irreversible fuse during
+// ringing, and the answered call would be torn down immediately. ProcessAnswer
+// arms it once the call is answered. See: https://github.com/livekit/sip/issues/813
+func TestMediaPortEarlyAnswerDoesNotArmTimeout(t *testing.T) {
+	c1, _ := newUDPPipe()
+	mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+		IP: netip.MustParseAddr("127.0.0.1"),
+	}, RoomSampleRate)
+
+	offerData, err := mp.GenerateOffer()
+	require.NoError(t, err)
+	offer, err := sdp.ParseOfferWith(defaultCodecs, offerData)
+	require.NoError(t, err)
+	answer, _, err := offer.Answer(netip.MustParseAddr("9.8.7.6"), 12345, sdp.EncryptionNone)
+	require.NoError(t, err)
+	answerData, err := answer.SDP.Marshal()
+	require.NoError(t, err)
+
+	require.NoError(t, mp.ProcessEarlyAnswer(answerData))
+	require.Nil(t, mp.timeoutStart.Load(), "early answer must not arm the media timeout")
+
+	require.NoError(t, mp.ProcessAnswer(answerData))
+	require.NotNil(t, mp.timeoutStart.Load(), "final answer must arm the media timeout")
+}
+
+// The final answer completing a provisional early-media negotiation must
+// rebuild the pipeline when codec/DTMF/crypto change, instead of falling into
+// the renegotiation-disabled path and silently staying on the early-media
+// codec. When the final answer matches the provisional one, the pipeline must
+// be kept. See: https://github.com/livekit/sip/issues/813
+func TestMediaPortEarlyAnswerFinalCodecChange(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		finalSet    func() *msdk.CodecSet
+		wantFinal   string
+		wantRebuild bool
+	}{
+		{
+			name:        "identical codec keeps the pipeline",
+			finalSet:    func() *msdk.CodecSet { return enabledCodecSet(g711.ULawSDPNameOnly) },
+			wantFinal:   g711.ULawSDPNameOnly,
+			wantRebuild: false,
+		},
+		{
+			name:        "changed codec rebuilds the pipeline",
+			finalSet:    func() *msdk.CodecSet { return enabledCodecSet(g711.ALawSDPNameOnly) },
+			wantFinal:   g711.ALawSDPNameOnly,
+			wantRebuild: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c1, _ := newUDPPipe()
+			mp := newTestPort(t, logger.NewTestLogger(t), c1, &MediaOptions{
+				IP: netip.MustParseAddr("127.0.0.1"),
+			}, RoomSampleRate)
+
+			offerData, err := mp.GenerateOffer()
+			require.NoError(t, err)
+			peerAddr := netip.MustParseAddrPort("9.8.7.6:12345")
+
+			// Early answer limited to PCMU.
+			early, err := sdp.ParseOfferWith(enabledCodecSet(g711.ULawSDPNameOnly), offerData)
+			require.NoError(t, err)
+			earlyAnswer, _, err := early.Answer(peerAddr.Addr(), int(peerAddr.Port()), sdp.EncryptionNone)
+			require.NoError(t, err)
+			earlyData, err := earlyAnswer.SDP.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, mp.ProcessEarlyAnswer(earlyData))
+
+			mp.mu.RLock()
+			earlyPipeline := mp.pipeline
+			provisional := mp.provisional
+			mp.mu.RUnlock()
+			require.True(t, provisional, "pipeline must be tagged provisional after early media")
+			require.Equal(t, g711.ULawSDPNameOnly, negotiatedCodecName(t, mp),
+				"early media must negotiate the provisional codec")
+
+			// Final answer with the test case's codec selection.
+			final, err := sdp.ParseOfferWith(tc.finalSet(), offerData)
+			require.NoError(t, err)
+			finalAnswer, _, err := final.Answer(peerAddr.Addr(), int(peerAddr.Port()), sdp.EncryptionNone)
+			require.NoError(t, err)
+			finalData, err := finalAnswer.SDP.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, mp.ProcessAnswer(finalData))
+
+			mp.mu.RLock()
+			finalPipeline := mp.pipeline
+			provisionalAfter := mp.provisional
+			mp.mu.RUnlock()
+			require.False(t, provisionalAfter, "provisional tag must be cleared by the final answer")
+			require.Equal(t, tc.wantFinal, negotiatedCodecName(t, mp),
+				"final answer must be negotiated")
+			if tc.wantRebuild {
+				require.NotSame(t, earlyPipeline, finalPipeline,
+					"codec change between early and final answer must rebuild the pipeline")
+			} else {
+				require.Same(t, earlyPipeline, finalPipeline,
+					"identical final answer must keep the early-media pipeline")
+			}
+		})
+	}
+}
+
+func enabledCodecSet(name string) *msdk.CodecSet {
+	s := msdk.NewCodecSet()
+	s.SetEnabledMap(map[string]bool{
+		name:             true,
+		dtmf.SDPNameOnly: true,
+	})
+	return s
+}
+
+func negotiatedCodecName(t testing.TB, mp *mediaPort) string {
+	t.Helper()
+	audio := mp.NegotiatedAudio()
+	require.NotNil(t, audio)
+	return audio.Info.Name
 }
 
 // negotiate runs a full offer/answer between two ports, m1 offering, and returns the answer.

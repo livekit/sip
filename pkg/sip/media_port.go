@@ -556,11 +556,12 @@ type mediaPort struct {
 	encryption       sdp.Encryption
 	localCrypto      []srtp.Profile // our SRTP material, generated once per port
 
-	mu         sync.RWMutex
-	pipeline   *mediaPortPipeline
-	localSDP   []byte
-	offer      *sdp.Offer
-	negotiated *sdp.MediaConfig
+	mu          sync.RWMutex
+	pipeline    *mediaPortPipeline
+	localSDP    []byte
+	offer       *sdp.Offer
+	negotiated  *sdp.MediaConfig
+	provisional bool // pipeline was built from a provisional early-media answer
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -876,6 +877,12 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 // ProcessEarlyAnswer connects the media pipeline from a provisional 1xx
 // response's SDP body (early media) without consuming the offer, so the
 // final 200 OK can still be processed via ProcessAnswer.
+//
+// The pipeline is tagged as provisional: if the final answer changes codec,
+// DTMF or crypto, configure rebuilds instead of falling into the
+// renegotiation-disabled path. The media timeout is NOT armed here — the
+// call is not answered yet, so a carrier that sends 183 SDP but no early
+// RTP must not break the fuse before ProcessAnswer gets a chance to arm it.
 func (p *mediaPort) ProcessEarlyAnswer(answerData []byte) error {
 	if len(answerData) == 0 {
 		return nil
@@ -909,8 +916,8 @@ func (p *mediaPort) ProcessEarlyAnswer(answerData []byte) error {
 	}
 	p.mu.Lock()
 	p.offer = offer
+	p.provisional = true
 	p.mu.Unlock()
-	p.SetTimeout(p.opts.MediaTimeoutInitial, p.opts.MediaTimeout)
 	return nil
 }
 
@@ -1020,7 +1027,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
 	}
 	if changeSetSummary.shouldReconfigure() {
-		if changeSetSummary != changeSetNew {
+		if changeSetSummary != changeSetNew && !p.provisional {
 			// Explicitly disable renegotiation for now
 			// Compatibility to today's behavior: return 200 OK, but don't reconfigure the pipeline
 			return nil
@@ -1056,7 +1063,12 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.pipeline = newPipeline
 
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
+	} else if p.provisional {
+		// Completing a provisional early-media negotiation without a rebuild:
+		// the pipeline already matches the final answer; record its local SDP.
+		p.localSDP = localSDP
 	}
+	p.provisional = false
 	p.negotiated = c
 	return nil
 }
