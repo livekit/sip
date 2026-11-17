@@ -120,12 +120,27 @@ type recordingStateHandler struct {
 	mu      sync.Mutex
 	updates []*livekit.SIPCallInfo
 	events  []SignalingEvent
+	dialogs []*Dialog
 }
 
 var (
 	_ StateHandler          = (*recordingStateHandler)(nil)
 	_ SignalingEventHandler = (*recordingStateHandler)(nil)
+	_ DialogHandler         = (*recordingStateHandler)(nil)
 )
+
+func (h *recordingStateHandler) HandleDialog(d *Dialog) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dialogs = append(h.dialogs, d)
+}
+
+// Dialogs returns the dialog snapshots reported so far, oldest first.
+func (h *recordingStateHandler) Dialogs() []*Dialog {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.dialogs)
+}
 
 // GetStateHandler returns this recorder for every call in the test.
 func (h *recordingStateHandler) GetStateHandler() GetStateHandler {
