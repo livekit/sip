@@ -1122,17 +1122,17 @@ func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map
 		err                error
 	)
 	// A final non-2xx response fails the INVITE, and so does a 401/407 we
-	// can't answer. resp is nil when no final response arrived; it is the 200
+	// can't answer. resp is nil when no final response arrived; it is the 2xx
 	// when the call fails after the answer.
 	defer func() {
-		if retErr == nil || resp == nil || resp.StatusCode == sip.StatusOK {
+		if retErr == nil || resp == nil || resp.StatusCode/100 == 2 {
 			return
 		}
 		c.finalStatus = int(resp.StatusCode)
-		if resp.StatusCode < 300 {
-			// TODO: an unexpected 2xx sets up a dialog on the remote side, but we
-			// neither ACK nor hang it up. ACK and BYE it, or treat it as a 200.
-			return // we reject an unexpected 2xx; the remote side didn't fail the call
+		if resp.StatusCode < 200 {
+			// A malformed status below 100 is passed up as provisional by sipgo
+			// and reaches here as final; the call fails without an event.
+			return
 		}
 		c.emitEvent(SignalingEvent{
 			Type:       EventFailed,
@@ -1178,8 +1178,6 @@ authLoop:
 		}
 		var authHeaderName string
 		switch resp.StatusCode {
-		case sip.StatusOK:
-			break authLoop
 		default:
 			st := sipStatusFromResponse(resp)
 			if blocked := carrierBlockFromResponse(resp, st); blocked != nil {
