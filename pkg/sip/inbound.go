@@ -2305,9 +2305,7 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(&typ)
 	}
 	r.AppendHeader(sip.HeaderClone(allowHeader))
-	if status > sip.StatusTrying { // Anything establishing early dialog must have contact
-		r.AppendHeader(c.contact)
-	}
+	r.AppendHeader(c.contact)
 	c.addExtraHeaders(r)
 	if err := c.inviteTx.Respond(r); err != nil {
 		return false
