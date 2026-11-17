@@ -92,9 +92,12 @@ type outboundCall struct {
 	lkRoom       RoomInterface
 	lkRoomIn     msdk.PCM16Writer // output to room; OPUS at 48k
 	inboundMedia bool             // SIP→room audio path attached (early media or final answer)
-	// dialtoneCancel stops the local dialtone; carrier-provided early media
-	// takes over the ringback once it attaches (RFC 3960). Guarded by mu.
+	// dialtoneCancel stops the local dialtone and dialtoneDone closes when the
+	// tone goroutine has finished its last write; carrier-provided early media
+	// takes over the ringback once it attaches (RFC 3960), waiting for a clean
+	// handoff instead of overlapping writes. Both guarded by mu.
 	dialtoneCancel context.CancelFunc
+	dialtoneDone   chan struct{}
 	sipConf        sipOutboundConfig
 }
 
@@ -559,12 +562,15 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
+		done := make(chan struct{})
 		c.dialtoneCancel = rcancel
+		c.dialtoneDone = done
 
 		dst := c.lkRoomIn // already under mutex
 
 		// Play dialtone to the room while participant connects
 		go func() {
+			defer close(done)
 			rctx, span := Tracer.Start(rctx, "tones.Play")
 			defer span.End()
 
@@ -648,11 +654,21 @@ func (c *outboundCall) connectInboundMedia() {
 
 	// Carrier-provided early media takes over the ringback from here: stop
 	// the local dialtone so the two never overlap (and never write the track
-	// writer concurrently). CancelFunc is idempotent; the deferred cancel in
-	// dialSIP covers paths that never reach early media.
+	// writer concurrently). Cancellation only signals the tone goroutine, so
+	// wait for its last write to finish before attaching — a clean handoff.
+	// The goroutine needs no locks to exit, so waiting under mu is safe; the
+	// bound keeps a blocked tone writer from stalling SIP processing.
 	if c.dialtoneCancel != nil {
 		c.dialtoneCancel()
 		c.dialtoneCancel = nil
+		if done := c.dialtoneDone; done != nil {
+			c.dialtoneDone = nil
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				c.log().Warnw("early media: dialtone did not stop in time; continuing", nil)
+			}
+		}
 	}
 
 	if processor := c.cm.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
