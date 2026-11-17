@@ -123,6 +123,13 @@ func TestInboundDialog(t *testing.T) {
 	require.Equal(t, uint32(10), d.RemoteCSeq)
 	require.Equal(t, []byte("remote-reoffer"), d.RemoteSDP)
 	require.Equal(t, "sip:+15550100@198.51.100.7:5070", d.RemoteTarget)
+
+	// A delayed re-INVITE, older than the last one, changes nothing.
+	c.acceptedReinvite(dialogTestReinvite(t, "sip:+15550100@198.51.100.9:5070"), 9, []byte("remote-old-offer"))
+	d = c.Dialog()
+	require.Equal(t, uint32(10), d.RemoteCSeq)
+	require.Equal(t, []byte("remote-reoffer"), d.RemoteSDP)
+	require.Equal(t, "sip:+15550100@198.51.100.7:5070", d.RemoteTarget)
 }
 
 func TestOutboundDialog(t *testing.T) {

@@ -192,11 +192,16 @@ func (c *sipInbound) Dialog() *Dialog {
 }
 
 // acceptedReinvite records the CSeq, the SDP and the Contact of a re-INVITE
-// this side accepted from the remote side.
+// this side accepted from the remote side. A re-INVITE that is not newer
+// than the last one recorded changes nothing: its SDP and its Contact are
+// already replaced.
 func (c *sipInbound) acceptedReinvite(req *sip.Request, cseq uint32, sdp []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.remoteCSeq = max(c.remoteCSeq, cseq)
+	if cseq <= c.remoteCSeq {
+		return
+	}
+	c.remoteCSeq = cseq
 	if len(sdp) != 0 {
 		c.remoteSDP = slices.Clone(sdp)
 	}
