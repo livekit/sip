@@ -307,8 +307,14 @@ func byeSucceeded(res *sip.Response, err error) bool {
 	return err == nil && res != nil && res.StatusCode >= 200 && res.StatusCode < 300
 }
 
-func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
-	req := sip.NewRequest(sip.REFER, inviteRequest.Recipient)
+// newDialogRequest builds an in-dialog request of the given method for a dialog
+// established by inviteRequest/inviteResponse, as seen by the side that sent the
+// INVITE: same Call-ID, From and To (with tags), route set from Route or
+// Record-Route, and the INVITE CSeq plus one. Callers set the final CSeq, the
+// method-specific headers and the body. Inbound callers must swap source and
+// destination afterwards.
+func newDialogRequest(method sip.RequestMethod, inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader) *sip.Request {
+	req := sip.NewRequest(method, inviteRequest.Recipient)
 
 	req.SipVersion = inviteRequest.SipVersion
 	sip.CopyHeaders("Via", inviteRequest, req)
@@ -354,9 +360,15 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 
 	req.AppendHeader(contactHeader)
 
-	cseq := req.CSeq()
-	cseq.SeqNo = cseq.SeqNo + 1
-	cseq.MethodName = sip.REFER
+	if cseq := req.CSeq(); cseq != nil {
+		cseq.SeqNo = cseq.SeqNo + 1
+		cseq.MethodName = method
+	}
+	return req
+}
+
+func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, referToUrl string, headers map[string]string) *sip.Request {
+	req := newDialogRequest(sip.REFER, inviteRequest, inviteResponse, contactHeader)
 
 	// Set Refer-To header
 	referTo := sip.NewHeader("Refer-To", referToUrl)
@@ -374,6 +386,48 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	req.SetBody(nil)
 
 	return req
+}
+
+// NewInfoRequest builds a SIP INFO request (RFC 6086) for an established dialog.
+// The body is sent as-is with the given Content-Type; an empty body sends no
+// Content-Type. headers are appended verbatim (e.g. Info-Package).
+func NewInfoRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, contactHeader *sip.ContactHeader, contentType string, body []byte, headers map[string]string) *sip.Request {
+	req := newDialogRequest(sip.INFO, inviteRequest, inviteResponse, contactHeader)
+
+	req.SetTransport(inviteRequest.Transport())
+	req.SetSource(inviteRequest.Source())
+	req.SetDestination(inviteRequest.Destination())
+
+	for k, v := range headers {
+		req.AppendHeader(sip.NewHeader(k, v))
+	}
+
+	if len(body) != 0 {
+		req.AppendHeader(sip.NewHeader("Content-Type", contentType))
+	}
+	req.SetBody(body)
+
+	return req
+}
+
+// sendInfo sends an INFO request and waits for its final response. Like BYE and
+// REFER, INFO is a non-INVITE transaction: any final response ends it. The
+// response is returned whatever its status; err is set only when the request
+// could not be sent or got no final response.
+func sendInfo(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
+	ctx, span := Tracer.Start(ctx, "sip.sendInfo")
+	defer span.End()
+	tx, err := c.Transaction(req)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Terminate()
+
+	resp, _, err := sipResponse(ctx, tx, stop, nil)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
