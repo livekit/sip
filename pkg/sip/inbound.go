@@ -690,20 +690,12 @@ func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
-// HandleCancel runs for a CANCEL that did not match an INVITE transaction.
+// Runs for a CANCEL that did not match an INVITE server transaction.
 // Where a matching CANCEL is answered by the tx, these are unexpected CANCEL mesages.
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) HandleCancel(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
-	tag, _ := GetLocalTagUAS(req)
-	sipCallID := ""
-	if h := req.CallID(); h != nil {
-		sipCallID = h.Value()
-	}
-	toHost := ""
-	if h := req.To(); h != nil {
-		toHost = h.Address.Host
-	}
-	cm.log.Infow("Unmatched CANCEL from remote", "callID", tag, "sipCallID", sipCallID, "toHost", toHost)
+	// No-op. We are explicitly not replying to this message.
+	// This exists here so we don't fall to HandleNoRoute(), which generates a reply.
 }
 
 // TODO(alexfish): Move this into manager.go
