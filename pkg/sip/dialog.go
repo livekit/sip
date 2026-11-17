@@ -46,7 +46,8 @@ type Dialog struct {
 	LocalURI  string
 	RemoteURI string
 	// RemoteTarget is the remote side's Contact URI: the Request-URI of
-	// this side's requests.
+	// this side's requests. It is the Contact of the INVITE or of its
+	// answer, or of the last re-INVITE this side accepted.
 	RemoteTarget string
 	// RouteSet is the dialog's route set in the order this side's requests
 	// use it: the first entry is the next hop.
@@ -79,8 +80,13 @@ var dialogVersion atomic.Uint64
 
 // DialogHandler is an optional extension of StateHandler. When the handler
 // returned by GetStateHandler implements it, CallState sends it a snapshot of
-// the call's dialog each time the dialog changes: when it is established and
-// after each re-INVITE this side accepts.
+// the call's dialog when the call is established, and again after each
+// re-INVITE this side accepts.
+//
+// The first snapshot comes when the call is answered and is in its room. An
+// inbound call that asks for a PIN is answered before the prompt, so its
+// first snapshot comes after the prompt, when the call has joined its room;
+// a call that ends during the prompt sends none.
 //
 // Snapshots can reach the handler out of order; a handler that keeps the
 // dialog should drop a snapshot with a lower Version than one it already has.
