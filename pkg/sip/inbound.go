@@ -690,7 +690,9 @@ func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
-// Called when a CANCEL cannot match a server transaction locally
+// Runs for a CANCEL that did not match an INVITE server transaction.
+// Where a matching CANCEL is answered by the tx, these are unexpected CANCEL mesages.
+// TODO(alexfish): Move this into manager.go
 func (cm *callManager) HandleCancel(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
 	// No-op. We are explicitly not replying to this message.
 	// This exists here so we don't fall to HandleNoRoute(), which generates a reply.
