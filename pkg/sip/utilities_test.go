@@ -203,6 +203,10 @@ const (
 type testRoom struct {
 	room *Room
 	cfg  *testRoomConfig
+	// trackSamples counts the PCM samples delivered to the participant track
+	// writer returned by NewParticipantTrack, so tests can assert that audio
+	// actually reaches the room.
+	trackSamples atomic.Uint64
 }
 
 var _ RoomInterface = (*testRoom)(nil)
@@ -370,8 +374,12 @@ func (r *testRoom) Participant() ParticipantInfo {
 
 func (r *testRoom) NewParticipantTrack(sampleRate int) (msdk.WriteCloser[msdk.PCM16Sample], error) {
 	// For testing, we need to mock NewParticipantTrack since it requires a real LocalParticipant
-	// which we don't have in our mock lksdk.Room. Return a no-op writer.
-	return msdk.NewFuncWriteCloser(RoomSampleRate, func(msdk.PCM16Sample) error { return nil }), nil
+	// which we don't have in our mock lksdk.Room. Count delivered samples so
+	// tests can assert that audio actually reaches the room.
+	return msdk.NewFuncWriteCloser(RoomSampleRate, func(s msdk.PCM16Sample) error {
+		r.trackSamples.Add(uint64(len(s)))
+		return nil
+	}), nil
 }
 
 func (r *testRoom) NewTrack() *mixer.Input {

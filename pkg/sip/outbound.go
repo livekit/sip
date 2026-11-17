@@ -85,13 +85,17 @@ type outboundCall struct {
 
 	byeReceived atomic.Bool // EventByeReceived was emitted
 
-	mu         sync.RWMutex
-	mon        *stats.CallMonitor
-	sessionDur func() time.Duration
-	callDur    func() time.Duration // set once the call is answered
-	lkRoom     RoomInterface
-	lkRoomIn   msdk.PCM16Writer // output to room; OPUS at 48k
-	sipConf    sipOutboundConfig
+	mu           sync.RWMutex
+	mon          *stats.CallMonitor
+	sessionDur   func() time.Duration
+	callDur      func() time.Duration // set once the call is answered
+	lkRoom       RoomInterface
+	lkRoomIn     msdk.PCM16Writer // output to room; OPUS at 48k
+	inboundMedia bool             // SIP→room audio path attached (early media or final answer)
+	// dialtoneCancel stops the local dialtone; carrier-provided early media
+	// takes over the ringback once it attaches (RFC 3960). Guarded by mu.
+	dialtoneCancel context.CancelFunc
+	sipConf        sipOutboundConfig
 }
 
 // TODO(alexfish): Move this into manager.go
@@ -555,6 +559,7 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
+		c.dialtoneCancel = rcancel
 
 		dst := c.lkRoomIn // already under mutex
 
@@ -618,6 +623,38 @@ func (c *outboundCall) connectMedia() {
 		c.log().Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
+	// The SIP→room path may already be attached (early media during ringing);
+	// connectInboundMedia is idempotent, so this is a no-op then.
+	c.connectInboundMedia()
+	// The final answer may select a different DTMF clock rate than the
+	// provisional one (e.g. an offer carrying both telephone-event/8000 and
+	// /16000); re-attach the sink so it matches the final negotiation.
+	c.attachInboundDTMF()
+}
+
+// connectInboundMedia attaches the SIP→room receive path (media processor and
+// inbound audio) so media received from the carrier reaches the room. It is
+// idempotent: whoever attaches first wins, and the writer's ownership moves to
+// the media port's switch afterwards. The room→SIP direction is not touched
+// here — it stays gated until the final answer attaches it in connectMedia, so
+// early media never sends room audio to the carrier before the call is
+// answered. The caller must hold c.mu (both call sites do: the early-media
+// provisional callback fires under the lock held across dialSIP, and
+// connectMedia runs after it under the same lock).
+func (c *outboundCall) connectInboundMedia() {
+	if c.inboundMedia {
+		return
+	}
+
+	// Carrier-provided early media takes over the ringback from here: stop
+	// the local dialtone so the two never overlap (and never write the track
+	// writer concurrently). CancelFunc is idempotent; the deferred cancel in
+	// dialSIP covers paths that never reach early media.
+	if c.dialtoneCancel != nil {
+		c.dialtoneCancel()
+		c.dialtoneCancel = nil
+	}
+
 	if processor := c.cm.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
@@ -631,6 +668,15 @@ func (c *outboundCall) connectMedia() {
 	// double-closing later.
 	c.lkRoomIn = nil
 
+	c.attachInboundDTMF()
+
+	c.inboundMedia = true
+}
+
+// attachInboundDTMF wires the room's inbound DTMF sink to the media port,
+// replacing (and closing) any previously attached sink. The sink rate always
+// reflects the current negotiation.
+func (c *outboundCall) attachInboundDTMF() {
 	rate := rtp.DefClockRate
 	if mc := c.media.NegotiatedAudio(); mc != nil {
 		if d := mc.DTMF; d != nil {
@@ -639,7 +685,6 @@ func (c *outboundCall) connectMedia() {
 	}
 	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter(rate)); old != nil {
 		old.Close()
-		c.log().Warnw("media port has unexpected inbound DTMF writer", nil)
 	}
 }
 
@@ -853,7 +898,14 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		if err := c.media.ProcessEarlyAnswer(res.Body()); err != nil {
 			c.log().Warnw("early media: failed to process provisional SDP", err,
 				"status", res.StatusCode)
+			return
 		}
+		// Attach the SIP→room receive path now, ahead of the final answer:
+		// dialSIP sends the INVITE before connectMedia runs, so without this
+		// the early-media decoder would write into an unwired switch and all
+		// pre-answer audio would be discarded. connectInboundMedia is
+		// idempotent — the later connectMedia only adds the room→SIP direction.
+		c.connectInboundMedia()
 	})
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
