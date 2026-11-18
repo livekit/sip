@@ -650,6 +650,17 @@ type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 // ErrSIPRequestTimeout), "hangup" (ctx ended otherwise) or "shutdown" (stop).
 func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc) (_ *sip.Response, cancelled string, _ error) {
 	cnt := 0
+	// final reports res if it is final, and counts it otherwise.
+	final := func(res *sip.Response) bool {
+		if onResponse != nil {
+			onResponse(res.StatusCode, res.Headers())
+		}
+		if res.StatusCode/100 == 1 {
+			cnt++
+			return false
+		}
+		return true
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -665,20 +676,29 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			_ = tx.Cancel()
 			return nil, "shutdown", psrpc.NewErrorf(psrpc.Canceled, "service shutting down")
 		case <-tx.Done():
-			return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+			// A transaction can end right after it passes up its final response (Timer D
+			// is zero over TCP/TLS, and not yet set if the response beats Init), so both
+			// cases can be ready and select may pick this one. Read what was passed up first.
+			for {
+				select {
+				case res := <-tx.Responses():
+					if res == nil {
+						return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+					}
+					if final(res) {
+						return res, "", nil
+					}
+				default:
+					return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
+				}
+			}
 		case res := <-tx.Responses():
 			if res == nil {
 				return nil, "", psrpc.NewError(psrpc.Canceled, transactionTimeoutError{responses: cnt})
 			}
-			status := res.StatusCode
-			if onResponse != nil {
-				onResponse(res.StatusCode, res.Headers())
-			}
-			if status/100 != 1 { // != 1xx
+			if final(res) {
 				return res, "", nil
 			}
-			// continue
-			cnt++
 		}
 	}
 }
