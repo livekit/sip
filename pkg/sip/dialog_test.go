@@ -256,9 +256,6 @@ func TestOutboundCallReportsDialog(t *testing.T) {
 	require.Equal(t, []byte(testMinimalSDP), d.RemoteSDP)
 }
 
-// TestDialogJSON fixes the JSON form of a Dialog. A stored snapshot must stay
-// readable by later versions, so a change of this text needs a reader for the
-// old form.
 func TestDialogJSON(t *testing.T) {
 	d := Dialog{
 		Version:       3,
