@@ -452,6 +452,19 @@ type MediaPort interface {
 	// SIDE EFFECT: May cause a rebuild of the pipeline.
 	ProcessAnswer(answer []byte) error
 
+	// ProcessEarlyAnswer processes an SDP body from a provisional 1xx response
+	// (e.g. 183 Session Progress) so that early-media audio (ringback, IVR
+	// announcements) can reach the LiveKit room before the final 200 OK.
+	//
+	// Unlike ProcessAnswer, this does not consume the offer: a subsequent
+	// ProcessAnswer for the final 200 OK will still negotiate normally. If the
+	// final answer carries a different remote address or codec set, the
+	// pipeline is rebuilt by ProcessAnswer's configure call.
+	//
+	// Returns nil (no-op) if the body is empty, so callers can pass a
+	// provisional response unconditionally.
+	ProcessEarlyAnswer(answer []byte) error
+
 	GetLocalSDP() ([]byte, error)
 
 	// NegotiatedAudio returns the audio configuration chosen by SDP negotiation.
@@ -544,11 +557,12 @@ type mediaPort struct {
 	encryption       sdp.Encryption
 	localCrypto      []srtp.Profile // our SRTP material, generated once per port
 
-	mu         sync.RWMutex
-	pipeline   *mediaPortPipeline
-	localSDP   []byte
-	offer      *sdp.Offer
-	negotiated *sdp.MediaConfig
+	mu          sync.RWMutex
+	pipeline    *mediaPortPipeline
+	localSDP    []byte
+	offer       *sdp.Offer
+	negotiated  *sdp.MediaConfig
+	provisional bool // pipeline was built from a provisional early-media answer
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
 	audioOut *msdk.WriteCloserSwitch[msdk.PCM16Sample] // LK PCM -> SIP RTP
@@ -861,6 +875,53 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 	return nil
 }
 
+// ProcessEarlyAnswer connects the media pipeline from a provisional 1xx
+// response's SDP body (early media) without consuming the offer, so the
+// final 200 OK can still be processed via ProcessAnswer.
+//
+// The pipeline is tagged as provisional: if the final answer changes codec,
+// DTMF or crypto, configure rebuilds instead of falling into the
+// renegotiation-disabled path. The media timeout is NOT armed here — the
+// call is not answered yet, so a carrier that sends 183 SDP but no early
+// RTP must not break the fuse before ProcessAnswer gets a chance to arm it.
+func (p *mediaPort) ProcessEarlyAnswer(answerData []byte) error {
+	if len(answerData) == 0 {
+		return nil
+	}
+
+	p.mu.RLock()
+	offer := p.offer
+	p.mu.RUnlock()
+	if offer == nil {
+		return errors.New("no offer generated")
+	}
+
+	answer, err := parseAnswerWith(p.log, p.mon, p.codecs, answerData)
+	if err != nil {
+		return SDPError{Err: err}
+	}
+	mc, localSDP, err := answer.ApplyWithLocal(offer, p.encryption)
+	if err != nil {
+		return SDPError{Err: err}
+	}
+
+	localSDPBytes, err := localSDP.Marshal()
+	if err != nil {
+		return err
+	}
+
+	// configure rebuilds the pipeline and sets p.offer = nil. Restore the
+	// offer afterward so ProcessAnswer (for the final 200 OK) can still run.
+	if err := p.configure(mc, localSDPBytes); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.offer = offer
+	p.provisional = true
+	p.mu.Unlock()
+	return nil
+}
+
 func (p *mediaPort) GetLocalSDP() ([]byte, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -967,7 +1028,7 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.log.Infow("peer requested hold", "direction", c.PeerDirection.String(), "remote", c.Remote.String())
 	}
 	if changeSetSummary.shouldReconfigure() {
-		if changeSetSummary != changeSetNew {
+		if changeSetSummary != changeSetNew && !p.provisional {
 			// Explicitly disable renegotiation for now
 			// Compatibility to today's behavior: return 200 OK, but don't reconfigure the pipeline
 			return nil
@@ -1003,7 +1064,12 @@ func (p *mediaPort) configure(c *sdp.MediaConfig, localSDP []byte) error {
 		p.pipeline = newPipeline
 
 		p.localSDP = localSDP // TODO: Move to end of function when reconfiguring is supported
+	} else if p.provisional {
+		// Completing a provisional early-media negotiation without a rebuild:
+		// the pipeline already matches the final answer; record its local SDP.
+		p.localSDP = localSDP
 	}
+	p.provisional = false
 	p.negotiated = c
 	return nil
 }
