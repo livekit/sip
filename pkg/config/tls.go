@@ -22,6 +22,17 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
+// Validate reports a certificate entry the service could not load.
+func (c TLSCert) Validate() error {
+	if c.CertFile == "" {
+		return errors.New("cert_file is required")
+	}
+	if (c.KeyFile == "") == (c.KeyURI == "") {
+		return errors.New("set exactly one of key_file and key_uri")
+	}
+	return nil
+}
+
 // ApplyPolicy applies MinVersion, MaxVersion and CipherSuites to c.
 //
 // If WarnOnly is set, they are not applied. Instead, c keeps Go's defaults and logs a warning
