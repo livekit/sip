@@ -27,11 +27,6 @@ import (
 // with the session descriptions currently in use. It holds what a user agent
 // needs to send a new request within the dialog, such as a re-INVITE that
 // changes the media address, or a BYE.
-//
-// A Dialog has a JSON form, so that a snapshot can be kept outside the process
-// and read back by a later version of this package. That form is a contract:
-// do not rename a key or change the type of its value. A new field gets a new
-// key with omitempty. LocalSDP and RemoteSDP are base64 strings in JSON.
 type Dialog struct {
 	// Version increases with each snapshot. Snapshots can reach the handler
 	// out of order; a snapshot with a lower Version than one already handled
