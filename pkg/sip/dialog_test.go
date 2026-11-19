@@ -15,6 +15,7 @@
 package sip
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -253,4 +254,39 @@ func TestOutboundCallReportsDialog(t *testing.T) {
 	require.Equal(t, tr.req.CallID().Value(), d.CallID)
 	require.Equal(t, tr.req.CSeq().SeqNo+1, d.NextLocalCSeq)
 	require.Equal(t, []byte(testMinimalSDP), d.RemoteSDP)
+}
+
+// TestDialogJSON fixes the JSON form of a Dialog. A stored snapshot must stay
+// readable by later versions, so a change of this text needs a reader for the
+// old form.
+func TestDialogJSON(t *testing.T) {
+	d := Dialog{
+		Version:       3,
+		State:         DialogConfirmed,
+		Direction:     livekit.SIPCallDirection_SCD_INBOUND,
+		CallID:        "call-1",
+		LocalTag:      "local",
+		RemoteTag:     "remote",
+		LocalURI:      "sip:callee@example.com",
+		RemoteURI:     "sip:caller@example.com",
+		RemoteTarget:  "sip:caller@192.0.2.1:5060",
+		RouteSet:      []string{"sip:192.0.2.2:5060;lr"},
+		NextLocalCSeq: 7,
+		RemoteCSeq:    2,
+		LocalSDP:      []byte("v=0\r\n"),
+		RemoteSDP:     []byte("v=1\r\n"),
+	}
+	const want = `{"version":3,"state":"confirmed","direction":1,` +
+		`"call_id":"call-1","local_tag":"local","remote_tag":"remote",` +
+		`"local_uri":"sip:callee@example.com","remote_uri":"sip:caller@example.com",` +
+		`"remote_target":"sip:caller@192.0.2.1:5060","route_set":["sip:192.0.2.2:5060;lr"],` +
+		`"next_local_cseq":7,"remote_cseq":2,"local_sdp":"dj0wDQo=","remote_sdp":"dj0xDQo="}`
+
+	data, err := json.Marshal(d)
+	require.NoError(t, err)
+	require.Equal(t, want, string(data))
+
+	var got Dialog
+	require.NoError(t, json.Unmarshal([]byte(want), &got))
+	require.Equal(t, d, got)
 }
