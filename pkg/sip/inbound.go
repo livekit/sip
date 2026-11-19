@@ -480,6 +480,8 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		}
 		// TODO(alexfish): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
+		existing.cc.acceptedReinvite(req, cc.InviteCSeq(), sdpBodyFromRequest(req))
+		existing.state.EmitDialog(existing.cc.Dialog())
 		return nil
 	}
 
@@ -505,6 +507,8 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		oc.cc.RecordInvite(newCSeq)
 		// TODO(alexfish): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(localSDP)
+		oc.cc.acceptedReinvite(req, sdpBodyFromRequest(req), localSDP)
+		oc.state.EmitDialog(oc.cc.Dialog())
 		return nil
 	}
 
@@ -1206,6 +1210,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}
 	})
+	// The dialog is established: this side answered. The ACK may still be on
+	// its way, and a lost ACK does not end a call that has media. A call with
+	// no ACK and no media ends, and its handler sees the end.
+	c.state.EmitDialog(c.cc.Dialog())
 
 	c.started.Break()
 
@@ -2204,6 +2212,9 @@ type sipInbound struct {
 	lastSDP         []byte
 	inviteOk        *sip.Response
 	nextRequestCSeq uint32
+	remoteCSeq      uint32 // highest CSeq of an accepted re-INVITE
+	remoteSDP       []byte // SDP of the last accepted re-INVITE
+	remoteTarget    string // Contact of the last accepted re-INVITE that had one
 	referCseq       uint32
 	ringing         chan struct{}
 	acked           core.Fuse
