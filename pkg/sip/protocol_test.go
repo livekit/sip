@@ -447,3 +447,23 @@ func TestParseReason(t *testing.T) {
 		})
 	}
 }
+
+func TestReasonString(t *testing.T) {
+	cases := []struct {
+		Name   string
+		Reason ReasonHeader
+		Exp    string
+	}{
+		{Name: "empty", Reason: ReasonHeader{}, Exp: "<none>"},
+		{Name: "Q.850 with text", Reason: ReasonHeader{Type: "q.850", Cause: 16, Text: "Terminated"}, Exp: "q.850-16: Terminated"},
+		{Name: "Q.850 without text", Reason: ReasonHeader{Type: "q.850", Cause: 127}, Exp: "q.850-127: Interworking, unspecified"},
+		{Name: "Q.850 unknown cause", Reason: ReasonHeader{Type: "q.850", Cause: 126}, Exp: "q.850-126"},
+		{Name: "X.int without text", Reason: ReasonHeader{Type: "x.int", Cause: 0x32D}, Exp: "x.int-813"},
+		{Name: "SIP with text", Reason: ReasonHeader{Type: "sip", Cause: 487, Text: "Request Terminated"}, Exp: "sip-487: Request Terminated"},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			require.Equal(t, c.Exp, c.Reason.String())
+		})
+	}
+}
