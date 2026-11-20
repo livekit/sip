@@ -512,8 +512,14 @@ func handleNotify(req *sip.Request) (notifyInfo, error) {
 	return info, nil
 }
 
+// isNotifyForRefer reports whether a NOTIFY is for the REFER with CSeq
+// referCseq. A NOTIFY without an event id is taken to be for it.
+func isNotifyForRefer(info notifyInfo, referCseq uint32) bool {
+	return info.CSeq == 0 || info.CSeq == referCseq
+}
+
 func handleReferNotify(info notifyInfo, referCseq uint32, referDone chan<- error) {
-	if info.CSeq != 0 && info.CSeq != referCseq {
+	if !isNotifyForRefer(info, referCseq) {
 		// NOTIFY for a different REFER, skip
 		return
 	}

@@ -17,7 +17,9 @@ package sip
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,6 +273,91 @@ func TestByeOutcome(t *testing.T) {
 			require.Equal(t, tc.want, byeOutcome(tc.res, tc.err))
 		})
 	}
+}
+
+func TestReferOutcome(t *testing.T) {
+	req := sip.NewRequest(sip.REFER, sip.Uri{Host: "example.com"})
+	rejected := sip.NewResponseFromRequest(req, sip.StatusForbidden, "", nil)
+	for _, tc := range []struct {
+		name string
+		res  *sip.Response
+		err  error
+		want string
+	}{
+		// sendRefer returns no error for a 200 or 202, and an error with the
+		// response for any other final response.
+		{name: "202", res: sip.NewResponseFromRequest(req, 202, "Accepted", nil), want: "accepted"},
+		{name: "403", res: rejected, err: &livekit.SIPStatus{Code: livekit.SIPStatusCode_SIP_STATUS_FORBIDDEN}, want: "rejected"},
+		{name: "no response", err: psrpc.NewError(psrpc.Canceled, transactionTimeoutError{}), want: "timeout"},
+		{name: "deadline", err: psrpc.NewError(psrpc.Canceled, ErrSIPRequestTimeout), want: "timeout"},
+		{name: "not sent", err: errors.New("no route"), want: "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, referOutcome(tc.res, tc.err))
+		})
+	}
+}
+
+func TestTransferEndedEvent(t *testing.T) {
+	start := time.Now()
+	end := start.Add(2 * time.Second)
+	for _, tc := range []struct {
+		name   string
+		err    error
+		result string
+		reason string
+		status int
+	}{
+		{name: "success", result: "success", reason: "completed"},
+		{name: "rejected", err: &livekit.SIPStatus{Code: livekit.SIPStatusCode_SIP_STATUS_BUSY_HERE}, result: "failed", reason: "rejected", status: 486},
+		{name: "call ended", err: psrpc.NewError(psrpc.Aborted, errTransferCallEnded), result: "failed", reason: "call-ended"},
+		{name: "subscription terminated", err: psrpc.NewErrorf(psrpc.UpstreamServerError, "%w", errReferSubscriptionTerminated), result: "failed", reason: "subscription-terminated"},
+		{name: "ringing timeout", err: psrpc.NewErrorf(psrpc.Canceled, "refer canceled: %w", context.DeadlineExceeded), result: "failed", reason: "ringing-timeout"},
+		{name: "other", err: errors.New("media port not found"), result: "failed", reason: "unspecified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := transferEndedEvent(end, start, tc.err)
+			require.Equal(t, EventTransferEnded, ev.Type)
+			require.Equal(t, end, ev.Time)
+			require.Equal(t, tc.result, ev.Result)
+			require.Equal(t, tc.reason, ev.Reason)
+			require.Equal(t, tc.status, ev.StatusCode)
+			require.Equal(t, 2*time.Second, ev.Duration)
+		})
+	}
+}
+
+func TestCallStateTransferEvents(t *testing.T) {
+	h := &recordingStateHandler{}
+	st := NewCallState(h, &livekit.SIPCallInfo{CallId: "SCL_test"})
+
+	first := st.StartTransfer("tel:+15550000001")
+	st.EmitSignalingEvent(SignalingEvent{Type: EventReferSent, Time: time.Now()})
+	st.EndTransfer(first, &livekit.SIPStatus{Code: livekit.SIPStatusCode_SIP_STATUS_FORBIDDEN})
+	// A NOTIFY after the transfer ended still gets its ID.
+	st.EmitSignalingEvent(SignalingEvent{Type: EventReferNotifyReceived, Time: time.Now()})
+
+	second := st.StartTransfer("tel:+15550000002")
+	st.EmitSignalingEvent(SignalingEvent{Type: EventByeReceived, Time: time.Now()})
+	st.EndTransfer(second, nil)
+	st.EndTransfer("unknown", nil) // ignored
+
+	evs := h.Events()
+	require.Equal(t, []SignalingEventType{
+		EventTransferRequested, EventReferSent, EventTransferEnded, EventReferNotifyReceived,
+		EventTransferRequested, EventByeReceived, EventTransferEnded,
+	}, eventTypes(evs))
+	require.NotEqual(t, first, second)
+	for i, want := range []string{first, first, first, first, second, "", second} {
+		require.Equal(t, want, evs[i].TransferID, "event %d (%s)", i, evs[i].Type)
+		require.Equal(t, "SCL_test", evs[i].CallID)
+	}
+	require.Equal(t, "failed", evs[2].Result)
+	require.Equal(t, "rejected", evs[2].Reason)
+	require.Equal(t, 403, evs[2].StatusCode)
+	require.Equal(t, "success", evs[6].Result)
+	require.Equal(t, "completed", evs[6].Reason)
+	require.False(t, evs[6].Time.Before(evs[4].Time))
 }
 
 func TestReasonCause(t *testing.T) {
@@ -669,5 +756,170 @@ func TestOutboundSignalingEventsNotAnswered(t *testing.T) {
 			require.Equal(t, tr.req.CSeq().SeqNo, last.CSeq)
 			require.Equal(t, c.status, evs[len(evs)-1].StatusCode)
 		})
+	}
+}
+
+// transferEvents waits for EventTransferEnded and returns the transfer events,
+// ordered by Time.
+func transferEvents(t *testing.T, h *recordingStateHandler) []SignalingEvent {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return slices.Contains(h.EventTypes(), EventTransferEnded)
+	}, 5*time.Second, 10*time.Millisecond, "transfer end should be reported")
+	var evs []SignalingEvent
+	for _, ev := range eventsByTime(h) {
+		if isTransferEvent(ev.Type) {
+			evs = append(evs, ev)
+		}
+	}
+	return evs
+}
+
+func TestTransferSignalingEvents(t *testing.T) {
+	type notify struct {
+		status int    // sipfrag status, 0 for no body
+		sub    string // Subscription-State, "" for none
+	}
+	cases := []struct {
+		name        string
+		referStatus int
+		notifies    []notify
+		want        []SignalingEventType
+		ended       SignalingEvent // Result, Reason and StatusCode to expect
+	}{
+		{
+			name:        "completed",
+			referStatus: 202,
+			notifies:    []notify{{status: 100}, {status: 180}, {status: 200, sub: "terminated;reason=noresource"}},
+			want: []SignalingEventType{
+				EventTransferRequested, EventReferSent,
+				EventReferNotifyReceived, EventReferNotifyReceived, EventReferNotifyReceived,
+				EventTransferEnded,
+			},
+			ended: SignalingEvent{Result: "success", Reason: "completed"},
+		},
+		{
+			name:        "refer rejected",
+			referStatus: 403,
+			want:        []SignalingEventType{EventTransferRequested, EventReferSent, EventTransferEnded},
+			ended:       SignalingEvent{Result: "failed", Reason: "rejected", StatusCode: 403},
+		},
+		{
+			name:        "subscription terminated",
+			referStatus: 202,
+			notifies:    []notify{{status: 100, sub: "terminated;reason=noresource"}},
+			want: []SignalingEventType{
+				EventTransferRequested, EventReferSent, EventReferNotifyReceived, EventTransferEnded,
+			},
+			ended: SignalingEvent{Result: "failed", Reason: "subscription-terminated"},
+		},
+	}
+	directions := map[string]func(t *testing.T, st *serviceTest) *sipUADialogTest{
+		"inbound": func(t *testing.T, st *serviceTest) *sipUADialogTest {
+			call, _ := st.CreateInboundCall(t)
+			return call
+		},
+		"outbound": func(t *testing.T, st *serviceTest) *sipUADialogTest {
+			call, _, _ := st.CreateOutboundCall(t)
+			return call
+		},
+	}
+	for direction, setupCall := range directions {
+		for _, tc := range cases {
+			t.Run(direction+"/"+tc.name, func(t *testing.T) {
+				h := &recordingStateHandler{}
+				st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
+				call := setupCall(t, st)
+				reqs := call.RegisterRequestChannel("")
+				t.Cleanup(func() { call.UnregisterRequestChannel("") })
+
+				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				defer cancel()
+				result := make(chan *rpc.InternalTransferSIPParticipantResponse, 1)
+				go func() {
+					resp, _ := st.Service.TransferSIPParticipant(ctx, &rpc.InternalTransferSIPParticipantRequest{
+						SipCallId:      string(call.remoteTag),
+						TransferTo:     "tel:+15551234567",
+						RingingTimeout: durationpb.New(3 * time.Second),
+					})
+					result <- resp
+				}()
+
+				var refer *sipUARequest
+				select {
+				case refer = <-reqs:
+				case <-ctx.Done():
+					t.Fatal("no REFER received")
+				}
+				require.Equal(t, sip.REFER, refer.req.Method)
+				require.NoError(t, refer.tx.Respond(sip.NewResponseFromRequest(refer.req, tc.referStatus, sipStatus(tc.referStatus), nil)))
+
+				var notifyCSeqs []uint32
+				for _, n := range tc.notifies {
+					req := call.NewRequest(sip.NOTIFY)
+					// The id is the REFER's CSeq. The event must report the
+					// NOTIFY's own CSeq instead.
+					req.AppendHeader(sip.NewHeader("Event", fmt.Sprintf("refer;id=%d", refer.req.CSeq().SeqNo)))
+					notifyCSeqs = append(notifyCSeqs, req.CSeq().SeqNo)
+					if n.sub != "" {
+						req.AppendHeader(sip.NewHeader("Subscription-State", n.sub))
+					}
+					if n.status != 0 {
+						req.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag"))
+						req.SetBody([]byte(sip.NewResponse(n.status, sipStatus(n.status)).String()))
+					}
+					require.Equal(t, 200, call.TransactionRequest(t, req).StatusCode)
+				}
+
+				evs := transferEvents(t, h)
+				require.Equal(t, tc.want, eventTypes(evs))
+				transferID := evs[0].TransferID
+				require.NotEmpty(t, transferID)
+				for _, ev := range evs {
+					require.Equal(t, transferID, ev.TransferID, ev.Type)
+					require.Equal(t, string(call.remoteTag), ev.CallID, ev.Type)
+				}
+
+				referEv := eventOf(t, evs, EventReferSent)
+				require.Equal(t, refer.req.CSeq().SeqNo, referEv.CSeq)
+				require.Equal(t, tc.referStatus, referEv.StatusCode)
+				wantRefer := "accepted"
+				if tc.referStatus >= 300 {
+					wantRefer = "rejected"
+				}
+				require.Equal(t, wantRefer, referEv.Result)
+				require.NotZero(t, referEv.Duration)
+
+				var notifies []SignalingEvent
+				for _, ev := range evs {
+					if ev.Type == EventReferNotifyReceived {
+						notifies = append(notifies, ev)
+					}
+				}
+				for i, n := range tc.notifies {
+					require.Equal(t, n.status, notifies[i].StatusCode)
+					require.Equal(t, notifyCSeqs[i], notifies[i].CSeq)
+					state, reason, _ := strings.Cut(n.sub, ";reason=")
+					require.Equal(t, state, notifies[i].Result)
+					require.Equal(t, reason, notifies[i].Reason)
+				}
+
+				ended := evs[len(evs)-1]
+				require.Equal(t, tc.ended.Result, ended.Result)
+				require.Equal(t, tc.ended.Reason, ended.Reason)
+				require.Equal(t, tc.ended.StatusCode, ended.StatusCode)
+				require.InDelta(t, ended.Time.Sub(evs[0].Time), ended.Duration, float64(time.Millisecond))
+
+				if tc.ended.Result == "success" {
+					select {
+					case resp := <-result:
+						require.NotNil(t, resp)
+						require.Equal(t, resp.TransferId, transferID, "the events and the API report the same transfer")
+					case <-ctx.Done():
+						t.Fatal("no transfer result")
+					}
+				}
+			})
+		}
 	}
 }

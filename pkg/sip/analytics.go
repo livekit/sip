@@ -114,7 +114,11 @@ type CallState struct {
 	handler       StateHandler
 	callInfo      *livekit.SIPCallInfo
 	transferInfos map[string]*livekit.SIPTransferInfo
-	dirty         bool
+	// lastTransferID is the ID of the transfer that started most recently.
+	// emitLocked adds it to the REFER and NOTIFY events. It stays set after
+	// that transfer ends, so a NOTIFY that arrives late still gets it.
+	lastTransferID string
+	dirty          bool
 }
 
 func (s *CallState) Info() *livekit.SIPCallInfo {
@@ -146,21 +150,28 @@ func (s *CallState) Update(update func(info *livekit.SIPCallInfo)) {
 	s.flushLocked()
 }
 
+// StartTransfer records the start of a transfer, emits
+// EventTransferRequested and returns the new transfer ID.
 func (s *CallState) StartTransfer(transferTo string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	ti := &livekit.SIPTransferInfo{
 		TransferId:            guid.New(utils.SIPTransferPrefix),
 		CallId:                s.callInfo.CallId,
 		TransferTo:            transferTo,
-		TransferInitiatedAtNs: time.Now().UnixNano(),
+		TransferInitiatedAtNs: now.UnixNano(),
 		TransferStatus:        livekit.SIPTransferStatus_STS_TRANSFER_ONGOING,
 	}
 	s.handler.HandleTransfer(ti)
 	s.transferInfos[ti.TransferId] = ti
+	s.lastTransferID = ti.TransferId
+	s.emitLocked(SignalingEvent{Type: EventTransferRequested, Time: now, TransferID: ti.TransferId})
 	return ti.TransferId
 }
 
+// EndTransfer records the outcome of a transfer (inErr is nil on success)
+// and emits EventTransferEnded. An unknown transfer ID is ignored.
 func (s *CallState) EndTransfer(transferID string, inErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,7 +180,8 @@ func (s *CallState) EndTransfer(transferID string, inErr error) {
 	if ti == nil {
 		return
 	}
-	ti.TransferCompletedAtNs = time.Now().UnixNano()
+	now := time.Now()
+	ti.TransferCompletedAtNs = now.UnixNano()
 	if inErr != nil {
 		ti.Error = inErr.Error()
 		ti.TransferStatus = livekit.SIPTransferStatus_STS_TRANSFER_FAILED
@@ -181,6 +193,10 @@ func (s *CallState) EndTransfer(transferID string, inErr error) {
 		ti.TransferStatusCode = sipStatus
 	}
 	s.handler.HandleTransfer(ti)
+
+	ended := transferEndedEvent(now, time.Unix(0, ti.TransferInitiatedAtNs), inErr)
+	ended.TransferID = transferID
+	s.emitLocked(ended)
 }
 
 // RecordCallContext appends late-arriving context to the canonical callInfo
@@ -219,18 +235,28 @@ func (s *CallState) flushLocked() {
 	s.dirty = false
 }
 
-// EmitSignalingEvent stamps ev with the call's identifiers and passes it to
-// the handler, if the handler accepts signaling events. Events with a zero
-// Time are dropped. Safe to call on a nil CallState.
+// EmitSignalingEvent stamps ev with the call's identifiers (and the transfer
+// ID, for a transfer event) and passes it to the handler, if the handler
+// accepts signaling events. Events with a zero Time are dropped. Safe to call
+// on a nil CallState.
 func (s *CallState) EmitSignalingEvent(ev SignalingEvent) {
 	if s == nil || ev.Time.IsZero() {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.emitLocked(ev)
+}
+
+// emitLocked is EmitSignalingEvent for a caller that holds s.mu. A transfer
+// event without a TransferID gets the ID of the latest transfer.
+func (s *CallState) emitLocked(ev SignalingEvent) {
 	h, ok := s.handler.(SignalingEventHandler)
 	if !ok {
 		return
+	}
+	if ev.TransferID == "" && isTransferEvent(ev.Type) {
+		ev.TransferID = s.lastTransferID
 	}
 	ev.CallID = s.callInfo.CallId
 	ev.SIPCallID = s.callInfo.SipCallId
