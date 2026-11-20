@@ -104,6 +104,14 @@ const (
 	// is acknowledged and hung up at once (no EventAckSent or EventByeSent), and
 	// the call never joins the room. It can come before or after EventCallEnded.
 	EventLateAnswerReceived SignalingEventType = "sip.late_answer.received"
+	// EventRemoteAudioReceived: the first audio frame from the callee that is
+	// above the silence threshold (see voiceThresholdDBFS) reached the room.
+	// The callee's audio is connected to the room only after the 200 OK, so
+	// early media (ringback, announcements) does not count. Once per call.
+	// Time is when the frame was written to the room, after decoding and the
+	// media processor (e.g. noise cancellation), if any. Background noise or
+	// in-band DTMF above the threshold also counts.
+	EventRemoteAudioReceived SignalingEventType = "sip.remote_audio.received"
 )
 
 // Both directions.
@@ -121,6 +129,15 @@ const (
 	// EventCallEnded: the call is over, for any reason, including rejections
 	// before a call was set up.
 	EventCallEnded SignalingEventType = "sip.call.ended"
+	// EventAgentAudioSent: the first audio frame from an agent track that is
+	// above the silence threshold (see voiceThresholdDBFS) went to the SIP
+	// side. Only frames sent while the room output to the SIP side is
+	// connected count, so it is never before the 200 OK. Once per call.
+	// ParticipantID is the agent's and TrackID its track. Audio from other
+	// participants and tones played by sip (PIN prompts, dial tones) do not
+	// count. Time is when the frame entered the room mixer; the mixer adds
+	// about one frame (20 ms) before it is sent.
+	EventAgentAudioSent SignalingEventType = "sip.agent_audio.sent"
 )
 
 // SignalingEvent is one step in a call's signaling lifecycle.
@@ -143,9 +160,13 @@ type SignalingEvent struct {
 	// EventCallDispatched, which reports its own lookup's rule (empty if none
 	// matched).
 	DispatchRuleID string
-	// ParticipantID is the SID of the SIP participant in the room. It is set on
-	// EventRoomJoined, so the call joins the room's participant events.
+	// ParticipantID is the SID of the participant the event is about, so the
+	// call joins the room's participant events: the SIP participant on
+	// EventRoomJoined, the agent on EventAgentAudioSent.
 	ParticipantID string
+	// TrackID is the SID of the track the event is about. Set on
+	// EventAgentAudioSent.
+	TrackID string
 
 	// SIP message details, set when the event corresponds to a SIP message.
 	SIPMethod string
@@ -268,6 +289,16 @@ func requestCSeq(req *sip.Request) uint32 {
 // inviteResponseEvent builds an event for a response sent to the INVITE.
 func inviteResponseEvent(typ SignalingEventType, t time.Time, statusCode int, cseq uint32) SignalingEvent {
 	return SignalingEvent{Type: typ, Time: t, SIPMethod: "INVITE", StatusCode: statusCode, CSeq: cseq}
+}
+
+// agentAudioSent emits EventAgentAudioSent. It is the room's OnAgentAudio.
+func (s *CallState) agentAudioSent(t time.Time, participantID, trackID string) {
+	s.EmitSignalingEvent(SignalingEvent{Type: EventAgentAudioSent, Time: t, ParticipantID: participantID, TrackID: trackID})
+}
+
+// remoteAudioReceived emits EventRemoteAudioReceived.
+func (s *CallState) remoteAudioReceived(t time.Time) {
+	s.EmitSignalingEvent(SignalingEvent{Type: EventRemoteAudioReceived, Time: t})
 }
 
 // callEndedEvent builds EventCallEnded from the call's termination and the

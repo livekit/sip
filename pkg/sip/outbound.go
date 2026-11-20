@@ -527,6 +527,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
+	lkNew.OnAgentAudio = c.state.agentAudioSent
 	r := getRoom(c.log(), &c.stats.Room)
 	if err := r.Connect(ctx, c.cm.conf, lkNew); err != nil {
 		_ = r.Close()
@@ -618,6 +619,9 @@ func (c *outboundCall) connectMedia() {
 		c.log().Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
+	// Wrap the room writer before the processor wraps it, so the detector
+	// sees the processed audio: what the room gets.
+	c.lkRoomIn = newRemoteAudioDetector(c.lkRoomIn, c.state.remoteAudioReceived)
 	if processor := c.cm.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
