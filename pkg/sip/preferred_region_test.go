@@ -20,17 +20,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/protocol/livekit"
+
+	"github.com/livekit/sip/pkg/config"
 )
 
 func TestWithPreferredRegion(t *testing.T) {
 	const wsURL = "wss://project.example.com"
 	region := &livekit.RegionInfo{Region: "region-a", Url: "https://project.region-a.example.com"}
 
-	cm := &callManager{}
+	cm := &callManager{conf: &config.Config{WsUrl: "wss://default.example.com"}}
 	require.Nil(t, cm.withPreferredRegion(RoomConfig{WsUrl: wsURL}).PreferredRegion)
 
 	var gotURL string
 	WithPreferredRegion(func(u string) *livekit.RegionInfo { gotURL = u; return region })(cm)
 	require.Same(t, region, cm.withPreferredRegion(RoomConfig{WsUrl: wsURL}).PreferredRegion)
 	require.Equal(t, wsURL, gotURL)
+
+	// An empty call URL uses the configured URL.
+	cm.withPreferredRegion(RoomConfig{})
+	require.Equal(t, "wss://default.example.com", gotURL)
 }

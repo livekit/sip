@@ -123,7 +123,11 @@ func WithPreferredRegion(fn func(wsURL string) *livekit.RegionInfo) CallManagerO
 
 func (cm *callManager) withPreferredRegion(rconf RoomConfig) RoomConfig {
 	if cm.preferredRegion != nil {
-		rconf.PreferredRegion = cm.preferredRegion(rconf.WsUrl)
+		wsURL := rconf.WsUrl
+		if wsURL == "" {
+			wsURL = cm.conf.WsUrl // as in Room.Connect
+		}
+		rconf.PreferredRegion = cm.preferredRegion(wsURL)
 	}
 	return rconf
 }
