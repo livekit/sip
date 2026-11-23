@@ -660,8 +660,12 @@ func setCSeq(req *sip.Request, cseq uint32) {
 
 func ToSIPUri(ip string, u sip.Uri) *livekit.SIPUri {
 	tr, _ := u.UriParams.Get("transport")
+	user := u.User
+	if user == "" && strings.EqualFold(u.Scheme, "tel") {
+		user, _, _ = strings.Cut(u.Raw(), ";")
+	}
 	url := &livekit.SIPUri{
-		User:      u.User,
+		User:      user,
 		Host:      u.Host,
 		Ip:        ip,
 		Port:      uint32(u.Port),
