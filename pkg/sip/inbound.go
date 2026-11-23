@@ -585,6 +585,23 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 	state.Flush()
 	state.EmitSignalingEvent(lookupEvent(EventInviteAuthorized, authAt, authDur, authResultName(r.Result)))
 
+	// A stopping service waits for its calls to end. It refuses new calls, so
+	// that the sender can retry on another server. The refusal is not cached,
+	// unlike RespondAndDrop: a cached rejection is replayed to every later
+	// INVITE of the dialog, also to a re-INVITE or a retry with credentials.
+	stopping := cm.mon.Health() == stats.HealthStopped
+	refuseStopping := func() error {
+		const reason = "Shutting down"
+		rejectInvite(stats.ServerError("shutting-down"))
+		log.Infow("Rejecting inbound, service is shutting down")
+		if err := tx.Respond(newResponse(req, sip.StatusServiceUnavailable, reason, nil)); err == nil {
+			cc.setLastStatus(sip.StatusServiceUnavailable, reason)
+			cc.emitRejected(sip.StatusServiceUnavailable, reason)
+		}
+		cc.Drop()
+		return psrpc.NewErrorf(psrpc.Unavailable, "service is shutting down")
+	}
+
 	switch r.Result {
 	case AuthDrop:
 		rejectInvite(stats.ClientError("flood"))
@@ -632,6 +649,11 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		callInfo.stopChallengeTimer()
 		callInfo.countInvite(log, req)
 		status, authHeader := cm.handleInviteAuth(log, req, r.Auth)
+		if stopping && status.Code == sip.StatusProxyAuthRequired {
+			// A challenge would start a new call. Valid credentials answer a
+			// challenge that was already sent, and that call continues below.
+			return refuseStopping()
+		}
 		switch status.Code {
 		case sip.StatusOK:
 			// No issue encountered. Proceed with call setup. Don't send 200 here.
@@ -679,6 +701,9 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 			return psrpc.NewErrorf(psrpc.PermissionDenied, "invalid credentials were provided")
 		}
 	case AuthAccept:
+		if stopping {
+			return refuseStopping()
+		}
 		cm.getCallInfo(cc.ID()).countInvite(log, req)
 		// ok
 	}
