@@ -528,7 +528,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
 	r := getRoom(c.log(), &c.stats.Room)
-	if err := r.Connect(ctx, c.cm.conf, lkNew); err != nil {
+	if err := r.Connect(ctx, c.cm.conf, c.cm.withPreferredRegion(lkNew)); err != nil {
 		_ = r.Close()
 		return err
 	}
