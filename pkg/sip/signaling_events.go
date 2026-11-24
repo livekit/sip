@@ -123,6 +123,40 @@ const (
 	EventCallEnded SignalingEventType = "sip.call.ended"
 )
 
+// Transfers, both directions. Each event has the TransferID of the transfer.
+const (
+	// EventTransferRequested: a transfer of the call started. A repeated
+	// request for a transfer that is in progress does not start a new one, so
+	// it gets no event.
+	EventTransferRequested SignalingEventType = "sip.transfer.requested"
+	// EventReferSent: we tried to send the REFER for the transfer. Time is the
+	// time of the try; the event is emitted when its transaction ends. Result
+	// is the outcome (see referOutcome): "error" can mean that the REFER was
+	// never sent. StatusCode is the final response (0 if none) and Duration the
+	// time to it.
+	EventReferSent SignalingEventType = "sip.refer.sent"
+	// EventReferNotifyReceived: a NOTIFY for the REFER arrived. CSeq is the
+	// CSeq of the NOTIFY, not of the REFER. StatusCode is the status in its
+	// sipfrag body, 0 if it has no body. Result is the Subscription-State
+	// ("active", "pending", "terminated"), empty if the NOTIFY has none, and
+	// Reason its reason, if any.
+	EventReferNotifyReceived SignalingEventType = "sip.refer.notify.received"
+	// EventTransferEnded: the transfer is over. Result is "success" or
+	// "failed", Reason says why (see transferReasonName), StatusCode is the
+	// SIP status of a rejection (0 otherwise) and Duration the time from
+	// EventTransferRequested.
+	EventTransferEnded SignalingEventType = "sip.transfer.ended"
+)
+
+// isTransferEvent reports whether events of type typ belong to a transfer.
+func isTransferEvent(typ SignalingEventType) bool {
+	switch typ {
+	case EventTransferRequested, EventReferSent, EventReferNotifyReceived, EventTransferEnded:
+		return true
+	}
+	return false
+}
+
 // SignalingEvent is one step in a call's signaling lifecycle.
 //
 // Callers set Type, Time and the event-specific fields. CallState fills in
@@ -146,6 +180,11 @@ type SignalingEvent struct {
 	// ParticipantID is the SID of the SIP participant in the room. It is set on
 	// EventRoomJoined, so the call joins the room's participant events.
 	ParticipantID string
+	// TransferID identifies the transfer on the transfer events. The REFER and
+	// NOTIFY code does not know it, so CallState adds the ID of the transfer
+	// that started most recently. The ID stays after that transfer ends, so a
+	// NOTIFY that arrives late still gets it.
+	TransferID string
 
 	// SIP message details, set when the event corresponds to a SIP message.
 	SIPMethod string
@@ -166,7 +205,7 @@ type SignalingEvent struct {
 	// set it document their own values.
 	Result string
 	// Duration is how long the step took, for events that time one (lookups,
-	// the BYE transaction).
+	// the BYE and REFER transactions, the transfer).
 	Duration time.Duration
 	// WithPIN marks the second EventCallDispatched of a PIN call.
 	WithPIN bool
@@ -232,6 +271,96 @@ func byeOutcome(res *sip.Response, err error) string {
 	default:
 		return "error"
 	}
+}
+
+// referOutcome classifies the result of sendRefer for EventReferSent:
+// "accepted" (200 or 202), "rejected" (another final response), "timeout" (no
+// final response) or "error" (the REFER could not be sent, or the service is
+// stopping).
+func referOutcome(res *sip.Response, err error) string {
+	switch {
+	case err == nil && res != nil:
+		return "accepted"
+	case res != nil:
+		return "rejected"
+	case errors.As(err, &transactionTimeoutError{}) || errors.Is(err, ErrSIPRequestTimeout):
+		return "timeout"
+	default:
+		return "error"
+	}
+}
+
+// referSentEvent builds EventReferSent for a REFER sent at t with sendRefer's
+// result.
+func referSentEvent(req *sip.Request, t time.Time, res *sip.Response, err error) SignalingEvent {
+	ev := SignalingEvent{
+		Type:      EventReferSent,
+		Time:      t,
+		SIPMethod: string(sip.REFER),
+		CSeq:      requestCSeq(req),
+		Result:    referOutcome(res, err),
+		Duration:  time.Since(t),
+	}
+	if res != nil {
+		ev.StatusCode = int(res.StatusCode)
+	}
+	return ev
+}
+
+// referNotifyEvent builds EventReferNotifyReceived for the NOTIFY req, which
+// arrived at t and parsed to info.
+func referNotifyEvent(req *sip.Request, t time.Time, info notifyInfo) SignalingEvent {
+	return SignalingEvent{
+		Type:       EventReferNotifyReceived,
+		Time:       t,
+		SIPMethod:  string(sip.NOTIFY),
+		StatusCode: info.Status,
+		// Not info.CSeq: that is the CSeq of the REFER, from the id parameter
+		// of the Event header ("Event: refer;id=2").
+		CSeq:   requestCSeq(req),
+		Result: info.Sub.State,
+		Reason: info.Sub.Reason,
+	}
+}
+
+// transferReasonName names a transfer reason for EventTransferEnded.
+func transferReasonName(r livekit.SIPTransferReason) string {
+	switch r {
+	case livekit.SIPTransferReason_STR_COMPLETED:
+		return "completed"
+	case livekit.SIPTransferReason_STR_CALL_ENDED:
+		return "call-ended"
+	case livekit.SIPTransferReason_STR_REJECTED:
+		return "rejected"
+	case livekit.SIPTransferReason_STR_RINGING_TIMEOUT:
+		return "ringing-timeout"
+	case livekit.SIPTransferReason_STR_SUBSCRIPTION_TERMINATED:
+		return "subscription-terminated"
+	case livekit.SIPTransferReason_STR_CANCELED:
+		return "canceled"
+	default:
+		return "unspecified"
+	}
+}
+
+// transferEndedEvent builds EventTransferEnded for a transfer that started at
+// start and ended at t with err (nil on success).
+func transferEndedEvent(t, start time.Time, err error) SignalingEvent {
+	reason, sipStatus := transferReason(err)
+	ev := SignalingEvent{
+		Type:     EventTransferEnded,
+		Time:     t,
+		Result:   "success",
+		Reason:   transferReasonName(reason),
+		Duration: t.Sub(start),
+	}
+	if err != nil {
+		ev.Result = "failed"
+	}
+	if sipStatus != nil {
+		ev.StatusCode = int(sipStatus.Code)
+	}
+	return ev
 }
 
 // reasonCause renders a Reason header as "<protocol>;cause=<code>" for

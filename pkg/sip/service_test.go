@@ -17,12 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/status"
 
+	esip "github.com/emiago/sipgo/sip"
 	msdk "github.com/livekit/media-sdk"
 
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	lksip "github.com/livekit/protocol/sip"
 	"github.com/livekit/psrpc"
 	"github.com/livekit/sipgo"
 	"github.com/livekit/sipgo/sip"
@@ -1746,4 +1748,135 @@ func TestCallForwardingInfo(t *testing.T) {
 		code, _ := psrpc.GetErrorCode(err)
 		require.Equal(t, psrpc.NotFound, code)
 	})
+}
+
+func TestService_InboundTelURI(t *testing.T) {
+	cases := []struct {
+		name     string
+		reqURI   string
+		fromURI  string
+		toURI    string
+		wantReq  string
+		wantFrom string
+		wantTo   string
+	}{
+		{
+			name:     "tel To with sip Request-URI",
+			reqURI:   "sip:+15105550100@sip.example.net;user=phone",
+			fromURI:  "sip:+15105550111@edge.carrier.example:5069;user=phone",
+			toURI:    "tel:+15105550100",
+			wantReq:  "+15105550100",
+			wantFrom: "+15105550111",
+			wantTo:   "+15105550100",
+		},
+		{
+			name:     "tel Request-URI From and To",
+			reqURI:   "tel:+15105550100",
+			fromURI:  "tel:+15105550111",
+			toURI:    "tel:+15105550100",
+			wantReq:  "+15105550100",
+			wantFrom: "+15105550111",
+			wantTo:   "+15105550100",
+		},
+	}
+
+	trunk := &livekit.SIPInboundTrunkInfo{
+		SipTrunkId:     "ST_test",
+		Numbers:        []string{"+15105550100"},
+		AllowedNumbers: []string{"+15105550111"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotCall atomic.Pointer[rpc.SIPCall]
+
+			h := &TestHandler{
+				GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+					gotCall.Store(call)
+					return AuthInfo{Result: AuthNotFound}, nil
+				},
+			}
+
+			sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+			localIP, err := config.GetLocalIP()
+			require.NoError(t, err)
+			sipServerAddress := fmt.Sprintf("%s:%d", localIP, sipPort)
+
+			mon, err := stats.NewMonitor(&config.Config{MaxCpuUtilization: 0.9})
+			require.NoError(t, err)
+
+			log := logger.NewTestLogger(t)
+			conf := &config.Config{
+				SIPPort:       sipPort,
+				SIPPortListen: sipPort,
+				RTPPort:       rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+			}
+			manager, err := NewCallManager("", conf, log, mon, newTestNonces(t), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+				return NewRPCStateHandler(nil)
+			})
+			require.NoError(t, err)
+			s, err := NewService(conf, mon, log, manager)
+			require.NoError(t, err)
+			t.Cleanup(s.Stop)
+
+			s.SetHandler(h)
+			require.NoError(t, s.Start())
+
+			ua, err := sipgo.NewUA(
+				sipgo.WithUserAgent("tel-test"),
+				sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = ua.Close() })
+
+			client, err := sipgo.NewClient(ua)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = client.Close() })
+
+			offer, err := sdp.NewOfferWith(defaultCodecs, localIP, 0xB0B, sdp.EncryptionNone)
+			require.NoError(t, err)
+			offerData, err := offer.SDP.Marshal()
+			require.NoError(t, err)
+
+			var reqURI, fromURI, toURI sip.Uri
+			require.NoError(t, esip.ParseUri(tc.reqURI, &reqURI))
+			require.NoError(t, esip.ParseUri(tc.fromURI, &fromURI))
+			require.NoError(t, esip.ParseUri(tc.toURI, &toURI))
+
+			req := sip.NewRequest(sip.INVITE, reqURI)
+			req.SetDestination(sipServerAddress)
+			req.SetBody(offerData)
+			req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+			req.AppendHeader(&sip.FromHeader{
+				Address: fromURI,
+				Params:  sip.HeaderParams{{K: "tag", V: "tel-from-tag"}},
+			})
+			req.AppendHeader(&sip.ToHeader{
+				Address: toURI,
+			})
+
+			tx, err := client.TransactionRequest(req)
+			require.NoError(t, err)
+			t.Cleanup(tx.Terminate)
+
+			res := getFinalResponseOrFail(t, nil, tx)
+			require.Equal(t, sip.StatusCode(404), res.StatusCode)
+
+			call := gotCall.Load()
+			require.NotNil(t, call)
+			require.Equal(t, tc.wantReq, call.Address.User)
+			require.Equal(t, tc.wantFrom, call.From.User)
+			require.Equal(t, tc.wantTo, call.To.User)
+
+			matched, err := lksip.MatchTrunk([]*livekit.SIPInboundTrunkInfo{trunk}, call)
+			require.NoError(t, err)
+			require.NotNil(t, matched)
+			require.Equal(t, trunk.SipTrunkId, matched.SipTrunkId)
+
+			require.Equal(t, toURI.Scheme, res.To().Address.Scheme)
+			require.Equal(t, toURI.Raw(), res.To().Address.Raw())
+			require.Equal(t, fromURI.Scheme, res.From().Address.Scheme)
+			require.Equal(t, fromURI.Raw(), res.From().Address.Raw())
+		})
+	}
 }

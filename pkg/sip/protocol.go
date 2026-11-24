@@ -512,8 +512,14 @@ func handleNotify(req *sip.Request) (notifyInfo, error) {
 	return info, nil
 }
 
+// isNotifyForRefer reports whether a NOTIFY is for the REFER with CSeq
+// referCseq. A NOTIFY without an event id is taken to be for it.
+func isNotifyForRefer(info notifyInfo, referCseq uint32) bool {
+	return info.CSeq == 0 || info.CSeq == referCseq
+}
+
 func handleReferNotify(info notifyInfo, referCseq uint32, referDone chan<- error) {
-	if info.CSeq != 0 && info.CSeq != referCseq {
+	if !isNotifyForRefer(info, referCseq) {
 		// NOTIFY for a different REFER, skip
 		return
 	}
@@ -660,8 +666,12 @@ func setCSeq(req *sip.Request, cseq uint32) {
 
 func ToSIPUri(ip string, u sip.Uri) *livekit.SIPUri {
 	tr, _ := u.UriParams.Get("transport")
+	user := u.User
+	if user == "" && strings.EqualFold(u.Scheme, "tel") {
+		user, _, _ = strings.Cut(u.Raw(), ";")
+	}
 	url := &livekit.SIPUri{
-		User:      u.User,
+		User:      user,
 		Host:      u.Host,
 		Ip:        ip,
 		Port:      uint32(u.Port),

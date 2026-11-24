@@ -528,7 +528,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
 	r := getRoom(c.log(), &c.stats.Room)
-	if err := r.Connect(ctx, c.cm.conf, lkNew); err != nil {
+	if err := r.Connect(ctx, c.cm.conf, c.cm.withPreferredRegion(lkNew)); err != nil {
 		_ = r.Close()
 		return err
 	}
@@ -1536,7 +1536,9 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, err := sendRefer(ctx, c, req, c.closing.Watch())
+	sentAt := time.Now()
+	res, err := sendRefer(ctx, c, req, c.closing.Watch())
+	c.emitEvent(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err
 	}
@@ -1545,6 +1547,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 }
 
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	receivedAt := time.Now()
 	info, err := handleNotify(req)
 	if err != nil {
 		c.log.Infow("error parsing NOTIFY request", "error", err)
@@ -1567,6 +1570,10 @@ func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) e
 		c.mu.RLock()
 		referCseq := c.referCseq
 		c.mu.RUnlock()
+		// Emit before the handoff: the handoff can end the transfer.
+		if isNotifyForRefer(info, referCseq) {
+			c.emitEvent(referNotifyEvent(req, receivedAt, info))
+		}
 		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}

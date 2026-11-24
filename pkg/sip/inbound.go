@@ -1956,7 +1956,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	}
 
 	tconn := c.mon.StageDurTimer("lk-connect")
-	err = c.lkRoom.Connect(ctx, c.cm.conf, rconf)
+	err = c.lkRoom.Connect(ctx, c.cm.conf, c.cm.withPreferredRegion(rconf))
 	tconn()
 	if err != nil {
 		return err
@@ -2844,7 +2844,9 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 		return err
 	}
 
-	_, err = sendRefer(ctx, c, req, c.cm.closing.Watch())
+	sentAt := time.Now()
+	res, err := sendRefer(ctx, c, req, c.cm.closing.Watch())
+	c.emit(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err
 	}
@@ -2853,6 +2855,7 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	receivedAt := time.Now()
 	info, err := handleNotify(req)
 	if err != nil {
 		return err
@@ -2872,6 +2875,10 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 		c.mu.RLock()
 		referCseq := c.referCseq
 		c.mu.RUnlock()
+		// Emit before the handoff: the handoff can end the transfer.
+		if isNotifyForRefer(info, referCseq) {
+			c.emit(referNotifyEvent(req, receivedAt, info))
+		}
 		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}

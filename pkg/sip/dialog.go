@@ -31,39 +31,39 @@ type Dialog struct {
 	// Version increases with each snapshot. Snapshots can reach the handler
 	// out of order; a snapshot with a lower Version than one already handled
 	// is stale.
-	Version   uint64
-	State     DialogState
-	Direction livekit.SIPCallDirection
+	Version   uint64                   `json:"version"`
+	State     DialogState              `json:"state"`
+	Direction livekit.SIPCallDirection `json:"direction"`
 
 	// CallID is the SIP Call-ID.
-	CallID string
+	CallID string `json:"call_id"`
 	// LocalTag and RemoteTag identify the dialog together with the Call-ID.
 	// The local tag is the From tag of this side's requests.
-	LocalTag  string
-	RemoteTag string
+	LocalTag  string `json:"local_tag"`
+	RemoteTag string `json:"remote_tag"`
 	// LocalURI and RemoteURI are the From and To URIs of this side's
 	// requests, without tags.
-	LocalURI  string
-	RemoteURI string
+	LocalURI  string `json:"local_uri"`
+	RemoteURI string `json:"remote_uri"`
 	// RemoteTarget is the remote side's Contact URI: the Request-URI of
 	// this side's requests. It is the Contact of the INVITE or of its
 	// answer, or of the last re-INVITE this side accepted.
-	RemoteTarget string
+	RemoteTarget string `json:"remote_target"`
 	// RouteSet is the dialog's route set in the order this side's requests
 	// use it: the first entry is the next hop.
-	RouteSet []string
+	RouteSet []string `json:"route_set"`
 
 	// NextLocalCSeq is the lowest CSeq a new request from this side may use.
 	// Requests sent after the snapshot raise it, so a user agent that sends
 	// from a snapshot should start well above it.
-	NextLocalCSeq uint32
+	NextLocalCSeq uint32 `json:"next_local_cseq"`
 	// RemoteCSeq is the highest CSeq of the remote side's INVITEs: the one
 	// that created the dialog and the re-INVITEs this side accepted.
-	RemoteCSeq uint32
+	RemoteCSeq uint32 `json:"remote_cseq"`
 
 	// LocalSDP and RemoteSDP are the last session descriptions each side sent.
-	LocalSDP  []byte
-	RemoteSDP []byte
+	LocalSDP  []byte `json:"local_sdp"`
+	RemoteSDP []byte `json:"remote_sdp"`
 }
 
 // DialogState is the state of a dialog (RFC 3261 section 12).
