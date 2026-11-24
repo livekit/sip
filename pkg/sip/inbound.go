@@ -1170,14 +1170,23 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 	var participantID string
 	c.state.Update(func(info *livekit.SIPCallInfo) {
 		if r := c.lkRoom.Room(); r != nil {
-			info.RoomId = r.SID()
 			info.RoomName = r.Name()
 			participantID = r.LocalParticipant.SID()
 		} else {
-			c.log().Warnw("could not set RoomId: room is nil", nil)
+			c.log().Warnw("could not set RoomName: room is nil", nil)
 		}
 	})
-	c.state.EmitSignalingEvent(SignalingEvent{Type: EventRoomJoined, Time: c.sigTs.JoinRoomTime, ParticipantID: participantID})
+	// The room SID can arrive after the join. Do not wait for it: the event is
+	// sent when the SID arrives, with the join time, so that it has the room ID.
+	joinTime := c.sigTs.JoinRoomTime
+	c.lkRoom.OnRoomID(func(roomID string) {
+		if roomID != "" {
+			c.state.Update(func(info *livekit.SIPCallInfo) {
+				info.RoomId = roomID
+			})
+		}
+		c.state.EmitSignalingEvent(SignalingEvent{Type: EventRoomJoined, Time: joinTime, ParticipantID: participantID})
+	})
 
 	// Publish our own track.
 	if err := c.publishTrack(disp.EnabledFeatures, disp.FeatureFlags); err != nil {
@@ -1205,7 +1214,9 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 		if r := c.lkRoom.Room(); r != nil {
-			info.RoomId = r.SID()
+			if roomID := c.lkRoom.RoomID(); roomID != "" {
+				info.RoomId = roomID
+			}
 			info.RoomName = r.Name()
 			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}

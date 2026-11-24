@@ -199,6 +199,10 @@ type RoomInterface interface {
 	ClosedReason() livekit.DisconnectReason
 	Subscribed() <-chan struct{}
 	Room() *lksdk.Room
+	RoomID() string
+	// OnRoomID calls f with the room SID when the room has it, or with an empty SID
+	// if the room closes first. It does not wait: f runs now or in a new goroutine.
+	OnRoomID(f func(roomID string))
 	Subscribe()
 	Close() error
 	CloseWithReason(reason livekit.DisconnectReason) error
@@ -254,6 +258,12 @@ type Room struct {
 	stopped        core.Fuse
 	closed         core.Fuse
 	stats          *RoomStats
+
+	// roomID is set once the SDK has the room SID. The join response can come
+	// before the server knows the room SID, so the SID can arrive later in a
+	// room update. Calls must not wait for it.
+	roomID      atomic.Pointer[string]
+	roomIDReady core.Fuse
 }
 
 type ParticipantConfig struct {
@@ -299,9 +309,9 @@ func NewRoom(log logger.Logger, st *RoomStats) *Room {
 
 	go func() {
 		select {
-		case <-r.ready.Watch():
+		case <-r.roomIDReady.Watch():
 			if room := r.room.Load(); room != nil {
-				resolve.Resolve("room", room.Name(), "roomID", room.SID())
+				resolve.Resolve("room", room.Name(), "roomID", r.RoomID())
 			} else {
 				resolve.Resolve()
 			}
@@ -320,6 +330,55 @@ func (r *Room) Closed() <-chan struct{} {
 		return nil
 	}
 	return r.stopped.Watch()
+}
+
+// RoomID returns the room SID without a wait. It is empty until the SDK has the
+// SID, or if the room disconnected before the SID arrived.
+func (r *Room) RoomID() string {
+	if r == nil {
+		return ""
+	}
+	p := r.roomID.Load()
+	if p == nil {
+		return ""
+	}
+	// After the first SID, room.SID() does not block. Read it again, because a
+	// room move changes the SID.
+	if room := r.room.Load(); room != nil {
+		if sid := room.SID(); sid != "" {
+			return sid
+		}
+	}
+	return *p
+}
+
+// OnRoomID implements RoomInterface.
+func (r *Room) OnRoomID(f func(roomID string)) {
+	if r == nil {
+		f("")
+		return
+	}
+	if r.roomIDReady.IsBroken() {
+		f(r.RoomID())
+		return
+	}
+	go func() {
+		select {
+		case <-r.roomIDReady.Watch():
+		case <-r.stopped.Watch():
+		}
+		f(r.RoomID())
+	}()
+}
+
+// waitRoomID stores the room SID when the SDK gets it. room.SID() blocks until
+// the SID arrives, or returns empty when the room disconnects.
+func (r *Room) waitRoomID(room *lksdk.Room, resolveLog logger.DeferredFieldResolver) {
+	roomID := room.SID()
+	// Store before the fuse breaks: code that sees the broken fuse reads RoomID.
+	r.roomID.Store(&roomID)
+	resolveLog.Resolve("roomID", roomID)
+	r.roomIDReady.Break()
 }
 
 // ClosedReason returns the raw protocol disconnect reason once Closed() has
@@ -439,7 +498,10 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	r.room.Store(room)
 	r.setParticipantFromRoom()
 	p := r.Participant()
-	r.log = r.log.WithValues("room", room.Name(), "roomID", room.SID(), "participant", p.Identity, "participantID", p.ID)
+	// The roomID field is deferred: log lines wait for the SID, but the join does not.
+	var resolveLog logger.DeferredFieldResolver
+	r.log, resolveLog = r.log.WithValues("room", room.Name(), "participant", p.Identity, "participantID", p.ID).WithDeferredValues()
+	go r.waitRoomID(room, resolveLog)
 	r.log.Infow("SIP participant joined room")
 	room.LocalParticipant.SetAttributes(partConf.Attributes)
 	r.ready.Break()

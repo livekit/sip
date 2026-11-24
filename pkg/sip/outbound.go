@@ -271,9 +271,17 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 			c.log().Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
 			return
 		}
-		info.RoomId = lkroom.SID()
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
+	})
+	// The room SID can arrive after the call is answered. Report it when it arrives.
+	c.lkRoom.OnRoomID(func(roomID string) {
+		if roomID == "" {
+			return
+		}
+		c.state.Update(func(info *livekit.SIPCallInfo) {
+			info.RoomId = roomID
+		})
 	})
 	return nil
 }

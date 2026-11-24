@@ -233,6 +233,11 @@ type testRoomConfig struct {
 	// inboundAudioErr, when set, is returned by GetInboundAudioWriter, standing
 	// in for a failure to publish our own track into the room.
 	inboundAudioErr error
+	// lateRoomID makes the join response have no room SID, as when the server
+	// has not resolved the room yet. Send the SID with sendRoomID.
+	lateRoomID bool
+	// onCreate, when set, gets each room that the test creates.
+	onCreate func(r *testRoom)
 }
 
 func newTestRoomConfig(cfg *testRoomConfig) GetRoomFunc {
@@ -280,10 +285,14 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 
 	// Drive the SDK room through a join so Name() and SID() report values, as
 	// they would after a real connection.
+	joinSID := testRoomSID
+	if cfg.lateRoomID {
+		joinSID = ""
+	}
 	sdkRoom.OnRoomJoined(&livekit.Room{
 		Name:            testRoomName,
 		Metadata:        "test-metadata",
-		Sid:             testRoomSID,
+		Sid:             joinSID,
 		NumParticipants: 1,
 		NumPublishers:   1,
 	}, &livekit.ParticipantInfo{
@@ -301,7 +310,20 @@ func newTestRoomWithConfig(log logger.Logger, st *RoomStats, cfg *testRoomConfig
 		Name:     "Test Participant",
 	})
 
-	return &testRoom{room: room, cfg: cfg}
+	_, resolveLog := log.WithDeferredValues()
+	go room.waitRoomID(sdkRoom, resolveLog)
+
+	tr := &testRoom{room: room, cfg: cfg}
+	if cfg.onCreate != nil {
+		cfg.onCreate(tr)
+	}
+	return tr
+}
+
+// sendRoomID sends the room SID in a room update, as the server does when the
+// room resolves after the join response.
+func (r *testRoom) sendRoomID() {
+	r.room.Room().OnRoomUpdate(&livekit.Room{Name: testRoomName, Sid: testRoomSID})
 }
 
 // Connect overrides Room.Connect to skip actual LiveKit connection
@@ -336,6 +358,14 @@ func (r *testRoom) Subscribed() <-chan struct{} {
 
 func (r *testRoom) Room() *lksdk.Room {
 	return r.room.Room()
+}
+
+func (r *testRoom) RoomID() string {
+	return r.room.RoomID()
+}
+
+func (r *testRoom) OnRoomID(f func(roomID string)) {
+	r.room.OnRoomID(f)
 }
 
 func (r *testRoom) Subscribe() {

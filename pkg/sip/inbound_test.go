@@ -19,6 +19,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -506,6 +507,55 @@ func TestInboundRoomIDReportedOnAnsweredCall(t *testing.T) {
 		require.Equal(t, testRoomName, u.RoomName, "update %d reported an unexpected room name", i)
 	}
 	require.True(t, joined, "room identity should have been reported at least once")
+}
+
+// TestInboundRoomIDArrivesLate covers a join response without the room SID, as
+// when the server resolves the room after the join. The call must not wait for
+// the SID. The SID and the room joined event are reported when the SID arrives.
+func TestInboundRoomIDArrivesLate(t *testing.T) {
+	states := &recordingStateHandler{}
+	rooms := make(chan *testRoom, 4)
+	st := NewServiceTest(t, &serviceTestConfig{
+		GetRoom: newTestRoomConfig(&testRoomConfig{
+			lateRoomID: true,
+			onCreate:   func(r *testRoom) { rooms <- r },
+		}),
+		GetStateHandler: states.GetStateHandler(),
+	})
+
+	_, ic := st.CreateInboundCall(t)
+	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond, "call should become active without the room SID")
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.CallStatus == livekit.SIPCallStatus_SCS_ACTIVE
+	}, 5*time.Second, 10*time.Millisecond, "active call should be reported")
+	active := states.Last()
+	require.Empty(t, active.RoomId, "the room SID has not arrived")
+	require.Equal(t, testRoomName, active.RoomName)
+	require.NotContains(t, states.EventTypes(), EventRoomJoined, "the room joined event waits for the room SID")
+
+	var room *testRoom
+	select {
+	case room = <-rooms:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no room was created")
+	}
+	room.sendRoomID()
+
+	require.Eventually(t, func() bool {
+		last := states.Last()
+		return last != nil && last.RoomId == testRoomSID
+	}, 5*time.Second, 10*time.Millisecond, "room SID should be reported when it arrives")
+
+	var joined []SignalingEvent
+	require.Eventually(t, func() bool {
+		joined = slices.DeleteFunc(states.Events(), func(ev SignalingEvent) bool { return ev.Type != EventRoomJoined })
+		return len(joined) > 0
+	}, 5*time.Second, 10*time.Millisecond, "room joined event should be sent when the SID arrives")
+	require.Len(t, joined, 1)
+	require.Equal(t, testRoomSID, joined[0].RoomID)
+	require.NotEmpty(t, joined[0].ParticipantID)
+	require.Less(t, joined[0].Time.UnixNano(), active.StartedAtNs, "the event keeps the join time, not the time the SID arrived")
 }
 
 // TestInboundCallStatusCode checks the value of info.CallStatusCode for various call outcomes
