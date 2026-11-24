@@ -24,6 +24,7 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/exp/maps"
 
+	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sipgo/sip"
@@ -48,6 +49,7 @@ type CallManager interface {
 	// SIP Handlers
 	HandleInvite(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
+	HandleCancel(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleBye(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleNotify(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
 	HandleOptions(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction)
@@ -71,6 +73,7 @@ type callManager struct {
 	tr              SIPTransport
 	getStateHandler GetStateHandler
 	getRoom         GetRoomFunc
+	preferredRegion func(wsURL string) *livekit.RegionInfo
 	sealer          sealer.Sealer
 
 	closing            core.Fuse
@@ -107,6 +110,26 @@ func WithGetRoom(fn GetRoomFunc) CallManagerOption {
 			cm.getRoom = fn
 		}
 	}
+}
+
+// WithPreferredRegion sets a function that returns the region to try first
+// when SIP joins a room through wsURL. The function returns nil for no
+// preference.
+func WithPreferredRegion(fn func(wsURL string) *livekit.RegionInfo) CallManagerOption {
+	return func(cm *callManager) {
+		cm.preferredRegion = fn
+	}
+}
+
+func (cm *callManager) withPreferredRegion(rconf RoomConfig) RoomConfig {
+	if cm.preferredRegion != nil {
+		wsURL := rconf.WsUrl
+		if wsURL == "" {
+			wsURL = cm.conf.WsUrl // as in Room.Connect
+		}
+		rconf.PreferredRegion = cm.preferredRegion(wsURL)
+	}
+	return rconf
 }
 
 // NewCallManager returns the default CallManager.

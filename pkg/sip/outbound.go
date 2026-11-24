@@ -529,7 +529,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	lkNew.Participant.Attributes = attrs
 	lkNew.OnAgentAudio = c.state.agentAudioSent
 	r := getRoom(c.log(), &c.stats.Room)
-	if err := r.Connect(ctx, c.cm.conf, lkNew); err != nil {
+	if err := r.Connect(ctx, c.cm.conf, c.cm.withPreferredRegion(lkNew)); err != nil {
 		_ = r.Close()
 		return err
 	}
@@ -868,6 +868,8 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 		return err
 	}
 	c.sigTs.AckTime = time.Now()
+	// The dialog is established: the remote side answered and this side sent the ACK.
+	c.state.EmitDialog(c.cc.Dialog())
 	joinDur()
 
 	if ctx.Err() != nil {
@@ -997,6 +999,9 @@ type sipOutbound struct {
 	referCseq        uint32
 	referDone        chan error
 	latestInviteCSeq uint32
+	remoteSDP        []byte // SDP of the last accepted re-INVITE
+	localSDP         []byte // SDP this side answered the last accepted re-INVITE with
+	remoteTarget     string // Contact of the last accepted re-INVITE that had one
 
 	emit        func(SignalingEvent)    // reports signaling events; nil if not set
 	provisional map[sip.StatusCode]bool // 1xx codes already reported
@@ -1535,7 +1540,9 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.referCseq = cseq.SeqNo
 	c.mu.Unlock()
 
-	_, err := sendRefer(ctx, c, req, c.closing.Watch())
+	sentAt := time.Now()
+	res, err := sendRefer(ctx, c, req, c.closing.Watch())
+	c.emitEvent(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err
 	}
@@ -1544,6 +1551,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 }
 
 func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	receivedAt := time.Now()
 	info, err := handleNotify(req)
 	if err != nil {
 		c.log.Infow("error parsing NOTIFY request", "error", err)
@@ -1566,6 +1574,10 @@ func (c *sipOutbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) e
 		c.mu.RLock()
 		referCseq := c.referCseq
 		c.mu.RUnlock()
+		// Emit before the handoff: the handoff can end the transfer.
+		if isNotifyForRefer(info, referCseq) {
+			c.emitEvent(referNotifyEvent(req, receivedAt, info))
+		}
 		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}

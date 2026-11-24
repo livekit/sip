@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	sipgo "github.com/emiago/sipgo/sip"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/psrpc"
@@ -444,6 +445,81 @@ func TestParseReason(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, c.Reason, r)
 			require.Equal(t, c.Normal, r.IsNormal())
+		})
+	}
+}
+
+func TestReasonString(t *testing.T) {
+	cases := []struct {
+		Name   string
+		Reason ReasonHeader
+		Exp    string
+	}{
+		{Name: "empty", Reason: ReasonHeader{}, Exp: "<none>"},
+		{Name: "Q.850 with text", Reason: ReasonHeader{Type: "q.850", Cause: 16, Text: "Terminated"}, Exp: "q.850-16: Terminated"},
+		{Name: "Q.850 without text", Reason: ReasonHeader{Type: "q.850", Cause: 127}, Exp: "q.850-127: Interworking, unspecified"},
+		{Name: "Q.850 unknown cause", Reason: ReasonHeader{Type: "q.850", Cause: 126}, Exp: "q.850-126"},
+		{Name: "X.int without text", Reason: ReasonHeader{Type: "x.int", Cause: 0x32D}, Exp: "x.int-813"},
+		{Name: "SIP with text", Reason: ReasonHeader{Type: "sip", Cause: 487, Text: "Request Terminated"}, Exp: "sip-487: Request Terminated"},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			require.Equal(t, c.Exp, c.Reason.String())
+		})
+	}
+}
+
+func TestToSIPUri(t *testing.T) {
+	cases := []struct {
+		Name string
+		URI  string
+		IP   string
+		Want *livekit.SIPUri
+	}{
+		{
+			Name: "sip",
+			URI:  "sip:+15105550100@sip.example.net:5061;transport=tls;user=phone",
+			IP:   "192.0.2.1",
+			Want: &livekit.SIPUri{
+				User:      "+15105550100",
+				Host:      "sip.example.net",
+				Ip:        "192.0.2.1",
+				Port:      5061,
+				Transport: livekit.SIPTransport_SIP_TRANSPORT_TLS,
+			},
+		},
+		{
+			Name: "tel",
+			URI:  "tel:+15105550100",
+			Want: &livekit.SIPUri{
+				User: "+15105550100",
+			},
+		},
+		{
+			Name: "tel with separators",
+			URI:  "tel:+1-510-555-0100",
+			Want: &livekit.SIPUri{
+				User: "+1-510-555-0100",
+			},
+		},
+		{
+			Name: "tel with params",
+			URI:  "TEL:+15105550100;phone-context=example.com",
+			Want: &livekit.SIPUri{
+				User: "+15105550100",
+			},
+		},
+		{
+			Name: "urn",
+			URI:  "urn:service:sos",
+			Want: &livekit.SIPUri{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			var u sip.Uri
+			require.NoError(t, sipgo.ParseUri(c.URI, &u))
+			require.Equal(t, c.Want, ToSIPUri(c.IP, u))
 		})
 	}
 }

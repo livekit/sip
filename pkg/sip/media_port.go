@@ -351,6 +351,7 @@ func (c *udpConn) startDiscarding() {
 
 func (c *udpConn) stopDiscarding() {
 	c.discardStop.Store(true)
+	_ = c.UDPConn.SetReadDeadline(time.Now()) // wake the pending read
 	c.discardWG.Wait()
 }
 

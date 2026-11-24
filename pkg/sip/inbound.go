@@ -480,6 +480,8 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		}
 		// TODO(alexfish): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(existing.cc.OwnSDP())
+		existing.cc.acceptedReinvite(req, cc.InviteCSeq(), sdpBodyFromRequest(req))
+		existing.state.EmitDialog(existing.cc.Dialog())
 		return nil
 	}
 
@@ -505,6 +507,8 @@ func (cm *callManager) processInvite(req *sip.Request, tx sip.ServerTransaction)
 		oc.cc.RecordInvite(newCSeq)
 		// TODO(alexfish): Reply with the new SDP.
 		cc.AcceptAsKeepAlive(localSDP)
+		oc.cc.acceptedReinvite(req, sdpBodyFromRequest(req), localSDP)
+		oc.state.EmitDialog(oc.cc.Dialog())
 		return nil
 	}
 
@@ -690,17 +694,26 @@ func (cm *callManager) HandleOptions(log *slog.Logger, req *sip.Request, tx sip.
 	_ = tx.Respond(newResponse(req, sip.StatusOK, "", nil))
 }
 
+// Runs for a CANCEL that did not match an INVITE server transaction.
+// Where a matching CANCEL is answered by the tx, these are unexpected CANCEL mesages.
+// TODO(alexfish): Move this into manager.go
+func (cm *callManager) HandleCancel(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	// No-op. We are explicitly not replying to this message.
+	// This exists here so we don't fall to HandleNoRoute(), which generates a reply.
+}
+
 // TODO(alexfish): Move this into manager.go
 func (cm *callManager) HandleAck(log *slog.Logger, req *sip.Request, tx sip.ServerTransaction) {
+	// Never respond, by convention.
 	tag, err := GetLocalTagUAS(req)
 	if err != nil {
-		return
+		return // 2xx ACK requests are a separate tx, and must have to tag
 	}
 	cm.cmu.RLock()
 	c := cm.byLocalTag[tag]
 	cm.cmu.RUnlock()
 	if c == nil {
-		return
+		return // Not found
 	}
 	c.log().Infow("ACK from remote")
 	c.cc.AcceptAck(req, tx)
@@ -1197,6 +1210,10 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 			info.ParticipantAttributes = r.LocalParticipant.Attributes() // clones
 		}
 	})
+	// The dialog is established: this side answered. The ACK may still be on
+	// its way, and a lost ACK does not end a call that has media. A call with
+	// no ACK and no media ends, and its handler sees the end.
+	c.state.EmitDialog(c.cc.Dialog())
 
 	c.started.Break()
 
@@ -1940,7 +1957,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	}
 
 	tconn := c.mon.StageDurTimer("lk-connect")
-	err = c.lkRoom.Connect(ctx, c.cm.conf, rconf)
+	err = c.lkRoom.Connect(ctx, c.cm.conf, c.cm.withPreferredRegion(rconf))
 	tconn()
 	if err != nil {
 		return err
@@ -2196,6 +2213,9 @@ type sipInbound struct {
 	lastSDP         []byte
 	inviteOk        *sip.Response
 	nextRequestCSeq uint32
+	remoteCSeq      uint32 // highest CSeq of an accepted re-INVITE
+	remoteSDP       []byte // SDP of the last accepted re-INVITE
+	remoteTarget    string // Contact of the last accepted re-INVITE that had one
 	referCseq       uint32
 	ringing         chan struct{}
 	acked           core.Fuse
@@ -2297,9 +2317,7 @@ func (c *sipInbound) respondWithData(status sip.StatusCode, reason string, conte
 		r.AppendHeader(&typ)
 	}
 	r.AppendHeader(sip.HeaderClone(allowHeader))
-	if status > sip.StatusTrying { // Anything establishing early dialog must have contact
-		r.AppendHeader(c.contact)
-	}
+	r.AppendHeader(c.contact)
 	c.addExtraHeaders(r)
 	if err := c.inviteTx.Respond(r); err != nil {
 		return false
@@ -2423,11 +2441,10 @@ func (c *sipInbound) StartRinging() bool {
 			select {
 			case <-stop:
 				return
-			case r := <-cancels:
-				receivedAt := time.Now()
+			case <-cancels:
+				now := time.Now()
+				c.emit(SignalingEvent{Type: EventCancelReceived, Time: now, SIPMethod: string(sip.CANCEL), CSeq: c.inviteCSeq})
 				close(c.cancelled) // Other goroutines will respond to the primary INVITE
-				_ = tx.Respond(newResponse(r, sip.StatusOK, "", nil))
-				c.emit(SignalingEvent{Type: EventCancelReceived, Time: receivedAt, SIPMethod: string(sip.CANCEL), CSeq: c.inviteCSeq})
 				return
 			case <-ticker.C:
 			}
@@ -2828,7 +2845,9 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 		return err
 	}
 
-	_, err = sendRefer(ctx, c, req, c.cm.closing.Watch())
+	sentAt := time.Now()
+	res, err := sendRefer(ctx, c, req, c.cm.closing.Watch())
+	c.emit(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err
 	}
@@ -2837,6 +2856,7 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 }
 
 func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) error {
+	receivedAt := time.Now()
 	info, err := handleNotify(req)
 	if err != nil {
 		return err
@@ -2856,6 +2876,10 @@ func (c *sipInbound) handleNotify(req *sip.Request, tx sip.ServerTransaction) er
 		c.mu.RLock()
 		referCseq := c.referCseq
 		c.mu.RUnlock()
+		// Emit before the handoff: the handoff can end the transfer.
+		if isNotifyForRefer(info, referCseq) {
+			c.emit(referNotifyEvent(req, receivedAt, info))
+		}
 		handleReferNotify(info, referCseq, c.referDone)
 		return nil
 	}

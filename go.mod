@@ -8,17 +8,17 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/icholy/digest v1.2.0
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
-	github.com/livekit/media-sdk v0.1.2-0.20261110211843-756e3cfaa8dd
-	github.com/livekit/mediatransportutil v0.0.0-20261103164426-a2ee44bcc302
-	github.com/livekit/protocol v1.53.3-0.20261110212946-e6dd7c1a6bf6
+	github.com/livekit/media-sdk v0.1.2-0.20261113224556-6af80a081262
+	github.com/livekit/mediatransportutil v0.0.0-20261105133908-2cf1b1487796
+	github.com/livekit/protocol v1.54.1
 	github.com/livekit/psrpc v0.8.2
-	github.com/livekit/server-sdk-go/v2 v2.19.1-0.20261104011314-e4b3611b22e3
-	github.com/livekit/sipgo v0.13.2-0.20261106192933-b339eb131743
+	github.com/livekit/server-sdk-go/v2 v2.20.1-0.20261122072228-9becc57c9fcd
+	github.com/livekit/sipgo v0.13.2-0.20261112191756-b8d7ff706561
 	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
 	github.com/ory/dockertest/v3 v3.12.0
 	github.com/pion/rtp v1.10.6
 	github.com/pion/sdp/v3 v3.0.20
-	github.com/pion/webrtc/v4 v4.2.25
+	github.com/pion/webrtc/v4 v4.2.26
 	github.com/prometheus/client_golang v1.25.0
 	github.com/sirupsen/logrus v1.10.2
 	github.com/stretchr/testify v1.12.1
@@ -32,8 +32,9 @@ require (
 require (
 	github.com/jfreymuth/oggvorbis v1.0.5 // indirect
 	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect
+	github.com/pion/dtls/v4 v4.0.0-rc.8 // indirect
 	github.com/pion/stun/v4 v4.0.1 // indirect
-	github.com/pion/transport/v5 v5.1.1 // indirect
+	github.com/pion/transport/v5 v5.1.4 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302 // indirect
 )
@@ -62,13 +63,13 @@ require (
 	github.com/docker/cli v29.2.0+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
-	github.com/emiago/sipgo v1.6.0
+	github.com/emiago/sipgo v1.7.2
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/gammazero/deque v1.2.2 // indirect
+	github.com/gammazero/deque v1.2.3 // indirect
 	github.com/go-logr/logr v1.4.4
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
@@ -78,7 +79,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/gotranspile/g722 v0.0.0-20240123003956-384a1bb16a19 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/jxskiss/base62 v1.1.0 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
@@ -100,7 +101,7 @@ require (
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.15 // indirect
 	github.com/pion/ice/v4 v4.4.8 // indirect
-	github.com/pion/interceptor v0.1.49 // indirect
+	github.com/pion/interceptor v0.1.51 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.2.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
@@ -109,7 +110,7 @@ require (
 	github.com/pion/srtp/v3 v3.1.3 // indirect
 	github.com/pion/stun/v3 v3.1.7 // indirect
 	github.com/pion/transport/v4 v4.1.0 // indirect
-	github.com/pion/turn/v5 v5.1.2 // indirect
+	github.com/pion/turn/v5 v5.1.3 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
@@ -123,11 +124,11 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 // indirect
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
-	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.47.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
@@ -135,12 +136,16 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260817212433-ac3dfec99bb1 // indirect
+	golang.org/x/time v0.16.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260825221802-da73d73af1c5 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
 	google.golang.org/grpc v1.85.0
 )
+
+replace github.com/pion/webrtc/v4 => github.com/livekit/webrtc-pion/v4 v4.2.25-warp.3
+
+replace github.com/pion/ice/v4 => github.com/livekit/ice/v4 v4.4.8-warp.4

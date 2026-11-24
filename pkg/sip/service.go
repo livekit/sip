@@ -213,6 +213,7 @@ func (s *Service) Start() error {
 		sipgo.WithUserAgent(UserAgent),
 		sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
 	}
+	opts = append(opts, s.srv.uaOpts...)
 	if tconf := s.conf.TCP; tconf != nil {
 		s.log.Debugw("configuring TCP dial port range", "start", tconf.DialPort.Start, "end", tconf.DialPort.End)
 		opts = append(opts, sipgo.WithUserAgentTCPConfig(&sipgo.TCPConfig{

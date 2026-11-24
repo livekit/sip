@@ -274,7 +274,8 @@ type RoomConfig struct {
 	LogSignalChanges bool
 	// OnAgentAudio, if set, is called once, for the first agent audio frame
 	// that goes to the SIP side.
-	OnAgentAudio AgentAudioFunc
+	OnAgentAudio    AgentAudioFunc
+	PreferredRegion *livekit.RegionInfo
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -433,6 +434,7 @@ func (r *Room) Connect(ctx context.Context, conf *config.Config, rconf RoomConfi
 	err := room.JoinWithContextAndToken(ctx, rconf.WsUrl, rconf.Token,
 		lksdk.WithAutoSubscribe(false),
 		lksdk.WithExtraAttributes(partConf.Attributes),
+		lksdk.WithPreferredRegion(rconf.PreferredRegion),
 	)
 	if err != nil {
 		return err

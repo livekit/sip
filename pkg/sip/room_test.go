@@ -93,6 +93,7 @@ func newReconnectFixture(t *testing.T) *reconnectFixture {
 	}
 
 	sdk := lksdk.NewRoom(cb)
+	sdk.SetLogger(newRoomOverrideLogger(r.log))
 	r.room.Store(sdk)
 	r.ready.Break()
 
