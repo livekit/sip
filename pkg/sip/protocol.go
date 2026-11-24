@@ -776,7 +776,88 @@ func (r ReasonHeader) String() string {
 	if r.IsZero() {
 		return "<none>"
 	}
-	return fmt.Sprintf("%s-%d: %s", r.Type, r.Cause, r.Text)
+	text := r.Text
+	if text == "" && r.Type == "q.850" {
+		// Many carriers send only the cause number, so fill in the standard name.
+		text = q850CauseNames[r.Cause]
+	}
+	if text == "" {
+		return fmt.Sprintf("%s-%d", r.Type, r.Cause)
+	}
+	return fmt.Sprintf("%s-%d: %s", r.Type, r.Cause, text)
+}
+
+// q850CauseNames maps ITU-T Q.850 cause values to their standard names.
+var q850CauseNames = map[int]string{
+	1:   "Unallocated (unassigned) number",
+	2:   "No route to specified transit network",
+	3:   "No route to destination",
+	4:   "Send special information tone",
+	5:   "Misdialled trunk prefix",
+	6:   "Channel unacceptable",
+	7:   "Call awarded and being delivered in an established channel",
+	8:   "Preemption",
+	9:   "Preemption - circuit reserved for reuse",
+	16:  "Normal call clearing",
+	17:  "User busy",
+	18:  "No user responding",
+	19:  "No answer from user (user alerted)",
+	20:  "Subscriber absent",
+	21:  "Call rejected",
+	22:  "Number changed",
+	23:  "Redirection to new destination",
+	25:  "Exchange routing error",
+	26:  "Non-selected user clearing",
+	27:  "Destination out of order",
+	28:  "Invalid number format (address incomplete)",
+	29:  "Facility rejected",
+	30:  "Response to STATUS ENQUIRY",
+	31:  "Normal, unspecified",
+	34:  "No circuit/channel available",
+	38:  "Network out of order",
+	39:  "Permanent frame mode connection out of service",
+	40:  "Permanent frame mode connection operational",
+	41:  "Temporary failure",
+	42:  "Switching equipment congestion",
+	43:  "Access information discarded",
+	44:  "Requested circuit/channel not available",
+	46:  "Precedence call blocked",
+	47:  "Resource unavailable, unspecified",
+	49:  "Quality of service not available",
+	50:  "Requested facility not subscribed",
+	53:  "Outgoing calls barred within CUG",
+	55:  "Incoming calls barred within CUG",
+	57:  "Bearer capability not authorized",
+	58:  "Bearer capability not presently available",
+	62:  "Inconsistency in designated outgoing access information and subscriber class",
+	63:  "Service or option not available, unspecified",
+	65:  "Bearer capability not implemented",
+	66:  "Channel type not implemented",
+	69:  "Requested facility not implemented",
+	70:  "Only restricted digital information bearer capability is available",
+	79:  "Service or option not implemented, unspecified",
+	81:  "Invalid call reference value",
+	82:  "Identified channel does not exist",
+	83:  "A suspended call exists, but this call identity does not",
+	84:  "Call identity in use",
+	85:  "No call suspended",
+	86:  "Call having the requested call identity has been cleared",
+	87:  "User not member of CUG",
+	88:  "Incompatible destination",
+	90:  "Non-existent CUG",
+	91:  "Invalid transit network selection",
+	95:  "Invalid message, unspecified",
+	96:  "Mandatory information element is missing",
+	97:  "Message type non-existent or not implemented",
+	98:  "Message not compatible with call state or message type non-existent or not implemented",
+	99:  "Information element/parameter non-existent or not implemented",
+	100: "Invalid information element contents",
+	101: "Message not compatible with call state",
+	102: "Recovery on timer expiry",
+	103: "Parameter non-existent or not implemented, passed on",
+	110: "Message with unrecognized parameter, discarded",
+	111: "Protocol error, unspecified",
+	127: "Interworking, unspecified",
 }
 
 func ParseReasonHeader(header string) (ReasonHeader, error) {
