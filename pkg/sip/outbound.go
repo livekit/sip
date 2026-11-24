@@ -85,13 +85,20 @@ type outboundCall struct {
 
 	byeReceived atomic.Bool // EventByeReceived was emitted
 
-	mu         sync.RWMutex
-	mon        *stats.CallMonitor
-	sessionDur func() time.Duration
-	callDur    func() time.Duration // set once the call is answered
-	lkRoom     RoomInterface
-	lkRoomIn   msdk.PCM16Writer // output to room; OPUS at 48k
-	sipConf    sipOutboundConfig
+	mu           sync.RWMutex
+	mon          *stats.CallMonitor
+	sessionDur   func() time.Duration
+	callDur      func() time.Duration // set once the call is answered
+	lkRoom       RoomInterface
+	lkRoomIn     msdk.PCM16Writer // output to room; OPUS at 48k
+	inboundMedia bool             // SIP→room audio path attached (early media or final answer)
+	// dialtoneCancel stops the local dialtone and dialtoneDone closes when the
+	// tone goroutine has finished its last write; carrier-provided early media
+	// takes over the ringback once it attaches (RFC 3960), waiting for a clean
+	// handoff instead of overlapping writes. Both guarded by mu.
+	dialtoneCancel context.CancelFunc
+	dialtoneDone   chan struct{}
+	sipConf        sipOutboundConfig
 }
 
 // TODO(alexfish): Move this into manager.go
@@ -555,11 +562,15 @@ func (c *outboundCall) dialSIP(ctx context.Context) error {
 		const ringVolume = math.MaxInt16 / 2
 		rctx, rcancel := context.WithCancel(ctx)
 		defer rcancel()
+		done := make(chan struct{})
+		c.dialtoneCancel = rcancel
+		c.dialtoneDone = done
 
 		dst := c.lkRoomIn // already under mutex
 
 		// Play dialtone to the room while participant connects
 		go func() {
+			defer close(done)
 			rctx, span := Tracer.Start(rctx, "tones.Play")
 			defer span.End()
 
@@ -618,6 +629,48 @@ func (c *outboundCall) connectMedia() {
 		c.log().Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
+	// The SIP→room path may already be attached (early media during ringing);
+	// connectInboundMedia is idempotent, so this is a no-op then.
+	c.connectInboundMedia()
+	// The final answer may select a different DTMF clock rate than the
+	// provisional one (e.g. an offer carrying both telephone-event/8000 and
+	// /16000); re-attach the sink so it matches the final negotiation.
+	c.attachInboundDTMF()
+}
+
+// connectInboundMedia attaches the SIP→room receive path (media processor and
+// inbound audio) so media received from the carrier reaches the room. It is
+// idempotent: whoever attaches first wins, and the writer's ownership moves to
+// the media port's switch afterwards. The room→SIP direction is not touched
+// here — it stays gated until the final answer attaches it in connectMedia, so
+// early media never sends room audio to the carrier before the call is
+// answered. The caller must hold c.mu (both call sites do: the early-media
+// provisional callback fires under the lock held across dialSIP, and
+// connectMedia runs after it under the same lock).
+func (c *outboundCall) connectInboundMedia() {
+	if c.inboundMedia {
+		return
+	}
+
+	// Carrier-provided early media takes over the ringback from here: stop
+	// the local dialtone so the two never overlap (and never write the track
+	// writer concurrently). Cancellation only signals the tone goroutine, so
+	// wait for its last write to finish before attaching — a clean handoff.
+	// The goroutine needs no locks to exit, so waiting under mu is safe; the
+	// bound keeps a blocked tone writer from stalling SIP processing.
+	if c.dialtoneCancel != nil {
+		c.dialtoneCancel()
+		c.dialtoneCancel = nil
+		if done := c.dialtoneDone; done != nil {
+			c.dialtoneDone = nil
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				c.log().Warnw("early media: dialtone did not stop in time; continuing", nil)
+			}
+		}
+	}
+
 	if processor := c.cm.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}
@@ -631,6 +684,15 @@ func (c *outboundCall) connectMedia() {
 	// double-closing later.
 	c.lkRoomIn = nil
 
+	c.attachInboundDTMF()
+
+	c.inboundMedia = true
+}
+
+// attachInboundDTMF wires the room's inbound DTMF sink to the media port,
+// replacing (and closing) any previously attached sink. The sink rate always
+// reflects the current negotiation.
+func (c *outboundCall) attachInboundDTMF() {
 	rate := rtp.DefClockRate
 	if mc := c.media.NegotiatedAudio(); mc != nil {
 		if d := mc.DTMF; d != nil {
@@ -639,16 +701,21 @@ func (c *outboundCall) connectMedia() {
 	}
 	if old := c.media.WriteInboundDTMFTo(c.lkRoom.GetInboundDTMFWriter(rate)); old != nil {
 		old.Close()
-		c.log().Warnw("media port has unexpected inbound DTMF writer", nil)
 	}
 }
 
 type sipRespFunc func(code sip.StatusCode, hdrs Headers)
 
+// provisionalRespFunc is invoked for each 1xx provisional response that carries
+// an SDP body (e.g. 183 Session Progress with early-media SDP). It lets the
+// caller connect the RTP pipeline ahead of the final 200 OK so early-media
+// audio (ringback, IVR announcements) reaches the LiveKit room during ringing.
+type provisionalRespFunc func(res *sip.Response)
+
 // sipResponse waits for the final response to tx. If ctx ends or stop closes
 // first, it sends a CANCEL and says why in cancelled: "timeout" (ctx ended with
 // ErrSIPRequestTimeout), "hangup" (ctx ended otherwise) or "shutdown" (stop).
-func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc) (_ *sip.Response, cancelled string, _ error) {
+func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan struct{}, onResponse sipRespFunc, onProvisional provisionalRespFunc) (_ *sip.Response, cancelled string, _ error) {
 	cnt := 0
 	for {
 		select {
@@ -674,11 +741,14 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 			if onResponse != nil {
 				onResponse(res.StatusCode, res.Headers())
 			}
-			if status/100 != 1 { // != 1xx
-				return res, "", nil
+			if status/100 == 1 { // 1xx provisional
+				if onProvisional != nil && len(res.Body()) > 0 {
+					onProvisional(res)
+				}
+				cnt++
+				continue
 			}
-			// continue
-			cnt++
+			return res, "", nil
 		}
 	}
 }
@@ -817,6 +887,7 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 	c.sessionDur = c.mon.SessionDur()
 
 	ringing := false
+	earlyMediaEnabled := featureFlagEnabled(c.sipConf.featureFlags, earlyMediaFeatureFlag)
 	sdpResp, err := c.cc.Invite(ctx, c.sipConf.user, c.sipConf.pass, c.sipConf.headers, sdpOfferData, func(code sip.StatusCode, hdrs Headers) {
 		if code == sip.StatusOK {
 			return // is set separately
@@ -830,6 +901,27 @@ func (c *outboundCall) sipSignal(ctx context.Context) error {
 			c.setStatus(CallRinging)
 		}
 		c.setExtraAttrs(nil, 0, nil, hdrs)
+	}, func(res *sip.Response) {
+		// Early media: a provisional response (e.g. 183 Session Progress)
+		// carries an SDP body. Connect the RTP pipeline now so ringback / IVR
+		// audio reaches the room before the final 200 OK.
+		if !earlyMediaEnabled {
+			return
+		}
+		if ct := res.GetHeader("Content-Type"); ct == nil || !strings.HasPrefix(ct.Value(), "application/sdp") {
+			return
+		}
+		if err := c.media.ProcessEarlyAnswer(res.Body()); err != nil {
+			c.log().Warnw("early media: failed to process provisional SDP", err,
+				"status", res.StatusCode)
+			return
+		}
+		// Attach the SIP→room receive path now, ahead of the final answer:
+		// dialSIP sends the INVITE before connectMedia runs, so without this
+		// the early-media decoder would write into an unwired switch and all
+		// pre-answer audio would be discarded. connectInboundMedia is
+		// idempotent — the later connectMedia only adds the room→SIP direction.
+		c.connectInboundMedia()
 	})
 	if err != nil {
 		// TODO: should we retry? maybe new offer will work
@@ -1095,7 +1187,7 @@ func (c *sipOutbound) RemoteHeaders() Headers {
 	return c.inviteOk.Headers()
 }
 
-func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc) (_ []byte, retErr error) {
+func (c *sipOutbound) Invite(ctx context.Context, user, pass string, headers map[string]string, sdpOffer []byte, setState sipRespFunc, onProvisional provisionalRespFunc) (_ []byte, retErr error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.Invite")
 	defer span.End()
 	c.mu.Lock()
@@ -1146,7 +1238,7 @@ authLoop:
 		if try >= 5 {
 			return nil, authError(ErrAuthMaxRetry, resp)
 		}
-		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState)
+		req, resp, err = c.attemptInvite(ctx, sip.CallIDHeader(c.callID), dest, sdpOffer, authHeaderRespName, authHeader, sipHeaders, setState, onProvisional)
 		if err != nil {
 			return nil, err
 		}
@@ -1335,7 +1427,7 @@ func uriTransport(uri *sip.Uri) string {
 	return "udp"
 }
 
-func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc) (*sip.Request, *sip.Response, error) {
+func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader, dest string, offer []byte, authHeaderName, authHeader string, headers Headers, setState sipRespFunc, onProvisional provisionalRespFunc) (*sip.Request, *sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.outbound.attemptInvite")
 	defer span.End()
 	req := sip.NewRequest(sip.INVITE, *c.uri)
@@ -1412,7 +1504,7 @@ func (c *sipOutbound) attemptInvite(ctx context.Context, callID sip.CallIDHeader
 			setState(code, hdrs)
 		}
 	}
-	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse)
+	resp, cancelled, err := sipResponse(ctx, tx, c.closing.Watch(), onResponse, onProvisional)
 	if cancelled != "" {
 		c.emitEvent(SignalingEvent{Type: EventCancelSent, Time: time.Now(), SIPMethod: string(sip.CANCEL), CSeq: cseq, Reason: cancelled})
 		// Cancelled: return now, but watch for a racing 2xx in the background.

@@ -17,6 +17,8 @@ package sip
 import (
 	"context"
 	"errors"
+	"net"
+	"net/netip"
 	"slices"
 	"testing"
 	"time"
@@ -670,4 +672,132 @@ func TestOutboundSignalingEventsNotAnswered(t *testing.T) {
 			require.Equal(t, c.status, evs[len(evs)-1].StatusCode)
 		})
 	}
+}
+
+// sendPCMU sends one 20ms PCMU RTP packet to addr, advancing seq/timestamp.
+func sendPCMU(t *testing.T, addr netip.AddrPort, seq *uint16, ts *uint32) {
+	t.Helper()
+	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr))
+	require.NoError(t, err)
+	defer conn.Close()
+	*seq++
+	*ts += 160
+	// RTP header: V=2, no padding/extension/CSRC, M=0, PT=0 (PCMU).
+	hdr := []byte{
+		0x80, 0x00, byte(*seq >> 8), byte(*seq),
+		byte(*ts >> 24), byte(*ts >> 16), byte(*ts >> 8), byte(*ts),
+		0xde, 0xad, 0xbe, 0xef, // SSRC
+	}
+	_, err = conn.Write(append(hdr, make([]byte, 160)...))
+	require.NoError(t, err)
+}
+
+// With early media enabled, a 183 with SDP must attach the SIP→room receive
+// path immediately — dialSIP sends the INVITE before connectMedia runs, so
+// without this the early-media decoder writes into an unwired switch and all
+// pre-answer audio is discarded. Room→SIP audio stays gated until the final
+// answer, and the inbound writer must survive it (single ownership).
+// Asserted via real RTP flowing into the room track, not internal flags: the
+// call mutex is held across dialSIP, so the test must not lock it.
+// See: https://github.com/livekit/sip/issues/813
+func TestOutboundEarlyMediaReachesRoomBeforeAnswer(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	req.FeatureFlags = map[string]string{earlyMediaFeatureFlag: "true"}
+	states, h, tr := startOutboundCall(t, req)
+
+	// 183 Session Progress with SDP before the final answer.
+	early := sip.NewResponseFromRequest(tr.req, sip.StatusSessionInProgress, "Session Progress", []byte(testMinimalSDP))
+	early.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	require.NoError(t, tr.transaction.SendResponse(early))
+
+	var room *testRoom
+	var dst netip.AddrPort
+	var seq uint16
+	var ts uint32
+	// Early RTP must reach the room track before any 200 OK: the decoded
+	// samples prove the room writer was attached ahead of the answer.
+	require.Eventually(t, func() bool {
+		call := h.manager.getActiveCall(LocalTag(req.SipCallId))
+		if call == nil {
+			return false
+		}
+		r, ok := call.lkRoom.(*testRoom)
+		if !ok {
+			return false
+		}
+		room = r
+		port := getMediaPort(t, call.media)
+		dst = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(port.Port()))
+		sendPCMU(t, dst, &seq, &ts)
+		return room.trackSamples.Load() > 0
+	}, 5*time.Second, 50*time.Millisecond, "early-media RTP must reach the room track before the final answer")
+
+	// Room→SIP audio stays gated until the final answer.
+	require.Nil(t, room.room.WriteOutboundAudioTo(nil), "room→SIP audio must not be attached before the final answer")
+
+	// Final answer: the outbound direction attaches now, and the inbound
+	// writer is not re-attached or closed (single ownership) — late samples
+	// still reach the same track writer.
+	answerOutbound(t, h, tr, req.SipCallId)
+	call := activeCall(t, states, h, req.SipCallId)
+	require.NotNil(t, room.room.WriteOutboundAudioTo(nil), "room→SIP audio must attach at the final answer")
+
+	before := room.trackSamples.Load()
+	require.Eventually(t, func() bool {
+		sendPCMU(t, dst, &seq, &ts)
+		return room.trackSamples.Load() > before
+	}, 3*time.Second, 100*time.Millisecond, "inbound writer must survive the final answer")
+
+	go func() { _ = call.EndCall(context.Background(), nil) }()
+	answerBYE(t, h, time.Second, req.SipCallId)
+}
+
+// Without the early-media flag, a 183 with SDP must not connect the SIP→room
+// path: pre-answer RTP stays discarded, and the final answer connects it as
+// before.
+func TestOutboundNoEarlyMediaKeepsRoomGated(t *testing.T) {
+	req := MinimalCreateSIPParticipantRequest()
+	states, h, tr := startOutboundCall(t, req)
+
+	early := sip.NewResponseFromRequest(tr.req, sip.StatusSessionInProgress, "Session Progress", []byte(testMinimalSDP))
+	early.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	require.NoError(t, tr.transaction.SendResponse(early))
+
+	var room *testRoom
+	var dst netip.AddrPort
+	var seq uint16
+	var ts uint32
+	// Wait for the media port to exist, then confirm pre-answer RTP is
+	// discarded: no samples may reach the room track.
+	require.Eventually(t, func() bool {
+		call := h.manager.getActiveCall(LocalTag(req.SipCallId))
+		if call == nil {
+			return false
+		}
+		r, ok := call.lkRoom.(*testRoom)
+		if !ok {
+			return false
+		}
+		room = r
+		port := getMediaPort(t, call.media)
+		dst = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(port.Port()))
+		return true
+	}, 2*time.Second, 20*time.Millisecond)
+
+	require.Never(t, func() bool {
+		sendPCMU(t, dst, &seq, &ts)
+		return room.trackSamples.Load() > 0
+	}, 400*time.Millisecond, 50*time.Millisecond, "pre-answer RTP must be discarded without the early-media flag")
+
+	// Final answer connects the receive path: the same RTP now flows.
+	answerOutbound(t, h, tr, req.SipCallId)
+	call := activeCall(t, states, h, req.SipCallId)
+	require.NotNil(t, room.room.WriteOutboundAudioTo(nil), "room→SIP audio must attach at the final answer")
+	require.Eventually(t, func() bool {
+		sendPCMU(t, dst, &seq, &ts)
+		return room.trackSamples.Load() > 0
+	}, 3*time.Second, 50*time.Millisecond, "post-answer RTP must reach the room track")
+
+	go func() { _ = call.EndCall(context.Background(), nil) }()
+	answerBYE(t, h, time.Second, req.SipCallId)
 }
