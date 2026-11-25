@@ -226,6 +226,29 @@ func TestOutboundProviderLabel(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+// The room SID is on the call state before the INVITE is sent, so events
+// that come right after the 200 OK (for example the first audio) have it.
+func TestOutboundRoomIDBeforeInvite(t *testing.T) {
+	states := &recordingStateHandler{}
+	req := MinimalCreateSIPParticipantRequest()
+	h, _, _ := waitOutboundINVITEAndACK(t, TestSIPConfig{GetIOClient: states.GetStateHandler()}, req,
+		func(*transactionRequest, *sip.Response) {
+			last := states.Last()
+			require.NotNil(t, last)
+			require.Equal(t, testRoomSID, last.RoomId)
+		})
+
+	h.manager.cmu.RLock()
+	var call *outboundCall
+	for _, c := range h.manager.activeCalls {
+		call = c
+	}
+	h.manager.cmu.RUnlock()
+	require.NotNil(t, call)
+	go func() { _ = call.EndCall(context.Background(), nil) }()
+	answerBYE(t, h, time.Second, req.SipCallId)
+}
+
 // An answered call reports its end time when it ends.
 func TestOutboundCallReportsFullDuration(t *testing.T) {
 	states := &recordingStateHandler{}

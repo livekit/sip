@@ -129,15 +129,16 @@ const (
 	// EventCallEnded: the call is over, for any reason, including rejections
 	// before a call was set up.
 	EventCallEnded SignalingEventType = "sip.call.ended"
-	// EventAgentAudioSent: the first audio frame from an agent track that is
-	// above the silence threshold (see voiceThresholdDBFS) went to the SIP
-	// side. Only frames sent while the room output to the SIP side is
-	// connected count, so it is never before the 200 OK. Once per call.
-	// ParticipantID is the agent's and TrackID its track. Audio from other
-	// participants and tones played by sip (PIN prompts, dial tones) do not
-	// count. Time is when the frame entered the room mixer; the mixer adds
-	// about one frame (20 ms) before it is sent.
-	EventAgentAudioSent SignalingEventType = "sip.agent_audio.sent"
+	// EventRoomAudioSent: the first audio frame of a room track that is above
+	// the silence threshold (see voiceThresholdDBFS) went to the SIP side. Once
+	// per track: an agent's voice and its background audio are separate events,
+	// and TrackName tells them apart. A track that the participant publishes
+	// again with the same name does not report again. Only frames sent while
+	// the room output to the SIP side is connected count, so it is never before
+	// the 200 OK. Tones played by sip (PIN prompts, dial tones) do not count.
+	// Time is when the frame entered the room mixer; the mixer adds about one
+	// frame (20 ms) before it is sent.
+	EventRoomAudioSent SignalingEventType = "sip.room_audio.sent"
 )
 
 // Transfers, both directions. Each event has the TransferID of the transfer.
@@ -196,11 +197,15 @@ type SignalingEvent struct {
 	DispatchRuleID string
 	// ParticipantID is the SID of the participant the event is about, so the
 	// call joins the room's participant events: the SIP participant on
-	// EventRoomJoined, the agent on EventAgentAudioSent.
+	// EventRoomJoined, the track's participant on EventRoomAudioSent.
 	ParticipantID string
-	// TrackID is the SID of the track the event is about. Set on
-	// EventAgentAudioSent.
-	TrackID string
+	// ParticipantKind is the kind of that participant, for example "AGENT" or
+	// "STANDARD". Set on EventRoomAudioSent.
+	ParticipantKind string
+	// TrackID and TrackName identify the track the event is about. Set on
+	// EventRoomAudioSent.
+	TrackID   string
+	TrackName string
 	// TransferID identifies the transfer on the transfer events. The REFER and
 	// NOTIFY code does not know it, so CallState adds the ID of the transfer
 	// that started most recently. The ID stays after that transfer ends, so a
@@ -420,9 +425,16 @@ func inviteResponseEvent(typ SignalingEventType, t time.Time, statusCode int, cs
 	return SignalingEvent{Type: typ, Time: t, SIPMethod: "INVITE", StatusCode: statusCode, CSeq: cseq}
 }
 
-// agentAudioSent emits EventAgentAudioSent. It is the room's OnAgentAudio.
-func (s *CallState) agentAudioSent(t time.Time, participantID, trackID string) {
-	s.EmitSignalingEvent(SignalingEvent{Type: EventAgentAudioSent, Time: t, ParticipantID: participantID, TrackID: trackID})
+// roomAudioSent emits EventRoomAudioSent. It is the room's OnRoomAudio.
+func (s *CallState) roomAudioSent(t time.Time, tr RoomAudioTrack) {
+	s.EmitSignalingEvent(SignalingEvent{
+		Type:            EventRoomAudioSent,
+		Time:            t,
+		ParticipantID:   tr.ParticipantID,
+		ParticipantKind: tr.ParticipantKind,
+		TrackID:         tr.TrackID,
+		TrackName:       tr.TrackName,
+	})
 }
 
 // remoteAudioReceived emits EventRemoteAudioReceived.

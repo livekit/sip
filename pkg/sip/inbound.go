@@ -1938,7 +1938,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	if partConf.Attributes == nil {
 		partConf.Attributes = make(map[string]string)
 	}
-	rconf.OnAgentAudio = c.state.agentAudioSent
+	rconf.OnRoomAudio = c.state.roomAudioSent
 	for k, v := range c.extraAttrs {
 		partConf.Attributes[k] = v
 	}
