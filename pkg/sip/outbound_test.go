@@ -329,6 +329,51 @@ func TestSIPResponseCancelReturnsImmediately(t *testing.T) {
 	require.Len(t, tx.cancels, 1, "CANCEL should be sent")
 }
 
+// sipResponse returns a final response that the transaction passed up before it
+// ended, as sipgo does over TCP/TLS (Timer D = 0): the responses are buffered and
+// both channels are closed, so select may pick Done.
+func TestSIPResponseAfterTransactionDone(t *testing.T) {
+	trying := &sip.Response{StatusCode: sip.StatusTrying}
+	challenge := &sip.Response{StatusCode: sip.StatusProxyAuthRequired}
+	for _, tt := range []struct {
+		name      string
+		responses []*sip.Response
+		wantRes   *sip.Response
+		wantCodes []sip.StatusCode
+	}{
+		{"final", []*sip.Response{trying, challenge}, challenge, []sip.StatusCode{100, 407}},
+		{"no final", []*sip.Response{trying}, nil, []sip.StatusCode{100}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Each attempt with both channels ready picks Done half of the time.
+			for range 100 {
+				tx := &testSIPClientTransaction{
+					responses: make(chan *sip.Response, len(tt.responses)),
+					done:      make(chan struct{}),
+				}
+				for _, res := range tt.responses {
+					tx.responses <- res
+				}
+				close(tx.done)
+				close(tx.responses)
+
+				var codes []sip.StatusCode
+				res, _, err := sipResponse(t.Context(), tx, nil, func(code sip.StatusCode, _ Headers) {
+					codes = append(codes, code)
+				})
+				require.Equal(t, tt.wantCodes, codes)
+				if tt.wantRes == nil {
+					require.ErrorAs(t, err, &transactionTimeoutError{})
+					require.ErrorContains(t, err, "(1 intermediate responses)")
+					continue
+				}
+				require.NoError(t, err)
+				require.Same(t, tt.wantRes, res)
+			}
+		})
+	}
+}
+
 // watchCancelledInvite ACKs and BYEs a 2xx that races in after a CANCEL, and
 // stays quiet otherwise.
 func TestWatchCancelledInvite(t *testing.T) {
