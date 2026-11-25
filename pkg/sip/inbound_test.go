@@ -22,11 +22,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/icholy/digest"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sipgo/sip"
 )
@@ -1113,5 +1115,95 @@ func TestInboundByeOverInviteConnection(t *testing.T) {
 	t.Run("UDP", func(t *testing.T) {
 		_, ic := st.CreateInboundCall(t)
 		require.False(t, inviteConnOpen(ic))
+	})
+}
+
+// A service that is shutting down refuses new calls, but keeps serving the calls in progress.
+func TestInboundShutdown(t *testing.T) {
+	const username, password = "user", "secret"
+	st := NewServiceTest(t, nil)
+	challenged := newTestCall(st.TestUA, false)
+	unchallenged := newTestCall(st.TestUA, false)
+	st.Manager.SetHandler(&TestHandler{
+		GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+			switch call.From.User {
+			case challenged.localUser, unchallenged.localUser:
+				return AuthInfo{Result: AuthPassword, Auth: InboundAuth{Username: username, Password: password}}, nil
+			}
+			return AuthInfo{Result: AuthAccept}, nil
+		},
+	})
+
+	inbound, _ := st.CreateInboundCall(t)
+	outbound, oc, _ := st.CreateOutboundCall(t)
+	outboundSDP, err := oc.media.GetLocalSDP()
+	require.NoError(t, err)
+
+	// A call that was challenged before the shutdown, and answers the challenge after it.
+	req, _, err := challenged.Invite(nil)
+	require.NoError(t, err)
+	resp := st.TestUA.TransactionRequest(t, req, true)
+	require.Equal(t, sip.StatusProxyAuthRequired, resp.StatusCode)
+	challenge, err := digest.ParseChallenge(resp.GetHeader("Proxy-Authenticate").Value())
+	require.NoError(t, err)
+
+	st.Manager.mon.Shutdown()
+	require.Equal(t, stats.HealthStopped, st.Manager.mon.Health())
+
+	t.Run("new INVITE", func(t *testing.T) {
+		req, _, err := newTestCall(st.TestUA, false).Invite(nil)
+		require.NoError(t, err)
+		resp := st.TestUA.TransactionRequest(t, req, true)
+		require.Equal(t, sip.StatusServiceUnavailable, resp.StatusCode)
+	})
+
+	t.Run("new INVITE that needs a challenge", func(t *testing.T) {
+		req, _, err := unchallenged.Invite(nil)
+		require.NoError(t, err)
+		resp := st.TestUA.TransactionRequest(t, req, true)
+		require.Equal(t, sip.StatusServiceUnavailable, resp.StatusCode)
+	})
+
+	t.Run("inbound re-INVITE", func(t *testing.T) {
+		req, _, err := inbound.Invite(inbound.localSDP)
+		require.NoError(t, err)
+		resp := st.TestUA.TransactionRequest(t, req, true)
+		require.Equal(t, sip.StatusOK, resp.StatusCode)
+		require.Equal(t, inbound.remoteSDP, resp.Body())
+	})
+
+	t.Run("outbound re-INVITE", func(t *testing.T) {
+		req, _, err := outbound.Invite(outbound.localSDP)
+		require.NoError(t, err)
+		resp := st.TestUA.TransactionRequest(t, req, false)
+		require.Equal(t, sip.StatusOK, resp.StatusCode)
+		require.Equal(t, outboundSDP, resp.Body())
+	})
+
+	t.Run("challenged INVITE", func(t *testing.T) {
+		// A repeat without credentials is refused, and does not block the retry with credentials.
+		req, _, err := challenged.Invite(nil)
+		require.NoError(t, err)
+		resp := st.TestUA.TransactionRequest(t, req, true)
+		require.Equal(t, sip.StatusServiceUnavailable, resp.StatusCode)
+
+		req, _, err = challenged.Invite(nil)
+		require.NoError(t, err)
+		cred, err := digest.Digest(challenge, digest.Options{
+			Method:   "INVITE",
+			URI:      req.Recipient.String(),
+			Username: username,
+			Password: password,
+		})
+		require.NoError(t, err)
+		req.AppendHeader(sip.NewHeader("Proxy-Authorization", cred.String()))
+		resp = st.TestUA.TransactionRequest(t, req, true)
+		require.Equal(t, sip.StatusOK, resp.StatusCode)
+
+		tag, _ := resp.To().Params.Get("tag")
+		challenged.SetRemoteTag(LocalTag(tag))
+		challenged.SetRouteSet(resp, true)
+		resp = st.TestUA.TransactionRequest(t, challenged.NewRequest(sip.BYE), true)
+		require.Equal(t, sip.StatusOK, resp.StatusCode)
 	})
 }
