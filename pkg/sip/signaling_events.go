@@ -131,11 +131,12 @@ const (
 	EventCallEnded SignalingEventType = "sip.call.ended"
 	// EventRoomAudioSent: the first audio frame of a room track that is above
 	// the silence threshold (see voiceThresholdDBFS) went to the SIP side. Once
-	// per track: an agent's voice and its background audio are separate events,
-	// and TrackName tells them apart. A track that the participant publishes
-	// again with the same name does not report again. Only frames sent while
-	// the room output to the SIP side is connected count, so it is never before
-	// the 200 OK. Tones played by sip (PIN prompts, dial tones) do not count.
+	// per participant and track name: an agent's voice and its background audio
+	// are separate events, and TrackName tells them apart. Tracks with the same
+	// name share the event: a track that is published again, or a second track
+	// with that name, does not report again. Only frames sent while the room
+	// output to the SIP side is connected count, so it is never before the
+	// 200 OK. Tones played by sip (PIN prompts, dial tones) do not count.
 	// Time is when the frame entered the room mixer; the mixer adds about one
 	// frame (20 ms) before it is sent.
 	EventRoomAudioSent SignalingEventType = "sip.room_audio.sent"
