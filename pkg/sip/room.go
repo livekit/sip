@@ -272,7 +272,10 @@ type RoomConfig struct {
 	RoomConfig       *livekit.RoomConfiguration
 	JitterBuf        bool
 	LogSignalChanges bool
-	PreferredRegion  *livekit.RegionInfo
+	// OnRoomAudio, if set, is called once per room track, for its first audio
+	// frame that goes to the SIP side.
+	OnRoomAudio     RoomAudioFunc
+	PreferredRegion *livekit.RegionInfo
 }
 
 func NewRoom(log logger.Logger, st *RoomStats) *Room {
@@ -471,6 +474,12 @@ func (r *Room) setParticipantFromRoom() {
 // newRoomCallback builds the LiveKit room callback for this SIP participant.
 // Separate from Connect so tests can build it without joining a room.
 func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.RoomCallback {
+	// One flag per participant and track name, so a track that is published
+	// again (for example after a reconnect) does not report again.
+	var roomAudio *audioFlags
+	if rconf.OnRoomAudio != nil {
+		roomAudio = &audioFlags{}
+	}
 	return &lksdk.RoomCallback{
 		OnParticipantConnected: func(rp *lksdk.RemoteParticipant) {
 			log := r.roomLog.WithValues("participant", rp.Identity(), "participantID", rp.SID())
@@ -519,6 +528,22 @@ func (r *Room) newRoomCallback(conf *config.Config, rconf RoomConfig) *lksdk.Roo
 							log.Errorw("cannot create signal logger", err)
 							return
 						}
+					}
+					// The detector sits before the mixer, so sip's own prompts do not
+					// count, and each track reports on its own. sip does not decide
+					// which track is the agent's voice: TrackName tells the consumer.
+					if roomAudio != nil {
+						tr := RoomAudioTrack{
+							ParticipantID:   rp.SID(),
+							ParticipantKind: livekit.ParticipantInfo_Kind(rp.Kind()).String(),
+							TrackID:         pub.SID(),
+							TrackName:       pub.Name(),
+						}
+						out = newAudioDetector(out, "RoomAudioDetector("+tr.TrackID+")", roomAudio.get(rp.Identity()+"/"+tr.TrackName),
+							// Before the room output is connected (inbound: before the 200 OK),
+							// the mixer drops the audio, so the caller hears nothing of it.
+							func() bool { return r.outboundAudio.Get() != nil },
+							func(t time.Time) { rconf.OnRoomAudio(t, tr) })
 					}
 
 					codec := track.Codec()

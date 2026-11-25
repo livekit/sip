@@ -266,12 +266,6 @@ func (c *outboundCall) Dial(ctx context.Context) error {
 		if info.EndedAtNs != 0 {
 			return // closed since connectSIP; don't report a start after the end
 		}
-		lkroom := c.lkRoom.Room()
-		if lkroom == nil {
-			c.log().Errorw("failed to update SIP info", fmt.Errorf("unexpected state: lkroom is not set"))
-			return
-		}
-		info.RoomId = lkroom.SID()
 		info.StartedAtNs = time.Now().UnixNano()
 		info.CallStatus = livekit.SIPCallStatus_SCS_ACTIVE
 	})
@@ -527,6 +521,7 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 
 	attrs[livekit.AttrSIPCallStatus] = CallDialing.Attribute()
 	lkNew.Participant.Attributes = attrs
+	lkNew.OnRoomAudio = c.state.roomAudioSent
 	r := getRoom(c.log(), &c.stats.Room)
 	if err := r.Connect(ctx, c.cm.conf, c.cm.withPreferredRegion(lkNew)); err != nil {
 		_ = r.Close()
@@ -541,6 +536,15 @@ func (c *outboundCall) connectToRoom(ctx context.Context, lkNew RoomConfig, getR
 	}
 	c.lkRoom = r
 	c.lkRoomIn = local
+	// Set RoomId before the INVITE, so that all call events have it: the first
+	// audio events after the 200 OK, and the events of a call that is not answered.
+	c.state.Update(func(info *livekit.SIPCallInfo) {
+		if room := r.Room(); room != nil {
+			info.RoomId = room.SID()
+		} else {
+			c.log().Warnw("could not set RoomId: room is nil", nil)
+		}
+	})
 	if err := registerSignalingRPC(c.lkRoom, c.cc); err != nil {
 		return err
 	}
@@ -618,6 +622,9 @@ func (c *outboundCall) connectMedia() {
 		c.log().Warnw("room has unexpected outbound DTMF writer", nil)
 	}
 
+	// Wrap the room writer before the processor wraps it, so the detector
+	// sees the processed audio: what the room gets.
+	c.lkRoomIn = newAudioDetector(c.lkRoomIn, "RemoteAudioDetector", new(atomic.Bool), nil, c.state.remoteAudioReceived)
 	if processor := c.cm.handler.GetMediaProcessor(c.sipConf.enabledFeatures, c.sipConf.featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); processor != nil {
 		c.lkRoomIn = processor(c.lkRoomIn)
 	}

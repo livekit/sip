@@ -136,9 +136,13 @@ func (s *SignalLogger) Close() error {
 	return s.next.Close()
 }
 
+// voiceThresholdDBFS is the level above which a frame counts as voice with the
+// default settings: the noise floor plus the enter offset.
+const voiceThresholdDBFS = DefaultInitialNoiseFloorDB + DefaultEnterVoiceOffsetDB
+
 // rmsToDBFS computes RMS of the frame then converts to dBFS: 10*log10(mean(square)/MAX^2).
 // Uses math.MaxInt16 (32767) as reference. Returns a value <= 0; silence approaches -inf, so we clamp to minDBFS.
-func (s *SignalLogger) rmsToDBFS(sample msdk.PCM16Sample, minDBFS float64) float64 {
+func rmsToDBFS(sample msdk.PCM16Sample) float64 {
 	if len(sample) == 0 {
 		return minDBFS
 	}
@@ -160,7 +164,7 @@ func (s *SignalLogger) rmsToDBFS(sample msdk.PCM16Sample, minDBFS float64) float
 }
 
 func (s *SignalLogger) WriteSample(sample msdk.PCM16Sample) error {
-	currentDB := s.rmsToDBFS(sample, minDBFS)
+	currentDB := rmsToDBFS(sample)
 
 	enterThreshold := s.noiseFloor + s.enterVoiceOffsetDB
 	exitThreshold := s.noiseFloor + s.exitVoiceOffsetDB
