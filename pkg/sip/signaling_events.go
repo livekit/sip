@@ -104,10 +104,12 @@ const (
 	// is acknowledged and hung up at once (no EventAckSent or EventByeSent), and
 	// the call never joins the room. It can come before or after EventCallEnded.
 	EventLateAnswerReceived SignalingEventType = "sip.late_answer.received"
-	// EventRemoteAudioReceived: the first audio frame from the callee that is
-	// above the silence threshold (see voiceThresholdDBFS) reached the room.
-	// The callee's audio is connected to the room only after the 200 OK, so
-	// early media (ringback, announcements) does not count. Once per call.
+	// EventRemoteAudioReceived: the first audio frame from the remote side (the
+	// caller on an inbound call, the callee on an outbound call) that is above
+	// the silence threshold (see voiceThresholdDBFS) reached the room. Once per
+	// call. The remote audio reaches the room only after the 200 OK, so early
+	// media (ringback, announcements) does not count. On an inbound call with a
+	// PIN, the audio reaches the room only after the PIN.
 	// Time is when the frame was written to the room, after decoding and the
 	// media processor (e.g. noise cancellation), if any. Background noise or
 	// in-band DTMF above the threshold also counts.
