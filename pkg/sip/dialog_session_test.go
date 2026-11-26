@@ -269,6 +269,7 @@ func TestDialogSessionStrictRouteTransport(t *testing.T) {
 		"option tls":       {"sip:10.0.0.1", TransportTLS, "TLS", "10.0.0.1:5061"},
 		"option tcp":       {"sips:10.0.0.1", TransportTCP, "TCP", "10.0.0.1:5060"},
 		"option with port": {"sip:10.0.0.1:5070", TransportTLS, "TLS", "10.0.0.1:5070"},
+		"option uppercase": {"sip:10.0.0.1", "TLS", "TLS", "10.0.0.1:5061"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := testDialog()

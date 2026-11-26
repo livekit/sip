@@ -129,6 +129,8 @@ func NewDialogSession(cli *Client, d *Dialog, opts DialogSessionOptions) (*Dialo
 		opts: opts,
 		d:    *cloneDialog(d),
 	}
+	// A transport name has no case; the Transport constants are in lower case.
+	s.opts.Transport = Transport(strings.ToLower(string(opts.Transport)))
 	if s.log == nil {
 		s.log = cli.log
 	}
