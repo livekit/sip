@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -880,6 +881,7 @@ func TestOutboundIPv6NATOverrides(t *testing.T) {
 	natSig6 := netip.MustParseAddr("2001:db8:9::1")
 	natMed6 := netip.MustParseAddr("2001:db8:9::2")
 	natSig4 := netip.MustParseAddr("203.0.113.10")
+	natMed4 := netip.MustParseAddr("203.0.113.20")
 
 	dualStackAddrs := func(bool) ([]netip.Addr, error) {
 		return []netip.Addr{v4, nicV6}, nil
@@ -890,6 +892,7 @@ func TestOutboundIPv6NATOverrides(t *testing.T) {
 
 	cases := []struct {
 		name                 string
+		listenIP             string
 		nat1To1IP            string
 		mediaNAT1To1IP       string
 		destAddr             string
@@ -919,6 +922,34 @@ func TestOutboundIPv6NATOverrides(t *testing.T) {
 			wantSDPAddrType:      "IP6",
 		},
 		{
+			name:                 "explicit IPv4 media NAT preserved when dialing IPv6 literal",
+			nat1To1IP:            natSig6.String(),
+			mediaNAT1To1IP:       natMed4.String(),
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: natSig6.String(),
+			wantContactIP:        natSig6.String(),
+			wantMediaIP:          natMed4.String(),
+			wantSDPAddrType:      "IP4",
+		},
+		{
+			name:                 "concrete IPv4 ListenIP keeps bound IPv4 Contact when dialing IPv6 literal",
+			listenIP:             v4.String(),
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: v4.String(),
+			wantContactIP:        v4.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "concrete IPv4 ListenIP avoids loopback IPv6 Contact when dialing ::1",
+			listenIP:             v4.String(),
+			destAddr:             "[::1]:5060",
+			wantDefaultContactIP: v4.String(),
+			wantContactIP:        v4.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
 			name:                 "auto-detected dual stack dials IPv6 literal with IPv6 Contact and SDP",
 			destAddr:             "[2001:db8:99::1]:5060",
 			wantDefaultContactIP: v4.String(),
@@ -939,14 +970,22 @@ func TestOutboundIPv6NATOverrides(t *testing.T) {
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sipConf := &config.Config{
-				SIPPort:        5060,
-				NAT1To1IP:      tc.nat1To1IP,
-				MediaNAT1To1IP: tc.mediaNAT1To1IP,
+				NodeID:            "test-node",
+				SIPPort:           5060,
+				SIPPortListen:     5060,
+				ListenIP:          tc.listenIP,
+				NAT1To1IP:         tc.nat1To1IP,
+				MediaNAT1To1IP:    tc.mediaNAT1To1IP,
+				RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
+				MaxCpuUtilization: 0.99,
+				WsUrl:             "ws://localhost:7880",
+				ApiKey:            "test-api-key",
+				ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
 			}
 			sconf, err := getServiceConfigWith(sipConf, dualStackAddrs, failExt)
 			require.NoError(t, err)
 
-			h := NewTestSIP(t, TestSIPConfig{})
+			h := NewTestSIP(t, TestSIPConfig{Config: sipConf})
 			h.Client.sconf = sconf
 			h.Server.sconf = sconf
 			h.manager.sconf = sconf

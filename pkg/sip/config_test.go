@@ -218,4 +218,26 @@ func TestGetServiceConfig_ListenIPAndLocalNet(t *testing.T) {
 		require.Equal(t, natMed6, s.MediaIP6)
 		require.Equal(t, v4, s.MediaIP4)
 	})
+
+	t.Run("concrete IPv4 ListenIP suppresses auto-detected IPv6 signaling while keeping IPv6 media", func(t *testing.T) {
+		s, err := getServiceConfigWith(&config.Config{
+			ListenIP: v4.String(),
+		}, multihomed, failExt)
+		require.NoError(t, err)
+		require.Equal(t, v4, s.SignalingIP)
+		require.Equal(t, v4, s.SignalingIP4)
+		require.False(t, s.SignalingIP6.IsValid())
+		require.False(t, s.SignalingIPLocal6.IsValid())
+		require.Equal(t, mgmtV6, s.MediaIP6)
+
+		sExt, err := getServiceConfigWith(&config.Config{
+			ListenIP:      v4.String(),
+			UseExternalIP: true,
+		}, multihomed, stubExt)
+		require.NoError(t, err)
+		require.Equal(t, extV4, sExt.SignalingIP)
+		require.False(t, sExt.SignalingIP6.IsValid())
+		require.False(t, sExt.SignalingIPLocal6.IsValid())
+		require.Equal(t, mgmtV6, sExt.MediaIP6)
+	})
 }

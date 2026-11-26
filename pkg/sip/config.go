@@ -45,6 +45,9 @@ func getServiceConfigWith(
 		return getLocalIPWith(localNet4, getAddrs)
 	}
 
+	ip4OnlyListener := listenIPv4Only(conf)
+	var mediaFallback6 netip.Addr
+
 	resolveLocal6 := func(publicOnly bool) (netip.Addr, error) {
 		if !publicOnly {
 			if l6 := listenIPv6(conf); l6.IsValid() {
@@ -73,10 +76,16 @@ func getServiceConfigWith(
 			return nil, err
 		}
 		s.SignalingIP4 = s.SignalingIP
-		if s.SignalingIPLocal6, err = resolveLocal6(false); err != nil {
+		local6, err := resolveLocal6(false)
+		if err != nil {
 			return nil, err
 		}
-		s.SignalingIP6, _ = resolveLocal6(true)
+		pub6, _ := resolveLocal6(true)
+		mediaFallback6 = pub6
+		if !ip4OnlyListener {
+			s.SignalingIPLocal6 = local6
+			s.SignalingIP6 = pub6
+		}
 	} else if conf.NAT1To1IP != "" {
 		ip, err := netip.ParseAddr(conf.NAT1To1IP)
 		if err != nil {
@@ -88,15 +97,21 @@ func getServiceConfigWith(
 		if ip.Is6() {
 			s.SignalingIP6 = ip
 			s.SignalingIPLocal6 = ip
+			mediaFallback6 = ip
 			if ip4, err4 := resolveLocal4(); err4 == nil {
 				s.SignalingIP4 = ip4
 			}
 		} else {
 			s.SignalingIP4 = ip
-			if s.SignalingIP6, err = resolveLocal6(false); err != nil {
+			ip6, err := resolveLocal6(false)
+			if err != nil {
 				return nil, err
 			}
-			s.SignalingIPLocal6 = s.SignalingIP6
+			mediaFallback6 = ip6
+			if !ip4OnlyListener {
+				s.SignalingIP6 = ip6
+				s.SignalingIPLocal6 = ip6
+			}
 		}
 	} else {
 		ip4, err4 := resolveLocal4()
@@ -105,7 +120,7 @@ func getServiceConfigWith(
 			return nil, err6
 		}
 		if err4 != nil {
-			if !ip6.IsValid() {
+			if !ip6.IsValid() || ip4OnlyListener {
 				return nil, err4
 			}
 			s.SignalingIP = ip6
@@ -115,8 +130,11 @@ func getServiceConfigWith(
 			s.SignalingIPLocal = ip4
 			s.SignalingIP4 = ip4
 		}
-		s.SignalingIP6 = ip6
-		s.SignalingIPLocal6 = ip6
+		mediaFallback6 = ip6
+		if !ip4OnlyListener {
+			s.SignalingIP6 = ip6
+			s.SignalingIPLocal6 = ip6
+		}
 	}
 
 	if conf.MediaUseExternalIP && !conf.UseExternalIP {
@@ -126,8 +144,8 @@ func getServiceConfigWith(
 		s.MediaIP4 = s.MediaIP
 		if ip6, err := resolveLocal6(true); err == nil && ip6.IsValid() {
 			s.MediaIP6 = ip6
-		} else if s.SignalingIP6.IsValid() && !s.SignalingIP6.IsPrivate() && (localNet6 == nil || localNet6.Contains(s.SignalingIP6)) {
-			s.MediaIP6 = s.SignalingIP6
+		} else if mediaFallback6.IsValid() && !mediaFallback6.IsPrivate() && (localNet6 == nil || localNet6.Contains(mediaFallback6)) {
+			s.MediaIP6 = mediaFallback6
 		}
 	} else if conf.MediaNAT1To1IP != "" && conf.MediaNAT1To1IP != conf.NAT1To1IP {
 		ip, err := netip.ParseAddr(conf.MediaNAT1To1IP)
@@ -143,12 +161,12 @@ func getServiceConfigWith(
 			}
 		} else {
 			s.MediaIP4 = ip
-			s.MediaIP6 = s.SignalingIP6
+			s.MediaIP6 = mediaFallback6
 		}
 	} else {
 		s.MediaIP = s.SignalingIP
 		s.MediaIP4 = s.SignalingIP4
-		s.MediaIP6 = s.SignalingIP6
+		s.MediaIP6 = mediaFallback6
 	}
 
 	return s, nil
@@ -197,6 +215,18 @@ func listenIPv6(conf *config.Config) netip.Addr {
 		return netip.Addr{}
 	}
 	return ip
+}
+
+func listenIPv4Only(conf *config.Config) bool {
+	if conf == nil || conf.ListenIP == "" {
+		return false
+	}
+	ip, err := netip.ParseAddr(conf.ListenIP)
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	return ip.Is4() && !ip.IsUnspecified()
 }
 
 func netAddrToAddr(a net.Addr) (netip.Addr, bool) {

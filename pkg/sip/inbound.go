@@ -1448,10 +1448,19 @@ func (cm *callManager) outboundFamilyIP(target *sip.Uri, fallback, ip6 netip.Add
 }
 
 func (cm *callManager) outboundSignalingIP(target *sip.Uri) netip.Addr {
+	if listenIPv4Only(cm.conf) && !cm.sconf.SignalingIP.Unmap().Is6() {
+		return cm.sconf.SignalingIP
+	}
 	return cm.outboundFamilyIP(target, cm.sconf.SignalingIP, cm.sconf.SignalingIP6)
 }
 
 func (cm *callManager) outboundMediaIP(target *sip.Uri) netip.Addr {
+	if cm.conf != nil && cm.conf.MediaNAT1To1IP != "" {
+		return cm.sconf.MediaIP
+	}
+	if cm.conf != nil && cm.conf.MediaUseExternalIP && !cm.sconf.MediaIP6.IsValid() {
+		return cm.sconf.MediaIP
+	}
 	return cm.outboundFamilyIP(target, cm.sconf.MediaIP, cm.sconf.MediaIP6)
 }
 
