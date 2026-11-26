@@ -258,9 +258,13 @@ func TestDialogSessionStrictRouteTransport(t *testing.T) {
 		want   string
 		dest   string
 	}{
-		"default":   {"sip:10.0.0.1:5060", "UDP", "10.0.0.1:5060"},
-		"parameter": {"sip:10.0.0.1:5060;transport=tcp", "TCP", "10.0.0.1:5060"},
-		"sips":      {"sips:10.0.0.1:5061", "TLS", "10.0.0.1:5061"},
+		"default":          {"sip:10.0.0.1:5060", "UDP", "10.0.0.1:5060"},
+		"parameter":        {"sip:10.0.0.1:5060;transport=tcp", "TCP", "10.0.0.1:5060"},
+		"sips":             {"sips:10.0.0.1:5061", "TLS", "10.0.0.1:5061"},
+		"no port":          {"sip:10.0.0.1", "UDP", "10.0.0.1:5060"},
+		"sips no port":     {"sips:10.0.0.1", "TLS", "10.0.0.1:5061"},
+		"sips tcp no port": {"sips:10.0.0.1;transport=tcp", "TLS", "10.0.0.1:5061"},
+		"sips other port":  {"sips:10.0.0.1:5070", "TLS", "10.0.0.1:5070"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := testDialog()

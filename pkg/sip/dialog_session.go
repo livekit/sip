@@ -247,7 +247,7 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 		// The transport layer takes the next hop and its transport from the
 		// first Route header; with a strict router the next hop is the
 		// Request-URI.
-		req.SetDestination(ConvertURI(&target).GetDest())
+		dest := ConvertURI(&target)
 		tr := transportFromURI(&target)
 		switch {
 		case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
@@ -255,6 +255,9 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 		case tr == "":
 			tr = TransportUDP
 		}
+		// The transport also selects the default port.
+		dest.Transport = tr
+		req.SetDestination(dest.GetDest())
 		req.SetTransport(strings.ToUpper(string(tr)))
 	}
 	for _, r := range routes {
