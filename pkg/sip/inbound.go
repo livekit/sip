@@ -327,10 +327,17 @@ func (cm *callManager) validateAuthorization(log logger.Logger, req *sip.Request
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
 	ct := req.ContentType()
-	if ct != nil && ct.Value() != contentTypeSDP {
+	if ct != nil && !isSDPContentType(ct.Value()) {
 		return nil
 	}
 	return req.Body()
+}
+
+// isSDPContentType reports whether a Content-Type value names SDP. A media
+// type has no case and can have parameters (RFC 3261 section 7.3.1).
+func isSDPContentType(v string) bool {
+	typ, _, _ := strings.Cut(v, ";")
+	return strings.EqualFold(strings.TrimSpace(typ), contentTypeSDP)
 }
 
 func providerLabel(p *livekit.ProviderInfo) string {

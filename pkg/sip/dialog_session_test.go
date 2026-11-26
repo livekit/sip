@@ -250,6 +250,45 @@ func TestDialogSessionStrictRoute(t *testing.T) {
 	require.Equal(t, "10.0.0.1:5060", req.Destination(), "the request goes to the strict router")
 }
 
+// The transport to a strict router comes from its own URI, not from the
+// route after it.
+func TestDialogSessionStrictRouteTransport(t *testing.T) {
+	for name, c := range map[string]struct {
+		router string
+		want   string
+		dest   string
+	}{
+		"default":   {"sip:10.0.0.1:5060", "UDP", "10.0.0.1:5060"},
+		"parameter": {"sip:10.0.0.1:5060;transport=tcp", "TCP", "10.0.0.1:5060"},
+		"sips":      {"sips:10.0.0.1:5061", "TLS", "10.0.0.1:5061"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := testDialog()
+			d.RouteSet = []string{c.router, "sip:far-proxy.example.com;lr;transport=ws"}
+			h, s := newTestDialogSession(t, d, DialogSessionOptions{})
+			startSessionInvite(s, "offer")
+			req := h.WaitTransaction(t, dialogTestTimeout, "local-tag", "").req
+			require.Equal(t, c.want, req.Transport())
+			require.Equal(t, c.dest, req.Destination())
+		})
+	}
+}
+
+// An offer is found when its Content-Type has another case or a parameter.
+func TestSDPBodyFromRequest(t *testing.T) {
+	for value, want := range map[string]string{
+		"application/sdp":                "offer",
+		"application/SDP":                "offer",
+		"application/sdp; charset=utf-8": "offer",
+		"text/plain":                     "",
+	} {
+		req := remoteRequest(sip.INVITE, 11, "")
+		req.AppendHeader(sip.NewHeader("Content-Type", value))
+		req.SetBody([]byte("offer"))
+		require.Equal(t, want, string(sdpBodyFromRequest(req)), value)
+	}
+}
+
 // deadTx is a client transaction that ends without a response.
 type deadTx struct {
 	sip.ClientTransaction

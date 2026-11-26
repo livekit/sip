@@ -244,12 +244,18 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 	}
 	req := sip.NewRequest(method, *target.Clone())
 	if strict {
-		// The transport layer takes the next hop from the first Route
-		// header; with a strict router the next hop is the Request-URI.
+		// The transport layer takes the next hop and its transport from the
+		// first Route header; with a strict router the next hop is the
+		// Request-URI.
 		req.SetDestination(ConvertURI(&target).GetDest())
-		if tr := transportFromURI(&target); tr != "" {
-			req.SetTransport(strings.ToUpper(string(tr)))
+		tr := transportFromURI(&target)
+		switch {
+		case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
+			tr = TransportTLS
+		case tr == "":
+			tr = TransportUDP
 		}
+		req.SetTransport(strings.ToUpper(string(tr)))
 	}
 	for _, r := range routes {
 		req.AppendHeader(&sip.RouteHeader{Address: *r.Clone()})
