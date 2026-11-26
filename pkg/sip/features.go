@@ -7,6 +7,9 @@ const (
 	outboundRouteHeadersFeatureFlag = "sip.outbound_route_headers"
 	lateOfferFeatureFlag            = "sip.late_offer"
 	outboundPreferSRVFeatureFlag    = "sip.outbound_prefer_srv"
+	// uriUserPhoneFeatureFlag appends ;user=phone to outbound Request-URI, From, and To
+	// (needed by some carriers such as Airtel; see livekit/sip#615).
+	uriUserPhoneFeatureFlag = "sip.uri_user_phone"
 )
 
 // featureFlagEnabled reports whether a boolean feature flag is set to true.
