@@ -65,9 +65,6 @@ type DialogSessionOptions struct {
 	// request of this side.
 	Username string
 	Password string
-	// Transport sends this side's requests over this transport. By default
-	// the URI of the next hop selects it.
-	Transport Transport
 	// OnOffer applies the offer of a re-INVITE from the remote side to the
 	// owner's media and returns the answer. An SDPError rejects the re-INVITE
 	// with a 488, another error with a 500.
@@ -129,8 +126,6 @@ func NewDialogSession(cli *Client, d *Dialog, opts DialogSessionOptions) (*Dialo
 		opts: opts,
 		d:    *cloneDialog(d),
 	}
-	// A transport name has no case; the Transport constants are in lower case.
-	s.opts.Transport = Transport(strings.ToLower(string(opts.Transport)))
 	if s.log == nil {
 		s.log = cli.log
 	}
@@ -250,15 +245,12 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 		// first Route header; with a strict router the next hop is the
 		// Request-URI.
 		dest := ConvertURI(&target)
-		tr := s.opts.Transport
-		if tr == "" {
-			tr = transportFromURI(&target)
-			switch {
-			case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
-				tr = TransportTLS
-			case tr == "":
-				tr = TransportUDP
-			}
+		tr := transportFromURI(&target)
+		switch {
+		case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
+			tr = TransportTLS
+		case tr == "":
+			tr = TransportUDP
 		}
 		// The transport also selects the default port.
 		dest.Transport = tr
@@ -280,9 +272,6 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 	req.AppendHeader(&sip.CSeqHeader{SeqNo: cseq, MethodName: method})
 	req.AppendHeader(&maxForwards)
 	req.AppendHeader(sip.NewHeader("User-Agent", UserAgent))
-	if s.opts.Transport != "" {
-		req.SetTransport(strings.ToUpper(string(s.opts.Transport)))
-	}
 	return req
 }
 
