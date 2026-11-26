@@ -104,6 +104,16 @@ const (
 	// is acknowledged and hung up at once (no EventAckSent or EventByeSent), and
 	// the call never joins the room. It can come before or after EventCallEnded.
 	EventLateAnswerReceived SignalingEventType = "sip.late_answer.received"
+	// EventRemoteAudioReceived: the first audio frame from the remote side (the
+	// caller on an inbound call, the callee on an outbound call) that is above
+	// the silence threshold (see voiceThresholdDBFS) reached the room. Once per
+	// call. The remote audio reaches the room only after the 200 OK, so early
+	// media (ringback, announcements) does not count. On an inbound call with a
+	// PIN, the audio reaches the room only after the PIN.
+	// Time is when the frame was written to the room, after decoding and the
+	// media processor (e.g. noise cancellation), if any. Background noise or
+	// in-band DTMF above the threshold also counts.
+	EventRemoteAudioReceived SignalingEventType = "sip.remote_audio.received"
 )
 
 // Both directions.
@@ -121,6 +131,17 @@ const (
 	// EventCallEnded: the call is over, for any reason, including rejections
 	// before a call was set up.
 	EventCallEnded SignalingEventType = "sip.call.ended"
+	// EventRoomAudioSent: the first audio frame of a room track that is above
+	// the silence threshold (see voiceThresholdDBFS) went to the SIP side. Once
+	// per participant and track name: an agent's voice and its background audio
+	// are separate events, and TrackName tells them apart. Tracks with the same
+	// name share the event: a track that is published again, or a second track
+	// with that name, does not report again. Only frames sent while the room
+	// output to the SIP side is connected count, so it is never before the
+	// 200 OK. Tones played by sip (PIN prompts, dial tones) do not count.
+	// Time is when the frame entered the room mixer; the mixer adds about one
+	// frame (20 ms) before it is sent.
+	EventRoomAudioSent SignalingEventType = "sip.room_audio.sent"
 )
 
 // Transfers, both directions. Each event has the TransferID of the transfer.
@@ -177,9 +198,17 @@ type SignalingEvent struct {
 	// EventCallDispatched, which reports its own lookup's rule (empty if none
 	// matched).
 	DispatchRuleID string
-	// ParticipantID is the SID of the SIP participant in the room. It is set on
-	// EventRoomJoined, so the call joins the room's participant events.
+	// ParticipantID is the SID of the participant the event is about, so the
+	// call joins the room's participant events: the SIP participant on
+	// EventRoomJoined, the track's participant on EventRoomAudioSent.
 	ParticipantID string
+	// ParticipantKind is the kind of that participant, for example "AGENT" or
+	// "STANDARD". Set on EventRoomAudioSent.
+	ParticipantKind string
+	// TrackID and TrackName identify the track the event is about. Set on
+	// EventRoomAudioSent.
+	TrackID   string
+	TrackName string
 	// TransferID identifies the transfer on the transfer events. The REFER and
 	// NOTIFY code does not know it, so CallState adds the ID of the transfer
 	// that started most recently. The ID stays after that transfer ends, so a
@@ -397,6 +426,23 @@ func requestCSeq(req *sip.Request) uint32 {
 // inviteResponseEvent builds an event for a response sent to the INVITE.
 func inviteResponseEvent(typ SignalingEventType, t time.Time, statusCode int, cseq uint32) SignalingEvent {
 	return SignalingEvent{Type: typ, Time: t, SIPMethod: "INVITE", StatusCode: statusCode, CSeq: cseq}
+}
+
+// roomAudioSent emits EventRoomAudioSent. It is the room's OnRoomAudio.
+func (s *CallState) roomAudioSent(t time.Time, tr RoomAudioTrack) {
+	s.EmitSignalingEvent(SignalingEvent{
+		Type:            EventRoomAudioSent,
+		Time:            t,
+		ParticipantID:   tr.ParticipantID,
+		ParticipantKind: tr.ParticipantKind,
+		TrackID:         tr.TrackID,
+		TrackName:       tr.TrackName,
+	})
+}
+
+// remoteAudioReceived emits EventRemoteAudioReceived.
+func (s *CallState) remoteAudioReceived(t time.Time) {
+	s.EmitSignalingEvent(SignalingEvent{Type: EventRemoteAudioReceived, Time: t})
 }
 
 // callEndedEvent builds EventCallEnded from the call's termination and the

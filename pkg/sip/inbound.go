@@ -1945,6 +1945,7 @@ func (c *inboundCall) createLiveKitParticipant(ctx context.Context, rconf RoomCo
 	if partConf.Attributes == nil {
 		partConf.Attributes = make(map[string]string)
 	}
+	rconf.OnRoomAudio = c.state.roomAudioSent
 	for k, v := range c.extraAttrs {
 		partConf.Attributes[k] = v
 	}
@@ -1985,6 +1986,9 @@ func (c *inboundCall) publishTrack(features []livekit.SIPFeature, featureFlags m
 		return err
 	}
 
+	// Wrap the room writer before the processor wraps it, so the detector
+	// sees the processed audio: what the room gets.
+	inboundAudio = newAudioDetector(inboundAudio, "RemoteAudioDetector", new(atomic.Bool), nil, c.state.remoteAudioReceived)
 	if audioInProcessor := c.cm.handler.GetMediaProcessor(features, featureFlags, string(c.cc.ID()), MediaProcessorOpts{InputSampleRate: RoomSampleRate}); audioInProcessor != nil {
 		inboundAudio = audioInProcessor(inboundAudio)
 	}

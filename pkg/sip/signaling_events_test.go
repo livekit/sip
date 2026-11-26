@@ -156,6 +156,30 @@ func TestInboundSignalingEventsAnswered(t *testing.T) {
 	require.Equal(t, "hangup", ended.Reason)
 }
 
+// TestInboundSignalingEventsRemoteAudio: the caller's first loud frame that
+// reaches the room gives EventRemoteAudioReceived, once.
+func TestInboundSignalingEventsRemoteAudio(t *testing.T) {
+	h := &recordingStateHandler{}
+	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
+	call, ic := st.CreateInboundCall(t)
+	require.Eventually(t, ic.started.IsBroken, 5*time.Second, 10*time.Millisecond)
+
+	mp, ok := ic.media.(*mediaPort)
+	require.True(t, ok)
+	w := mp.audioIn.Get()
+	require.NotNil(t, w)
+	require.Contains(t, w.String(), "RemoteAudioDetector")
+	require.NoError(t, w.WriteSample(audioFrame(quietLevel)))
+	require.NoError(t, w.WriteSample(audioFrame(loudLevel)))
+	require.NoError(t, w.WriteSample(audioFrame(loudLevel)))
+	st.TestUA.TransactionRequest(t, call.NewRequest(sip.BYE), true)
+
+	waitEventTypes(t, h, []SignalingEventType{
+		EventInviteReceived, EventTryingSent, EventInviteAuthorized, EventRingingSent, EventCallDispatched,
+		EventRoomJoined, EventAnsweredSent, EventAckReceived, EventRemoteAudioReceived, EventByeReceived, EventCallEnded,
+	})
+}
+
 func TestInboundSignalingEventsLiveKitHangsUp(t *testing.T) {
 	h := &recordingStateHandler{}
 	st := NewServiceTest(t, &serviceTestConfig{GetStateHandler: h.GetStateHandler()})
