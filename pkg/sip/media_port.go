@@ -479,8 +479,12 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 	}
 	opts.ApplyDefaults()
 	if conn == nil {
+		listenIP := netip.AddrFrom4([4]byte{0, 0, 0, 0})
+		if opts.IP.Unmap().Is6() {
+			listenIP = netip.IPv6Unspecified()
+		}
 		// use an even RTP port (RFC 3550); some gateways misroute media when offered an odd one
-		c, err := rtp.ListenUDPEvenPortRange(opts.Ports.Start, opts.Ports.End, netip.AddrFrom4([4]byte{0, 0, 0, 0}))
+		c, err := rtp.ListenUDPEvenPortRange(opts.Ports.Start, opts.Ports.End, listenIP)
 		if err != nil {
 			return nil, err
 		}
@@ -498,7 +502,7 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		log:         log,
 		opts:        opts,
 		mon:         mon,
-		externalIP:  opts.IP,
+		externalIP:  opts.IP.Unmap(),
 		timeoutKick: make(chan struct{}, 1),
 		port:        newUDPConn(log, conn, opts.SymmetricRTP),
 		stats:       opts.Stats,
@@ -782,6 +786,42 @@ func (p *mediaPort) MediaTimeout() <-chan struct{} {
 
 // SDP
 
+// media-sdk/sdp hardcodes AddressType="IP4" in generated SessionDescriptions; override to "IP6" for IPv6.
+func setSDPAddressType(sd *psdp.SessionDescription, ip netip.Addr) {
+	if sd == nil || !ip.Unmap().Is6() {
+		return
+	}
+	sd.Origin.AddressType = "IP6"
+	if sd.ConnectionInformation != nil {
+		sd.ConnectionInformation.AddressType = "IP6"
+	}
+	for _, md := range sd.MediaDescriptions {
+		if md.ConnectionInformation != nil {
+			md.ConnectionInformation.AddressType = "IP6"
+		}
+	}
+}
+
+func sdpOfferAddr(data []byte) (addr netip.Addr) {
+	if len(data) == 0 {
+		return netip.Addr{}
+	}
+	defer func() {
+		if recover() != nil {
+			addr = netip.Addr{}
+		}
+	}()
+	var sd psdp.SessionDescription
+	if err := sd.Unmarshal(data); err != nil {
+		return netip.Addr{}
+	}
+	ap, err := sdp.GetAudioDest(&sd, sdp.GetAudio(&sd))
+	if err != nil {
+		return netip.Addr{}
+	}
+	return ap.Addr().Unmap()
+}
+
 func (p *mediaPort) GenerateOffer() ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -793,6 +833,7 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	setSDPAddressType(&offer.SDP, p.externalIP)
 	p.offer = offer
 	return offer.SDP.Marshal()
 }
@@ -814,6 +855,7 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, SDPError{Err: err}
 	}
+	setSDPAddressType(&answer.SDP, p.externalIP)
 
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
@@ -847,6 +889,7 @@ func (p *mediaPort) ProcessAnswer(answerData []byte) error {
 	if err != nil {
 		return SDPError{Err: err}
 	}
+	setSDPAddressType(localSDP, p.externalIP)
 
 	localSDPBytes, err := localSDP.Marshal()
 	if err != nil {

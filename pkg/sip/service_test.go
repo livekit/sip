@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/icholy/digest"
+	psdp "github.com/pion/sdp/v3"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/status"
 
@@ -1877,6 +1880,182 @@ func TestService_InboundTelURI(t *testing.T) {
 			require.Equal(t, toURI.Raw(), res.To().Address.Raw())
 			require.Equal(t, fromURI.Scheme, res.From().Address.Scheme)
 			require.Equal(t, fromURI.Raw(), res.From().Address.Raw())
+		})
+	}
+}
+
+func TestService_InboundIPv6(t *testing.T) {
+	cases := []struct {
+		name           string
+		listenIP       string
+		nat1To1IP      string
+		mediaNAT1To1IP string
+		wantContactIP  string
+		wantMediaIP    string
+	}{
+		{
+			name:          "dual stack loopback fallback",
+			listenIP:      "",
+			wantContactIP: "::1",
+			wantMediaIP:   "::1",
+		},
+		{
+			name:          "explicit ListenIP IPv6 without NAT1To1IP",
+			listenIP:      "::1",
+			wantContactIP: "::1",
+			wantMediaIP:   "::1",
+		},
+		{
+			name:           "explicit IPv6 NAT1To1IP and MediaNAT1To1IP",
+			listenIP:       "::1",
+			nat1To1IP:      "::1",
+			mediaNAT1To1IP: "::1",
+			wantContactIP:  "::1",
+			wantMediaIP:    "::1",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sipPort := rand.Intn(testPortSIPMax-testPortSIPMin) + testPortSIPMin
+			callEnded := make(chan struct{})
+			var endOnce sync.Once
+
+			h := &TestHandler{
+				GetAuthCredentialsFunc: func(ctx context.Context, call *rpc.SIPCall) (AuthInfo, error) {
+					return AuthInfo{Result: AuthAccept}, nil
+				},
+				DispatchCallFunc: func(ctx context.Context, info *CallInfo) CallDispatch {
+					return CallDispatch{
+						Result: DispatchAccept,
+						Room: RoomConfig{
+							RoomName: "test-room",
+							Participant: ParticipantConfig{
+								Identity: "test-participant",
+							},
+						},
+					}
+				},
+				OnSessionEndFunc: func(ctx context.Context, callIdentifier *CallIdentifier, state *CallState, reason string) {
+					endOnce.Do(func() { close(callEnded) })
+				},
+			}
+
+			mon, err := stats.NewMonitor(&config.Config{})
+			require.NoError(t, err)
+
+			log := logger.NewTestLogger(t)
+			conf := &config.Config{
+				SIPPort:        sipPort,
+				SIPPortListen:  sipPort,
+				ListenIP:       tc.listenIP,
+				NAT1To1IP:      tc.nat1To1IP,
+				MediaNAT1To1IP: tc.mediaNAT1To1IP,
+				RTPPort:        rtcconfig.PortRange{Start: testPortRTPMin, End: testPortRTPMax},
+			}
+			manager, err := NewCallManager("", conf, log, mon, newTestNonces(t), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+				return NewRPCStateHandler(&MockIOInfoClient{})
+			}, WithGetRoom(newTestRoomConfig(nil)))
+			require.NoError(t, err)
+			s, err := NewService(conf, mon, log, manager)
+			require.NoError(t, err)
+			t.Cleanup(s.Stop)
+
+			s.SetHandler(h)
+			require.NoError(t, s.Start())
+
+			ua, err := sipgo.NewUA(
+				sipgo.WithUserAgent("ipv6-test"),
+				sipgo.WithUserAgentLogger(slog.New(logger.ToSlogHandler(s.log))),
+			)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = ua.Close() })
+
+			client, err := sipgo.NewClient(ua, sipgo.WithClientHostname("::1"))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = client.Close() })
+
+			req := sip.NewRequest(sip.INVITE, sip.Uri{User: "+15105550100", Host: "[::1]", Port: sipPort})
+			req.SetTransport("UDP")
+			req.SetDestination("[::1]:" + strconv.Itoa(sipPort))
+			fromParams := sip.NewParams()
+			fromParams.Add("tag", "from-v6")
+			req.AppendHeader(&sip.FromHeader{
+				Address: sip.Uri{User: "+15105550111", Host: "[::1]"},
+				Params:  fromParams,
+			})
+			req.AppendHeader(&sip.ToHeader{
+				Address: sip.Uri{User: "+15105550100", Host: "[::1]", Port: sipPort},
+			})
+			req.AppendHeader(&sip.ContactHeader{
+				Address: sip.Uri{User: "+15105550111", Host: "[::1]"},
+			})
+			sdpOffer := strings.Join([]string{
+				"v=0",
+				"o=- 1 1 IN IP6 ::1",
+				"s=-",
+				"c=IN IP6 ::1",
+				"t=0 0",
+				"m=audio 20000 RTP/AVP 0",
+				"a=rtpmap:0 PCMU/8000",
+				"a=sendrecv",
+			}, "\r\n") + "\r\n"
+			req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+			req.SetBody([]byte(sdpOffer))
+
+			tx, err := client.TransactionRequest(req)
+			require.NoError(t, err)
+			t.Cleanup(tx.Terminate)
+
+			res := getFinalResponseOrFail(t, nil, tx)
+			require.Equal(t, sip.StatusCode(200), res.StatusCode)
+
+			contact := res.Contact()
+			require.NotNil(t, contact)
+			contactIP, err := netip.ParseAddr(strings.Trim(contact.Address.Host, "[]"))
+			require.NoError(t, err)
+			require.Equal(t, netip.MustParseAddr(tc.wantContactIP), contactIP.Unmap())
+			require.Contains(t, contact.Value(), "["+tc.wantContactIP+"]")
+
+			var sd psdp.SessionDescription
+			require.NoError(t, sd.Unmarshal(res.Body()))
+			require.Equal(t, "IP6", sd.Origin.AddressType)
+			require.Equal(t, tc.wantMediaIP, sd.Origin.UnicastAddress)
+			require.NotNil(t, sd.ConnectionInformation)
+			require.Equal(t, "IP6", sd.ConnectionInformation.AddressType)
+			require.NotNil(t, sd.ConnectionInformation.Address)
+			require.Equal(t, tc.wantMediaIP, sd.ConnectionInformation.Address.Address)
+
+			toTag, ok := res.To().Params.Get("tag")
+			require.True(t, ok)
+			cm := manager.(*callManager)
+			cm.cmu.RLock()
+			ic := cm.byLocalTag[LocalTag(toTag)]
+			cm.cmu.RUnlock()
+			require.NotNil(t, ic)
+
+			ack := sip.NewAckRequest(req, res, nil)
+			ack.SetDestination("")
+			require.NoError(t, client.WriteRequest(ack))
+			require.Eventually(t, ic.cc.GotACK, 3*time.Second, 10*time.Millisecond)
+
+			bye := sip.NewByeRequest(req, res, nil)
+			bye.SetDestination("")
+			byeTx, err := client.TransactionRequest(bye)
+			require.NoError(t, err)
+			t.Cleanup(byeTx.Terminate)
+			var byeRes *sip.Response
+			select {
+			case byeRes = <-byeTx.Responses():
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for BYE response")
+			}
+			require.Equal(t, sip.StatusCode(200), byeRes.StatusCode)
+			select {
+			case <-callEnded:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for session end")
+			}
 		})
 	}
 }

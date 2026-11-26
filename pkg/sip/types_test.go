@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -73,4 +74,24 @@ func TestAttrsToHeaders(t *testing.T) {
 			require.Equal(t, c.exp, got)
 		})
 	}
+}
+
+func TestURI_IPv6DestAndHostPort(t *testing.T) {
+	uAddr := URI{
+		Addr: netip.MustParseAddrPort("[2001:db8::1]:5060"),
+	}
+	require.Equal(t, "[2001:db8::1]:5060", uAddr.GetHostPort())
+	require.Equal(t, "[2001:db8::1]:5060", uAddr.GetDest())
+
+	uHost := URI{
+		Host: "2001:db8::1",
+	}
+	require.Equal(t, "[2001:db8::1]:5060", uHost.GetHostPort())
+	require.Equal(t, "[2001:db8::1]:5060", uHost.GetDest())
+
+	uBracketed := URI{
+		Host: "[2001:db8::1]",
+	}
+	require.Equal(t, "[2001:db8::1]:5060", uBracketed.GetHostPort())
+	require.Equal(t, "[2001:db8::1]:5060", uBracketed.GetDest())
 }

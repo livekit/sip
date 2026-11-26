@@ -66,9 +66,12 @@ type transferOutcome struct {
 }
 
 type ServiceConfig struct {
-	SignalingIP      netip.Addr
-	SignalingIPLocal netip.Addr
-	MediaIP          netip.Addr
+	SignalingIP       netip.Addr
+	SignalingIPLocal  netip.Addr
+	MediaIP           netip.Addr
+	SignalingIP6      netip.Addr
+	SignalingIPLocal6 netip.Addr
+	MediaIP6          netip.Addr
 }
 
 type Service struct {

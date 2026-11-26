@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	psdp "github.com/pion/sdp/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -972,5 +973,72 @@ func TestParseSDPWithRecovery(t *testing.T) {
 		_, err := parseSDPWithRecovery(logger.NewTestLogger(t), nil, fn.parse, defaultCodecs, nil)
 		f := SDPError{Err: err}.ClassifyInvite()
 		require.Equal(t, stats.ClientError("sdp-error"), f.Term)
+	})
+}
+
+func TestMediaPortIPv6SDP(t *testing.T) {
+	ip6 := netip.MustParseAddr("2001:db8::20")
+	mon := newTestCallMonitor(t)
+	mp, err := NewMediaPortWith(logger.NewTestLogger(t), mon, &testUDPConn{}, &MediaOptions{
+		IP: ip6,
+	}, 20000)
+	require.NoError(t, err)
+	t.Cleanup(func() { mp.Close() })
+
+	t.Run("GenerateOffer and ProcessAnswer", func(t *testing.T) {
+		offerData, err := mp.GenerateOffer()
+		require.NoError(t, err)
+
+		var sd psdp.SessionDescription
+		require.NoError(t, sd.Unmarshal(offerData))
+		require.Equal(t, "IP6", sd.Origin.AddressType)
+		require.Equal(t, ip6.String(), sd.Origin.UnicastAddress)
+		require.NotNil(t, sd.ConnectionInformation)
+		require.Equal(t, "IP6", sd.ConnectionInformation.AddressType)
+		require.NotNil(t, sd.ConnectionInformation.Address)
+		require.Equal(t, ip6.String(), sd.ConnectionInformation.Address.Address)
+
+		answer := "v=0\r\n" +
+			"o=- 1 1 IN IP6 2001:db8::10\r\n" +
+			"s=-\r\n" +
+			"c=IN IP6 2001:db8::10\r\n" +
+			"t=0 0\r\n" +
+			"m=audio 30000 RTP/AVP 0\r\n" +
+			"a=rtpmap:0 PCMU/8000\r\n" +
+			"a=sendrecv\r\n"
+		require.NoError(t, mp.ProcessAnswer([]byte(answer)))
+
+		localData, err := mp.GetLocalSDP()
+		require.NoError(t, err)
+		var localSD psdp.SessionDescription
+		require.NoError(t, localSD.Unmarshal(localData))
+		require.Equal(t, "IP6", localSD.Origin.AddressType)
+		require.Equal(t, ip6.String(), localSD.Origin.UnicastAddress)
+		require.NotNil(t, localSD.ConnectionInformation)
+		require.Equal(t, "IP6", localSD.ConnectionInformation.AddressType)
+		require.NotNil(t, localSD.ConnectionInformation.Address)
+		require.Equal(t, ip6.String(), localSD.ConnectionInformation.Address.Address)
+	})
+
+	t.Run("GenerateAnswer", func(t *testing.T) {
+		offer := "v=0\r\n" +
+			"o=- 1 1 IN IP6 2001:db8::10\r\n" +
+			"s=-\r\n" +
+			"c=IN IP6 2001:db8::10\r\n" +
+			"t=0 0\r\n" +
+			"m=audio 30000 RTP/AVP 0\r\n" +
+			"a=rtpmap:0 PCMU/8000\r\n" +
+			"a=sendrecv\r\n"
+		answerData, err := mp.GenerateAnswer([]byte(offer))
+		require.NoError(t, err)
+
+		var sd psdp.SessionDescription
+		require.NoError(t, sd.Unmarshal(answerData))
+		require.Equal(t, "IP6", sd.Origin.AddressType)
+		require.Equal(t, ip6.String(), sd.Origin.UnicastAddress)
+		require.NotNil(t, sd.ConnectionInformation)
+		require.Equal(t, "IP6", sd.ConnectionInformation.AddressType)
+		require.NotNil(t, sd.ConnectionInformation.Address)
+		require.Equal(t, ip6.String(), sd.ConnectionInformation.Address.Address)
 	})
 }
