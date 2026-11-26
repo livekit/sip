@@ -238,6 +238,42 @@ func TestDialogSessionRouteTransport(t *testing.T) {
 	require.Equal(t, "tcp", tr)
 }
 
+func TestDialogSessionTransportOption(t *testing.T) {
+	h, s := newTestDialogSession(t, testDialog(), DialogSessionOptions{Transport: TransportTCP})
+	startSessionInvite(s, "offer")
+	req := h.WaitTransaction(t, dialogTestTimeout, "local-tag", "").req
+	require.Equal(t, "TCP", req.Transport())
+	tr, _ := req.Contact().Address.UriParams.Get("transport")
+	require.Equal(t, "tcp", tr)
+}
+
+// A sips next hop gets TLS when its URI has no transport parameter: a loose
+// route, or the remote target when there is no route.
+func TestDialogSessionSecureNextHop(t *testing.T) {
+	for name, c := range map[string]struct {
+		target string
+		routes []string
+		option Transport
+		want   string
+	}{
+		"loose route":     {"sip:callee@203.0.113.9:5070", []string{"sips:10.0.0.1:5061;lr"}, "", "TLS"},
+		"loose route tcp": {"sip:callee@203.0.113.9:5070", []string{"sips:10.0.0.1:5061;transport=tcp;lr"}, "", "TLS"},
+		"target":          {"sips:callee@203.0.113.9:5061", nil, "", "TLS"},
+		"sip target":      {"sip:callee@203.0.113.9:5070", nil, "", "UDP"},
+		"sip route":       {"sips:callee@203.0.113.9:5061", []string{"sip:10.0.0.1:5060;lr"}, "", "UDP"},
+		"option":          {"sip:callee@203.0.113.9:5070", []string{"sips:10.0.0.1:5061;lr"}, TransportTCP, "TCP"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := testDialog()
+			d.RemoteTarget, d.RouteSet = c.target, c.routes
+			h, s := newTestDialogSession(t, d, DialogSessionOptions{Transport: c.option})
+			startSessionInvite(s, "offer")
+			req := h.WaitTransaction(t, dialogTestTimeout, "local-tag", "").req
+			require.Equal(t, c.want, req.Transport())
+		})
+	}
+}
+
 // A first route without the lr parameter is a strict router: it is the
 // Request-URI, and the remote target is the last route.
 func TestDialogSessionStrictRoute(t *testing.T) {
@@ -259,21 +295,26 @@ func TestDialogSessionStrictRoute(t *testing.T) {
 func TestDialogSessionStrictRouteTransport(t *testing.T) {
 	for name, c := range map[string]struct {
 		router string
+		option Transport
 		want   string
 		dest   string
 	}{
-		"default":          {"sip:10.0.0.1:5060", "UDP", "10.0.0.1:5060"},
-		"parameter":        {"sip:10.0.0.1:5060;transport=tcp", "TCP", "10.0.0.1:5060"},
-		"sips":             {"sips:10.0.0.1:5061", "TLS", "10.0.0.1:5061"},
-		"no port":          {"sip:10.0.0.1", "UDP", "10.0.0.1:5060"},
-		"sips no port":     {"sips:10.0.0.1", "TLS", "10.0.0.1:5061"},
-		"sips tcp no port": {"sips:10.0.0.1;transport=tcp", "TLS", "10.0.0.1:5061"},
-		"sips other port":  {"sips:10.0.0.1:5070", "TLS", "10.0.0.1:5070"},
+		"default":          {"sip:10.0.0.1:5060", "", "UDP", "10.0.0.1:5060"},
+		"parameter":        {"sip:10.0.0.1:5060;transport=tcp", "", "TCP", "10.0.0.1:5060"},
+		"sips":             {"sips:10.0.0.1:5061", "", "TLS", "10.0.0.1:5061"},
+		"no port":          {"sip:10.0.0.1", "", "UDP", "10.0.0.1:5060"},
+		"sips no port":     {"sips:10.0.0.1", "", "TLS", "10.0.0.1:5061"},
+		"sips tcp no port": {"sips:10.0.0.1;transport=tcp", "", "TLS", "10.0.0.1:5061"},
+		"sips other port":  {"sips:10.0.0.1:5070", "", "TLS", "10.0.0.1:5070"},
+		"option tls":       {"sip:10.0.0.1", TransportTLS, "TLS", "10.0.0.1:5061"},
+		"option tcp":       {"sips:10.0.0.1", TransportTCP, "TCP", "10.0.0.1:5060"},
+		"option with port": {"sip:10.0.0.1:5070", TransportTLS, "TLS", "10.0.0.1:5070"},
+		"option uppercase": {"sip:10.0.0.1", "TLS", "TLS", "10.0.0.1:5061"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := testDialog()
 			d.RouteSet = []string{c.router, "sip:far-proxy.example.com;lr;transport=ws"}
-			h, s := newTestDialogSession(t, d, DialogSessionOptions{})
+			h, s := newTestDialogSession(t, d, DialogSessionOptions{Transport: c.option})
 			startSessionInvite(s, "offer")
 			req := h.WaitTransaction(t, dialogTestTimeout, "local-tag", "").req
 			require.Equal(t, c.want, req.Transport())

@@ -65,6 +65,9 @@ type DialogSessionOptions struct {
 	// request of this side.
 	Username string
 	Password string
+	// Transport sends this side's requests over this transport, whatever the
+	// URI of the next hop says. By default that URI selects it.
+	Transport Transport
 	// OnOffer applies the offer of a re-INVITE from the remote side to the
 	// owner's media and returns the answer. An SDPError rejects the re-INVITE
 	// with a 488, another error with a 500.
@@ -126,6 +129,8 @@ func NewDialogSession(cli *Client, d *Dialog, opts DialogSessionOptions) (*Dialo
 		opts: opts,
 		d:    *cloneDialog(d),
 	}
+	// A transport name has no case; the Transport constants are in lower case.
+	s.opts.Transport = Transport(strings.ToLower(string(opts.Transport)))
 	if s.log == nil {
 		s.log = cli.log
 	}
@@ -240,21 +245,34 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 		routes = append(slices.Clone(routes[1:]), s.target)
 	}
 	req := sip.NewRequest(method, *target.Clone())
-	if strict {
-		// The transport layer takes the next hop and its transport from the
-		// first Route header; with a strict router the next hop is the
-		// Request-URI.
-		dest := ConvertURI(&target)
-		tr := transportFromURI(&target)
-		switch {
-		case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
-			tr = TransportTLS
-		case tr == "":
+	// The next hop is the first route, or the Request-URI when there is no
+	// route or the first one is a strict router.
+	hop := target
+	if !strict && len(routes) > 0 {
+		hop = routes[0]
+	}
+	tr, fixed := s.opts.Transport, s.opts.Transport != ""
+	if !fixed {
+		tr = transportFromURI(&hop)
+		// A sips URI needs TLS. The transport layer selects UDP for one that
+		// has no transport parameter.
+		if hop.IsEncrypted() && (tr == "" || tr == TransportTCP) {
+			tr, fixed = TransportTLS, true
+		}
+	}
+	switch {
+	case strict:
+		// The transport layer takes the next hop from the first Route header,
+		// which is not the strict router.
+		if tr == "" {
 			tr = TransportUDP
 		}
+		dest := ConvertURI(&hop)
 		// The transport also selects the default port.
 		dest.Transport = tr
 		req.SetDestination(dest.GetDest())
+		req.SetTransport(strings.ToUpper(string(tr)))
+	case fixed:
 		req.SetTransport(strings.ToUpper(string(tr)))
 	}
 	for _, r := range routes {
