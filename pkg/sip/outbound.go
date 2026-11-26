@@ -108,7 +108,7 @@ func (cm *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config
 	room.LogSignalChanges = signalLoggingEnabled
 
 	tr := TransportFrom(sipConf.transport)
-	contact := cm.ContactURI(tr)
+	contact := getContactURI(cm.conf, cm.outboundSignalingIP(sipConf.uri), tr)
 
 	now := time.Now()
 	call := &outboundCall{
@@ -147,7 +147,7 @@ func (cm *callManager) newCall(ctx context.Context, tid traceid.ID, conf *config
 	var err error
 
 	call.media, err = NewMediaPort(log, call.mon, &MediaOptions{
-		IP:                   cm.sconf.MediaIP,
+		IP:                   cm.outboundMediaIP(sipConf.uri),
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  cm.conf.MediaTimeoutInitial,
 		MediaTimeout:         sipConf.mediaConfig.MediaTimeout,

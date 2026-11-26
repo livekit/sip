@@ -350,7 +350,11 @@ func (cm *callManager) createSIPParticipant(ctx context.Context, req *rpc.Intern
 	if req.RoomName == "" {
 		return nil, psrpc.NewErrorf(psrpc.InvalidArgument, "room name must be set")
 	}
-	defaultHost := cm.ContactURI(TransportFrom(req.Transport)).GetHost()
+	tr := TransportFrom(req.Transport)
+	defaultHost := cm.ContactURI(tr).GetHost()
+	if targetURI, err := buildRequestURI(req.SipRequestUri, req.CallTo, req.Address, req.Transport); err == nil {
+		defaultHost = getContactURI(cm.conf, cm.outboundSignalingIP(targetURI), tr).GetHost()
+	}
 	log := cm.log
 	if req.ProjectId != "" {
 		log = log.WithValues("projectID", req.ProjectId)
@@ -470,7 +474,7 @@ func (cm *callManager) createSIPParticipant(ctx context.Context, req *rpc.Intern
 func (cm *callManager) createSIPCallInfo(uri *sip.Uri, from *sip.FromHeader, to *sip.ToHeader, req *rpc.InternalCreateSIPParticipantRequest) *livekit.SIPCallInfo {
 	toUri := ConvertURI(&to.Address)
 	fromUri := ConvertURI(&from.Address)
-	fromUri.Addr = netip.AddrPortFrom(cm.sconf.SignalingIP, uint16(cm.conf.SIPPort))
+	fromUri.Addr = netip.AddrPortFrom(cm.outboundSignalingIP(uri), uint16(cm.conf.SIPPort))
 
 	callInfo := &livekit.SIPCallInfo{
 		CallId:                req.SipCallId,

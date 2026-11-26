@@ -19,6 +19,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ import (
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
+	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sip/pkg/stats"
 	"github.com/livekit/sipgo/sip"
 )
@@ -1113,5 +1116,160 @@ func TestInboundByeOverInviteConnection(t *testing.T) {
 	t.Run("UDP", func(t *testing.T) {
 		_, ic := st.CreateInboundCall(t)
 		require.False(t, inviteConnOpen(ic))
+	})
+}
+
+func TestInboundIPv6Selection(t *testing.T) {
+	conf := &config.Config{
+		SIPPort:        5060,
+		AddRecordRoute: true,
+	}
+	sconf := &ServiceConfig{
+		SignalingIP:       netip.MustParseAddr("203.0.113.10"),
+		SignalingIPLocal:  netip.MustParseAddr("10.0.0.10"),
+		MediaIP:           netip.MustParseAddr("203.0.113.20"),
+		SignalingIP6:      netip.MustParseAddr("2001:db8::10"),
+		SignalingIPLocal6: netip.MustParseAddr("fd00::10"),
+		MediaIP6:          netip.MustParseAddr("2001:db8::20"),
+	}
+	mon, err := stats.NewMonitor(conf)
+	require.NoError(t, err)
+	cm := newCallManager(nil, nil, "", conf, sconf, logger.NewTestLogger(t), mon, newTestNonces(t), func(projectID string, _ *rpc.SIPCallObservability, _ *livekit.SIPCallInfo) StateHandler {
+		return NewRPCStateHandler(nil)
+	})
+
+	offerV6 := []byte(strings.Join([]string{
+		"v=0",
+		"o=- 1 1 IN IP6 2001:db8::99",
+		"s=-",
+		"c=IN IP6 2001:db8::99",
+		"t=0 0",
+		"m=audio 20000 RTP/AVP 0",
+	}, "\r\n") + "\r\n")
+	offerV4 := []byte(strings.Join([]string{
+		"v=0",
+		"o=- 1 1 IN IP4 198.51.100.5",
+		"s=-",
+		"c=IN IP4 198.51.100.5",
+		"t=0 0",
+		"m=audio 20000 RTP/AVP 0",
+	}, "\r\n") + "\r\n")
+
+	t.Run("family selection matrix", func(t *testing.T) {
+		v6Peer := netip.MustParseAddr("2001:db8::99")
+		v4Peer := netip.MustParseAddr("198.51.100.5")
+		v4MappedPeer := netip.MustParseAddr("::ffff:198.51.100.5")
+
+		require.Equal(t, sconf.SignalingIP6, cm.inboundSignalingIP(v6Peer))
+		require.Equal(t, sconf.SignalingIP, cm.inboundSignalingIP(v4Peer))
+		require.Equal(t, sconf.SignalingIP, cm.inboundSignalingIP(v4MappedPeer))
+
+		require.Equal(t, sconf.MediaIP6, cm.inboundMediaIP(v6Peer, sdpOfferAddr(offerV6)))
+		require.Equal(t, sconf.MediaIP6, cm.inboundMediaIP(v6Peer, netip.Addr{}))
+		require.Equal(t, sconf.MediaIP, cm.inboundMediaIP(v4Peer, sdpOfferAddr(offerV4)))
+		require.Equal(t, sconf.MediaIP, cm.inboundMediaIP(v4MappedPeer, sdpOfferAddr(offerV4)))
+		require.Equal(t, sconf.MediaIP6, cm.inboundMediaIP(v4Peer, sdpOfferAddr(offerV6)))
+		require.Equal(t, sconf.MediaIP, cm.inboundMediaIP(v6Peer, sdpOfferAddr(offerV4)))
+	})
+
+	t.Run("inbound Contact, Record-Route, and Via headers", func(t *testing.T) {
+		cases := []struct {
+			name         string
+			src          netip.AddrPort
+			wantHost     string
+			wantWireHost string
+		}{
+			{
+				name:         "IPv6 INVITE",
+				src:          netip.MustParseAddrPort("[2001:db8::99]:5060"),
+				wantHost:     "2001:db8::10",
+				wantWireHost: "[2001:db8::10]",
+			},
+			{
+				name:         "IPv4 INVITE",
+				src:          netip.MustParseAddrPort("198.51.100.5:5060"),
+				wantHost:     "203.0.113.10",
+				wantWireHost: "203.0.113.10",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				req := sip.NewRequest(sip.INVITE, sip.Uri{User: "100", Host: tc.wantWireHost, Port: 5060})
+				req.SetTransport("UDP")
+				req.AppendHeader(sip.NewHeader("Call-ID", "call-"+tc.name))
+				fromParams := sip.NewParams()
+				fromParams.Add("tag", "from-tag")
+				req.AppendHeader(&sip.FromHeader{
+					Address: sip.Uri{User: "200", Host: tc.src.Addr().String()},
+					Params:  fromParams,
+				})
+				req.AppendHeader(&sip.ToHeader{
+					Address: sip.Uri{User: "100", Host: tc.wantWireHost, Port: 5060},
+				})
+
+				in, err := cm.newInbound(req, nil, tc.src, time.Now())
+				require.NoError(t, err)
+				require.Equal(t, tc.wantHost, in.contact.Address.Host)
+				require.Contains(t, in.contact.Value(), tc.wantWireHost)
+
+				resp := sip.NewResponseFromRequest(req, 200, "OK", nil)
+				in.addExtraHeaders(resp)
+				rr := resp.GetHeader("Record-Route")
+				require.NotNil(t, rr)
+				require.Contains(t, rr.Value(), tc.wantWireHost)
+
+				bye := sip.NewRequest(sip.BYE, sip.Uri{User: "200", Host: tc.src.Addr().String()})
+				bye.SetTransport("UDP")
+				via := in.generateViaHeader(bye)
+				require.Equal(t, tc.wantHost, via.Host)
+				require.Contains(t, via.Value(), tc.wantWireHost)
+			})
+		}
+	})
+
+	t.Run("loopback fallback without configured IPv6", func(t *testing.T) {
+		v4OnlyCM := newCallManager(nil, nil, "", &config.Config{SIPPort: 5060}, &ServiceConfig{
+			SignalingIP:      netip.MustParseAddr("192.0.2.10"),
+			SignalingIPLocal: netip.MustParseAddr("192.0.2.10"),
+			MediaIP:          netip.MustParseAddr("192.0.2.10"),
+		}, logger.NewTestLogger(t), mon, newTestNonces(t), nil)
+
+		loopback6 := netip.MustParseAddr("::1")
+		loopback4 := netip.MustParseAddr("127.0.0.1")
+		remote6 := netip.MustParseAddr("2001:db8::99")
+		fallback4 := netip.MustParseAddr("192.0.2.10")
+
+		require.Equal(t, loopback6, v4OnlyCM.inboundSignalingIP(loopback6))
+		require.Equal(t, loopback6, v4OnlyCM.inboundMediaIP(loopback6, loopback6))
+		require.Equal(t, loopback6, v4OnlyCM.inboundMediaIP(loopback6, netip.Addr{}))
+		require.Equal(t, fallback4, v4OnlyCM.inboundSignalingIP(netip.MustParseAddr("198.51.100.5")))
+
+		// A loopback SIP relay with a remote IPv6 offer must not advertise ::1.
+		require.Equal(t, fallback4, v4OnlyCM.inboundMediaIP(loopback4, remote6))
+		require.Equal(t, fallback4, v4OnlyCM.inboundMediaIP(loopback6, remote6))
+		// Unspecified SDP address uses SIP source loopback status.
+		require.Equal(t, loopback6, v4OnlyCM.inboundMediaIP(loopback6, netip.IPv6Unspecified()))
+		require.Equal(t, fallback4, v4OnlyCM.inboundMediaIP(remote6, netip.IPv6Unspecified()))
+	})
+
+	t.Run("inbound preserves IPv4 fallback when legacy fields hold IPv6 NAT overrides", func(t *testing.T) {
+		overrideCM := newCallManager(nil, nil, "", &config.Config{SIPPort: 5060}, &ServiceConfig{
+			SignalingIP:       netip.MustParseAddr("2001:db8::10"),
+			SignalingIPLocal:  netip.MustParseAddr("2001:db8::10"),
+			MediaIP:           netip.MustParseAddr("2001:db8::20"),
+			SignalingIP4:      netip.MustParseAddr("10.0.0.5"),
+			MediaIP4:          netip.MustParseAddr("10.0.0.6"),
+			SignalingIP6:      netip.MustParseAddr("2001:db8::10"),
+			SignalingIPLocal6: netip.MustParseAddr("2001:db8::10"),
+			MediaIP6:          netip.MustParseAddr("2001:db8::20"),
+		}, logger.NewTestLogger(t), mon, newTestNonces(t), nil)
+
+		v4Peer := netip.MustParseAddr("198.51.100.5")
+		v6Peer := netip.MustParseAddr("2001:db8::99")
+		require.Equal(t, netip.MustParseAddr("10.0.0.5"), overrideCM.inboundSignalingIP(v4Peer))
+		require.Equal(t, netip.MustParseAddr("10.0.0.6"), overrideCM.inboundMediaIP(v4Peer, v4Peer))
+		require.Equal(t, netip.MustParseAddr("2001:db8::10"), overrideCM.inboundSignalingIP(v6Peer))
+		require.Equal(t, netip.MustParseAddr("2001:db8::20"), overrideCM.inboundMediaIP(v6Peer, v6Peer))
 	})
 }

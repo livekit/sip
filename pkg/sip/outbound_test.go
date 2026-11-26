@@ -19,15 +19,19 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
+	psdp "github.com/pion/sdp/v3"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/sip/pkg/config"
 	"github.com/livekit/sipgo/sip"
 )
 
@@ -867,6 +871,177 @@ func TestURITransport(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, uriTransport(tc.uri))
+		})
+	}
+}
+
+func TestOutboundIPv6NATOverrides(t *testing.T) {
+	v4 := netip.MustParseAddr("10.0.0.5")
+	nicV6 := netip.MustParseAddr("2001:db8:1::10")
+	natSig6 := netip.MustParseAddr("2001:db8:9::1")
+	natMed6 := netip.MustParseAddr("2001:db8:9::2")
+	natSig4 := netip.MustParseAddr("203.0.113.10")
+	natMed4 := netip.MustParseAddr("203.0.113.20")
+
+	dualStackAddrs := func(bool) ([]netip.Addr, error) {
+		return []netip.Addr{v4, nicV6}, nil
+	}
+	failExt := func() (netip.Addr, error) {
+		return netip.Addr{}, errors.New("unexpected external IP lookup")
+	}
+
+	cases := []struct {
+		name                 string
+		listenIP             string
+		nat1To1IP            string
+		mediaNAT1To1IP       string
+		destAddr             string
+		wantDefaultContactIP string
+		wantContactIP        string
+		wantMediaIP          string
+		wantSDPAddrType      string
+	}{
+		{
+			name:                 "explicit IPv6 signaling and media NAT on hostname",
+			nat1To1IP:            natSig6.String(),
+			mediaNAT1To1IP:       natMed6.String(),
+			destAddr:             "trunk.example.com",
+			wantDefaultContactIP: natSig6.String(),
+			wantContactIP:        natSig6.String(),
+			wantMediaIP:          natMed6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "explicit IPv6 media NAT with IPv4 signaling NAT on hostname",
+			nat1To1IP:            natSig4.String(),
+			mediaNAT1To1IP:       natMed6.String(),
+			destAddr:             "trunk.example.com",
+			wantDefaultContactIP: natSig4.String(),
+			wantContactIP:        natSig4.String(),
+			wantMediaIP:          natMed6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "explicit IPv4 media NAT preserved when dialing IPv6 literal",
+			nat1To1IP:            natSig6.String(),
+			mediaNAT1To1IP:       natMed4.String(),
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: natSig6.String(),
+			wantContactIP:        natSig6.String(),
+			wantMediaIP:          natMed4.String(),
+			wantSDPAddrType:      "IP4",
+		},
+		{
+			name:                 "matching IPv4 NAT1To1IP and MediaNAT1To1IP use IPv6 when dialing IPv6 literal",
+			nat1To1IP:            natSig4.String(),
+			mediaNAT1To1IP:       natSig4.String(),
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: natSig4.String(),
+			wantContactIP:        nicV6.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "concrete IPv4 ListenIP keeps bound IPv4 Contact when dialing IPv6 literal",
+			listenIP:             v4.String(),
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: v4.String(),
+			wantContactIP:        v4.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "concrete IPv4 ListenIP avoids loopback IPv6 Contact when dialing ::1",
+			listenIP:             v4.String(),
+			destAddr:             "[::1]:5060",
+			wantDefaultContactIP: v4.String(),
+			wantContactIP:        v4.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "auto-detected dual stack dials IPv6 literal with IPv6 Contact and SDP",
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: v4.String(),
+			wantContactIP:        nicV6.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
+			name:                 "auto-detected dual stack dials IPv4 literal with IPv4 Contact and SDP",
+			destAddr:             "198.51.100.5:5060",
+			wantDefaultContactIP: v4.String(),
+			wantContactIP:        v4.String(),
+			wantMediaIP:          v4.String(),
+			wantSDPAddrType:      "IP4",
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sipConf := &config.Config{
+				NodeID:            "test-node",
+				SIPPort:           5060,
+				SIPPortListen:     5060,
+				ListenIP:          tc.listenIP,
+				NAT1To1IP:         tc.nat1To1IP,
+				MediaNAT1To1IP:    tc.mediaNAT1To1IP,
+				RTPPort:           rtcconfig.PortRange{Start: 20000, End: 30000},
+				MaxCpuUtilization: 0.99,
+				WsUrl:             "ws://localhost:7880",
+				ApiKey:            "test-api-key",
+				ApiSecret:         "test-api-secret-extend-to-32-bytes-minimum",
+			}
+			sconf, err := getServiceConfigWith(sipConf, dualStackAddrs, failExt)
+			require.NoError(t, err)
+
+			h := NewTestSIP(t, TestSIPConfig{Config: sipConf})
+			h.Client.sconf = sconf
+			h.Server.sconf = sconf
+			h.manager.sconf = sconf
+
+			require.Equal(t, tc.wantDefaultContactIP, h.manager.ContactURI(TransportUDP).GetHost())
+			require.Equal(t, tc.wantDefaultContactIP, h.Client.ContactURI(TransportUDP).GetHost())
+
+			callID := fmt.Sprintf("outbound-v6-call-%d", i)
+			req := MinimalCreateSIPParticipantRequest()
+			req.SipCallId = callID
+			req.Address = tc.destAddr
+			req.Hostname = ""
+			req.WaitUntilAnswered = true
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			errCh := make(chan error, 1)
+			go func() {
+				_, callErr := h.manager.CreateSIPParticipant(ctx, req)
+				errCh <- callErr
+			}()
+
+			tr := h.WaitTransaction(t, time.Second, callID, "")
+			require.Equal(t, sip.INVITE, tr.req.Method)
+
+			contact := tr.req.Contact()
+			require.NotNil(t, contact)
+			require.Equal(t, tc.wantContactIP, strings.Trim(contact.Address.Host, "[]"))
+
+			from := tr.req.From()
+			require.NotNil(t, from)
+			require.Equal(t, tc.wantContactIP, strings.Trim(from.Address.Host, "[]"))
+
+			var sd psdp.SessionDescription
+			require.NoError(t, sd.Unmarshal(tr.req.Body()))
+			require.Equal(t, tc.wantSDPAddrType, sd.Origin.AddressType)
+			require.Equal(t, tc.wantMediaIP, sd.Origin.UnicastAddress)
+			require.NotNil(t, sd.ConnectionInformation)
+			require.Equal(t, tc.wantSDPAddrType, sd.ConnectionInformation.AddressType)
+			require.NotNil(t, sd.ConnectionInformation.Address)
+			require.Equal(t, tc.wantMediaIP, sd.ConnectionInformation.Address.Address)
+
+			reject := sip.NewResponseFromRequest(tr.req, sip.StatusBusyHere, "Busy Here", nil)
+			require.NoError(t, tr.transaction.SendResponse(reject))
+			require.Error(t, <-errCh)
 		})
 	}
 }

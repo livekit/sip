@@ -1102,7 +1102,7 @@ func (c *inboundCall) handleInvite(ctx context.Context, req *sip.Request, trunkI
 		ackTimeout  <-chan time.Time
 	)
 
-	if err := c.createMediaPort(mconf, conf, disp.FeatureFlags); err != nil {
+	if err := c.createMediaPort(mconf, conf, disp.FeatureFlags, sdpOffer); err != nil {
 		return rejectMedia(err)
 	}
 
@@ -1397,16 +1397,88 @@ func (w *pinDTMFWriter) WriteSample(sample string) error {
 	return nil
 }
 
-func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string) error {
+func pickFamilyIP(want6 bool, fallback, ip6Conf, ip6Listen netip.Addr, isLoopback bool) netip.Addr {
+	if want6 {
+		if ip6Conf.Unmap().Is6() {
+			return ip6Conf.Unmap()
+		}
+		if ip6Listen.IsValid() {
+			return ip6Listen
+		}
+		if isLoopback {
+			return netip.IPv6Loopback()
+		}
+	}
+	return fallback
+}
+
+func fallbackIP4(preferred, legacy netip.Addr) netip.Addr {
+	if preferred.IsValid() {
+		return preferred
+	}
+	return legacy
+}
+
+func (cm *callManager) inboundSignalingIP(remote netip.Addr) netip.Addr {
+	remote = remote.Unmap()
+	return pickFamilyIP(remote.Is6(), fallbackIP4(cm.sconf.SignalingIP4, cm.sconf.SignalingIP), cm.sconf.SignalingIP6, listenIPv6(cm.conf), remote.IsLoopback())
+}
+
+func (cm *callManager) inboundMediaIP(remote, offerAddr netip.Addr) netip.Addr {
+	remote = remote.Unmap()
+	offerAddr = offerAddr.Unmap()
+	want6 := remote.Is6()
+	isLoopback := remote.IsLoopback()
+	if offerAddr.IsValid() && !offerAddr.IsUnspecified() {
+		want6 = offerAddr.Is6()
+		isLoopback = offerAddr.IsLoopback()
+	} else if offerAddr.IsValid() {
+		want6 = offerAddr.Is6()
+	}
+	return pickFamilyIP(want6, fallbackIP4(cm.sconf.MediaIP4, cm.sconf.MediaIP), cm.sconf.MediaIP6, listenIPv6(cm.conf), isLoopback)
+}
+
+func (cm *callManager) outboundFamilyIP(target *sip.Uri, fallback, ip6 netip.Addr) netip.Addr {
+	if target != nil {
+		if addr, err := netip.ParseAddr(strings.Trim(target.Host, "[]")); err == nil && addr.Unmap().Is6() {
+			return pickFamilyIP(true, fallback, ip6, listenIPv6(cm.conf), addr.Unmap().IsLoopback())
+		}
+	}
+	return fallback
+}
+
+func (cm *callManager) outboundSignalingIP(target *sip.Uri) netip.Addr {
+	if listenIPv4Only(cm.conf) && !cm.sconf.SignalingIP.Unmap().Is6() {
+		return cm.sconf.SignalingIP
+	}
+	return cm.outboundFamilyIP(target, cm.sconf.SignalingIP, cm.sconf.SignalingIP6)
+}
+
+func (cm *callManager) outboundMediaIP(target *sip.Uri) netip.Addr {
+	if cm.conf != nil && cm.conf.MediaNAT1To1IP != "" && cm.conf.MediaNAT1To1IP != cm.conf.NAT1To1IP {
+		return cm.sconf.MediaIP
+	}
+	if cm.conf != nil && cm.conf.MediaUseExternalIP && !cm.sconf.MediaIP6.IsValid() {
+		return cm.sconf.MediaIP
+	}
+	return cm.outboundFamilyIP(target, cm.sconf.MediaIP, cm.sconf.MediaIP6)
+}
+
+func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string, sdpOffer []byte) error {
 	c.mmu.Lock()
 	defer c.mmu.Unlock()
 	if c.media != nil {
 		return nil
 	}
 
+	var remote netip.Addr
+	if c.cc != nil {
+		remote = c.cc.src.Addr()
+	}
+	mediaIP := c.cm.inboundMediaIP(remote, sdpOfferAddr(sdpOffer))
 	logSignalChanges, _ := strconv.ParseBool(featureFlags[signalLoggingFeatureFlag])
 	mp, err := NewMediaPort(c.log(), c.mon, &MediaOptions{
-		IP:                   c.cm.sconf.MediaIP,
+		IP:                   mediaIP,
 		Ports:                conf.RTPPort,
 		MediaTimeoutInitial:  c.cm.conf.MediaTimeoutInitial,
 		MediaTimeout:         mconf.MediaTimeout,
@@ -2150,7 +2222,8 @@ func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransa
 
 	legTr := legTransportFromReq(invite)
 	tr := callTransportFromReq(invite)
-	contact := cm.ContactURI(legTr)
+	sigIP := cm.inboundSignalingIP(src.Addr())
+	contact := getContactURI(cm.conf, sigIP, legTr)
 	log := cm.log.WithValues(
 		"callID", toTag,
 		"sipCallID", sipCallID,
@@ -2176,6 +2249,7 @@ func (cm *callManager) newInbound(invite *sip.Request, inviteTx sip.ServerTransa
 		legTr:       legTr,
 		tr:          tr,
 		src:         src,
+		signalingIP: sigIP,
 		sipInviteAt: sipInviteAt,
 		contact: &sip.ContactHeader{
 			Address: *contact.GetContactURI(),
@@ -2210,6 +2284,7 @@ type sipInbound struct {
 	tr          Transport // Transport used between LK SIP and the provider
 	referDone   chan error
 	src         netip.AddrPort
+	signalingIP netip.Addr
 	sipInviteAt time.Time // INVITE received; set at creation
 
 	mu              sync.RWMutex
@@ -2701,12 +2776,16 @@ func (c *sipInbound) swapSrcDst(req *sip.Request) (fallback string) {
 }
 
 func (c *sipInbound) generateViaHeader(req *sip.Request) *sip.ViaHeader {
+	host := c.cm.sconf.SignalingIP.String()
+	if c.signalingIP.IsValid() {
+		host = c.signalingIP.String()
+	}
 	newvia := &sip.ViaHeader{
 		ProtocolName:    "SIP",
 		ProtocolVersion: "2.0",
 		Transport:       req.Transport(),
-		Host:            c.cm.sconf.SignalingIP.String(), // This can be rewritten by transport layer
-		Port:            c.cm.conf.SIPPort,               // This can be rewritten by transport layer
+		Host:            host,              // This can be rewritten by transport layer
+		Port:            c.cm.conf.SIPPort, // This can be rewritten by transport layer
 		Params:          sip.NewParams(),
 	}
 	// NOTE: Consider length of branch configurable

@@ -145,7 +145,7 @@ func (u URI) GetPortOrNone() int {
 }
 
 func (u URI) GetHostPort() string {
-	return u.GetHost() + ":" + strconv.Itoa(u.GetPort())
+	return net.JoinHostPort(strings.Trim(u.GetHost(), "[]"), strconv.Itoa(u.GetPort()))
 }
 
 func (u URI) GetDest() string {
@@ -153,8 +153,7 @@ func (u URI) GetDest() string {
 	if u.Addr.Addr().IsValid() {
 		host = u.Addr.Addr().String()
 	}
-	host += ":" + strconv.Itoa(u.GetPort())
-	return host
+	return net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(u.GetPort()))
 }
 
 func (u URI) GetURI() *sip.Uri {
