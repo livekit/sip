@@ -358,7 +358,7 @@ func (cm *callManager) createSIPParticipant(ctx context.Context, req *rpc.Intern
 	if req.SipTrunkId != "" {
 		log = log.WithValues("sipTrunk", req.SipTrunkId)
 	}
-	mconf, err := newMediaConfig(req.Media, cm.conf.MediaTimeout)
+	mconf, err := newMediaConfig(req.Media, cm.conf.MediaTimeout, req.FeatureFlags)
 	if err != nil {
 		return nil, err
 	}
