@@ -932,6 +932,16 @@ func TestOutboundIPv6NATOverrides(t *testing.T) {
 			wantSDPAddrType:      "IP4",
 		},
 		{
+			name:                 "matching IPv4 NAT1To1IP and MediaNAT1To1IP use IPv6 when dialing IPv6 literal",
+			nat1To1IP:            natSig4.String(),
+			mediaNAT1To1IP:       natSig4.String(),
+			destAddr:             "[2001:db8:99::1]:5060",
+			wantDefaultContactIP: natSig4.String(),
+			wantContactIP:        nicV6.String(),
+			wantMediaIP:          nicV6.String(),
+			wantSDPAddrType:      "IP6",
+		},
+		{
 			name:                 "concrete IPv4 ListenIP keeps bound IPv4 Contact when dialing IPv6 literal",
 			listenIP:             v4.String(),
 			destAddr:             "[2001:db8:99::1]:5060",

@@ -1455,7 +1455,7 @@ func (cm *callManager) outboundSignalingIP(target *sip.Uri) netip.Addr {
 }
 
 func (cm *callManager) outboundMediaIP(target *sip.Uri) netip.Addr {
-	if cm.conf != nil && cm.conf.MediaNAT1To1IP != "" {
+	if cm.conf != nil && cm.conf.MediaNAT1To1IP != "" && cm.conf.MediaNAT1To1IP != cm.conf.NAT1To1IP {
 		return cm.sconf.MediaIP
 	}
 	if cm.conf != nil && cm.conf.MediaUseExternalIP && !cm.sconf.MediaIP6.IsValid() {
