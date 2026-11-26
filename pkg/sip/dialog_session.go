@@ -248,12 +248,15 @@ func (s *DialogSession) buildRequestLocked(method sip.RequestMethod, cseq uint32
 		// first Route header; with a strict router the next hop is the
 		// Request-URI.
 		dest := ConvertURI(&target)
-		tr := transportFromURI(&target)
-		switch {
-		case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
-			tr = TransportTLS
-		case tr == "":
-			tr = TransportUDP
+		tr := s.opts.Transport
+		if tr == "" {
+			tr = transportFromURI(&target)
+			switch {
+			case target.IsEncrypted() && (tr == "" || tr == TransportTCP):
+				tr = TransportTLS
+			case tr == "":
+				tr = TransportUDP
+			}
 		}
 		// The transport also selects the default port.
 		dest.Transport = tr
