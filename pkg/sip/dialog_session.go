@@ -78,15 +78,12 @@ type DialogSessionOptions struct {
 	Handler DialogHandler
 }
 
-// DialogSession is this side of an established SIP dialog. It is built from
-// a Dialog snapshot, so it does not need the transaction that created the
-// dialog. It owns the dialog's sequence numbers, sends requests within the
-// dialog (RFC 3261 section 12.2.1), and answers the requests of the remote
-// side that its owner passes to it (RFC 3261 section 12.2.2).
+// DialogSession is this side of an established SIP dialog, built from a
+// Dialog snapshot. It owns the dialog's sequence numbers and sends requests
+// within the dialog (RFC 3261 section 12.2.1).
 //
 // The session does not listen for requests. The owner of the SIP handlers
-// finds the session with Matches and calls HandleInvite, HandleAck or
-// HandleBye.
+// finds it with Matches and passes the requests to the Handle methods.
 type DialogSession struct {
 	log  logger.Logger
 	cli  *Client
@@ -214,10 +211,9 @@ func (s *DialogSession) Matches(req *sip.Request) bool {
 	return callID.Value() == s.d.CallID && toTag == s.d.LocalTag && fromTag == s.d.RemoteTag
 }
 
-// changedLocked gives the dialog a new version after a change and returns the
-// snapshot for the handler. The snapshot the session started from can come
-// from another process, whose versions this process's counter has not reached
-// yet, so the new version is also above the dialog's own last one.
+// changedLocked gives the dialog a new version and returns the snapshot for
+// the handler. The version of the first snapshot can be above this process's
+// counter, so the new version is also above the dialog's last one.
 func (s *DialogSession) changedLocked() *Dialog {
 	s.d.Version = max(s.d.Version+1, dialogVersion.Add(1))
 	return cloneDialog(&s.d)
@@ -287,10 +283,9 @@ func (s *DialogSession) transaction(req *sip.Request) (sip.ClientTransaction, er
 	return s.cli.sipCli.TransactionRequest(req)
 }
 
-// sendInvite sends the INVITE and waits for its final response. When ctx ends
-// first, it sends a CANCEL. The remote side can have accepted the INVITE
-// before it saw the CANCEL: that 2xx still needs its ACK (RFC 3261 section
-// 9.1), so sendInvite waits for it and returns it as the response.
+// sendInvite sends the INVITE and waits for its final response. When ctx
+// ends, it sends a CANCEL, and still returns a 2xx that the remote side sent
+// before it saw the CANCEL: that 2xx needs its ACK (RFC 3261 section 9.1).
 func (s *DialogSession) sendInvite(ctx context.Context, req *sip.Request) (*sip.Response, error) {
 	tx, err := s.transaction(req)
 	if err != nil {
@@ -307,16 +302,13 @@ func (s *DialogSession) sendInvite(ctx context.Context, req *sip.Request) (*sip.
 	return res, err
 }
 
-// Invite sends a re-INVITE with the offer and returns the answer of the
-// remote side. It sends the ACK for a 2xx. It tries again after a 491, and
-// after a digest challenge when the options hold credentials.
+// Invite sends a re-INVITE with the offer and returns the answer. It sends
+// the ACK for a 2xx, and tries again after a 491 or a digest challenge.
 //
-// A 481 or a 408 means that the remote side no longer has the dialog: the
-// session ends and the error wraps ErrDialogEnded.
+// A 481 or a 408 ends the session: the error wraps ErrDialogEnded.
 //
-// When ctx ends, Invite cancels the request and waits a short time for the
-// final response. If the remote side accepted the INVITE before it saw the
-// CANCEL, the re-INVITE took effect: Invite returns the answer and no error.
+// When ctx ends, Invite cancels the request. If the remote side accepted the
+// INVITE before it saw the CANCEL, Invite returns the answer and no error.
 func (s *DialogSession) Invite(ctx context.Context, offer []byte) ([]byte, error) {
 	s.mu.Lock()
 	if s.ended.IsBroken() {
@@ -460,14 +452,12 @@ func (s *DialogSession) Bye(ctx context.Context, headers map[string]string) erro
 	return nil
 }
 
-// HandleInvite answers a re-INVITE of the remote side. An INVITE with a
-// sequence number that is not above the last one accepted gets a 500. An
-// INVITE during an INVITE of this side gets a 491, and one during another
-// INVITE of the remote side a 500 with Retry-After (RFC 3261 sections 12.2.2
-// and 14.2).
+// HandleInvite answers a re-INVITE of the remote side (RFC 3261 sections
+// 12.2.2 and 14.2). It rejects an INVITE that is out of order, or that
+// arrives during another INVITE on the dialog.
 //
-// An INVITE without an offer is answered with the last description this side
-// sent, and the answer in its ACK is not applied: the session stays as it is.
+// An INVITE without an offer gets the last description this side sent. The
+// answer in its ACK is not applied.
 func (s *DialogSession) HandleInvite(req *sip.Request, tx sip.ServerTransaction) {
 	cseq := requestCSeq(req)
 	offer := sdpBodyFromRequest(req)

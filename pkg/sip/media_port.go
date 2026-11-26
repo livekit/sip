@@ -389,10 +389,8 @@ type MediaOptions struct {
 	DTMFAudio            bool
 	DropAudioDuringDTMF  bool // stop sending audio RTP while DTMF is sent
 	// SessionOrigin makes the port continue an existing session: its offers
-	// and answers keep this origin and raise the version by one each (RFC
-	// 3264 section 8).
-	// It is the origin of the last description this side sent in the session;
-	// see ParseSDPOrigin.
+	// and answers keep this origin and raise its version (RFC 3264 section
+	// 8). It is the origin of the last description this side sent.
 	SessionOrigin *psdp.Origin
 }
 
