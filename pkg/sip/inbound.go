@@ -2737,7 +2737,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	if cseq := r.CSeq(); cseq != nil {
 		ev.CSeq = cseq.SeqNo
 	}
-	res, err := sendBye(ctx, c.log, c, r)
+	res, err := sendBye(ctx, c.log, c.Transaction, r)
 	ev.Duration = time.Since(sentAt)
 	if !byeSucceeded(res, err) && fallback != "" {
 		c.log.Infow("retrying BYE via Contact", "addr", fallback)
@@ -2751,7 +2751,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			retryRes, retryErr = sendBye(ctx, c.log, c, r)
+			retryRes, retryErr = sendBye(ctx, c.log, c.Transaction, r)
 		}()
 		select {
 		case <-done:
@@ -2838,7 +2838,7 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 	}
 
 	sentAt := time.Now()
-	res, err := sendRefer(ctx, c, req, c.cm.closing.Watch())
+	res, err := sendRefer(ctx, c.Transaction, req, c.cm.closing.Watch())
 	c.emit(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err

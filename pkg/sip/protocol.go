@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/icholy/digest"
+
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/psrpc"
@@ -215,6 +217,32 @@ type Signaling interface {
 	Drop()
 }
 
+// transactFunc starts the client transaction of a request.
+type transactFunc func(req *sip.Request) (sip.ClientTransaction, error)
+
+// digestCredentials answers the digest challenge that the response has in the
+// header challengeName, for a request with the method and the URI.
+func digestCredentials(res *sip.Response, challengeName string, method sip.RequestMethod, uri, user, pass string) (string, error) {
+	h := res.GetHeader(challengeName)
+	if h == nil {
+		return "", authError(ErrAuthNoHeader, res)
+	}
+	challenge, err := digest.ParseChallenge(h.Value())
+	if err != nil {
+		return "", psrpc.NewErrorf(psrpc.Internal, "invalid challenge %q: %v", h.Value(), err)
+	}
+	cred, err := digest.Digest(challenge, digest.Options{
+		Method:   method.String(),
+		URI:      uri,
+		Username: user,
+		Password: pass,
+	})
+	if err != nil {
+		return "", err
+	}
+	return cred.String(), nil
+}
+
 func transportFromURI(u *sip.Uri) Transport {
 	if tr, _ := u.UriParams.Get("transport"); tr != "" {
 		return Transport(strings.ToLower(tr))
@@ -284,8 +312,8 @@ func getContactURI(c *config.Config, ip netip.Addr, t Transport) URI {
 // transaction (RFC 3261 §17.1.2): the response ends it, no ACK is sent.
 // It returns the response, or the error if the BYE could not be sent or got
 // no response. byeSucceeded tells whether the BYE was accepted.
-func sendBye(ctx context.Context, log logger.Logger, c Signaling, req *sip.Request) (*sip.Response, error) {
-	tx, err := c.Transaction(req)
+func sendBye(ctx context.Context, log logger.Logger, transact transactFunc, req *sip.Request) (*sip.Response, error) {
+	tx, err := transact(req)
 	if err != nil {
 		log.Infow("cannot send BYE", "error", err)
 		return nil, err
@@ -376,10 +404,10 @@ func NewReferRequest(inviteRequest *sip.Request, inviteResponse *sip.Response, c
 	return req
 }
 
-func sendRefer(ctx context.Context, c Signaling, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
+func sendRefer(ctx context.Context, transact transactFunc, req *sip.Request, stop <-chan struct{}) (*sip.Response, error) {
 	ctx, span := Tracer.Start(ctx, "sip.sendRefer")
 	defer span.End()
-	tx, err := c.Transaction(req)
+	tx, err := transact(req)
 	if err != nil {
 		return nil, err
 	}

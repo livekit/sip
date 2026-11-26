@@ -27,7 +27,6 @@ import (
 
 	esip "github.com/emiago/sipgo/sip"
 	"github.com/frostbyte73/core"
-	"github.com/icholy/digest"
 
 	"github.com/livekit/media-sdk/sdp"
 	"github.com/livekit/protocol/livekit"
@@ -58,7 +57,8 @@ var glareRetryDelay = func(ownsCallID bool) time.Duration {
 	return time.Duration(rand.IntN(201)) * 10 * time.Millisecond
 }
 
-// DialogSessionOptions configures a DialogSession. Every field is optional.
+// DialogSessionOptions configures a DialogSession. OnOffer is required; the
+// other fields are optional.
 type DialogSessionOptions struct {
 	Log logger.Logger
 	// Username and Password answer a digest challenge (401 or 407) to a
@@ -68,10 +68,9 @@ type DialogSessionOptions struct {
 	// Transport sends this side's requests over this transport. By default
 	// the URI of the next hop selects it.
 	Transport Transport
-	// OnOffer answers the offer of a re-INVITE from the remote side. An
-	// SDPError rejects the re-INVITE with a 488, another error with a 500.
-	// Without it, the session answers with the last description this side
-	// sent, which leaves the media as it is.
+	// OnOffer applies the offer of a re-INVITE from the remote side to the
+	// owner's media and returns the answer. An SDPError rejects the re-INVITE
+	// with a 488, another error with a 500.
 	OnOffer func(offer []byte) (answer []byte, err error)
 	// Handler receives a snapshot of the dialog after each change: a
 	// re-INVITE of either side that was accepted. It is called without a
@@ -111,10 +110,6 @@ type DialogSession struct {
 // NewDialogSession creates the session for the dialog in the snapshot. The
 // client sends the session's requests; it must be started before the first
 // request.
-//
-// The first request takes d.NextLocalCSeq. The snapshot's owner can have
-// sent requests after it took the snapshot, so a caller that is not that
-// owner raises NextLocalCSeq before it creates the session.
 func NewDialogSession(cli *Client, d *Dialog, opts DialogSessionOptions) (*DialogSession, error) {
 	if cli == nil {
 		return nil, errors.New("no SIP client")
@@ -127,6 +122,9 @@ func NewDialogSession(cli *Client, d *Dialog, opts DialogSessionOptions) (*Dialo
 	}
 	if d.CallID == "" || d.LocalTag == "" || d.RemoteTag == "" {
 		return nil, errors.New("dialog has no Call-ID or tags")
+	}
+	if opts.OnOffer == nil {
+		return nil, errors.New("no OnOffer in the options")
 	}
 	s := &DialogSession{
 		log:  opts.Log,
@@ -284,14 +282,28 @@ func (s *DialogSession) contact(tr string) *sip.ContactHeader {
 	return &sip.ContactHeader{Address: *uri.GetContactURI()}
 }
 
-// do sends the request and waits for its final response.
-func (s *DialogSession) do(ctx context.Context, req *sip.Request) (*sip.Response, error) {
-	tx, err := s.cli.sipCli.TransactionRequest(req)
+// transaction starts the client transaction of a request of this side.
+func (s *DialogSession) transaction(req *sip.Request) (sip.ClientTransaction, error) {
+	return s.cli.sipCli.TransactionRequest(req)
+}
+
+// sendInvite sends the INVITE and waits for its final response. When ctx ends
+// first, it sends a CANCEL. The remote side can have accepted the INVITE
+// before it saw the CANCEL: that 2xx still needs its ACK (RFC 3261 section
+// 9.1), so sendInvite waits for it and returns it as the response.
+func (s *DialogSession) sendInvite(ctx context.Context, req *sip.Request) (*sip.Response, error) {
+	tx, err := s.transaction(req)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Terminate()
-	res, _, err := sipResponse(ctx, tx, nil, nil)
+	res, cancelled, err := sipResponse(ctx, tx, nil, nil)
+	if cancelled != "" {
+		if accepted := cancelledInviteAnswer(tx); accepted != nil {
+			s.log.Infow("cancelled re-INVITE was accepted", "cseq", requestCSeq(req))
+			return accepted, nil
+		}
+	}
 	return res, err
 }
 
@@ -301,6 +313,10 @@ func (s *DialogSession) do(ctx context.Context, req *sip.Request) (*sip.Response
 //
 // A 481 or a 408 means that the remote side no longer has the dialog: the
 // session ends and the error wraps ErrDialogEnded.
+//
+// When ctx ends, Invite cancels the request and waits a short time for the
+// final response. If the remote side accepted the INVITE before it saw the
+// CANCEL, the re-INVITE took effect: Invite returns the answer and no error.
 func (s *DialogSession) Invite(ctx context.Context, offer []byte) ([]byte, error) {
 	s.mu.Lock()
 	if s.ended.IsBroken() {
@@ -333,7 +349,7 @@ func (s *DialogSession) Invite(ctx context.Context, offer []byte) ([]byte, error
 		req.SetBody(offer)
 
 		s.log.Infow("sending re-INVITE", "cseq", requestCSeq(req), "attempt", attempt)
-		res, err := s.do(ctx, req)
+		res, err := s.sendInvite(ctx, req)
 		if err != nil {
 			if ctx.Err() == nil {
 				// No final response: the same as a 408 (RFC 3261 section 12.2.1.2).
@@ -377,24 +393,11 @@ func (s *DialogSession) digestHeader(req *sip.Request, res *sip.Response) (sip.H
 	if res.StatusCode == sip.StatusProxyAuthRequired {
 		challengeName, name = "Proxy-Authenticate", "Proxy-Authorization"
 	}
-	h := res.GetHeader(challengeName)
-	if h == nil {
-		return nil, authError(ErrAuthNoHeader, res)
-	}
-	challenge, err := digest.ParseChallenge(h.Value())
-	if err != nil {
-		return nil, fmt.Errorf("invalid challenge %q: %w", h.Value(), err)
-	}
-	cred, err := digest.Digest(challenge, digest.Options{
-		Method:   req.Method.String(),
-		URI:      req.Recipient.String(),
-		Username: s.opts.Username,
-		Password: s.opts.Password,
-	})
+	cred, err := digestCredentials(res, challengeName, req.Method, req.Recipient.String(), s.opts.Username, s.opts.Password)
 	if err != nil {
 		return nil, err
 	}
-	return sip.NewHeader(name, cred.String()), nil
+	return sip.NewHeader(name, cred), nil
 }
 
 // inviteAccepted handles the 2xx to this side's re-INVITE: it refreshes the
@@ -446,7 +449,7 @@ func (s *DialogSession) Bye(ctx context.Context, headers map[string]string) erro
 	for k, v := range headers {
 		req.AppendHeader(sip.NewHeader(k, v))
 	}
-	res, err := s.do(ctx, req)
+	res, err := sendBye(ctx, s.log, s.transaction, req)
 	if err != nil {
 		return fmt.Errorf("BYE: %w", err)
 	}
@@ -501,7 +504,7 @@ func (s *DialogSession) HandleInvite(req *sip.Request, tx sip.ServerTransaction)
 		s.mu.Unlock()
 	}()
 
-	if len(offer) != 0 && s.opts.OnOffer != nil {
+	if len(offer) != 0 {
 		var err error
 		if answer, err = s.opts.OnOffer(offer); err != nil {
 			code, reason := reinviteRejection(err)

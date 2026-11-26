@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/frostbyte73/core"
-	"github.com/icholy/digest"
 	"golang.org/x/exp/maps"
 
 	msdk "github.com/livekit/media-sdk"
@@ -686,45 +685,56 @@ func sipResponse(ctx context.Context, tx sip.ClientTransaction, stop <-chan stru
 // cancelResponseGrace bounds how long a cancelled INVITE is watched for a 2xx.
 var cancelResponseGrace = 5 * time.Second
 
-// watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
-// the answered call is not orphaned. onAnswered, if set, is called with the 2xx.
-// It owns tx and terminates it when done.
-func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction, onAnswered func(*sip.Response)) {
-	defer tx.Terminate()
+// cancelledInviteAnswer waits for the final response to an INVITE that was
+// cancelled, for cancelResponseGrace at most. It returns the 2xx of a remote
+// side that accepted the INVITE before it saw the CANCEL, and nil otherwise.
+func cancelledInviteAnswer(tx sip.ClientTransaction) *sip.Response {
 	timer := time.NewTimer(cancelResponseGrace)
 	defer timer.Stop()
 	for {
 		select {
 		case res := <-tx.Responses():
 			if res == nil {
-				return
+				return nil
 			}
 			switch res.StatusCode / 100 {
 			case 1:
 				continue // provisional; keep waiting
 			case 2:
-				log.Infow("cancelled INVITE answered; sending ACK and BYE")
-				if onAnswered != nil {
-					onAnswered(res)
-				}
-				applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
-				_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
-				bye := sip.NewByeRequest(req, res, nil)
-				bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
-				if getHeaders != nil {
-					for k, v := range getHeaders(nil) {
-						bye.AppendHeader(sip.NewHeader(k, v))
-					}
-				}
-				_ = cli.WriteRequest(bye)
+				return res
 			}
-			return
+			return nil
 		case <-tx.Done():
-			return
+			return nil
 		case <-timer.C:
-			return
+			return nil
 		}
 	}
+}
+
+// watchCancelledInvite catches a 2xx racing with our CANCEL and ACKs+BYEs it so
+// the answered call is not orphaned. onAnswered, if set, is called with the 2xx.
+// It owns tx and terminates it when done.
+func watchCancelledInvite(log logger.Logger, cli SIPClient, getHeaders setHeadersFunc, req *sip.Request, tx sip.ClientTransaction, onAnswered func(*sip.Response)) {
+	defer tx.Terminate()
+	res := cancelledInviteAnswer(tx)
+	if res == nil {
+		return
+	}
+	log.Infow("cancelled INVITE answered; sending ACK and BYE")
+	if onAnswered != nil {
+		onAnswered(res)
+	}
+	applyInviteResponse(req, res) // route ACK/BYE to the answering Contact
+	_ = cli.WriteRequest(sip.NewAckRequest(req, res, nil))
+	bye := sip.NewByeRequest(req, res, nil)
+	bye.AppendHeader(sip.NewHeader("User-Agent", "LiveKit"))
+	if getHeaders != nil {
+		for k, v := range getHeaders(nil) {
+			bye.AppendHeader(sip.NewHeader(k, v))
+		}
+	}
+	_ = cli.WriteRequest(bye)
 }
 
 func (c *outboundCall) stopSIP(ctx context.Context, t stats.Termination, headers map[string]string) {
@@ -1190,30 +1200,14 @@ authLoop:
 		if user == "" || pass == "" {
 			return nil, authError(ErrAuthMissingCreds, resp)
 		}
-		headerVal := resp.GetHeader(authHeaderName)
-		if headerVal == nil {
-			return nil, authError(ErrAuthNoHeader, resp)
-		}
-		challengeStr := headerVal.Value()
-		challenge, err := digest.ParseChallenge(challengeStr)
-		if err != nil {
-			return nil, psrpc.NewErrorf(psrpc.Internal, "invalid challenge %q: %v", challengeStr, err)
-		}
 		toHeader := resp.To()
 		if toHeader == nil {
 			return nil, psrpc.NewErrorf(psrpc.Internal, "no 'To' header on Response")
 		}
-
-		cred, err := digest.Digest(challenge, digest.Options{
-			Method:   req.Method.String(),
-			URI:      toHeader.Address.String(),
-			Username: user,
-			Password: pass,
-		})
+		authHeader, err = digestCredentials(resp, authHeaderName, req.Method, toHeader.Address.String(), user, pass)
 		if err != nil {
 			return nil, err
 		}
-		authHeader = cred.String()
 		// Try again with a computed digest
 	}
 
@@ -1466,7 +1460,7 @@ func (c *sipOutbound) sendBye(ctx context.Context, headers map[string]string) {
 	c.setCSeq(r)
 	c.drop()
 	ev.CSeq = requestCSeq(r)
-	res, err := sendBye(ctx, c.log, c, r)
+	res, err := sendBye(ctx, c.log, c.Transaction, r)
 	ev.Duration = time.Since(ev.Time)
 	ev.Result = byeOutcome(res, err)
 	if res != nil {
@@ -1537,7 +1531,7 @@ func (c *sipOutbound) transferCall(ctx context.Context, transferTo string, heade
 	c.mu.Unlock()
 
 	sentAt := time.Now()
-	res, err := sendRefer(ctx, c, req, c.closing.Watch())
+	res, err := sendRefer(ctx, c.Transaction, req, c.closing.Watch())
 	c.emitEvent(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err

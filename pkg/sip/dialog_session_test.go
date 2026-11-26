@@ -68,9 +68,17 @@ func (r *sessionDialogs) all() []*Dialog {
 	return append([]*Dialog(nil), r.got...)
 }
 
+// testOnOffer answers each offer with the same description.
+func testOnOffer([]byte) ([]byte, error) { return []byte("test-answer"), nil }
+
+// newTestDialogSession creates a session; without OnOffer in opts it gets
+// testOnOffer.
 func newTestDialogSession(t *testing.T, d *Dialog, opts DialogSessionOptions) (*testSIPHarness, *DialogSession) {
 	t.Helper()
 	h := NewTestSIP(t, TestSIPConfig{})
+	if opts.OnOffer == nil {
+		opts.OnOffer = testOnOffer
+	}
 	s, err := NewDialogSession(h.Client, d, opts)
 	require.NoError(t, err)
 	return h, s
@@ -139,6 +147,7 @@ func newTestServerTx(h *testSIPHarness, req *sip.Request) *testSIPServerTransact
 
 func TestNewDialogSessionValidates(t *testing.T) {
 	h := NewTestSIP(t, TestSIPConfig{})
+	opts := DialogSessionOptions{OnOffer: testOnOffer}
 	for name, change := range map[string]func(d *Dialog){
 		"no state":       func(d *Dialog) { d.State = "" },
 		"no call id":     func(d *Dialog) { d.CallID = "" },
@@ -151,14 +160,19 @@ func TestNewDialogSessionValidates(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			d := testDialog()
 			change(d)
-			_, err := NewDialogSession(h.Client, d, DialogSessionOptions{})
+			_, err := NewDialogSession(h.Client, d, opts)
 			require.Error(t, err)
 		})
 	}
-	_, err := NewDialogSession(nil, testDialog(), DialogSessionOptions{})
+	_, err := NewDialogSession(nil, testDialog(), opts)
 	require.Error(t, err)
-	_, err = NewDialogSession(h.Client, nil, DialogSessionOptions{})
+	_, err = NewDialogSession(h.Client, nil, opts)
 	require.Error(t, err)
+	// A session without OnOffer could not answer an offer.
+	_, err = NewDialogSession(h.Client, testDialog(), DialogSessionOptions{})
+	require.Error(t, err)
+	_, err = NewDialogSession(h.Client, testDialog(), opts)
+	require.NoError(t, err)
 }
 
 // A re-INVITE is built from the dialog, its 2xx is acknowledged, and the
@@ -267,6 +281,105 @@ func TestDialogSessionInviteNoResponse(t *testing.T) {
 	case <-s.Ended():
 	default:
 		t.Fatal("the session did not end")
+	}
+}
+
+// cancelWatchClient closes cancelled when the transaction it started is
+// cancelled.
+type cancelWatchClient struct {
+	SIPClient
+	cancelled chan struct{}
+}
+
+func (c cancelWatchClient) TransactionRequest(req *sip.Request, opts ...sipgo.ClientRequestOption) (sip.ClientTransaction, error) {
+	tx, err := c.SIPClient.TransactionRequest(req, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &cancelWatchTx{ClientTransaction: tx, cancelled: c.cancelled}, nil
+}
+
+type cancelWatchTx struct {
+	sip.ClientTransaction
+	cancelled chan struct{}
+}
+
+func (t *cancelWatchTx) Cancel() error {
+	close(t.cancelled)
+	return nil
+}
+
+// The remote side can accept a re-INVITE before it sees the CANCEL. The
+// session then sends the ACK and Invite returns the answer.
+func TestDialogSessionInviteCancelled(t *testing.T) {
+	prev := cancelResponseGrace
+	t.Cleanup(func() { cancelResponseGrace = prev })
+
+	// start calls Invite and cancels it when the request is out. It returns
+	// the INVITE's transaction after the CANCEL.
+	start := func(t *testing.T, h *testSIPHarness, s *DialogSession) (*transactionRequest, <-chan inviteResult) {
+		t.Helper()
+		cancelled := make(chan struct{})
+		h.Client.sipCli = cancelWatchClient{h.Client.sipCli, cancelled}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		out := make(chan inviteResult, 1)
+		go func() {
+			answer, err := s.Invite(ctx, []byte("offer"))
+			out <- inviteResult{answer, err}
+		}()
+		tr := h.WaitTransaction(t, dialogTestTimeout, "local-tag", "")
+		cancel()
+		select {
+		case <-cancelled:
+		case <-time.After(dialogTestTimeout):
+			t.Fatal("no CANCEL was sent")
+		}
+		return tr, out
+	}
+
+	t.Run("accepted", func(t *testing.T) {
+		cancelResponseGrace = dialogTestTimeout
+		rec := &sessionDialogs{}
+		h, s := newTestDialogSession(t, testDialog(), DialogSessionOptions{Handler: rec})
+		tr, res := start(t, h, s)
+		require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, sip.StatusOK, "OK", []byte("answer"))))
+
+		got := waitSessionInvite(t, res)
+		require.NoError(t, got.err)
+		require.Equal(t, "answer", string(got.answer))
+		ack := h.WaitRequest(t, dialogTestTimeout, "local-tag", "").req
+		require.Equal(t, sip.ACK, ack.Method)
+		require.Equal(t, uint32(3), ack.CSeq().SeqNo)
+		d := s.Dialog()
+		require.Equal(t, "offer", string(d.LocalSDP))
+		require.Equal(t, "answer", string(d.RemoteSDP))
+		require.Len(t, rec.all(), 1)
+	})
+	for name, final := range map[string]sip.StatusCode{
+		"terminated":  sip.StatusRequestTerminated,
+		"no response": 0,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cancelResponseGrace = 20 * time.Millisecond
+			rec := &sessionDialogs{}
+			h, s := newTestDialogSession(t, testDialog(), DialogSessionOptions{Handler: rec})
+			tr, res := start(t, h, s)
+			if final != 0 {
+				require.NoError(t, tr.transaction.SendResponse(sip.NewResponseFromRequest(tr.req, final, "", nil)))
+			}
+
+			got := waitSessionInvite(t, res)
+			require.Error(t, got.err)
+			require.NotErrorIs(t, got.err, ErrDialogEnded)
+			select {
+			case <-s.Ended():
+				t.Fatal("the session ended")
+			default:
+			}
+			require.Equal(t, "local-sdp", string(s.Dialog().LocalSDP))
+			require.Empty(t, rec.all())
+		})
 	}
 }
 
@@ -447,26 +560,25 @@ func TestDialogSessionHandleInvite(t *testing.T) {
 	}
 }
 
-// Without OnOffer the session answers with the description it sent last.
+// An INVITE without an offer is answered with the description this side sent
+// last, without a call of OnOffer, and changes no description.
 func TestDialogSessionHandleInviteKeepsSession(t *testing.T) {
-	h, s := newTestDialogSession(t, testDialog(), DialogSessionOptions{})
-	req := remoteRequest(sip.INVITE, 11, "remote-offer")
+	h, s := newTestDialogSession(t, testDialog(), DialogSessionOptions{
+		OnOffer: func([]byte) ([]byte, error) {
+			t.Error("OnOffer was called without an offer")
+			return nil, nil
+		},
+	})
+	req := remoteRequest(sip.INVITE, 11, "")
 	tx := newTestServerTx(h, req)
 	s.HandleInvite(req, tx)
 	res := tx.WaitResponseTimeout(t, dialogTestTimeout)
 	require.Equal(t, sip.StatusOK, res.StatusCode)
 	require.Equal(t, "local-sdp", string(res.Body()))
-
-	// An INVITE without an offer gets the same description and changes no SDP.
-	req = remoteRequest(sip.INVITE, 12, "")
-	tx = newTestServerTx(h, req)
-	s.HandleInvite(req, tx)
-	res = tx.WaitResponseTimeout(t, dialogTestTimeout)
-	require.Equal(t, sip.StatusOK, res.StatusCode)
-	require.Equal(t, "local-sdp", string(res.Body()))
 	d := s.Dialog()
-	require.Equal(t, uint32(12), d.RemoteCSeq)
-	require.Equal(t, "remote-offer", string(d.RemoteSDP))
+	require.Equal(t, uint32(11), d.RemoteCSeq)
+	require.Equal(t, "local-sdp", string(d.LocalSDP))
+	require.Equal(t, "remote-sdp", string(d.RemoteSDP))
 }
 
 func TestDialogSessionHandleInviteRejects(t *testing.T) {
