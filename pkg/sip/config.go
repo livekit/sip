@@ -27,20 +27,38 @@ import (
 )
 
 func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
+	return getServiceConfigWith(conf, localInterfaceAddrs, getPublicIP)
+}
+
+func getServiceConfigWith(
+	conf *config.Config,
+	getAddrs func(bool) ([]netip.Addr, error),
+	getExtIP func() (netip.Addr, error),
+) (*ServiceConfig, error) {
 	s := new(ServiceConfig)
 	localNet4, localNet6, err := parseLocalNets(conf.LocalNet)
 	if err != nil {
 		return nil, err
 	}
 
+	resolveLocal4 := func() (netip.Addr, error) {
+		return getLocalIPWith(localNet4, getAddrs)
+	}
+
 	resolveLocal6 := func(publicOnly bool) (netip.Addr, error) {
-		ip6, err := getLocalIP6(localNet6, publicOnly)
+		if !publicOnly {
+			if l6 := listenIPv6(conf); l6.IsValid() {
+				if localNet6 != nil && !localNet6.Contains(l6) {
+					return netip.Addr{}, fmt.Errorf("listen IP %s is outside local_net %s", l6, localNet6)
+				}
+				return l6, nil
+			}
+		}
+		addrs, err := getAddrs(true)
 		if err != nil {
 			return netip.Addr{}, err
 		}
-		if !ip6.IsValid() && localNet6 == nil && !publicOnly {
-			ip6 = listenIPv6(conf)
-		}
+		ip6, _ := selectLocalIP6(addrs, localNet6, publicOnly)
 		if !ip6.IsValid() && localNet6 != nil && !publicOnly {
 			return netip.Addr{}, fmt.Errorf("no local interface found")
 		}
@@ -48,42 +66,40 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 	}
 
 	if conf.UseExternalIP {
-		if s.SignalingIP, err = getPublicIP(); err != nil {
+		if s.SignalingIP, err = getExtIP(); err != nil {
 			return nil, err
 		}
-		if s.SignalingIPLocal, err = getLocalIP(localNet4); err != nil {
+		if s.SignalingIPLocal, err = resolveLocal4(); err != nil {
 			return nil, err
 		}
+		s.SignalingIP4 = s.SignalingIP
 		if s.SignalingIPLocal6, err = resolveLocal6(false); err != nil {
 			return nil, err
 		}
-		s.SignalingIP6, _ = getLocalIP6(nil, true)
+		s.SignalingIP6, _ = resolveLocal6(true)
 	} else if conf.NAT1To1IP != "" {
 		ip, err := netip.ParseAddr(conf.NAT1To1IP)
 		if err != nil {
 			return nil, err
 		}
 		ip = ip.Unmap()
+		s.SignalingIP = ip
+		s.SignalingIPLocal = ip
 		if ip.Is6() {
 			s.SignalingIP6 = ip
 			s.SignalingIPLocal6 = ip
-			if ip4, err4 := getLocalIP(localNet4); err4 == nil {
-				s.SignalingIP = ip4
-				s.SignalingIPLocal = ip4
-			} else {
-				s.SignalingIP = ip
-				s.SignalingIPLocal = ip
+			if ip4, err4 := resolveLocal4(); err4 == nil {
+				s.SignalingIP4 = ip4
 			}
 		} else {
-			s.SignalingIP = ip
-			s.SignalingIPLocal = ip
+			s.SignalingIP4 = ip
 			if s.SignalingIP6, err = resolveLocal6(false); err != nil {
 				return nil, err
 			}
 			s.SignalingIPLocal6 = s.SignalingIP6
 		}
 	} else {
-		ip4, err4 := getLocalIP(localNet4)
+		ip4, err4 := resolveLocal4()
 		ip6, err6 := resolveLocal6(false)
 		if err6 != nil {
 			return nil, err6
@@ -97,18 +113,20 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 		} else {
 			s.SignalingIP = ip4
 			s.SignalingIPLocal = ip4
+			s.SignalingIP4 = ip4
 		}
 		s.SignalingIP6 = ip6
 		s.SignalingIPLocal6 = ip6
 	}
 
 	if conf.MediaUseExternalIP && !conf.UseExternalIP {
-		if s.MediaIP, err = getPublicIP(); err != nil {
+		if s.MediaIP, err = getExtIP(); err != nil {
 			return nil, err
 		}
-		if ip6, err := getLocalIP6(nil, true); err == nil && ip6.IsValid() {
+		s.MediaIP4 = s.MediaIP
+		if ip6, err := resolveLocal6(true); err == nil && ip6.IsValid() {
 			s.MediaIP6 = ip6
-		} else if s.SignalingIP6.IsValid() && !s.SignalingIP6.IsPrivate() {
+		} else if s.SignalingIP6.IsValid() && !s.SignalingIP6.IsPrivate() && (localNet6 == nil || localNet6.Contains(s.SignalingIP6)) {
 			s.MediaIP6 = s.SignalingIP6
 		}
 	} else if conf.MediaNAT1To1IP != "" && conf.MediaNAT1To1IP != conf.NAT1To1IP {
@@ -117,19 +135,19 @@ func GetServiceConfig(conf *config.Config) (*ServiceConfig, error) {
 			return nil, err
 		}
 		ip = ip.Unmap()
+		s.MediaIP = ip
 		if ip.Is6() {
 			s.MediaIP6 = ip
-			if s.SignalingIP.Is4() {
-				s.MediaIP = s.SignalingIP
-			} else {
-				s.MediaIP = ip
+			if s.SignalingIP4.IsValid() {
+				s.MediaIP4 = s.SignalingIP4
 			}
 		} else {
-			s.MediaIP = ip
+			s.MediaIP4 = ip
 			s.MediaIP6 = s.SignalingIP6
 		}
 	} else {
 		s.MediaIP = s.SignalingIP
+		s.MediaIP4 = s.SignalingIP4
 		s.MediaIP6 = s.SignalingIP6
 	}
 
@@ -152,18 +170,18 @@ func getPublicIP() (netip.Addr, error) {
 	return netip.Addr{}, fmt.Errorf("could not resolve external IP: %v", err)
 }
 
-func parseLocalNets(localNet string) (string, *netip.Prefix, error) {
+func parseLocalNets(localNet string) (*netip.Prefix, *netip.Prefix, error) {
 	if localNet == "" {
-		return "", nil, nil
+		return nil, nil, nil
 	}
 	p, err := netip.ParsePrefix(localNet)
 	if err != nil {
-		return "", nil, err
+		return nil, nil, err
 	}
 	if p.Addr().Is6() {
-		return "", &p, nil
+		return nil, &p, nil
 	}
-	return localNet, nil, nil
+	return &p, nil, nil
 }
 
 func listenIPv6(conf *config.Config) netip.Addr {
@@ -259,16 +277,8 @@ func selectLocalIP6(addrs []netip.Addr, netw *netip.Prefix, publicOnly bool) (ne
 	return netip.Addr{}, false
 }
 
-func getLocalIP(localNet string) (netip.Addr, error) {
-	var netw *netip.Prefix
-	if localNet != "" {
-		nw, err := netip.ParsePrefix(localNet)
-		if err != nil {
-			return netip.Addr{}, err
-		}
-		netw = &nw
-	}
-	addrs, err := localInterfaceAddrs(false)
+func getLocalIPWith(netw *netip.Prefix, getAddrs func(bool) ([]netip.Addr, error)) (netip.Addr, error) {
+	addrs, err := getAddrs(false)
 	if err != nil {
 		return netip.Addr{}, err
 	}
@@ -276,13 +286,4 @@ func getLocalIP(localNet string) (netip.Addr, error) {
 		return ip, nil
 	}
 	return netip.Addr{}, fmt.Errorf("no local interface found")
-}
-
-func getLocalIP6(netw *netip.Prefix, publicOnly bool) (netip.Addr, error) {
-	addrs, err := localInterfaceAddrs(true)
-	if err != nil {
-		return netip.Addr{}, err
-	}
-	ip, _ := selectLocalIP6(addrs, netw, publicOnly)
-	return ip, nil
 }

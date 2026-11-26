@@ -1412,17 +1412,47 @@ func pickFamilyIP(want6 bool, fallback, ip6Conf, ip6Listen netip.Addr, isLoopbac
 	return fallback
 }
 
+func fallbackIP4(preferred, legacy netip.Addr) netip.Addr {
+	if preferred.IsValid() {
+		return preferred
+	}
+	return legacy
+}
+
 func (cm *callManager) inboundSignalingIP(remote netip.Addr) netip.Addr {
-	return pickFamilyIP(remote.Unmap().Is6(), cm.sconf.SignalingIP, cm.sconf.SignalingIP6, listenIPv6(cm.conf), remote.Unmap().IsLoopback())
+	remote = remote.Unmap()
+	return pickFamilyIP(remote.Is6(), fallbackIP4(cm.sconf.SignalingIP4, cm.sconf.SignalingIP), cm.sconf.SignalingIP6, listenIPv6(cm.conf), remote.IsLoopback())
 }
 
 func (cm *callManager) inboundMediaIP(remote, offerAddr netip.Addr) netip.Addr {
-	want6 := remote.Unmap().Is6()
-	if offerAddr.IsValid() {
-		want6 = offerAddr.Unmap().Is6()
+	remote = remote.Unmap()
+	offerAddr = offerAddr.Unmap()
+	want6 := remote.Is6()
+	isLoopback := remote.IsLoopback()
+	if offerAddr.IsValid() && !offerAddr.IsUnspecified() {
+		want6 = offerAddr.Is6()
+		isLoopback = offerAddr.IsLoopback()
+	} else if offerAddr.IsValid() {
+		want6 = offerAddr.Is6()
 	}
-	isLoopback := remote.Unmap().IsLoopback() || offerAddr.Unmap().IsLoopback()
-	return pickFamilyIP(want6, cm.sconf.MediaIP, cm.sconf.MediaIP6, listenIPv6(cm.conf), isLoopback)
+	return pickFamilyIP(want6, fallbackIP4(cm.sconf.MediaIP4, cm.sconf.MediaIP), cm.sconf.MediaIP6, listenIPv6(cm.conf), isLoopback)
+}
+
+func (cm *callManager) outboundFamilyIP(target *sip.Uri, fallback, ip6 netip.Addr) netip.Addr {
+	if target != nil {
+		if addr, err := netip.ParseAddr(strings.Trim(target.Host, "[]")); err == nil && addr.Unmap().Is6() {
+			return pickFamilyIP(true, fallback, ip6, listenIPv6(cm.conf), addr.Unmap().IsLoopback())
+		}
+	}
+	return fallback
+}
+
+func (cm *callManager) outboundSignalingIP(target *sip.Uri) netip.Addr {
+	return cm.outboundFamilyIP(target, cm.sconf.SignalingIP, cm.sconf.SignalingIP6)
+}
+
+func (cm *callManager) outboundMediaIP(target *sip.Uri) netip.Addr {
+	return cm.outboundFamilyIP(target, cm.sconf.MediaIP, cm.sconf.MediaIP6)
 }
 
 func (c *inboundCall) createMediaPort(mconf *sipMediaConfig, conf *config.Config, featureFlags map[string]string, sdpOffer []byte) error {

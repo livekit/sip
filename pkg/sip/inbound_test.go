@@ -1236,9 +1236,40 @@ func TestInboundIPv6Selection(t *testing.T) {
 		}, logger.NewTestLogger(t), mon, newTestNonces(t), nil)
 
 		loopback6 := netip.MustParseAddr("::1")
+		loopback4 := netip.MustParseAddr("127.0.0.1")
+		remote6 := netip.MustParseAddr("2001:db8::99")
+		fallback4 := netip.MustParseAddr("192.0.2.10")
+
 		require.Equal(t, loopback6, v4OnlyCM.inboundSignalingIP(loopback6))
 		require.Equal(t, loopback6, v4OnlyCM.inboundMediaIP(loopback6, loopback6))
 		require.Equal(t, loopback6, v4OnlyCM.inboundMediaIP(loopback6, netip.Addr{}))
-		require.Equal(t, netip.MustParseAddr("192.0.2.10"), v4OnlyCM.inboundSignalingIP(netip.MustParseAddr("198.51.100.5")))
+		require.Equal(t, fallback4, v4OnlyCM.inboundSignalingIP(netip.MustParseAddr("198.51.100.5")))
+
+		// A loopback SIP relay with a remote IPv6 offer must not advertise ::1.
+		require.Equal(t, fallback4, v4OnlyCM.inboundMediaIP(loopback4, remote6))
+		require.Equal(t, fallback4, v4OnlyCM.inboundMediaIP(loopback6, remote6))
+		// Unspecified SDP address uses SIP source loopback status.
+		require.Equal(t, loopback6, v4OnlyCM.inboundMediaIP(loopback6, netip.IPv6Unspecified()))
+		require.Equal(t, fallback4, v4OnlyCM.inboundMediaIP(remote6, netip.IPv6Unspecified()))
+	})
+
+	t.Run("inbound preserves IPv4 fallback when legacy fields hold IPv6 NAT overrides", func(t *testing.T) {
+		overrideCM := newCallManager(nil, nil, "", &config.Config{SIPPort: 5060}, &ServiceConfig{
+			SignalingIP:       netip.MustParseAddr("2001:db8::10"),
+			SignalingIPLocal:  netip.MustParseAddr("2001:db8::10"),
+			MediaIP:           netip.MustParseAddr("2001:db8::20"),
+			SignalingIP4:      netip.MustParseAddr("10.0.0.5"),
+			MediaIP4:          netip.MustParseAddr("10.0.0.6"),
+			SignalingIP6:      netip.MustParseAddr("2001:db8::10"),
+			SignalingIPLocal6: netip.MustParseAddr("2001:db8::10"),
+			MediaIP6:          netip.MustParseAddr("2001:db8::20"),
+		}, logger.NewTestLogger(t), mon, newTestNonces(t), nil)
+
+		v4Peer := netip.MustParseAddr("198.51.100.5")
+		v6Peer := netip.MustParseAddr("2001:db8::99")
+		require.Equal(t, netip.MustParseAddr("10.0.0.5"), overrideCM.inboundSignalingIP(v4Peer))
+		require.Equal(t, netip.MustParseAddr("10.0.0.6"), overrideCM.inboundMediaIP(v4Peer, v4Peer))
+		require.Equal(t, netip.MustParseAddr("2001:db8::10"), overrideCM.inboundSignalingIP(v6Peer))
+		require.Equal(t, netip.MustParseAddr("2001:db8::20"), overrideCM.inboundMediaIP(v6Peer, v6Peer))
 	})
 }
