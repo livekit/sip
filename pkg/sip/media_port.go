@@ -388,6 +388,10 @@ type MediaOptions struct {
 	Encryption           sdp.Encryption
 	DTMFAudio            bool
 	DropAudioDuringDTMF  bool // stop sending audio RTP while DTMF is sent
+	// SessionOrigin makes the port continue an existing session: its offers
+	// and answers keep this origin and raise its version (RFC 3264 section
+	// 8). It is the origin of the last description this side sent.
+	SessionOrigin *psdp.Origin
 }
 
 func (o *MediaOptions) ApplyDefaults() {
@@ -506,6 +510,10 @@ func NewMediaPortWith(log logger.Logger, mon *stats.CallMonitor, conn UDPConn, o
 		encryption:  opts.Encryption,
 		localCrypto: localCrypto,
 	}
+	if opts.SessionOrigin != nil {
+		origin := *opts.SessionOrigin
+		p.origin = &origin
+	}
 	// Explicitly set sample rate. We manually create resamplers to include in latency
 	p.audioOut = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](targetSampleRate)
 	p.audioIn = msdk.NewWriteCloserSwitch[msdk.PCM16Sample](targetSampleRate)
@@ -548,6 +556,7 @@ type mediaPort struct {
 	pipeline   *mediaPortPipeline
 	localSDP   []byte
 	offer      *sdp.Offer
+	origin     *psdp.Origin // origin of the last offer, when the port continues a session
 	negotiated *sdp.MediaConfig
 
 	audioIn  *msdk.WriteCloserSwitch[msdk.PCM16Sample] // SIP RTP -> LK PCM
@@ -793,8 +802,22 @@ func (p *mediaPort) GenerateOffer() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.origin != nil {
+		// A new offer in an existing session keeps the origin and raises the version.
+		p.origin.SessionVersion++
+		offer.SDP.Origin = *p.origin
+	}
 	p.offer = offer
 	return offer.SDP.Marshal()
+}
+
+// ParseSDPOrigin returns the origin (the o= line) of a session description.
+func ParseSDPOrigin(data []byte) (*psdp.Origin, error) {
+	var desc psdp.SessionDescription
+	if err := desc.Unmarshal(data); err != nil {
+		return nil, SDPError{Err: err}
+	}
+	return &desc.Origin, nil
 }
 
 func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
@@ -815,6 +838,14 @@ func (p *mediaPort) GenerateAnswer(offerData []byte) ([]byte, error) {
 		return nil, SDPError{Err: err}
 	}
 
+	p.mu.Lock()
+	if p.origin != nil {
+		// An answer in a continued session is also a new description of
+		// this side: it keeps the origin and raises the version.
+		p.origin.SessionVersion++
+		answer.SDP.Origin = *p.origin
+	}
+	p.mu.Unlock()
 	answerData, err := answer.SDP.Marshal()
 	if err != nil {
 		return nil, err

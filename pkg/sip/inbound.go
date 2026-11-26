@@ -327,10 +327,17 @@ func (cm *callManager) validateAuthorization(log logger.Logger, req *sip.Request
 
 func sdpBodyFromRequest(req *sip.Request) []byte {
 	ct := req.ContentType()
-	if ct != nil && ct.Value() != contentTypeSDP {
+	if ct != nil && !isSDPContentType(ct.Value()) {
 		return nil
 	}
 	return req.Body()
+}
+
+// isSDPContentType reports whether a Content-Type value names SDP. A media
+// type has no case and can have parameters (RFC 3261 section 7.3.1).
+func isSDPContentType(v string) bool {
+	typ, _, _ := strings.Cut(v, ";")
+	return strings.EqualFold(strings.TrimSpace(typ), contentTypeSDP)
 }
 
 func providerLabel(p *livekit.ProviderInfo) string {
@@ -2511,20 +2518,13 @@ func (c *sipInbound) RejectAsKeepAlive(status sip.StatusCode, reason string) {
 // peer behavior, so reply 488 and log at Warn. Other errors are ours: reply 500
 // and log at Error.
 func (c *sipInbound) RejectReinvite(log logger.Logger, msg string, err error) {
-	if e := (SDPError{}); !errors.As(err, &e) {
+	code, reason := reinviteRejection(err)
+	if code == sip.StatusInternalServerError {
 		log.Errorw(msg, err)
-		c.RejectAsKeepAlive(sip.StatusInternalServerError, "Internal Server Error")
-		return
+	} else {
+		log.Warnw(msg, err)
 	}
-	log.Warnw(msg, err)
-	reason := "Invalid SDP"
-	switch {
-	case errors.Is(err, sdp.ErrNoCommonMedia):
-		reason = "No Acceptable Codec"
-	case errors.Is(err, sdp.ErrNoCommonCrypto):
-		reason = "No Acceptable Encryption Profile"
-	}
-	c.RejectAsKeepAlive(sip.StatusNotAcceptableHere, reason)
+	c.RejectAsKeepAlive(code, reason)
 }
 
 // TODO(alexfish): Remove this function in favor once re-invites are
@@ -2748,7 +2748,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 	if cseq := r.CSeq(); cseq != nil {
 		ev.CSeq = cseq.SeqNo
 	}
-	res, err := sendBye(ctx, c.log, c, r)
+	res, err := sendBye(ctx, c.log, c.Transaction, r)
 	ev.Duration = time.Since(sentAt)
 	if !byeSucceeded(res, err) && fallback != "" {
 		c.log.Infow("retrying BYE via Contact", "addr", fallback)
@@ -2762,7 +2762,7 @@ func (c *sipInbound) sendBye(ctx context.Context, headers map[string]string) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			retryRes, retryErr = sendBye(ctx, c.log, c, r)
+			retryRes, retryErr = sendBye(ctx, c.log, c.Transaction, r)
 		}()
 		select {
 		case <-done:
@@ -2849,7 +2849,7 @@ func (c *sipInbound) TransferCall(ctx context.Context, transferTo string, header
 	}
 
 	sentAt := time.Now()
-	res, err := sendRefer(ctx, c, req, c.cm.closing.Watch())
+	res, err := sendRefer(ctx, c.Transaction, req, c.cm.closing.Watch())
 	c.emit(referSentEvent(req, sentAt, res, err))
 	if err != nil {
 		return err

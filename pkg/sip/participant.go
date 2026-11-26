@@ -72,6 +72,12 @@ func disconnectReasonFromRoomClose(reason livekit.DisconnectReason) livekit.Disc
 	return reason
 }
 
+// RoomCloseEnding is how a call ends when its LiveKit room closes: the
+// termination for the metrics, and the disconnect reason for the call info.
+func RoomCloseEnding(reason livekit.DisconnectReason) (stats.Termination, livekit.DisconnectReason) {
+	return terminationFromRoomDisconnect(reason), disconnectReasonFromRoomClose(reason)
+}
+
 const (
 	// maxCallDuration sets a global max call duration.
 	maxCallDuration = 24 * time.Hour
